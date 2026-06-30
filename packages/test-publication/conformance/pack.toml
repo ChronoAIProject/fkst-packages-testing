@@ -1,0 +1,12 @@
+schema = 1
+runner_protocol = "fkst-declarative-rulepack@1"
+owner_package = "test-publication"
+
+[[rules]]
+id = "publication-pointer-only"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["**/*.lua"]
+exclude = ["tests/**"]
+pattern = "raw_report|full_report|attachment_body|screenshot_body"
+message = "test publication handoff must carry artifact pointers, not report bodies"

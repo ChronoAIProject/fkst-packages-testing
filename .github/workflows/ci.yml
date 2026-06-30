@@ -1,0 +1,76 @@
+name: ci
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main, dev]
+  workflow_dispatch:
+    inputs:
+      substrate_ref:
+        description: "fkst-substrate ref to build fkst-framework from"
+        default: ""
+        required: false
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout fkst-packages-testing
+        uses: actions/checkout@v4
+
+      - name: Hydrate pinned fkst-packages source
+        shell: bash
+        run: |
+          set -euo pipefail
+          pin="$(sed -n '/^[0-9a-fA-F]\{40\}$/{p;q;}' .fkst/conformance/fkst-packages.pin)"
+          [ -n "$pin" ] || { echo "missing fkst-packages pin in .fkst/conformance/fkst-packages.pin" >&2; exit 1; }
+          mkdir -p .fkst/run
+          git clone --no-checkout https://github.com/ChronoAIProject/fkst-packages.git .fkst/run/fkst-packages-conformance
+          git -C .fkst/run/fkst-packages-conformance checkout "$pin"
+          echo "fkst-packages pin: $pin"
+
+      - name: Resolve fkst-substrate source pin
+        id: substrate_ref
+        shell: bash
+        run: |
+          set -euo pipefail
+          ref="${{ github.event.inputs.substrate_ref }}"
+          if [ -z "$ref" ]; then ref="$(sed -n '1{s/[[:space:]]//g;p;q}' .fkst-substrate-ref 2>/dev/null || true)"; fi
+          if [ -z "$ref" ]; then ref="dev"; fi
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "fkst-substrate ref: $ref"
+
+      - name: Checkout fkst-substrate
+        uses: actions/checkout@v4
+        with:
+          repository: ChronoAIProject/fkst-substrate
+          ref: ${{ steps.substrate_ref.outputs.ref }}
+          path: fkst-substrate
+
+      - name: Install stable Rust
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup default stable
+          rustc --version
+
+      - name: Cache cargo
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: fkst-substrate
+
+      - name: Build fkst-framework
+        working-directory: fkst-substrate
+        run: cargo build -p fkst-framework
+
+      - name: Run repository checks and package tests
+        env:
+          BIN: ${{ github.workspace }}/fkst-substrate/target/debug/fkst-framework
+        run: |
+          test -x "$BIN"
+          scripts/run.sh check
+          scripts/run.sh test

@@ -1,0 +1,12 @@
+schema = 1
+runner_protocol = "fkst-declarative-rulepack@1"
+owner_package = "testing-runner"
+
+[[rules]]
+id = "no-large-inline-test-bodies"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["**/*.lua"]
+exclude = ["tests/**"]
+pattern = "report_body|full_report|stdout_body|browser_storage|cookie|password|token"
+message = "testing-runner payloads must carry small control fields and artifact pointers, not large reports or credentials"

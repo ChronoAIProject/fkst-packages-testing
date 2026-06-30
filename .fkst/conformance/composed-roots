@@ -1,0 +1,12 @@
+# Composed-package closed-world root sets.  (read by scripts/run.sh)
+#
+# Format:
+#   <package> <root> <root> ...
+# Bare roots resolve to this repo's packages/<name>; @platform/<name> resolves to the
+# hydrated fkst-packages pin checkout. These testing lifecycle packages initially close
+# over the local testing-runner adapter.
+
+module-test-loop testing-runner
+platform-test-loop testing-runner
+online-regression testing-runner
+ornn-testing-profile browser-readiness module-test-loop testing-runner

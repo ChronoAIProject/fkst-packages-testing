@@ -1,0 +1,8 @@
+# Package roots for fkst-packages-testing single-root conformance.
+# Relative paths resolve from this repository root.
+
+packages/testing-runner
+packages/browser-readiness
+packages/test-artifacts
+packages/test-publication
+packages/ornn-testing-profile

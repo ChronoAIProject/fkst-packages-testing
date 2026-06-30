@@ -1,0 +1,15 @@
+kind = "package.composed"
+name = "platform-test-loop"
+persistence_class = "saga"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow", "testkit"]
+
+[event_deps]
+packages = ["testing-runner"]
+
+[conformance]
+pack = "conformance/pack.toml"

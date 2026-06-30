@@ -1,0 +1,9 @@
+[workspace]
+# fkst-packages-testing is a Lua-primary testing-domain package workspace. Platform libraries under
+# libraries/ are vendored from fkst-packages at the sha in .fkst/conformance/fkst-packages.pin.
+units = ["packages/*", "libraries/*"]
+packages = ["packages/*"]
+libraries = ["libraries/*"]
+
+[registries]
+workspace = "workspace"

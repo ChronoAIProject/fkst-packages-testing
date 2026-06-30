@@ -1,0 +1,12 @@
+kind = "package"
+name = "testing-runner"
+persistence_class = "stateless_adapter"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow", "testkit"]
+
+[conformance]
+pack = "conformance/pack.toml"

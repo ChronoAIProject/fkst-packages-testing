@@ -1,0 +1,15 @@
+kind = "package.composed"
+name = "ornn-testing-profile"
+persistence_class = "saga"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow", "testkit"]
+
+[event_deps]
+packages = ["browser-readiness", "module-test-loop"]
+
+[conformance]
+pack = "conformance/pack.toml"
