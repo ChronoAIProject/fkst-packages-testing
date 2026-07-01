@@ -58,12 +58,13 @@ ensure_fkst_packages_checkout() {
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|supervise> [args]
+usage: scripts/run.sh <check|test|example|supervise> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
 
@@ -172,7 +173,7 @@ copy_tree() {
 }
 
 composed_test_workspace() {
-  local name="$1" roots="$2" work lib t src dep_name
+  local name="$1" roots="$2" work lib t src dep_name source_root="${3:-$ROOT/packages/$name}"
   work="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-composed.XXXXXX")"
   mkdir -p "$work/packages" "$work/libraries"
   cat > "$work/fkst.workspace.toml" <<'TOML'
@@ -188,7 +189,7 @@ TOML
     [ -d "$lib" ] || continue
     copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
   done
-  copy_tree "$ROOT/packages/$name" "$work/packages/$name" 0
+  copy_tree "$source_root" "$work/packages/$name" 0
   for t in $roots; do
     src="$(resolve_composed_root "$t")"
     dep_name="${t#@platform/}"
@@ -292,6 +293,21 @@ cmd_test() {
   echo "OK: $ran package(s)"
 }
 
+cmd_example() {
+  local name="${1:-generic-host}" example roots work args t
+  example="$ROOT/examples/$name"
+  [ -d "$example" ] || { echo "error: no example named '$name' under examples/" >&2; exit 1; }
+  resolve_testing_bin
+  roots="browser-readiness testing-pipeline module-test-loop testing-runner test-artifacts test-publication"
+  work="$(composed_test_workspace "$name" "$roots" "$example")" || return 1
+  args=(--project-root "$work" --package-root "$work/packages/$name")
+  for t in $roots; do
+    args+=(--package-root "$work/packages/${t#@platform/}")
+  done
+  echo "example $name (closed-world: $roots)"
+  run_engine "$BIN" test "${args[@]}"
+}
+
 cmd_supervise() {
   local name="${1:-}" pkg roots t dir rt durable
   [ -n "$name" ] || { echo "usage: scripts/run.sh supervise <package>" >&2; exit 1; }
@@ -321,7 +337,7 @@ cmd_supervise() {
 }
 
 case "${1:-}" in
-  check|test|supervise) ;;
+  check|test|example|supervise) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -337,5 +353,6 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  example) cmd_example "$@" ;;
   supervise) cmd_supervise "$@" ;;
 esac
