@@ -16,7 +16,7 @@ end
 local function act(event)
   local payload = event.payload or {}
   local result = core.run("module", payload)
-  log.info("testing-runner dept=run_module_loop tag=PLANNED module=" .. tostring(payload.module))
+  log.info("testing-runner dept=run_module_loop tag=" .. string.upper(result.status) .. " module=" .. tostring(payload.module))
   raise("testing_result", result)
 end
 

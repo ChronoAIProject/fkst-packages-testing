@@ -1,5 +1,8 @@
 local M = {}
 
+local agentic_cli = require("agentic_cli")
+local fkst_native = require("fkst_native")
+
 local max_string = 512
 local max_path = 4096
 local max_excerpt = 600
@@ -32,17 +35,6 @@ local function quote(value)
 end
 M.shell_single_quote = quote
 
-local function append(argv, value)
-  table.insert(argv, tostring(value))
-end
-
-local function append_flag(argv, flag, value)
-  if value ~= nil and value ~= "" then
-    append(argv, flag)
-    append(argv, value)
-  end
-end
-
 local function dense_list(value)
   if type(value) ~= "table" then
     return false
@@ -61,13 +53,22 @@ M.dense_list = dense_list
 
 local function safe_key(value)
   local text = tostring(value or "planned")
-  text = text:gsub("[^%w%._%-%/#]", "-")
-  text = text:gsub("^/+", "")
+  text = text:gsub("[^%w%._%-]", "-")
+  text = text:gsub("%.+", ".")
+  text = text:gsub("^%.", "")
   if text == "" then text = "planned" end
   if #text > 180 then text = text:sub(1, 180) end
   return text
 end
 M.safe_key = safe_key
+
+local function safe_artifact_root(value)
+  if not bounded_string(value, max_path) then return false end
+  if value:sub(1, 14) ~= ".testing/runs/" then return false end
+  if value:find("..", 1, true) ~= nil or value:find("\0", 1, true) ~= nil then return false end
+  return true
+end
+M.safe_artifact_root = safe_artifact_root
 
 local function spec_for(job)
   local spec = jobs[job]
@@ -78,6 +79,44 @@ local function spec_for(job)
 end
 M.spec_for = spec_for
 
+function M.resolve_backend(payload)
+  local backend = type(payload) == "table" and payload.backend or nil
+  backend = backend or "agentic-testing-cli"
+  if backend ~= "agentic-testing-cli" and backend ~= "fkst-native" then
+    error("testing-runner: unknown-backend: " .. tostring(backend))
+  end
+  return backend
+end
+
+local function validate_preflight(value)
+  if value == nil then return end
+  if type(value) ~= "table" then
+    error("testing-runner: malformed-request: preflight_result must be a table")
+  end
+  if not bounded_string(value.status, 80) then
+    error("testing-runner: malformed-request: preflight_result.status is required")
+  end
+end
+
+local function http_url(value)
+  return bounded_string(value, max_string) and value:match("^https?://") ~= nil
+end
+
+local function validate_native_argv(job, value)
+  if value == nil then return end
+  if job ~= "module" then
+    error("testing-runner: malformed-request: native_argv is only supported for module jobs")
+  end
+  if not dense_list(value) or #value == 0 then
+    error("testing-runner: malformed-request: native_argv must be a non-empty dense list")
+  end
+  for _, item in ipairs(value) do
+    if not bounded_string(item, max_string) then
+      error("testing-runner: malformed-request: native_argv items must be bounded strings")
+    end
+  end
+end
+
 function M.validate_request(job, payload)
   local spec = spec_for(job)
   if type(payload) ~= "table" then
@@ -86,14 +125,20 @@ function M.validate_request(job, payload)
   if payload.schema ~= spec.request_schema then
     error("testing-runner: unknown-schema: expected " .. spec.request_schema)
   end
+  M.resolve_backend(payload)
+  validate_preflight(payload.preflight_result)
+  validate_native_argv(job, payload.native_argv)
   if job == "module" and not bounded_string(payload.module, max_string) then
     error("testing-runner: malformed-request: module is required")
   end
   if job == "platform" and payload.modules ~= nil and not dense_list(payload.modules) then
     error("testing-runner: malformed-request: modules must be a dense list")
   end
-  if payload.artifact_root ~= nil and not bounded_string(payload.artifact_root, max_path) then
-    error("testing-runner: malformed-request: artifact_root is too large")
+  if job == "online_regression" and payload.heartbeat_url ~= nil and not http_url(payload.heartbeat_url) then
+    error("testing-runner: malformed-request: heartbeat_url must be an http URL")
+  end
+  if payload.artifact_root ~= nil and not safe_artifact_root(payload.artifact_root) then
+    error("testing-runner: malformed-request: artifact_root must be a safe .testing/runs/... path")
   end
   return payload
 end
@@ -105,61 +150,14 @@ function M.artifact_root(job, payload)
   return ".testing/runs/" .. safe_key(payload.run_id or payload.dedup_key or payload.module or job)
 end
 
-local function append_platform_modules(argv, payload)
-  if dense_list(payload.modules or {}) then
-    for _, module in ipairs(payload.modules) do
-      append_flag(argv, "--module", module)
-    end
-  elseif payload.module ~= nil then
-    append_flag(argv, "--module", payload.module)
-  end
-end
-
-local function append_priorities(argv, priorities)
-  if dense_list(priorities or {}) then
-    for _, priority in ipairs(priorities) do
-      append_flag(argv, "--priority", priority)
-    end
-  end
-end
-
 function M.argv(job, payload)
   M.validate_request(job, payload)
-  local spec = spec_for(job)
-  local argv = {
-    payload.python or "python3",
-    "-m",
-    "agentic_testing.cli",
-    "--root",
-    payload.agentic_testing_repo_root or ".",
-    "--config",
-    payload.config or "config/current-online-regression.yaml",
-    spec.subcommand,
-    "--once",
-  }
-  if payload.dry_run_github ~= false then append(argv, "--dry-run-github") end
-  if payload.no_browser == true then append(argv, "--no-browser") end
-
-  if job == "module" then
-    append_flag(argv, "--module", payload.module)
-    append_flag(argv, "--e2e-driver", payload.e2e_driver)
-  elseif job == "platform" then
-    append_platform_modules(argv, payload)
-    append_flag(argv, "--e2e-driver", payload.e2e_driver)
-    append_priorities(argv, payload.priority)
-  elseif job == "online_regression" then
-    append_flag(argv, "--driver", payload.driver)
-    if payload.final_summary == true then append(argv, "--final-summary") end
-  end
-  return argv
+  return agentic_cli.argv(job, payload, spec_for(job), dense_list)
 end
 
 function M.command(job, payload)
-  local quoted = {}
-  for _, value in ipairs(M.argv(job, payload)) do
-    table.insert(quoted, quote(value))
-  end
-  return table.concat(quoted, " ")
+  M.validate_request(job, payload)
+  return agentic_cli.command(job, payload, spec_for(job), dense_list, quote)
 end
 
 local function excerpt(value)
@@ -176,6 +174,7 @@ local function source_ref(payload)
   end
   return { kind = "testing-runner-request", ref = safe_key(payload.dedup_key or payload.run_id or payload.module or "planned") }
 end
+M.source_ref = source_ref
 
 function M.result_payload(job, payload, status, opts)
   local spec = spec_for(job)
@@ -186,30 +185,32 @@ function M.result_payload(job, payload, status, opts)
     status = status,
     artifact_root = M.artifact_root(job, payload),
     source_ref = source_ref(payload),
-    adapter = {
-      name = "agentic-testing-cli",
-      command = M.command(job, payload),
-    },
+    adapter = opts.adapter or { name = M.resolve_backend(payload) },
   }
   if opts.exit_code ~= nil then result.exit_code = opts.exit_code end
   if opts.stderr ~= nil then result.stderr_excerpt = excerpt(opts.stderr) end
   return result
 end
 
+local function adapter_context(job, payload)
+  return {
+    spec = spec_for(job),
+    dense_list = dense_list,
+    quote = quote,
+    result_payload = function(status, opts)
+      return M.result_payload(job, payload, status, opts)
+    end,
+  }
+end
+
 function M.run(job, payload, exec)
   M.validate_request(job, payload)
-  if payload.dry_run ~= false then
-    return M.result_payload(job, payload, "planned")
+  local backend = M.resolve_backend(payload)
+  local context = adapter_context(job, payload)
+  if backend == "fkst-native" then
+    return fkst_native.run(job, payload, context, exec)
   end
-  local run = exec or exec_sync
-  if type(run) ~= "function" then
-    error("testing-runner: exec-unavailable: exec_sync is required when dry_run=false")
-  end
-  local root = payload.agentic_testing_repo_root or "."
-  local out = run("cd " .. quote(root) .. " && " .. M.command(job, payload))
-  local code = type(out) == "table" and tonumber(out.exit_code) or nil
-  local status = code == 0 and "passed" or "failed"
-  return M.result_payload(job, payload, status, { exit_code = code or -1, stderr = type(out) == "table" and out.stderr or "" })
+  return agentic_cli.run(job, payload, context, exec)
 end
 
 return M

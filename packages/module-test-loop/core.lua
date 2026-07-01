@@ -15,6 +15,19 @@ function M.validate_request(payload)
   return payload
 end
 
+local function preflight_context(payload)
+  if type(payload.preflight_result) ~= "table" then return nil end
+  if type(payload.preflight_result.request_context) ~= "table" then return nil end
+  return payload.preflight_result.request_context
+end
+
+local function fallback(payload, key)
+  if payload[key] ~= nil then return payload[key] end
+  local context = preflight_context(payload)
+  if context == nil then return nil end
+  return context[key]
+end
+
 function M.runner_request(payload)
   payload = M.validate_request(payload)
   return {
@@ -22,9 +35,12 @@ function M.runner_request(payload)
     module = payload.module,
     config = payload.config,
     e2e_driver = payload.e2e_driver,
-    no_browser = payload.no_browser,
-    dry_run = payload.dry_run,
+    no_browser = fallback(payload, "no_browser"),
+    dry_run = fallback(payload, "dry_run"),
     dry_run_github = payload.dry_run_github,
+    backend = payload.backend,
+    native_argv = fallback(payload, "native_argv"),
+    preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,
     source_ref = payload.source_ref,

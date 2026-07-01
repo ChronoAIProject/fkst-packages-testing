@@ -9,4 +9,3 @@
 module-test-loop testing-runner
 platform-test-loop testing-runner
 online-regression testing-runner
-ornn-testing-profile browser-readiness module-test-loop testing-runner

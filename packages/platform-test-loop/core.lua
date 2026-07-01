@@ -40,6 +40,8 @@ function M.runner_request(payload)
     no_browser = payload.no_browser,
     dry_run = payload.dry_run,
     dry_run_github = payload.dry_run_github,
+    backend = payload.backend,
+    preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,
     source_ref = payload.source_ref,

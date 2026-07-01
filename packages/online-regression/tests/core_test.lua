@@ -6,11 +6,17 @@ return {
     local request = core.runner_request({
       schema = "online-regression.start.v1",
       driver = "ego_browser",
+      heartbeat_url = "http://localhost:8080/",
       dry_run_github = true,
+      backend = "fkst-native",
+      preflight_result = { status = "ready" },
     })
     t.eq(request.schema, "testing-runner.online-regression.request.v1")
     t.eq(request.driver, "ego_browser")
+    t.eq(request.heartbeat_url, "http://localhost:8080/")
     t.eq(request.dry_run_github, true)
+    t.eq(request.backend, "fkst-native")
+    t.eq(request.preflight_result.status, "ready")
   end,
 
   test_requires_schema = function()

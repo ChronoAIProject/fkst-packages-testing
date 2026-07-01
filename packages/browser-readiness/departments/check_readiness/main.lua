@@ -14,8 +14,8 @@ local function done(_event)
 end
 
 local function act(event)
-  local result = core.result(event.payload or {}, "planned")
-  log.info("browser-readiness dept=check_readiness tag=PLANNED sessions=" .. tostring(#result.sessions))
+  local result = core.result(event.payload or {})
+  log.info("browser-readiness dept=check_readiness tag=" .. string.upper(result.status) .. " sessions=" .. tostring(#result.sessions))
   raise("browser_readiness_result", result)
 end
 
