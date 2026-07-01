@@ -1,5 +1,17 @@
 local M = {}
 
+local strings = require("contract.strings")
+local testing_contract = require("contract.testing")
+
+local max_string = 512
+
+local statuses = {
+  planned = true,
+  passed = true,
+  failed = true,
+  blocked = true,
+}
+
 local function dense_list(value)
   if type(value) ~= "table" then
     return false
@@ -11,6 +23,106 @@ local function dense_list(value)
     end
   end
   return true
+end
+
+local function bounded_string(value, limit)
+  return type(value) == "string" and value ~= "" and #value <= (limit or max_string)
+end
+
+local function validate_artifact_root(value, message)
+  if value ~= nil and not strings.is_artifact_root(value) then
+    error(message or "platform-test-loop: malformed-request: artifact_root must be a safe .testing/runs/... path")
+  end
+end
+
+local function validate_ids(payload)
+  if payload.trace_id ~= nil and not testing_contract.is_bounded_id(payload.trace_id) then
+    error("platform-test-loop: malformed-request: trace_id must be a bounded string")
+  end
+  if payload.dedup_key ~= nil and not testing_contract.is_bounded_id(payload.dedup_key) then
+    error("platform-test-loop: malformed-request: dedup_key must be a bounded string")
+  end
+end
+
+local function module_name(result, index)
+  if bounded_string(result.module, max_string) then
+    return result.module
+  end
+  if type(result.native_summary) == "table" and bounded_string(result.native_summary.module, max_string) then
+    return result.native_summary.module
+  end
+  if type(result.source_ref) == "table" and bounded_string(result.source_ref.ref, max_string) then
+    return result.source_ref.ref
+  end
+  return "module-" .. tostring(index)
+end
+
+local function copy_module_result(result, index)
+  if type(result) ~= "table" then
+    error("platform-test-loop: malformed-aggregate: module result must be a table")
+  end
+  if result.schema ~= nil and result.schema ~= testing_contract.schemas.runner_result then
+    error("platform-test-loop: unknown-result-schema: expected testing-runner.result.v1")
+  end
+  if not statuses[result.status] then
+    error("platform-test-loop: malformed-aggregate: module result status is required")
+  end
+  validate_artifact_root(result.artifact_root, "platform-test-loop: malformed-aggregate: module artifact_root must be a safe .testing/runs/... path")
+  if result.dedup_key ~= nil and not testing_contract.is_bounded_id(result.dedup_key) then
+    error("platform-test-loop: malformed-aggregate: module dedup_key must be a bounded string")
+  end
+
+  local module = module_name(result, index)
+  local src = testing_contract.copy_source_ref(result.source_ref, "module", module)
+  local copy = {
+    module = module,
+    status = result.status,
+    source_ref = src,
+  }
+  if result.artifact_root ~= nil then copy.artifact_root = result.artifact_root end
+  if result.dedup_key ~= nil then copy.dedup_key = result.dedup_key end
+  if type(result.exit_code) == "number" then copy.exit_code = result.exit_code end
+  return copy
+end
+
+local function planned_module_result(module, index)
+  if not bounded_string(module, max_string) then
+    error("platform-test-loop: malformed-aggregate: modules must contain bounded strings")
+  end
+  return {
+    module = module,
+    status = "planned",
+    source_ref = { kind = "module", ref = module },
+  }
+end
+
+local function count_statuses(results)
+  local counts = {
+    total = #results,
+    planned = 0,
+    passed = 0,
+    failed = 0,
+    blocked = 0,
+  }
+  for _, result in ipairs(results) do
+    counts[result.status] = counts[result.status] + 1
+  end
+  return counts
+end
+
+local function aggregate_status(counts)
+  if counts.total == 0 or counts.planned == counts.total then return "planned" end
+  if counts.passed == counts.total then return "passed" end
+  if counts.failed == counts.total then return "failed" end
+  if counts.blocked == counts.total then return "blocked" end
+  return "mixed"
+end
+
+local function aggregate_artifact_root(payload, src)
+  if payload.artifact_root ~= nil then
+    return payload.artifact_root
+  end
+  return ".testing/runs/" .. testing_contract.safe_key(payload.platform or payload.dedup_key or src.ref or "platform", "platform")
 end
 
 function M.validate_request(payload)
@@ -26,6 +138,8 @@ function M.validate_request(payload)
   if payload.priority ~= nil and not dense_list(payload.priority) then
     error("platform-test-loop: malformed-request: priority must be a dense list")
   end
+  validate_artifact_root(payload.artifact_root)
+  validate_ids(payload)
   return payload
 end
 
@@ -45,6 +159,63 @@ function M.runner_request(payload)
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,
     source_ref = payload.source_ref,
+    trace_id = payload.trace_id,
+    dedup_key = payload.dedup_key,
+  }
+end
+
+function M.validate_aggregate_request(payload)
+  if type(payload) ~= "table" then
+    error("platform-test-loop: malformed-aggregate: payload must be a table")
+  end
+  if payload.schema ~= "platform-test-loop.aggregate.v1" then
+    error("platform-test-loop: unknown-aggregate-schema: expected platform-test-loop.aggregate.v1")
+  end
+  if payload.module_results ~= nil and not dense_list(payload.module_results) then
+    error("platform-test-loop: malformed-aggregate: module_results must be a dense list")
+  end
+  if payload.modules ~= nil and not dense_list(payload.modules) then
+    error("platform-test-loop: malformed-aggregate: modules must be a dense list")
+  end
+  validate_artifact_root(payload.artifact_root)
+  validate_ids(payload)
+  return payload
+end
+
+function M.aggregate_result(payload)
+  payload = M.validate_aggregate_request(payload)
+  local src = testing_contract.copy_source_ref(payload.source_ref, "platform", payload.platform or "platform")
+  local artifact_root = aggregate_artifact_root(payload, src)
+  validate_artifact_root(artifact_root)
+
+  local modules = {}
+  if payload.module_results ~= nil then
+    for index, result in ipairs(payload.module_results) do
+      table.insert(modules, copy_module_result(result, index))
+    end
+  elseif payload.modules ~= nil then
+    for index, module in ipairs(payload.modules) do
+      table.insert(modules, planned_module_result(module, index))
+    end
+  end
+
+  local counts = count_statuses(modules)
+  return {
+    schema = "platform-test-loop.aggregate.v1",
+    status = aggregate_status(counts),
+    counts = counts,
+    modules = modules,
+    artifact_root = artifact_root,
+    metadata_path = artifact_root .. "/metadata.json",
+    source_ref = src,
+    trace_id = testing_contract.trace_id(payload.trace_id, src, artifact_root),
+    dedup_key = testing_contract.dedup_key(payload.dedup_key, {
+      "platform-test-loop",
+      "aggregate",
+      src.kind,
+      src.ref,
+      artifact_root,
+    }),
   }
 end
 

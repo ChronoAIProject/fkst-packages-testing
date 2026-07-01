@@ -10,6 +10,8 @@ return {
       dry_run_github = true,
       backend = "fkst-native",
       preflight_result = { status = "ready" },
+      trace_id = "trace-online",
+      dedup_key = "dedup-online",
     })
     t.eq(request.schema, "testing-runner.online-regression.request.v1")
     t.eq(request.driver, "ego_browser")
@@ -17,6 +19,8 @@ return {
     t.eq(request.dry_run_github, true)
     t.eq(request.backend, "fkst-native")
     t.eq(request.preflight_result.status, "ready")
+    t.eq(request.trace_id, "trace-online")
+    t.eq(request.dedup_key, "dedup-online")
   end,
 
   test_requires_schema = function()

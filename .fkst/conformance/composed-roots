@@ -9,3 +9,4 @@
 module-test-loop testing-runner
 platform-test-loop testing-runner
 online-regression testing-runner
+testing-pipeline module-test-loop testing-runner test-artifacts test-publication

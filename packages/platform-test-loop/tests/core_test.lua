@@ -1,6 +1,19 @@
 local core = require("core")
 local t = fkst.test
 
+local function module_result(module, status)
+  return {
+    schema = "testing-runner.result.v1",
+    job = "module-test-loop",
+    module = module,
+    status = status,
+    artifact_root = ".testing/runs/" .. module,
+    source_ref = { kind = "module", ref = module },
+    dedup_key = module .. "-run",
+    exit_code = status == "passed" and 0 or 1,
+  }
+end
+
 return {
   test_builds_platform_runner_request = function()
     local request = core.runner_request({
@@ -10,6 +23,8 @@ return {
       e2e_driver = "browser_harness",
       backend = "fkst-native",
       preflight_result = { status = "ready" },
+      trace_id = "trace-platform",
+      dedup_key = "dedup-platform",
     })
     t.eq(request.schema, "testing-runner.platform-test-loop.request.v1")
     t.eq(request.modules[2], "b")
@@ -17,6 +32,8 @@ return {
     t.eq(request.e2e_driver, "browser_harness")
     t.eq(request.backend, "fkst-native")
     t.eq(request.preflight_result.status, "ready")
+    t.eq(request.trace_id, "trace-platform")
+    t.eq(request.dedup_key, "dedup-platform")
   end,
 
   test_rejects_sparse_modules = function()
@@ -25,6 +42,103 @@ return {
       modules[1] = "a"
       modules[3] = "c"
       core.runner_request({ schema = "platform-test-loop.start.v1", modules = modules })
+    end)
+  end,
+
+  test_aggregate_defaults_to_planned_modules = function()
+    local result = core.aggregate_result({
+      schema = "platform-test-loop.aggregate.v1",
+      modules = { "module-a", "module-b" },
+      platform = "generic-platform",
+      artifact_root = ".testing/runs/platform",
+      trace_id = "trace-platform",
+      dedup_key = "platform-run",
+    })
+    t.eq(result.status, "planned")
+    t.eq(result.counts.total, 2)
+    t.eq(result.counts.planned, 2)
+    t.eq(result.modules[1].module, "module-a")
+    t.eq(result.modules[2].status, "planned")
+    t.eq(result.artifact_root, ".testing/runs/platform")
+    t.eq(result.metadata_path, ".testing/runs/platform/metadata.json")
+    t.eq(result.trace_id, "trace-platform")
+    t.eq(result.dedup_key, "platform-run")
+  end,
+
+  test_aggregate_all_passed = function()
+    local result = core.aggregate_result({
+      schema = "platform-test-loop.aggregate.v1",
+      module_results = {
+        module_result("module-a", "passed"),
+        module_result("module-b", "passed"),
+      },
+      artifact_root = ".testing/runs/platform",
+    })
+    t.eq(result.status, "passed")
+    t.eq(result.counts.passed, 2)
+    t.eq(result.modules[1].dedup_key, "module-a-run")
+    t.eq(result.modules[2].exit_code, 0)
+  end,
+
+  test_aggregate_all_failed = function()
+    local result = core.aggregate_result({
+      schema = "platform-test-loop.aggregate.v1",
+      module_results = {
+        module_result("module-a", "failed"),
+        module_result("module-b", "failed"),
+      },
+      artifact_root = ".testing/runs/platform",
+    })
+    t.eq(result.status, "failed")
+    t.eq(result.counts.failed, 2)
+  end,
+
+  test_aggregate_all_blocked = function()
+    local result = core.aggregate_result({
+      schema = "platform-test-loop.aggregate.v1",
+      module_results = {
+        module_result("module-a", "blocked"),
+        module_result("module-b", "blocked"),
+      },
+      artifact_root = ".testing/runs/platform",
+    })
+    t.eq(result.status, "blocked")
+    t.eq(result.counts.blocked, 2)
+  end,
+
+  test_aggregate_mixed_statuses = function()
+    local result = core.aggregate_result({
+      schema = "platform-test-loop.aggregate.v1",
+      module_results = {
+        module_result("module-a", "passed"),
+        module_result("module-b", "failed"),
+        module_result("module-c", "blocked"),
+      },
+      artifact_root = ".testing/runs/platform",
+    })
+    t.eq(result.status, "mixed")
+    t.eq(result.counts.passed, 1)
+    t.eq(result.counts.failed, 1)
+    t.eq(result.counts.blocked, 1)
+  end,
+
+  test_aggregate_rejects_sparse_module_results = function()
+    t.raises(function()
+      local module_results = {}
+      module_results[1] = module_result("module-a", "passed")
+      module_results[3] = module_result("module-c", "passed")
+      core.aggregate_result({ schema = "platform-test-loop.aggregate.v1", module_results = module_results })
+    end)
+  end,
+
+  test_aggregate_rejects_unsafe_module_artifact_root = function()
+    t.raises(function()
+      local result = module_result("module-a", "passed")
+      result.artifact_root = "../outside"
+      core.aggregate_result({
+        schema = "platform-test-loop.aggregate.v1",
+        module_results = { result },
+      })
     end)
   end,
 }

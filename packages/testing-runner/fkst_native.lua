@@ -181,6 +181,8 @@ local function metadata_for(result)
     status = result.status,
     artifact_root = result.artifact_root,
     source_ref = result.source_ref,
+    trace_id = result.trace_id,
+    dedup_key = result.dedup_key,
     adapter = result.adapter,
   }
   if result.native_summary ~= nil then
@@ -267,16 +269,38 @@ function M.run(job, payload, context, _exec)
     return with_metadata(context.result_payload("planned", { adapter = adapter("no-browser-plan") }), payload, context)
   end
   if job == "module" and payload.e2e_driver ~= nil then
-    local result = context.result_payload("blocked", {
-      adapter = adapter("browser-driver-envelope"),
-      stderr = "fkst-native browser driver execution is not implemented",
+    if payload.native_argv == nil then
+      local result = context.result_payload("planned", { adapter = adapter("browser-driver-plan") })
+      result.native_summary = {
+        schema = "testing-runner.browser-driver-summary.v1",
+        module = payload.module,
+        driver = payload.e2e_driver,
+        status = result.status,
+        mode = "readiness-gated-plan",
+        readiness = readiness_summary(payload.preflight_result),
+      }
+      return with_metadata(result, payload, context)
+    end
+    if targets_legacy_cli(payload.native_argv) then
+      return with_metadata(context.result_payload("blocked", {
+        adapter = adapter("legacy-cli-blocked"),
+        stderr = "fkst-native native_argv must not target agentic_testing.cli",
+      }), payload, context)
+    end
+    local out = native_exec(payload, context, _exec)
+    local code = type(out) == "table" and tonumber(out.exit_code) or nil
+    local status = code == 0 and "passed" or "failed"
+    local result = context.result_payload(status, {
+      adapter = adapter("browser-driver"),
+      exit_code = code or -1,
+      stderr = type(out) == "table" and out.stderr or "",
     })
     result.native_summary = {
       schema = "testing-runner.browser-driver-summary.v1",
       module = payload.module,
       driver = payload.e2e_driver,
       status = result.status,
-      mode = "readiness-gated-envelope",
+      mode = "argv",
       readiness = readiness_summary(payload.preflight_result),
     }
     return with_metadata(result, payload, context)

@@ -1,0 +1,15 @@
+kind = "package.composed"
+name = "testing-pipeline"
+persistence_class = "saga"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow", "testkit"]
+
+[event_deps]
+packages = ["module-test-loop", "testing-runner", "test-artifacts", "test-publication"]
+
+[conformance]
+pack = "conformance/pack.toml"

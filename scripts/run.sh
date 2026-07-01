@@ -160,6 +160,44 @@ resolve_composed_root() {
   esac
 }
 
+copy_tree() {
+  local src="$1" dest="$2" exclude_tests="${3:-0}"
+  mkdir -p "$dest"
+  if [ "$exclude_tests" = "1" ]; then
+    (cd "$src" && LC_ALL=C tar --exclude './tests' --exclude './tests/*' --exclude 'tests' --exclude 'tests/*' -cf - .) | (cd "$dest" && LC_ALL=C tar xf -)
+    rm -rf "$dest/tests"
+  else
+    (cd "$src" && LC_ALL=C tar -cf - .) | (cd "$dest" && LC_ALL=C tar xf -)
+  fi
+}
+
+composed_test_workspace() {
+  local name="$1" roots="$2" work lib t src dep_name
+  work="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-composed.XXXXXX")"
+  mkdir -p "$work/packages" "$work/libraries"
+  cat > "$work/fkst.workspace.toml" <<'TOML'
+[workspace]
+units = ["packages/*", "libraries/*"]
+packages = ["packages/*"]
+libraries = ["libraries/*"]
+
+[registries]
+workspace = "workspace"
+TOML
+  for lib in "$ROOT"/libraries/*/; do
+    [ -d "$lib" ] || continue
+    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
+  done
+  copy_tree "$ROOT/packages/$name" "$work/packages/$name" 0
+  for t in $roots; do
+    src="$(resolve_composed_root "$t")"
+    dep_name="${t#@platform/}"
+    [ -d "$src" ] || { echo "error: composed root '$t' -> $src not found (hydrate the pin / check packages/)" >&2; return 1; }
+    copy_tree "$src" "$work/packages/$dep_name" 1
+  done
+  printf '%s\n' "$work"
+}
+
 # Run an engine subcommand (conformance|supervise) for one package with the correct scope:
 #   top-level composed (in composed-roots) -> CLOSED-WORLD across its declared graph. project-root is
 #     the repo (no package-root folds into it), so the engine enforces every consumed queue has a
@@ -236,10 +274,18 @@ cmd_test() {
     fi
     echo "--- $name ---"
     ran=$((ran + 1))
-    # Unit tests run single-root for every package (a composed package's tests exercise its own code
-    # and don't need the graph; the graph's closed-world validity is enforced in `check`). Multi-root
-    # `test` would re-run the stock platform packages' suites out of their home repo and false-fail.
-    run_engine "$BIN" test --project-root "$pkg" --package-root "$pkg" || fail=1
+    roots="$(composed_roots_for "$name")"
+    if [ -n "$roots" ]; then
+      work="$(composed_test_workspace "$name" "$roots")" || { fail=1; continue; }
+      local args=(--project-root "$work" --package-root "$work/packages/$name")
+      for t in $roots; do
+        args+=(--package-root "$work/packages/${t#@platform/}")
+      done
+      echo "    (composed tests, closed-world: $name + $roots)"
+      run_engine "$BIN" test "${args[@]}" || fail=1
+    else
+      run_engine "$BIN" test --project-root "$pkg" --package-root "$pkg" || fail=1
+    fi
   done < <(list_packages)
   if [ "$ran" -eq 0 ]; then echo "error: no packages matched${target:+ for '$target'}" >&2; return 1; fi
   if [ "$fail" -ne 0 ]; then echo "FAILED: $fail package(s)" >&2; return 1; fi

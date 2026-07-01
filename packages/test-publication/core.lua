@@ -1,14 +1,9 @@
 local M = {}
 
 local strings = require("contract.strings")
+local testing_contract = require("contract.testing")
 
-local statuses = {
-  planned = true,
-  passed = true,
-  failed = true,
-  blocked = true,
-  mixed = true,
-}
+local statuses = testing_contract.summary_statuses
 
 M.safe_artifact_root = strings.is_artifact_root
 
@@ -38,20 +33,14 @@ end
 M.subject = subject
 
 local function source_ref(summary)
-  if type(summary.source_ref) == "table" then
-    return {
-      kind = tostring(summary.source_ref.kind or "artifact"),
-      ref = tostring(summary.source_ref.ref or "unknown"),
-    }
-  end
-  return { kind = "artifact", ref = tostring(summary.artifact_root or "unknown") }
+  return testing_contract.copy_source_ref(summary.source_ref, "artifact", summary.artifact_root or "unknown")
 end
 
 function M.validate_artifact_summary(summary)
   if type(summary) ~= "table" then
     error("test-publication: malformed-summary: summary must be a table")
   end
-  if summary.schema ~= "test-artifacts.summary.v1" then
+  if summary.schema ~= testing_contract.schemas.artifact_summary then
     error("test-publication: unknown-schema: expected test-artifacts.summary.v1")
   end
   if not strings.is_artifact_root(summary.artifact_root) then
@@ -63,6 +52,12 @@ function M.validate_artifact_summary(summary)
   if summary.metadata_path ~= nil and summary.metadata_path ~= summary.artifact_root .. "/metadata.json" then
     error("test-publication: malformed-summary: metadata_path must point under artifact_root")
   end
+  if summary.trace_id ~= nil and not testing_contract.is_bounded_id(summary.trace_id) then
+    error("test-publication: malformed-summary: trace_id must be a bounded string")
+  end
+  if summary.dedup_key ~= nil and not testing_contract.is_bounded_id(summary.dedup_key) then
+    error("test-publication: malformed-summary: dedup_key must be a bounded string")
+  end
   return summary
 end
 
@@ -71,12 +66,20 @@ function M.publication_request(summary)
   local status = statuses[summary.status] and summary.status or "blocked"
   local src = source_ref(summary)
   local request = {
-    schema = "test-publication.publication-request.v1",
+    schema = testing_contract.schemas.publication_request,
     publication_kind = "testing-summary",
     channel = "testing",
     severity = severity(status),
     subject = subject(summary),
-    dedup_key = safe_key((src.kind or "artifact") .. "-" .. (src.ref or summary.artifact_root)),
+    trace_id = testing_contract.trace_id(summary.trace_id, src, summary.artifact_root),
+    dedup_key = testing_contract.dedup_key(summary.dedup_key, {
+      "testing-summary",
+      "testing",
+      tostring(summary.job or "unknown"),
+      src.kind,
+      src.ref,
+      summary.artifact_root,
+    }),
     status = status,
     job = tostring(summary.job or "unknown"),
     artifact_root = summary.artifact_root,

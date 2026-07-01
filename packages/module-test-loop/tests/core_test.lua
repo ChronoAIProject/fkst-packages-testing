@@ -11,6 +11,8 @@ return {
       backend = "fkst-native",
       native_argv = { "lua", "check.lua" },
       preflight_result = { status = "ready" },
+      trace_id = "trace-module-a",
+      dedup_key = "dedup-module-a",
     })
     t.eq(request.schema, "testing-runner.module-test-loop.request.v1")
     t.eq(request.module, "module-a")
@@ -20,6 +22,8 @@ return {
     t.eq(request.native_argv[1], "lua")
     t.eq(request.native_argv[2], "check.lua")
     t.eq(request.preflight_result.status, "ready")
+    t.eq(request.trace_id, "trace-module-a")
+    t.eq(request.dedup_key, "dedup-module-a")
   end,
 
   test_live_browser_driver_shape_preserves_native_backend = function()

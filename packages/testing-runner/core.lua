@@ -2,6 +2,7 @@ local M = {}
 
 local agentic_cli = require("agentic_cli")
 local fkst_native = require("fkst_native")
+local testing_contract = require("contract.testing")
 
 local max_string = 512
 local max_path = 4096
@@ -140,6 +141,12 @@ function M.validate_request(job, payload)
   if payload.artifact_root ~= nil and not safe_artifact_root(payload.artifact_root) then
     error("testing-runner: malformed-request: artifact_root must be a safe .testing/runs/... path")
   end
+  if payload.trace_id ~= nil and not testing_contract.is_bounded_id(payload.trace_id) then
+    error("testing-runner: malformed-request: trace_id must be a bounded string")
+  end
+  if payload.dedup_key ~= nil and not testing_contract.is_bounded_id(payload.dedup_key) then
+    error("testing-runner: malformed-request: dedup_key must be a bounded string")
+  end
   return payload
 end
 
@@ -169,22 +176,41 @@ local function excerpt(value)
 end
 
 local function source_ref(payload)
-  if type(payload.source_ref) == "table" then
-    return { kind = tostring(payload.source_ref.kind or "request"), ref = tostring(payload.source_ref.ref or "unknown") }
-  end
-  return { kind = "testing-runner-request", ref = safe_key(payload.dedup_key or payload.run_id or payload.module or "planned") }
+  return testing_contract.copy_source_ref(
+    payload.source_ref,
+    "testing-runner-request",
+    safe_key(payload.dedup_key or payload.run_id or payload.module or "planned")
+  )
 end
 M.source_ref = source_ref
+
+local function trace_id(payload, src, artifact_root)
+  return testing_contract.trace_id(payload.trace_id, src, artifact_root)
+end
+
+local function dedup_key(payload, src, artifact_root, job)
+  return testing_contract.dedup_key(payload.dedup_key, {
+    "testing-runner",
+    job,
+    src.kind,
+    src.ref,
+    artifact_root,
+  })
+end
 
 function M.result_payload(job, payload, status, opts)
   local spec = spec_for(job)
   opts = opts or {}
+  local artifact_root = M.artifact_root(job, payload)
+  local src = source_ref(payload)
   local result = {
-    schema = "testing-runner.result.v1",
+    schema = testing_contract.schemas.runner_result,
     job = spec.output_job,
     status = status,
-    artifact_root = M.artifact_root(job, payload),
-    source_ref = source_ref(payload),
+    artifact_root = artifact_root,
+    source_ref = src,
+    trace_id = trace_id(payload, src, artifact_root),
+    dedup_key = dedup_key(payload, src, artifact_root, spec.output_job),
     adapter = opts.adapter or { name = M.resolve_backend(payload) },
   }
   if opts.exit_code ~= nil then result.exit_code = opts.exit_code end

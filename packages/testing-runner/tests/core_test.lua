@@ -1,6 +1,20 @@
 local core = require("core")
 local t = fkst.test
 
+local function assert_payload(actual, expected)
+  t.eq(type(actual), "table")
+  for key, expected_value in pairs(expected) do
+    if type(expected_value) == "table" then
+      assert_payload(actual[key], expected_value)
+    else
+      t.eq(actual[key], expected_value)
+    end
+  end
+  for key, _ in pairs(actual) do
+    t.is_true(expected[key] ~= nil)
+  end
+end
+
 return {
   test_legacy_module_argv_uses_agentic_testing_cli = function()
     local argv = core.argv("module", {
@@ -114,6 +128,32 @@ return {
     t.eq(result.adapter.name, "fkst-native")
     t.eq(result.adapter.mode, "readiness-blocked")
     t.is_true(result.stderr_excerpt:find("preflight is blocked", 1, true) ~= nil)
+  end,
+
+  test_fkst_native_blocked_preflight_payload_is_golden = function()
+    local result = core.run("online_regression", {
+      schema = "testing-runner.online-regression.request.v1",
+      backend = "fkst-native",
+      artifact_root = ".testing/runs/preflight-blocked",
+      source_ref = { kind = "host", ref = "preflight-blocked" },
+      trace_id = "trace-preflight-blocked",
+      dedup_key = "dedup-preflight-blocked",
+      preflight_result = { status = "blocked" },
+      artifact_writer = function()
+        return true
+      end,
+    })
+    assert_payload(result, {
+      schema = "testing-runner.result.v1",
+      job = "online-regression",
+      status = "blocked",
+      artifact_root = ".testing/runs/preflight-blocked",
+      source_ref = { kind = "host", ref = "preflight-blocked" },
+      trace_id = "trace-preflight-blocked",
+      dedup_key = "dedup-preflight-blocked",
+      adapter = { name = "fkst-native", mode = "readiness-blocked" },
+      stderr_excerpt = "fkst-native preflight is blocked",
+    })
   end,
 
   test_fkst_native_ready_preflight_allows_planning = function()
@@ -305,6 +345,44 @@ return {
     t.eq(result.adapter.mode, "module-no-browser")
   end,
 
+  test_fkst_native_module_no_browser_failure_payload_is_golden = function()
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      no_browser = true,
+      native_argv = { "lua", "checks/module-a.lua" },
+      artifact_root = ".testing/runs/module-a-failed",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a",
+      dedup_key = "dedup-module-a-failed",
+      artifact_writer = function()
+        return true
+      end,
+    }, function()
+      return { exit_code = 3, stderr = "check failed" }
+    end)
+    assert_payload(result, {
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "failed",
+      artifact_root = ".testing/runs/module-a-failed",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a",
+      dedup_key = "dedup-module-a-failed",
+      adapter = { name = "fkst-native", mode = "module-no-browser" },
+      native_summary = {
+        schema = "testing-runner.module-no-browser-summary.v1",
+        module = "module-a",
+        status = "failed",
+        mode = "argv",
+      },
+      exit_code = 3,
+      stderr_excerpt = "check failed",
+    })
+  end,
+
   test_fkst_native_module_no_browser_blocks_legacy_cli_native_argv = function()
     local called = false
     local result = core.run("module", {
@@ -327,6 +405,45 @@ return {
     t.eq(called, false)
   end,
 
+  test_fkst_native_legacy_cli_block_payload_and_metadata_are_golden = function()
+    local called = false
+    local written = {}
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      no_browser = true,
+      native_argv = { "python3", "-m", "agentic_testing.cli" },
+      artifact_root = ".testing/runs/module-a",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a",
+      dedup_key = "dedup-module-a",
+      artifact_writer = function(path, body)
+        written.path = path
+        written.body = body
+        return true
+      end,
+    }, function()
+      called = true
+      return { exit_code = 0 }
+    end)
+    assert_payload(result, {
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "blocked",
+      artifact_root = ".testing/runs/module-a",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a",
+      dedup_key = "dedup-module-a",
+      adapter = { name = "fkst-native", mode = "legacy-cli-blocked" },
+      stderr_excerpt = "fkst-native native_argv must not target agentic_testing.cli",
+    })
+    t.eq(written.path, ".testing/runs/module-a/metadata.json")
+    t.eq(written.body, "{\"adapter\":{\"mode\":\"legacy-cli-blocked\",\"name\":\"fkst-native\"},\"artifact_root\":\".testing/runs/module-a\",\"dedup_key\":\"dedup-module-a\",\"job\":\"module-test-loop\",\"schema\":\"testing-runner.native-metadata.v1\",\"source_ref\":{\"kind\":\"host\",\"ref\":\"module-a\"},\"status\":\"blocked\",\"trace_id\":\"trace-module-a\"}\n")
+    t.eq(called, false)
+  end,
+
   test_malformed_native_argv_is_rejected = function()
     t.raises(function()
       core.run("module", {
@@ -338,7 +455,7 @@ return {
     end)
   end,
 
-  test_fkst_native_module_browser_driver_blocks_with_envelope = function()
+  test_fkst_native_module_browser_driver_without_native_argv_plans_with_readiness_envelope = function()
     local called = false
     local written = {}
     local result = core.run("module", {
@@ -363,13 +480,14 @@ return {
       called = true
       return { exit_code = 0 }
     end)
-    t.eq(result.status, "blocked")
+    t.eq(result.status, "planned")
     t.eq(result.adapter.name, "fkst-native")
     t.eq(result.adapter.command, nil)
-    t.eq(result.adapter.mode, "browser-driver-envelope")
+    t.eq(result.adapter.mode, "browser-driver-plan")
     t.eq(result.native_summary.schema, "testing-runner.browser-driver-summary.v1")
     t.eq(result.native_summary.module, "module-a")
     t.eq(result.native_summary.driver, "multi_session_browser_harness")
+    t.eq(result.native_summary.mode, "readiness-gated-plan")
     t.eq(result.native_summary.readiness.status, "ready")
     t.eq(result.native_summary.readiness.sessions[1].role, "base_url")
     t.eq(result.native_summary.readiness.sessions[2].role, "admin")
@@ -380,6 +498,104 @@ return {
     t.is_true(written.body:find('"readiness":{"sessions":[{"role":"base_url","status":"ready"},{"role":"admin","status":"ready"}],"status":"ready"}', 1, true) ~= nil)
     t.eq(written.body:find('"checks"', 1, true), nil)
     t.eq(called, false)
+  end,
+
+  test_fkst_native_module_browser_driver_runs_native_argv = function()
+    local called = false
+    local written = {}
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      e2e_driver = "multi_session_browser_harness",
+      native_argv = { "browser-harness", "run", "module-a" },
+      preflight_result = {
+        status = "ready",
+        sessions = {
+          { role = "base_url", status = "ready" },
+          { role = "admin", status = "ready" },
+        },
+      },
+      artifact_writer = function(path, body)
+        written.path = path
+        written.body = body
+        return true
+      end,
+    }, function(command)
+      called = true
+      t.eq(command, "'browser-harness' 'run' 'module-a'")
+      t.eq(command:find("agentic_testing.cli", 1, true), nil)
+      return { exit_code = 0, stderr = "" }
+    end)
+    t.eq(result.status, "passed")
+    t.eq(result.exit_code, 0)
+    t.eq(result.adapter.name, "fkst-native")
+    t.eq(result.adapter.command, nil)
+    t.eq(result.adapter.mode, "browser-driver")
+    t.eq(result.native_summary.schema, "testing-runner.browser-driver-summary.v1")
+    t.eq(result.native_summary.module, "module-a")
+    t.eq(result.native_summary.driver, "multi_session_browser_harness")
+    t.eq(result.native_summary.status, "passed")
+    t.eq(result.native_summary.mode, "argv")
+    t.eq(result.native_summary.readiness.status, "ready")
+    t.eq(written.path, result.artifact_root .. "/metadata.json")
+    t.is_true(written.body:find('"adapter":{"mode":"browser-driver","name":"fkst-native"}', 1, true) ~= nil)
+    t.is_true(written.body:find('"schema":"testing-runner.browser-driver-summary.v1"', 1, true) ~= nil)
+    t.eq(called, true)
+  end,
+
+  test_fkst_native_module_browser_driver_failure_payload_is_golden = function()
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      e2e_driver = "multi_session_browser_harness",
+      native_argv = { "browser-harness", "run", "module-a" },
+      artifact_root = ".testing/runs/module-a-browser-failed",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-browser",
+      dedup_key = "dedup-module-a-browser-failed",
+      preflight_result = {
+        status = "ready",
+        sessions = {
+          { role = "base_url", status = "ready", checks = { { name = "local_http", status = "ready" } } },
+          { role = "admin", status = "ready", checks = { { name = "cdp_endpoint_env", status = "ready" } } },
+        },
+      },
+      artifact_writer = function()
+        return true
+      end,
+    }, function()
+      return { exit_code = 4, stderr = "browser check failed" }
+    end)
+    assert_payload(result, {
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "failed",
+      artifact_root = ".testing/runs/module-a-browser-failed",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-browser",
+      dedup_key = "dedup-module-a-browser-failed",
+      adapter = { name = "fkst-native", mode = "browser-driver" },
+      native_summary = {
+        schema = "testing-runner.browser-driver-summary.v1",
+        module = "module-a",
+        driver = "multi_session_browser_harness",
+        status = "failed",
+        mode = "argv",
+        readiness = {
+          status = "ready",
+          sessions = {
+            { role = "base_url", status = "ready" },
+            { role = "admin", status = "ready" },
+          },
+        },
+      },
+      exit_code = 4,
+      stderr_excerpt = "browser check failed",
+    })
   end,
 
   test_fkst_native_unsupported_live_execution_blocks_without_exec = function()
@@ -400,6 +616,38 @@ return {
     t.eq(result.adapter.name, "fkst-native")
     t.eq(result.adapter.mode, "capability-gap")
     t.is_true(result.stderr_excerpt:find("fkst-native live execution", 1, true) ~= nil)
+    t.eq(called, false)
+  end,
+
+  test_fkst_native_unsupported_live_execution_payload_is_golden = function()
+    local called = false
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      artifact_root = ".testing/runs/module-a-live",
+      source_ref = { kind = "host", ref = "module-a-live" },
+      trace_id = "trace-module-a-live",
+      dedup_key = "dedup-module-a-live",
+      artifact_writer = function()
+        return true
+      end,
+    }, function()
+      called = true
+      return { exit_code = 0 }
+    end)
+    assert_payload(result, {
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "blocked",
+      artifact_root = ".testing/runs/module-a-live",
+      source_ref = { kind = "host", ref = "module-a-live" },
+      trace_id = "trace-module-a-live",
+      dedup_key = "dedup-module-a-live",
+      adapter = { name = "fkst-native", mode = "capability-gap" },
+      stderr_excerpt = "fkst-native live execution for module is not implemented beyond the planning envelope",
+    })
     t.eq(called, false)
   end,
 

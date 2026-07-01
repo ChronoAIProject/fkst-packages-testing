@@ -1,17 +1,9 @@
 local M = {}
 
 local strings = require("contract.strings")
+local testing_contract = require("contract.testing")
 
-local statuses = {
-  planned = true,
-  passed = true,
-  failed = true,
-  blocked = true,
-  mixed = true,
-}
-
-local max_string = 512
-local max_path = 4096
+local statuses = testing_contract.summary_statuses
 
 M.bounded_string = strings.is_bounded_string
 
@@ -31,40 +23,15 @@ local function bounded_text(value, limit)
   return type(value) == "string" and #value <= limit
 end
 
-local function bounded_map(value)
-  if type(value) ~= "table" then return nil end
-  local copy = {}
-  local count = 0
-  for key, item in pairs(value) do
-    local key_text = tostring(key)
-    if not strings.is_bounded_string(key_text, 80) then return nil end
-    if type(item) == "string" then
-      if not strings.is_bounded_string(item, max_string) then return nil end
-      copy[key_text] = item
-    elseif type(item) == "number" or type(item) == "boolean" then
-      copy[key_text] = item
-    else
-      return nil
-    end
-    count = count + 1
-    if count > 16 then return nil end
-  end
-  return copy
-end
-
-local function source_ref(value)
-  if type(value) ~= "table" then return nil end
-  return {
-    kind = tostring(value.kind or "request"),
-    ref = tostring(value.ref or "unknown"),
-  }
+local function source_ref(value, artifact_root)
+  return testing_contract.copy_source_ref(value, "artifact", artifact_root)
 end
 
 function M.validate_summary(summary)
   if type(summary) ~= "table" then
     error("test-artifacts: malformed-summary: summary must be a table")
   end
-  if summary.schema ~= "test-artifacts.summary.v1" then
+  if summary.schema ~= testing_contract.schemas.artifact_summary then
     error("test-artifacts: unknown-schema: expected test-artifacts.summary.v1")
   end
   if not statuses[summary.status] then
@@ -79,6 +46,18 @@ function M.validate_summary(summary)
   if summary.stderr_excerpt ~= nil and not bounded_text(summary.stderr_excerpt, 600) then
     error("test-artifacts: malformed-summary: stderr_excerpt is too large")
   end
+  if summary.trace_id ~= nil and not testing_contract.is_bounded_id(summary.trace_id) then
+    error("test-artifacts: malformed-summary: trace_id must be a bounded string")
+  end
+  if summary.dedup_key ~= nil and not testing_contract.is_bounded_id(summary.dedup_key) then
+    error("test-artifacts: malformed-summary: dedup_key must be a bounded string")
+  end
+  if summary.adapter ~= nil and testing_contract.copy_scalar_map(summary.adapter) == nil then
+    error("test-artifacts: malformed-summary: adapter metadata must be bounded scalar fields")
+  end
+  if summary.native_summary ~= nil and testing_contract.copy_native_summary(summary.native_summary) == nil then
+    error("test-artifacts: malformed-summary: native_summary must be a known bounded native summary")
+  end
   return summary
 end
 
@@ -86,26 +65,35 @@ function M.from_testing_result(result)
   if type(result) ~= "table" then
     error("test-artifacts: malformed-result: result must be a table")
   end
-  if result.schema ~= "testing-runner.result.v1" then
+  if result.schema ~= testing_contract.schemas.runner_result then
     error("test-artifacts: unknown-result-schema: expected testing-runner.result.v1")
   end
   local status = statuses[result.status] and result.status or "blocked"
   local artifact_root = result.artifact_root or (".testing/runs/" .. safe_key(result.job))
-  local adapter = bounded_map(result.adapter)
-  local native_summary = bounded_map(result.native_summary)
+  local src = source_ref(result.source_ref, artifact_root)
+  local adapter = testing_contract.copy_scalar_map(result.adapter)
+  local native_summary = testing_contract.copy_native_summary(result.native_summary)
   if result.adapter ~= nil and adapter == nil then
     error("test-artifacts: malformed-result: adapter metadata must be bounded scalar fields")
   end
   if result.native_summary ~= nil and native_summary == nil then
-    error("test-artifacts: malformed-result: native_summary must be bounded scalar fields")
+    error("test-artifacts: malformed-result: native_summary must be a known bounded native summary")
   end
   local summary = {
-    schema = "test-artifacts.summary.v1",
+    schema = testing_contract.schemas.artifact_summary,
     job = tostring(result.job or "unknown"),
     status = status,
     artifact_root = artifact_root,
     metadata_path = artifact_root .. "/metadata.json",
-    source_ref = source_ref(result.source_ref),
+    source_ref = src,
+    trace_id = testing_contract.trace_id(result.trace_id, src, artifact_root),
+    dedup_key = testing_contract.dedup_key(result.dedup_key, {
+      "artifact-summary",
+      tostring(result.job or "unknown"),
+      src.kind,
+      src.ref,
+      artifact_root,
+    }),
     adapter = adapter,
     native_summary = native_summary,
     exit_code = type(result.exit_code) == "number" and result.exit_code or nil,
