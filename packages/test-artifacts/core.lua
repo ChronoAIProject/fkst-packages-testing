@@ -25,13 +25,7 @@ local function safe_key(value)
   return text
 end
 
-local function safe_artifact_root(value)
-  if not strings.is_bounded_string(value, max_path) then return false end
-  if value:sub(1, 14) ~= ".testing/runs/" then return false end
-  if value:find("..", 1, true) ~= nil or value:find("\0", 1, true) ~= nil then return false end
-  return true
-end
-M.safe_artifact_root = safe_artifact_root
+M.safe_artifact_root = strings.is_artifact_root
 
 local function bounded_text(value, limit)
   return type(value) == "string" and #value <= limit
@@ -76,7 +70,7 @@ function M.validate_summary(summary)
   if not statuses[summary.status] then
     error("test-artifacts: malformed-summary: unknown status")
   end
-  if not safe_artifact_root(summary.artifact_root) then
+  if not strings.is_artifact_root(summary.artifact_root) then
     error("test-artifacts: malformed-summary: artifact_root must be a safe .testing/runs/... path")
   end
   if summary.metadata_path ~= nil and summary.metadata_path ~= summary.artifact_root .. "/metadata.json" then

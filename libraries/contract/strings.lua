@@ -28,6 +28,10 @@ function S.is_bounded_string(value, limit)
   return type(value) == "string" and value ~= "" and #value <= limit
 end
 
+function S.is_artifact_root(value, limit)
+  return S.is_path_safe_key(value, limit or 4096) and value:sub(1, 14) == ".testing/runs/"
+end
+
 function S.decimal_checksum(value)
   local hash = 2166136261
   local text = tostring(value or "")
