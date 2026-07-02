@@ -11,6 +11,7 @@ T.schemas = {
   module_no_browser_summary = "testing-runner.module-no-browser-summary.v1",
   online_heartbeat_summary = "testing-runner.online-heartbeat-summary.v1",
   browser_driver_summary = "testing-runner.browser-driver-summary.v1",
+  module_inventory_summary = "testing-runner.module-inventory-summary.v1",
 }
 
 T.runner_statuses = {
@@ -174,6 +175,23 @@ local function copy_browser_driver(value)
   return copy
 end
 
+local function copy_module_inventory(value)
+  if not has_only(value, { schema = true, status = true, discovery_status = true, inventory_path = true, module_count = true, coverage = true }) then return nil end
+  if not bounded_field(value.status, 80) or not bounded_field(value.discovery_status, 80) then return nil end
+  if not bounded_field(value.inventory_path, max_string) or not bounded_field(value.coverage, 80) then return nil end
+  if value.inventory_path:sub(1, 14) ~= ".testing/runs/" then return nil end
+  if value.inventory_path:sub(-22) ~= "/module-inventory.json" then return nil end
+  if type(value.module_count) ~= "number" or value.module_count < 0 or value.module_count > 64 or math.floor(value.module_count) ~= value.module_count then return nil end
+  return {
+    schema = T.schemas.module_inventory_summary,
+    status = value.status,
+    discovery_status = value.discovery_status,
+    inventory_path = value.inventory_path,
+    module_count = value.module_count,
+    coverage = value.coverage,
+  }
+end
+
 function T.copy_native_summary(value)
   if value == nil then return nil end
   if type(value) ~= "table" then return nil end
@@ -185,6 +203,9 @@ function T.copy_native_summary(value)
   end
   if value.schema == T.schemas.browser_driver_summary then
     return copy_browser_driver(value)
+  end
+  if value.schema == T.schemas.module_inventory_summary then
+    return copy_module_inventory(value)
   end
   return nil
 end

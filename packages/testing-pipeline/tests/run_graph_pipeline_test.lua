@@ -47,6 +47,44 @@ local function module_start_event()
   }
 end
 
+local function module_discovery_start_event()
+  return {
+    queue = "module_start",
+    payload = {
+      schema = "testing-pipeline.module-start.v1",
+      module = "dashboard",
+      backend = "fkst-native",
+      dry_run = false,
+      e2e_driver = "multi_session_browser_harness",
+      artifact_root = ".testing/runs/dashboard-discovery",
+      source_ref = { kind = "external", ref = "dashboard" },
+      dedup_key = "dashboard-discovery-run",
+      preflight_result = {
+        status = "ready",
+        sessions = {
+          { role = "base_url", status = "ready" },
+        },
+      },
+      module_discovery = {
+        schema = "testing-runner.module-discovery.v1",
+        base_url = "http://localhost:8080/",
+        allowed_origins = { "http://localhost:8080" },
+        observations = {
+          {
+            id = "dashboard",
+            name = "Dashboard",
+            entry_url = "http://localhost:8080/dashboard",
+            visible_label = "Dashboard",
+            discovery_source = "navigation",
+            evidence_pointer = "dom://nav/dashboard",
+          },
+        },
+      },
+    },
+    source_ref = { kind = "external", reference = "dashboard" },
+  }
+end
+
 local function prepare_artifact_dir()
   local ok = os.execute("mkdir -p .testing/runs/module-a")
   if ok ~= true and ok ~= 0 then
@@ -133,5 +171,37 @@ return {
     t.eq(publication.payload.subject, "Testing passed: module-test-loop")
     t.eq(publication.payload.dedup_key, "module-a-run")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
+  end,
+
+  test_run_graph_module_inventory_summary_flows_through_artifact_pipeline = function()
+    local trace = graph.require_quiescent(graph.run(module_discovery_start_event(), { max_steps = 12 }))
+
+    graph.require_delivery(trace, {
+      queue = "testing-pipeline.module_start",
+      consumer = "testing-pipeline.start_module",
+    })
+    graph.require_delivery(trace, {
+      queue = "module-test-loop.module_loop_request",
+      consumer = "module-test-loop.start",
+    })
+    graph.require_delivery(trace, {
+      queue = "testing-runner.module_test_request",
+      consumer = "testing-runner.run_module_loop",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-artifacts.testing_result",
+      consumer = "test-artifacts.summarize",
+    })
+
+    local result = graph.require_raise(trace, "testing-runner.testing_result")
+    t.eq(result.payload.status, "planned")
+    t.eq(result.payload.native_summary.schema, "testing-runner.module-inventory-summary.v1")
+    t.eq(result.payload.native_summary.inventory_path, ".testing/runs/dashboard-discovery/module-inventory.json")
+    t.eq(result.payload.native_summary.module_count, 1)
+
+    local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
+    t.eq(summary.payload.native_summary.schema, "testing-runner.module-inventory-summary.v1")
+    t.eq(summary.payload.native_summary.coverage, "visible-session-only")
+    t.eq(summary.payload.metadata_path, ".testing/runs/dashboard-discovery/metadata.json")
   end,
 }

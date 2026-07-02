@@ -92,6 +92,31 @@ return {
     t.eq(request.no_browser, false)
   end,
 
+  test_module_discovery_flows_to_runner_request = function()
+    local discovery = {
+      schema = "testing-runner.module-discovery.v1",
+      base_url = "http://localhost:8080/",
+      allowed_origins = { "http://localhost:8080" },
+      observations = {
+        {
+          id = "settings",
+          name = "Settings",
+          entry_url = "http://localhost:8080/settings",
+          visible_label = "Settings",
+          discovery_source = "navigation",
+          evidence_pointer = "dom://nav/settings",
+        },
+      },
+    }
+    local request = core.runner_request({
+      schema = "module-test-loop.start.v1",
+      module = "settings",
+      backend = "fkst-native",
+      module_discovery = discovery,
+    })
+    t.eq(request.module_discovery, discovery)
+  end,
+
   test_requires_module = function()
     t.raises(function()
       core.runner_request({ schema = "module-test-loop.start.v1" })

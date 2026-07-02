@@ -2,6 +2,7 @@ local M = {}
 
 local agentic_cli = require("agentic_cli")
 local fkst_native = require("fkst_native")
+local module_inventory = require("module_inventory")
 local testing_contract = require("contract.testing")
 
 local max_string = 512
@@ -129,6 +130,12 @@ function M.validate_request(job, payload)
   M.resolve_backend(payload)
   validate_preflight(payload.preflight_result)
   validate_native_argv(job, payload.native_argv)
+  if payload.module_discovery ~= nil then
+    if job ~= "module" then
+      error("testing-runner: malformed-request: module_discovery is only supported for module jobs")
+    end
+    module_inventory.validate_request(payload.module_discovery)
+  end
   if job == "module" and not bounded_string(payload.module, max_string) then
     error("testing-runner: malformed-request: module is required")
   end

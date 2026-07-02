@@ -40,6 +40,7 @@ function M.module_loop_request(payload)
     dry_run_github = payload.dry_run_github,
     backend = payload.backend,
     native_argv = payload.native_argv,
+    module_discovery = payload.module_discovery,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,

@@ -1,5 +1,7 @@
 local M = {}
 
+local module_inventory = require("module_inventory")
+
 local function adapter(mode)
   return {
     name = "fkst-native",
@@ -205,7 +207,32 @@ local function write_metadata(result, payload, context)
   return writer(result.artifact_root .. "/metadata.json", body)
 end
 
+local function write_inventory(result, payload, context)
+  if payload.module_discovery == nil then return true end
+  if not safe_artifact_root(result.artifact_root) then
+    return nil, "unsafe artifact_root for fkst-native module inventory"
+  end
+  local writer = payload.artifact_writer
+  if writer == nil then
+    writer = function(path, body)
+      return write_file(path, body, context.quote)
+    end
+  end
+  local inventory = module_inventory.inventory(payload.module_discovery, result.artifact_root, {
+    readiness = readiness_summary(payload.preflight_result),
+  })
+  result.native_summary = module_inventory.summary(inventory, result.artifact_root, result.status)
+  return writer(result.artifact_root .. "/module-inventory.json", json_encode(inventory) .. "\n")
+end
+
 local function with_metadata(result, payload, context)
+  local inventory_ok, inventory_err = write_inventory(result, payload, context)
+  if not inventory_ok then
+    return context.result_payload("blocked", {
+      adapter = result.adapter,
+      stderr = "fkst-native artifact write failed: " .. tostring(inventory_err),
+    })
+  end
   local ok, err = write_metadata(result, payload, context)
   if ok then
     return result
@@ -270,6 +297,17 @@ function M.run(job, payload, context, _exec)
   end
   if job == "module" and payload.e2e_driver ~= nil then
     if payload.native_argv == nil then
+      if payload.module_discovery ~= nil and readiness == nil then
+        local result = context.result_payload("blocked", { adapter = adapter("readiness-missing") })
+        result.native_summary = {
+          schema = "testing-runner.browser-driver-summary.v1",
+          module = payload.module,
+          driver = payload.e2e_driver,
+          status = result.status,
+          mode = "readiness-missing",
+        }
+        return with_metadata(result, payload, context)
+      end
       local result = context.result_payload("planned", { adapter = adapter("browser-driver-plan") })
       result.native_summary = {
         schema = "testing-runner.browser-driver-summary.v1",

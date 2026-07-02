@@ -133,6 +133,37 @@ return {
     t.eq(summary.dedup_key, "dedup-module-a-browser")
   end,
 
+  test_module_inventory_summary_is_pointer_only_golden = function()
+    local summary = core.from_testing_result({
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "planned",
+      artifact_root = ".testing/runs/module-inventory",
+      source_ref = { kind = "host", ref = "module-inventory" },
+      trace_id = "trace-module-inventory",
+      dedup_key = "dedup-module-inventory",
+      adapter = { name = "fkst-native", mode = "browser-driver-plan" },
+      native_summary = {
+        schema = "testing-runner.module-inventory-summary.v1",
+        status = "planned",
+        discovery_status = "complete",
+        inventory_path = ".testing/runs/module-inventory/module-inventory.json",
+        module_count = 2,
+        coverage = "visible-session-only",
+      },
+    })
+    assert_payload(summary.native_summary, {
+      schema = "testing-runner.module-inventory-summary.v1",
+      status = "planned",
+      discovery_status = "complete",
+      inventory_path = ".testing/runs/module-inventory/module-inventory.json",
+      module_count = 2,
+      coverage = "visible-session-only",
+    })
+    t.eq(summary.trace_id, "trace-module-inventory")
+    t.eq(summary.dedup_key, "dedup-module-inventory")
+  end,
+
   test_missing_trace_and_dedup_are_derived_deterministically = function()
     local result = {
       schema = "testing-runner.result.v1",
@@ -213,6 +244,28 @@ return {
             sessions = {
               { role = "admin", status = "ready", checks = { { name = "local_http", status = "ready" } } },
             },
+          },
+        },
+      })
+    end)
+  end,
+
+  test_module_inventory_summary_rejects_embedded_modules = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "planned",
+        artifact_root = ".testing/runs/module-inventory",
+        native_summary = {
+          schema = "testing-runner.module-inventory-summary.v1",
+          status = "planned",
+          discovery_status = "complete",
+          inventory_path = ".testing/runs/module-inventory/module-inventory.json",
+          module_count = 1,
+          coverage = "visible-session-only",
+          modules = {
+            { id = "dashboard", evidence_pointer = "dom://nav/dashboard" },
           },
         },
       })
