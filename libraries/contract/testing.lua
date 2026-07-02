@@ -6,6 +6,8 @@ local T = {}
 T.schemas = {
   runner_result = "testing-runner.result.v1",
   native_metadata = "testing-runner.native-metadata.v1",
+  native_evidence_bundle = "testing-runner.native-evidence-bundle.v1",
+  native_evidence_pointers = "testing-runner.native-evidence-pointers.v1",
   artifact_summary = "test-artifacts.summary.v1",
   publication_request = "test-publication.publication-request.v1",
   module_no_browser_summary = "testing-runner.module-no-browser-summary.v1",
@@ -97,6 +99,50 @@ local function has_only(value, allowed)
     if allowed[key] ~= true then return false end
   end
   return true
+end
+
+local evidence_pointer_suffixes = {
+  bundle_path = "evidence/bundle.json",
+  discovery_path = "evidence/discovery.json",
+  planning_path = "evidence/planning.json",
+  execution_path = "evidence/execution.json",
+  skipped_path = "evidence/skipped.json",
+  failures_path = "evidence/failures.json",
+  actions_path = "evidence/actions.json",
+  urls_path = "evidence/urls.json",
+  observations_path = "evidence/observations.json",
+  console_path = "evidence/console.json",
+  network_path = "evidence/network.json",
+  trace_path = "evidence/trace.json",
+  screenshots_path = "evidence/screenshots.json",
+  dom_state_path = "evidence/dom_state.json",
+}
+
+local evidence_pointer_allowed = { schema = true }
+for key, _ in pairs(evidence_pointer_suffixes) do
+  evidence_pointer_allowed[key] = true
+end
+
+function T.evidence_bundle_pointers(artifact_root)
+  if not strings.is_artifact_root(artifact_root) then return nil end
+  local pointers = { schema = T.schemas.native_evidence_pointers }
+  for key, suffix in pairs(evidence_pointer_suffixes) do
+    pointers[key] = artifact_root .. "/" .. suffix
+  end
+  return pointers
+end
+
+function T.copy_evidence_bundle(value, artifact_root)
+  if value == nil then return nil end
+  if type(value) ~= "table" then return nil end
+  if value.schema ~= T.schemas.native_evidence_pointers then return nil end
+  if not has_only(value, evidence_pointer_allowed) then return nil end
+  local expected = T.evidence_bundle_pointers(artifact_root)
+  if expected == nil then return nil end
+  for key, expected_value in pairs(expected) do
+    if value[key] ~= expected_value then return nil end
+  end
+  return expected
 end
 
 local function bounded_field(value, limit)

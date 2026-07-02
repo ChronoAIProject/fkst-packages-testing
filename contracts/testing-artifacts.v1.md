@@ -10,6 +10,7 @@ Testing packages exchange artifact pointers, not report bodies.
 - `status`: `planned`, `passed`, `failed`, `blocked`, or `mixed`
 - `artifact_root`: stable local or handoff pointer, usually `.testing/runs/<run>`
 - `metadata_path`: optional pointer to runner metadata, normally `<artifact_root>/metadata.json`
+- `evidence_bundle`: optional `testing-runner.native-evidence-pointers.v1` table pointing to native evidence bundle files under `<artifact_root>/evidence/`
 - `source_ref`: optional bounded source reference
 - `trace_id`: bounded logical trace identifier, preserved from runner result or deterministically derived
 - `dedup_key`: bounded stable idempotency key, preserved from runner result or deterministically derived
@@ -19,6 +20,8 @@ Testing packages exchange artifact pointers, not report bodies.
 - `stderr_excerpt`: optional bounded error excerpt
 
 Artifact summaries must carry small control metadata and pointers only. They must not embed report bodies, raw stdout/stderr bodies, screenshots, traces, browser storage, credentials, cookies, or tokens.
+
+When present, `evidence_bundle` must be copied from a runner result as a pointer table only. Every path must equal the deterministic native bundle path under `artifact_root`: `evidence/bundle.json`, `discovery.json`, `planning.json`, `execution.json`, `skipped.json`, `failures.json`, `actions.json`, `urls.json`, `observations.json`, `console.json`, `network.json`, `trace.json`, `screenshots.json`, and `dom_state.json`. Extra fields or paths outside `artifact_root` are malformed.
 
 `native_summary` is diagnostic metadata, not a downstream consumption requirement. Accepted nested native summaries are bounded `testing-runner.module-no-browser-summary.v1`, `testing-runner.online-heartbeat-summary.v1`, and `testing-runner.browser-driver-summary.v1` payloads. Browser driver summaries may include only a readiness audit: `readiness.status` plus up to 16 session `{ role, status }` entries. Readiness `checks`, report bodies, browser state, credentials, cookies, tokens, screenshots, traces, and arbitrary nested trees must be rejected.
 

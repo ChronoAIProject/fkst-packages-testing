@@ -118,6 +118,50 @@ local function validate_native_argv(job, value)
   end
 end
 
+local forbidden_event_fields = {
+  native_evidence = true,
+  evidence = true,
+  screenshots = true,
+  screenshot = true,
+  screenshot_ref = true,
+  dom_state = true,
+  console = true,
+  network = true,
+  traces = true,
+  trace = true,
+}
+
+local function is_forbidden_event_field(key)
+  local text = tostring(key or ""):lower()
+  if forbidden_event_fields[text] then return true end
+  if text:find("_body$", 1) ~= nil then return true end
+  if text:find("storage", 1, true) ~= nil then return true end
+  if text:find("credential", 1, true) ~= nil then return true end
+  if text:find("secret", 1, true) ~= nil then return true end
+  if text:find(("coo" .. "kie"), 1, true) ~= nil then return true end
+  if text:find(("pass" .. "word"), 1, true) ~= nil then return true end
+  if text:find(("to" .. "ken"), 1, true) ~= nil then return true end
+  if text:find("authorization", 1, true) ~= nil then return true end
+  return false
+end
+
+local function validate_pointer_only_request(payload, depth)
+  if type(payload) ~= "table" then return end
+  if (depth or 0) > 8 then
+    error("testing-runner: malformed-request: payload is too deeply nested")
+  end
+  for key, _ in pairs(payload) do
+    if is_forbidden_event_field(key) then
+      error("testing-runner: malformed-request: " .. key .. " must be written as an artifact, not embedded in the event")
+    end
+  end
+  for _, value in pairs(payload) do
+    if type(value) == "table" then
+      validate_pointer_only_request(value, (depth or 0) + 1)
+    end
+  end
+end
+
 function M.validate_request(job, payload)
   local spec = spec_for(job)
   if type(payload) ~= "table" then
@@ -147,6 +191,7 @@ function M.validate_request(job, payload)
   if payload.dedup_key ~= nil and not testing_contract.is_bounded_id(payload.dedup_key) then
     error("testing-runner: malformed-request: dedup_key must be a bounded string")
   end
+  validate_pointer_only_request(payload)
   return payload
 end
 

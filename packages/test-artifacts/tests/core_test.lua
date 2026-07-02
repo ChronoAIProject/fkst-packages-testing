@@ -15,6 +15,26 @@ local function assert_payload(actual, expected)
   end
 end
 
+local function expected_evidence_bundle(root)
+  return {
+    schema = "testing-runner.native-evidence-pointers.v1",
+    actions_path = root .. "/evidence/actions.json",
+    bundle_path = root .. "/evidence/bundle.json",
+    console_path = root .. "/evidence/console.json",
+    discovery_path = root .. "/evidence/discovery.json",
+    dom_state_path = root .. "/evidence/dom_state.json",
+    execution_path = root .. "/evidence/execution.json",
+    failures_path = root .. "/evidence/failures.json",
+    network_path = root .. "/evidence/network.json",
+    observations_path = root .. "/evidence/observations.json",
+    planning_path = root .. "/evidence/planning.json",
+    screenshots_path = root .. "/evidence/screenshots.json",
+    skipped_path = root .. "/evidence/skipped.json",
+    trace_path = root .. "/evidence/trace.json",
+    urls_path = root .. "/evidence/urls.json",
+  }
+end
+
 return {
   test_summary_from_testing_result = function()
     local summary = core.from_testing_result({
@@ -22,6 +42,7 @@ return {
       job = "module-test-loop",
       status = "passed",
       artifact_root = ".testing/runs/module-a",
+      evidence_bundle = expected_evidence_bundle(".testing/runs/module-a"),
       source_ref = { kind = "module", ref = "module-a" },
       trace_id = "trace-module-a",
       dedup_key = "dedup-module-a",
@@ -40,6 +61,8 @@ return {
     t.eq(summary.status, "passed")
     t.eq(summary.artifact_root, ".testing/runs/module-a")
     t.eq(summary.metadata_path, ".testing/runs/module-a/metadata.json")
+    t.eq(summary.evidence_bundle.bundle_path, ".testing/runs/module-a/evidence/bundle.json")
+    t.eq(summary.evidence_bundle.actions_path, ".testing/runs/module-a/evidence/actions.json")
     t.eq(summary.source_ref.ref, "module-a")
     t.eq(summary.trace_id, "trace-module-a")
     t.eq(summary.dedup_key, "dedup-module-a")
@@ -56,6 +79,7 @@ return {
       job = "module-test-loop",
       status = "failed",
       artifact_root = ".testing/runs/module-a-failed",
+      evidence_bundle = expected_evidence_bundle(".testing/runs/module-a-failed"),
       source_ref = { kind = "host", ref = "module-a" },
       trace_id = "trace-module-a",
       dedup_key = "dedup-module-a-failed",
@@ -75,6 +99,7 @@ return {
       status = "failed",
       artifact_root = ".testing/runs/module-a-failed",
       metadata_path = ".testing/runs/module-a-failed/metadata.json",
+      evidence_bundle = expected_evidence_bundle(".testing/runs/module-a-failed"),
       source_ref = { kind = "host", ref = "module-a" },
       trace_id = "trace-module-a",
       dedup_key = "dedup-module-a-failed",
@@ -179,6 +204,34 @@ return {
         status = "passed",
         artifact_root = ".testing/runs/module-a",
         metadata_path = ".testing/runs/other/metadata.json",
+      })
+    end)
+  end,
+
+  test_result_rejects_mismatched_evidence_bundle_pointer = function()
+    local bundle = expected_evidence_bundle(".testing/runs/module-a")
+    bundle.bundle_path = ".testing/runs/other/evidence/bundle.json"
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "passed",
+        artifact_root = ".testing/runs/module-a",
+        evidence_bundle = bundle,
+      })
+    end)
+  end,
+
+  test_summary_rejects_evidence_bundle_extra_fields = function()
+    local bundle = expected_evidence_bundle(".testing/runs/module-a")
+    bundle.console_body = "inline console"
+    t.raises(function()
+      core.validate_summary({
+        schema = "test-artifacts.summary.v1",
+        job = "module-test-loop",
+        status = "passed",
+        artifact_root = ".testing/runs/module-a",
+        evidence_bundle = bundle,
       })
     end)
   end,

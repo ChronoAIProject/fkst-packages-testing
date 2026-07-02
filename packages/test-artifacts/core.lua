@@ -43,6 +43,9 @@ function M.validate_summary(summary)
   if summary.metadata_path ~= nil and summary.metadata_path ~= summary.artifact_root .. "/metadata.json" then
     error("test-artifacts: malformed-summary: metadata_path must point under artifact_root")
   end
+  if summary.evidence_bundle ~= nil and testing_contract.copy_evidence_bundle(summary.evidence_bundle, summary.artifact_root) == nil then
+    error("test-artifacts: malformed-summary: evidence_bundle must contain artifact-root evidence pointers")
+  end
   if summary.stderr_excerpt ~= nil and not bounded_text(summary.stderr_excerpt, 600) then
     error("test-artifacts: malformed-summary: stderr_excerpt is too large")
   end
@@ -73,11 +76,15 @@ function M.from_testing_result(result)
   local src = source_ref(result.source_ref, artifact_root)
   local adapter = testing_contract.copy_scalar_map(result.adapter)
   local native_summary = testing_contract.copy_native_summary(result.native_summary)
+  local evidence_bundle = testing_contract.copy_evidence_bundle(result.evidence_bundle, artifact_root)
   if result.adapter ~= nil and adapter == nil then
     error("test-artifacts: malformed-result: adapter metadata must be bounded scalar fields")
   end
   if result.native_summary ~= nil and native_summary == nil then
     error("test-artifacts: malformed-result: native_summary must be a known bounded native summary")
+  end
+  if result.evidence_bundle ~= nil and evidence_bundle == nil then
+    error("test-artifacts: malformed-result: evidence_bundle must contain artifact-root evidence pointers")
   end
   local summary = {
     schema = testing_contract.schemas.artifact_summary,
@@ -85,6 +92,7 @@ function M.from_testing_result(result)
     status = status,
     artifact_root = artifact_root,
     metadata_path = artifact_root .. "/metadata.json",
+    evidence_bundle = evidence_bundle,
     source_ref = src,
     trace_id = testing_contract.trace_id(result.trace_id, src, artifact_root),
     dedup_key = testing_contract.dedup_key(result.dedup_key, {

@@ -15,6 +15,37 @@ local function assert_payload(actual, expected)
   end
 end
 
+local function expected_evidence_bundle(root)
+  return {
+    schema = "testing-runner.native-evidence-pointers.v1",
+    actions_path = root .. "/evidence/actions.json",
+    bundle_path = root .. "/evidence/bundle.json",
+    console_path = root .. "/evidence/console.json",
+    discovery_path = root .. "/evidence/discovery.json",
+    dom_state_path = root .. "/evidence/dom_state.json",
+    execution_path = root .. "/evidence/execution.json",
+    failures_path = root .. "/evidence/failures.json",
+    network_path = root .. "/evidence/network.json",
+    observations_path = root .. "/evidence/observations.json",
+    planning_path = root .. "/evidence/planning.json",
+    screenshots_path = root .. "/evidence/screenshots.json",
+    skipped_path = root .. "/evidence/skipped.json",
+    trace_path = root .. "/evidence/trace.json",
+    urls_path = root .. "/evidence/urls.json",
+  }
+end
+
+local function capture_writes()
+  local writes = { by_path = {} }
+  writes.writer = function(path, body)
+    writes.path = path
+    writes.body = body
+    writes.by_path[path] = body
+    return true
+  end
+  return writes
+end
+
 return {
   test_legacy_module_argv_uses_agentic_testing_cli = function()
     local argv = core.argv("module", {
@@ -151,6 +182,7 @@ return {
       source_ref = { kind = "host", ref = "preflight-blocked" },
       trace_id = "trace-preflight-blocked",
       dedup_key = "dedup-preflight-blocked",
+      evidence_bundle = expected_evidence_bundle(".testing/runs/preflight-blocked"),
       adapter = { name = "fkst-native", mode = "readiness-blocked" },
       stderr_excerpt = "fkst-native preflight is blocked",
     })
@@ -175,6 +207,38 @@ return {
         schema = "testing-runner.online-regression.request.v1",
         backend = "fkst-native",
         preflight_result = {},
+      })
+    end)
+  end,
+
+  test_rejects_inline_evidence_fields_on_request_events = function()
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        screenshots = { { path = "screenshots/home.png" } },
+      })
+    end)
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        native_evidence = { actions = { { kind = "click" } } },
+      })
+    end)
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        preflight_result = {
+          status = "ready",
+          request_context = {
+            browser_storage = { localStorage = "raw" },
+          },
+        },
       })
     end)
   end,
@@ -371,6 +435,7 @@ return {
       source_ref = { kind = "host", ref = "module-a" },
       trace_id = "trace-module-a",
       dedup_key = "dedup-module-a-failed",
+      evidence_bundle = expected_evidence_bundle(".testing/runs/module-a-failed"),
       adapter = { name = "fkst-native", mode = "module-no-browser" },
       native_summary = {
         schema = "testing-runner.module-no-browser-summary.v1",
@@ -436,11 +501,13 @@ return {
       source_ref = { kind = "host", ref = "module-a" },
       trace_id = "trace-module-a",
       dedup_key = "dedup-module-a",
+      evidence_bundle = expected_evidence_bundle(".testing/runs/module-a"),
       adapter = { name = "fkst-native", mode = "legacy-cli-blocked" },
       stderr_excerpt = "fkst-native native_argv must not target agentic_testing.cli",
     })
     t.eq(written.path, ".testing/runs/module-a/metadata.json")
-    t.eq(written.body, "{\"adapter\":{\"mode\":\"legacy-cli-blocked\",\"name\":\"fkst-native\"},\"artifact_root\":\".testing/runs/module-a\",\"dedup_key\":\"dedup-module-a\",\"job\":\"module-test-loop\",\"schema\":\"testing-runner.native-metadata.v1\",\"source_ref\":{\"kind\":\"host\",\"ref\":\"module-a\"},\"status\":\"blocked\",\"trace_id\":\"trace-module-a\"}\n")
+    t.is_true(written.body:find('"evidence_bundle"', 1, true) ~= nil)
+    t.is_true(written.body:find('"bundle_path":".testing/runs/module-a/evidence/bundle.json"', 1, true) ~= nil)
     t.eq(called, false)
   end,
 
@@ -545,6 +612,90 @@ return {
     t.eq(called, true)
   end,
 
+  test_fkst_native_browser_driver_writes_native_evidence_bundle_pointer_only = function()
+    local writes = capture_writes()
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      e2e_driver = "multi_session_browser_harness",
+      native_argv = { "browser-harness", "run", "module-a" },
+      artifact_root = ".testing/runs/module-a-evidence",
+      preflight_result = {
+        status = "ready",
+        sessions = {
+          { role = "base_url", status = "ready" },
+          { role = "admin", status = "ready" },
+        },
+      },
+      artifact_writer = writes.writer,
+    }, function()
+      return {
+        exit_code = 0,
+        stderr = "",
+        native_evidence = {
+          discovery = { { summary = "module discovered" } },
+          planning = { { summary = "case planned" } },
+          execution = { { summary = "case executed" } },
+          skipped = { { reason = "none" } },
+          failures = { { summary = "none" } },
+          actions = {
+            {
+              kind = "click",
+              target = "button#save",
+              summary = "saved",
+              screenshot_body = "inline image bytes",
+              browser_storage = { localStorage = "raw" },
+            },
+          },
+          urls = {
+            { role = "base_url", url = "https://example.test/path?secret=value#frag" },
+          },
+          observations = {
+            { summary = "visible state", path = "evidence/observations-extra.json" },
+          },
+          console = {
+            { level = "error", summary = "bounded console summary" },
+          },
+          network = {
+            { method = "GET", url = "https://example.test/api?secret=value", status = 200 },
+          },
+          traces = {
+            { kind = "step", summary = "execution trace summary" },
+          },
+          screenshots = {
+            { path = "screenshots/home.png", label = "home", mime = "image/png", width = 1200, height = 800, body = "raw" },
+          },
+          dom_state = {
+            { path = "dom/home.json", summary = "state summary", state = "loaded" },
+          },
+        },
+      }
+    end)
+
+    assert_payload(result.evidence_bundle, expected_evidence_bundle(".testing/runs/module-a-evidence"))
+    t.eq(result.screenshots, nil)
+    t.eq(result.console, nil)
+    t.eq(result.network, nil)
+    t.eq(result.dom_state, nil)
+    t.eq(writes.path, ".testing/runs/module-a-evidence/metadata.json")
+    t.is_true(writes.by_path[".testing/runs/module-a-evidence/evidence/bundle.json"]:find('"schema":"testing-runner.native-evidence-bundle.v1"', 1, true) ~= nil)
+    local actions = writes.by_path[".testing/runs/module-a-evidence/evidence/actions.json"]
+    t.is_true(actions:find('"kind":"click"', 1, true) ~= nil)
+    t.eq(actions:find("screenshot_body", 1, true), nil)
+    t.eq(actions:find("browser_storage", 1, true), nil)
+    local urls = writes.by_path[".testing/runs/module-a-evidence/evidence/urls.json"]
+    t.is_true(urls:find('"url":"https://example.test/path"', 1, true) ~= nil)
+    t.eq(urls:find("secret", 1, true), nil)
+    local screenshots = writes.by_path[".testing/runs/module-a-evidence/evidence/screenshots.json"]
+    t.is_true(screenshots:find('"path":".testing/runs/module-a-evidence/screenshots/home.png"', 1, true) ~= nil)
+    t.eq(screenshots:find('"body"', 1, true), nil)
+    local dom_state = writes.by_path[".testing/runs/module-a-evidence/evidence/dom_state.json"]
+    t.is_true(dom_state:find('"path":".testing/runs/module-a-evidence/dom/home.json"', 1, true) ~= nil)
+    t.is_true(writes.body:find('"evidence_bundle"', 1, true) ~= nil)
+  end,
+
   test_fkst_native_module_browser_driver_failure_payload_is_golden = function()
     local result = core.run("module", {
       schema = "testing-runner.module-test-loop.request.v1",
@@ -578,6 +729,7 @@ return {
       source_ref = { kind = "host", ref = "module-a" },
       trace_id = "trace-module-a-browser",
       dedup_key = "dedup-module-a-browser-failed",
+      evidence_bundle = expected_evidence_bundle(".testing/runs/module-a-browser-failed"),
       adapter = { name = "fkst-native", mode = "browser-driver" },
       native_summary = {
         schema = "testing-runner.browser-driver-summary.v1",
@@ -645,6 +797,7 @@ return {
       source_ref = { kind = "host", ref = "module-a-live" },
       trace_id = "trace-module-a-live",
       dedup_key = "dedup-module-a-live",
+      evidence_bundle = expected_evidence_bundle(".testing/runs/module-a-live"),
       adapter = { name = "fkst-native", mode = "capability-gap" },
       stderr_excerpt = "fkst-native live execution for module is not implemented beyond the planning envelope",
     })

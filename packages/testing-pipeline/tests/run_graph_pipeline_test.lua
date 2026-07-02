@@ -1,12 +1,33 @@
 local graph = require("testkit.graph")
 local t = fkst.test
 
+local function evidence_bundle(root)
+  return {
+    schema = "testing-runner.native-evidence-pointers.v1",
+    actions_path = root .. "/evidence/actions.json",
+    bundle_path = root .. "/evidence/bundle.json",
+    console_path = root .. "/evidence/console.json",
+    discovery_path = root .. "/evidence/discovery.json",
+    dom_state_path = root .. "/evidence/dom_state.json",
+    execution_path = root .. "/evidence/execution.json",
+    failures_path = root .. "/evidence/failures.json",
+    network_path = root .. "/evidence/network.json",
+    observations_path = root .. "/evidence/observations.json",
+    planning_path = root .. "/evidence/planning.json",
+    screenshots_path = root .. "/evidence/screenshots.json",
+    skipped_path = root .. "/evidence/skipped.json",
+    trace_path = root .. "/evidence/trace.json",
+    urls_path = root .. "/evidence/urls.json",
+  }
+end
+
 local function testing_result(status)
   return {
     schema = "testing-runner.result.v1",
     job = "module-test-loop",
     status = status or "failed",
     artifact_root = ".testing/runs/module-a",
+    evidence_bundle = evidence_bundle(".testing/runs/module-a"),
     source_ref = { kind = "external", ref = "module-a" },
     dedup_key = "module-a-run",
     adapter = { name = "fkst-native", mode = "module-no-browser" },
@@ -76,6 +97,8 @@ return {
     t.eq(summary.payload.status, "failed")
     t.eq(summary.payload.artifact_root, ".testing/runs/module-a")
     t.eq(summary.payload.metadata_path, ".testing/runs/module-a/metadata.json")
+    t.eq(summary.payload.evidence_bundle.bundle_path, ".testing/runs/module-a/evidence/bundle.json")
+    t.eq(summary.payload.evidence_bundle.console_path, ".testing/runs/module-a/evidence/console.json")
     t.eq(summary.payload.source_ref.ref, "module-a")
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
@@ -87,6 +110,7 @@ return {
     t.eq(publication.payload.dedup_key, "module-a-run")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
     t.eq(publication.payload.metadata_path, ".testing/runs/module-a/metadata.json")
+    t.eq(publication.payload.evidence_bundle, nil)
   end,
 
   test_run_graph_no_browser_module_reaches_publication_request = function()
@@ -126,6 +150,7 @@ return {
     t.eq(result.payload.adapter.name, "fkst-native")
     t.eq(result.payload.adapter.mode, "module-no-browser")
     t.eq(result.payload.native_summary.mode, "argv")
+    t.eq(result.payload.evidence_bundle.bundle_path, ".testing/runs/module-a/evidence/bundle.json")
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
     t.eq(publication.payload.status, "passed")
