@@ -21,6 +21,29 @@ local function testing_result(status)
   }
 end
 
+local function browser_driver_result(overrides)
+  local result = testing_result("failed")
+  result.adapter = { name = "fkst-native", mode = "browser-driver" }
+  result.native_summary = {
+    schema = "testing-runner.browser-driver-summary.v1",
+    module = "module-a",
+    driver = "multi_session_browser_harness",
+    status = result.status,
+    mode = "argv",
+    readiness = {
+      status = "ready",
+      sessions = {
+        { role = "base_url", status = "ready" },
+        { role = "admin", status = "ready" },
+      },
+    },
+  }
+  for key, value in pairs(overrides or {}) do
+    result[key] = value
+  end
+  return result
+end
+
 local function result_event(status)
   return {
     queue = "testing-runner.testing_result",
@@ -133,5 +156,55 @@ return {
     t.eq(publication.payload.subject, "Testing passed: module-test-loop")
     t.eq(publication.payload.dedup_key, "module-a-run")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
+  end,
+
+  test_run_graph_classifies_harness_uncertainty_and_raises_gap_backlog = function()
+    local trace = graph.require_quiescent(graph.run({
+      queue = "testing-runner.testing_result",
+      payload = browser_driver_result(),
+      source_ref = { kind = "external", reference = "module-a" },
+    }, { max_steps = 10 }))
+
+    graph.require_delivery(trace, {
+      queue = "testing-runner.testing_result",
+      consumer = "testing-pipeline.classify_result",
+    })
+
+    local classification = graph.require_raise(trace, "testing-pipeline.outcome_classification")
+    t.eq(classification.payload.schema, "testing-pipeline.outcome-classification.v1")
+    t.eq(classification.payload.category, "harness_tooling_issue")
+    t.eq(classification.payload.reason, "harness or CDP uncertainty prevents product defect classification")
+    t.eq(#classification.payload.evidence_refs, 0)
+
+    local backlog = graph.require_raise(trace, "testing-pipeline.gap_backlog")
+    t.eq(backlog.payload.schema, "testing-pipeline.gap-backlog.v1")
+    t.eq(backlog.payload.blocked_modules[1].module, "module-a")
+    t.eq(backlog.payload.required_follow_up[1].follow_up, "stabilize harness or CDP signal and rerun")
+    t.eq(backlog.payload.backlog_ref.ref, ".testing/runs/module-a/gap-backlog.json")
+  end,
+
+  test_run_graph_allows_product_defect_only_with_user_facing_repro_evidence = function()
+    local trace = graph.require_quiescent(graph.run({
+      queue = "testing-runner.testing_result",
+      payload = browser_driver_result({
+        adapter = { name = "fkst-native", mode = "module-no-browser" },
+        native_summary = {
+          schema = "testing-runner.module-no-browser-summary.v1",
+          module = "module-a",
+          status = "failed",
+          mode = "argv",
+        },
+        evidence_refs = {
+          { kind = "artifact", ref = ".testing/runs/module-a/evidence/product.json", user_facing = true, reproducible = true },
+        },
+      }),
+      source_ref = { kind = "external", reference = "module-a" },
+    }, { max_steps = 10 }))
+
+    local classification = graph.require_raise(trace, "testing-pipeline.outcome_classification")
+    t.eq(classification.payload.category, "product_defect")
+    t.eq(classification.payload.evidence_refs[1].user_facing, true)
+    t.eq(classification.payload.evidence_refs[1].reproducible, true)
+    t.eq(graph.find_raise(trace, "testing-pipeline.gap_backlog"), nil)
   end,
 }

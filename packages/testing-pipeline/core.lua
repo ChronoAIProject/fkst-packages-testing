@@ -2,6 +2,7 @@ local M = {}
 
 local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
+local outcome = require("outcome")
 
 local statuses = {
   planned = true,
@@ -10,6 +11,8 @@ local statuses = {
   blocked = true,
   mixed = true,
 }
+
+M.outcome_categories = outcome.categories
 
 function M.validate_module_start(payload)
   if type(payload) ~= "table" then
@@ -63,6 +66,9 @@ function M.validate_testing_result(result)
   if result.schema ~= "testing-runner.result.v1" then
     error("testing-pipeline: unknown-result-schema: expected testing-runner.result.v1")
   end
+  if result.artifact_root ~= nil and not strings.is_artifact_root(result.artifact_root) then
+    error("testing-pipeline: malformed-result: artifact_root must be a safe .testing/runs/... path")
+  end
   return result
 end
 
@@ -81,5 +87,10 @@ function M.validate_artifact_summary(summary)
   end
   return summary
 end
+
+M.classify_testing_result = outcome.classify_testing_result
+M.validate_outcome_classification = outcome.validate_outcome_classification
+M.gap_backlog = outcome.gap_backlog
+M.validate_gap_backlog = outcome.validate_gap_backlog
 
 return M
