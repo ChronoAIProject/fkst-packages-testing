@@ -64,8 +64,8 @@ usage: scripts/run.sh <check|test|test-affected|example|supervise> [args]
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
-  test-affected       derive changed paths from git and run package-scoped tests when possible,
-                      otherwise run the full local test gate
+  test-affected       derive changed paths from the target merge-base plus local edits and run
+                      package-scoped tests when possible, otherwise run the full local test gate
   example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
@@ -249,13 +249,14 @@ cmd_check() {
     run_pkg_engine conformance "$pkg" || fail=1
   done < <(list_packages)
   if [ "$ran" -eq 0 ]; then echo "error: no packages found under packages/" >&2; return 1; fi
+  check_platform_pin_read_only || fail=1
   if [ "$fail" -ne 0 ]; then echo "FAILED: check" >&2; fi
   return "$fail"
 }
 
 cmd_test() {
   local target="${1:-}" fail=0 ran=0 pkg name
-  cmd_check
+  cmd_check || return 1
   resolve_testing_bin
 
   # Hermetic roots so local runs predict CI and never touch ambient durable state. Script-global
@@ -296,13 +297,28 @@ cmd_test() {
   done < <(list_packages)
   if [ "$ran" -eq 0 ]; then echo "error: no packages matched${target:+ for '$target'}" >&2; return 1; fi
   if [ "$fail" -ne 0 ]; then echo "FAILED: $fail package(s)" >&2; return 1; fi
-  check_platform_pin_read_only
+  check_platform_pin_read_only || return 1
   echo "OK: $ran package(s)"
 }
 
+test_affected_base() {
+  local candidate base
+  for candidate in "${FKST_TEST_AFFECTED_BASE:-}" origin/integration-testing integration-testing origin/dev dev; do
+    [ -n "$candidate" ] || continue
+    if git -C "$ROOT" rev-parse --verify -q "$candidate^{commit}" >/dev/null; then
+      base="$(git -C "$ROOT" merge-base "$candidate" HEAD 2>/dev/null || true)"
+      if [ -n "$base" ]; then printf '%s\n' "$base"; return 0; fi
+    fi
+  done
+  git -C "$ROOT" rev-parse HEAD
+}
+
 changed_paths() {
+  local base
+  base="$(test_affected_base)"
   {
-    git -C "$ROOT" diff --name-only --diff-filter=ACMRTUXB HEAD
+    git -C "$ROOT" diff --name-only --diff-filter=ACDMRTUXB "$base"...HEAD
+    git -C "$ROOT" diff --name-only --diff-filter=ACDMRTUXB HEAD
     git -C "$ROOT" ls-files --others --exclude-standard
   } | LC_ALL=C sort -u
 }
