@@ -15,6 +15,48 @@ local function assert_payload(actual, expected)
   end
 end
 
+local function browser_exploration_plan(overrides)
+  local plan = {
+    schema = "testing-runner.browser-exploration.v1",
+    module_boundary = "module-a",
+    allowed_origins = { "http://localhost:8080" },
+    step_budget = 2,
+    stop_conditions = { "goal-met" },
+    session_role = "admin",
+    actions = {
+      {
+        priority = "P0",
+        intent = "open module dashboard",
+        action = "navigate",
+        target = "/module-a",
+        url = "http://localhost:8080/module-a",
+      },
+      {
+        priority = "P1",
+        intent = "inspect healthy module state",
+        action = "click",
+        target = "[data-testid=status]",
+        url = "http://localhost:8080/module-a",
+      },
+    },
+  }
+  for key, value in pairs(overrides or {}) do
+    plan[key] = value
+  end
+  return plan
+end
+
+local function ready_browser_preflight()
+  return {
+    schema = "browser-readiness.result.v1",
+    status = "ready",
+    sessions = {
+      { role = "base_url", status = "ready", checks = { { name = "local_http", status = "ready" } } },
+      { role = "admin", status = "ready", checks = { { name = "cdp_endpoint_env", status = "ready" } } },
+    },
+  }
+end
+
 return {
   test_legacy_module_argv_uses_agentic_testing_cli = function()
     local argv = core.argv("module", {
@@ -596,6 +638,160 @@ return {
       exit_code = 4,
       stderr_excerpt = "browser check failed",
     })
+  end,
+
+  test_fkst_native_browser_exploration_runs_bounded_p0_p1_actions = function()
+    local calls = {}
+    local written = {}
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      e2e_driver = "multi_session_browser_harness",
+      browser_exploration = browser_exploration_plan(),
+      artifact_root = ".testing/runs/module-a-browser-exploration",
+      preflight_result = ready_browser_preflight(),
+      artifact_writer = function(path, body)
+        written.path = path
+        written.body = body
+        return true
+      end,
+      probe = {
+        browser_harness_action = function(action, context)
+          table.insert(calls, { action = action, context = context })
+          return {
+            result = "passed",
+            classification = "passed",
+            url = action.url .. "?ignored=true#section",
+            observation = action.action .. " completed",
+            evidence_pointer = context.artifact_root .. "/evidence/action-" .. tostring(#calls) .. ".json",
+            stop_condition = #calls == 2 and "goal-met" or nil,
+          }
+        end,
+      },
+    })
+    t.eq(result.status, "passed")
+    t.eq(result.exit_code, 0)
+    t.eq(result.adapter.name, "fkst-native")
+    t.eq(result.adapter.mode, "browser-exploration")
+    t.eq(result.native_summary.schema, "testing-runner.browser-exploration-summary.v1")
+    t.eq(result.native_summary.module, "module-a")
+    t.eq(result.native_summary.driver, "multi_session_browser_harness")
+    t.eq(result.native_summary.classification, "stopped")
+    t.eq(result.native_summary.step_budget, 2)
+    t.eq(result.native_summary.planned_actions, 2)
+    t.eq(result.native_summary.executed_actions, 2)
+    t.eq(result.native_summary.actions[1].intent, "open module dashboard")
+    t.eq(result.native_summary.actions[1].action, "navigate")
+    t.eq(result.native_summary.actions[1].target, "/module-a")
+    t.eq(result.native_summary.actions[1].url, "http://localhost:8080/module-a")
+    t.eq(result.native_summary.actions[1].observation, "navigate completed")
+    t.eq(result.native_summary.actions[1].evidence_pointer, ".testing/runs/module-a-browser-exploration/evidence/action-1.json")
+    t.eq(result.native_summary.readiness.sessions[2].role, "admin")
+    t.eq(result.native_summary.readiness.sessions[2].checks, nil)
+    t.eq(#calls, 2)
+    t.eq(calls[1].context.session_role, "admin")
+    t.eq(calls[1].context.allowed_origins[1], "http://localhost:8080")
+    t.eq(written.path, ".testing/runs/module-a-browser-exploration/metadata.json")
+    t.is_true(written.body:find('"schema":"testing-runner.browser-exploration-summary.v1"', 1, true) ~= nil)
+    t.is_true(written.body:find('"evidence_pointer":".testing/runs/module-a-browser-exploration/evidence/action-1.json"', 1, true) ~= nil)
+    t.eq(written.body:find("ignored=true", 1, true), nil)
+    t.eq(written.body:find('"checks"', 1, true), nil)
+  end,
+
+  test_fkst_native_browser_exploration_boundary_violation_blocks_without_product_failure = function()
+    local calls = 0
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      e2e_driver = "multi_session_browser_harness",
+      browser_exploration = browser_exploration_plan({
+        actions = {
+          {
+            priority = "P2",
+            intent = "mutate risky settings",
+            action = "click",
+            target = "[data-testid=delete]",
+            url = "http://localhost:8080/module-a",
+          },
+        },
+      }),
+      preflight_result = ready_browser_preflight(),
+      artifact_writer = function()
+        return true
+      end,
+      probe = {
+        browser_harness_action = function()
+          calls = calls + 1
+          return { result = "passed" }
+        end,
+      },
+    })
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.mode, "browser-exploration")
+    t.eq(result.native_summary.classification, "boundary")
+    t.eq(result.native_summary.actions[1].classification, "boundary")
+    t.eq(result.native_summary.actions[1].result, "blocked")
+    t.eq(result.native_summary.actions[1].evidence_pointer, result.artifact_root .. "/metadata.json#native_summary.actions.1")
+    t.eq(calls, 0)
+  end,
+
+  test_fkst_native_browser_exploration_missing_session_blocks_as_session_gap = function()
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      e2e_driver = "multi_session_browser_harness",
+      browser_exploration = browser_exploration_plan(),
+      preflight_result = {
+        schema = "browser-readiness.result.v1",
+        status = "ready",
+        sessions = {
+          { role = "base_url", status = "ready" },
+        },
+      },
+      artifact_writer = function()
+        return true
+      end,
+    })
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.mode, "browser-exploration")
+    t.eq(result.native_summary.classification, "missing-session")
+    t.is_true(result.stderr_excerpt:find("existing ready browser session", 1, true) ~= nil)
+  end,
+
+  test_fkst_native_browser_exploration_unreliable_harness_blocks = function()
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      e2e_driver = "multi_session_browser_harness",
+      browser_exploration = browser_exploration_plan(),
+      preflight_result = ready_browser_preflight(),
+      artifact_writer = function()
+        return true
+      end,
+      probe = {
+        browser_harness_action = function()
+          return {
+            result = "passed",
+            classification = "passed",
+            url = "http://localhost:8080/module-a",
+            observation = "completed without pointer",
+          }
+        end,
+      },
+    })
+    t.eq(result.status, "blocked")
+    t.eq(result.native_summary.classification, "harness")
+    t.eq(result.native_summary.actions[1].classification, "harness")
+    t.eq(result.native_summary.actions[1].result, "blocked")
+    t.eq(result.native_summary.actions[1].observation, "harness did not return an evidence pointer")
   end,
 
   test_fkst_native_unsupported_live_execution_blocks_without_exec = function()

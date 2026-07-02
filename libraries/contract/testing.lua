@@ -11,6 +11,7 @@ T.schemas = {
   module_no_browser_summary = "testing-runner.module-no-browser-summary.v1",
   online_heartbeat_summary = "testing-runner.online-heartbeat-summary.v1",
   browser_driver_summary = "testing-runner.browser-driver-summary.v1",
+  browser_exploration_summary = "testing-runner.browser-exploration-summary.v1",
 }
 
 T.runner_statuses = {
@@ -30,6 +31,9 @@ T.summary_statuses = {
 
 local max_string = 512
 local max_id = 180
+local max_browser_actions = 16
+local max_browser_origins = 8
+local max_stop_conditions = 8
 
 local function has_no_control(text)
   return type(text) == "string" and text:find("[%z\1-\31]") == nil
@@ -103,6 +107,14 @@ local function bounded_field(value, limit)
   return type(value) == "string" and value ~= "" and #value <= (limit or max_string) and has_no_control(value)
 end
 
+local function bounded_optional_field(value, limit)
+  return value == nil or bounded_field(value, limit)
+end
+
+local function bounded_integer(value, min, max)
+  return type(value) == "number" and value >= min and value <= max and math.floor(value) == value
+end
+
 local function dense_list(value)
   if type(value) ~= "table" then return false end
   local count, max_index = 0, 0
@@ -174,6 +186,94 @@ local function copy_browser_driver(value)
   return copy
 end
 
+local function copy_browser_action(value)
+  if type(value) ~= "table" then return nil end
+  if not has_only(value, {
+    intent = true,
+    action = true,
+    target = true,
+    url = true,
+    priority = true,
+    result = true,
+    classification = true,
+    observation = true,
+    evidence_pointer = true,
+  }) then
+    return nil
+  end
+  if not bounded_field(value.intent, max_string) then return nil end
+  if not bounded_field(value.action, 80) then return nil end
+  if not bounded_field(value.target, max_string) then return nil end
+  if not bounded_field(value.url, max_string) then return nil end
+  if not bounded_field(value.priority, 16) then return nil end
+  if not bounded_field(value.result, 80) then return nil end
+  if not bounded_field(value.classification, 80) then return nil end
+  if not bounded_field(value.observation, max_string) then return nil end
+  if not bounded_field(value.evidence_pointer, max_string) then return nil end
+  return {
+    intent = value.intent,
+    action = value.action,
+    target = value.target,
+    url = value.url,
+    priority = value.priority,
+    result = value.result,
+    classification = value.classification,
+    observation = value.observation,
+    evidence_pointer = value.evidence_pointer,
+  }
+end
+
+local function copy_browser_exploration(value)
+  if not has_only(value, {
+    schema = true,
+    module = true,
+    driver = true,
+    status = true,
+    mode = true,
+    classification = true,
+    step_budget = true,
+    planned_actions = true,
+    executed_actions = true,
+    actions = true,
+    readiness = true,
+  }) then
+    return nil
+  end
+  if not bounded_field(value.module, max_string) or not bounded_field(value.driver, max_string) then return nil end
+  if not bounded_field(value.status, 80) or not bounded_field(value.mode, 80) then return nil end
+  if not bounded_field(value.classification, 80) then return nil end
+  if not bounded_integer(value.step_budget, 0, max_browser_actions) then return nil end
+  if not bounded_integer(value.planned_actions, 0, max_browser_actions) then return nil end
+  if not bounded_integer(value.executed_actions, 0, max_browser_actions) then return nil end
+  if not dense_list(value.actions) or #value.actions > max_browser_actions then return nil end
+
+  local actions = {}
+  for _, item in ipairs(value.actions) do
+    local action = copy_browser_action(item)
+    if action == nil then return nil end
+    table.insert(actions, action)
+  end
+
+  local copy = {
+    schema = T.schemas.browser_exploration_summary,
+    module = value.module,
+    driver = value.driver,
+    status = value.status,
+    mode = value.mode,
+    classification = value.classification,
+    step_budget = value.step_budget,
+    planned_actions = value.planned_actions,
+    executed_actions = value.executed_actions,
+    actions = actions,
+  }
+  if value.readiness ~= nil then
+    local readiness = copy_readiness(value.readiness)
+    if readiness == nil then return nil end
+    copy.readiness = readiness
+  end
+  return copy
+end
+
 function T.copy_native_summary(value)
   if value == nil then return nil end
   if type(value) ~= "table" then return nil end
@@ -186,7 +286,84 @@ function T.copy_native_summary(value)
   if value.schema == T.schemas.browser_driver_summary then
     return copy_browser_driver(value)
   end
+  if value.schema == T.schemas.browser_exploration_summary then
+    return copy_browser_exploration(value)
+  end
   return nil
+end
+
+local function validate_bounded_list(value, max_items, item_limit, message)
+  if value == nil then return end
+  if not dense_list(value) or #value > max_items then
+    error(message)
+  end
+  for _, item in ipairs(value) do
+    if not bounded_field(item, item_limit) then
+      error(message)
+    end
+  end
+end
+
+function T.validate_browser_exploration_shape(value)
+  if value == nil then return end
+  if type(value) ~= "table" then
+    error("testing-contract: malformed-browser-exploration: browser_exploration must be a table")
+  end
+  if not has_only(value, {
+    schema = true,
+    module_boundary = true,
+    allowed_origins = true,
+    step_budget = true,
+    stop_conditions = true,
+    session_role = true,
+    actions = true,
+  }) then
+    error("testing-contract: malformed-browser-exploration: browser_exploration has unsupported field")
+  end
+  if value.schema ~= nil and value.schema ~= "testing-runner.browser-exploration.v1" then
+    error("testing-contract: malformed-browser-exploration: unknown browser_exploration schema")
+  end
+  if not bounded_optional_field(value.module_boundary, max_string) then
+    error("testing-contract: malformed-browser-exploration: module_boundary must be bounded")
+  end
+  if value.step_budget ~= nil and not bounded_integer(value.step_budget, 1, max_browser_actions) then
+    error("testing-contract: malformed-browser-exploration: step_budget must be a bounded integer")
+  end
+  if not bounded_optional_field(value.session_role, 80) then
+    error("testing-contract: malformed-browser-exploration: session_role must be bounded")
+  end
+  validate_bounded_list(
+    value.allowed_origins,
+    max_browser_origins,
+    max_string,
+    "testing-contract: malformed-browser-exploration: allowed_origins must be a bounded dense list"
+  )
+  validate_bounded_list(
+    value.stop_conditions,
+    max_stop_conditions,
+    80,
+    "testing-contract: malformed-browser-exploration: stop_conditions must be a bounded dense list"
+  )
+  if value.actions == nil then return end
+  if not dense_list(value.actions) or #value.actions > max_browser_actions then
+    error("testing-contract: malformed-browser-exploration: actions must be a bounded dense list")
+  end
+  for _, action in ipairs(value.actions) do
+    if type(action) ~= "table" then
+      error("testing-contract: malformed-browser-exploration: actions must contain tables")
+    end
+    if not has_only(action, { priority = true, intent = true, action = true, target = true, url = true }) then
+      error("testing-contract: malformed-browser-exploration: action has unsupported field")
+    end
+    if not bounded_optional_field(action.intent, max_string)
+      or not bounded_optional_field(action.action, 80)
+      or not bounded_optional_field(action.target, max_string)
+      or not bounded_optional_field(action.url, max_string)
+      or not bounded_optional_field(action.priority, 16)
+    then
+      error("testing-contract: malformed-browser-exploration: action fields must be bounded")
+    end
+  end
 end
 
 local function source_basis(source_ref, artifact_root, fallback)

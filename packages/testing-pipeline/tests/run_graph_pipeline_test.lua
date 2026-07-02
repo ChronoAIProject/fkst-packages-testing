@@ -47,6 +47,49 @@ local function module_start_event()
   }
 end
 
+local function browser_exploration_result_event()
+  return {
+    queue = "testing-runner.testing_result",
+    payload = {
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "passed",
+      artifact_root = ".testing/runs/module-a-browser-exploration",
+      source_ref = { kind = "external", ref = "module-a" },
+      trace_id = "trace-module-a-browser-exploration",
+      dedup_key = "module-a-browser-exploration-run",
+      adapter = { name = "fkst-native", mode = "browser-exploration" },
+      native_summary = {
+        schema = "testing-runner.browser-exploration-summary.v1",
+        module = "module-a",
+        driver = "multi_session_browser_harness",
+        status = "passed",
+        mode = "bounded-cdp-exploration",
+        classification = "stopped",
+        step_budget = 1,
+        planned_actions = 1,
+        executed_actions = 1,
+        actions = {
+          {
+            priority = "P0",
+            intent = "open module dashboard",
+            action = "navigate",
+            target = "/module-a",
+            url = "http://localhost:8080/module-a",
+            result = "passed",
+            classification = "passed",
+            observation = "navigate completed",
+            evidence_pointer = ".testing/runs/module-a-browser-exploration/evidence/action-1.json",
+          },
+        },
+      },
+      exit_code = 0,
+      stderr_excerpt = "",
+    },
+    source_ref = { kind = "external", reference = "module-a" },
+  }
+end
+
 local function prepare_artifact_dir()
   local ok = os.execute("mkdir -p .testing/runs/module-a")
   if ok ~= true and ok ~= 0 then
@@ -133,5 +176,32 @@ return {
     t.eq(publication.payload.subject, "Testing passed: module-test-loop")
     t.eq(publication.payload.dedup_key, "module-a-run")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
+  end,
+
+  test_run_graph_browser_exploration_reaches_artifact_and_publication_seams = function()
+    local trace = graph.require_quiescent(graph.run(browser_exploration_result_event(), { max_steps = 8 }))
+
+    graph.require_delivery(trace, {
+      queue = "testing-runner.testing_result",
+      consumer = "testing-pipeline.summarize_result",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-artifacts.testing_result",
+      consumer = "test-artifacts.summarize",
+    })
+
+    local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
+    t.eq(summary.payload.status, "passed")
+    t.eq(summary.payload.adapter.mode, "browser-exploration")
+    t.eq(summary.payload.native_summary.schema, "testing-runner.browser-exploration-summary.v1")
+    t.eq(summary.payload.native_summary.actions[1].priority, "P0")
+    t.eq(summary.payload.native_summary.actions[1].observation, "navigate completed")
+    t.eq(summary.payload.native_summary.actions[1].evidence_pointer, ".testing/runs/module-a-browser-exploration/evidence/action-1.json")
+
+    local publication = graph.require_raise(trace, "test-publication.publication_request")
+    t.eq(publication.payload.status, "passed")
+    t.eq(publication.payload.severity, "success")
+    t.eq(publication.payload.dedup_key, "module-a-browser-exploration-run")
+    t.eq(publication.payload.metadata_path, ".testing/runs/module-a-browser-exploration/metadata.json")
   end,
 }

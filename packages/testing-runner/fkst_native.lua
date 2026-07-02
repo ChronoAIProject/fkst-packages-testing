@@ -89,6 +89,279 @@ local function readiness_summary(preflight)
   return summary
 end
 
+local function local_origin(value)
+  if type(value) ~= "string" or value == "" or #value > 512 then return nil end
+  local scheme, authority = value:match("^(https?)://([^/%?#]+)")
+  if scheme == nil then return nil end
+  if authority == "localhost" or authority == "127.0.0.1" or authority == "[::1]" then
+    return scheme .. "://" .. authority
+  end
+  local host, port = authority:match("^(localhost):(%d+)$")
+  if host == nil then host, port = authority:match("^(127%.0%.0%.1):(%d+)$") end
+  if host == nil then host, port = authority:match("^(%[::1%]):(%d+)$") end
+  if host ~= nil and port ~= nil then
+    return scheme .. "://" .. host .. ":" .. port
+  end
+  return nil
+end
+
+local function url_in_origins(url, origins)
+  local origin = local_origin(url)
+  if origin == nil then return false end
+  for _, allowed in ipairs(origins or {}) do
+    if origin == allowed then return true end
+  end
+  return false
+end
+
+local function safe_browser_text(value, fallback, limit)
+  local text = tostring(value or fallback or "unknown")
+  if text == "" then text = fallback or "unknown" end
+  text = text:gsub("[%z\1-\31]", " ")
+  if #text > (limit or 512) then text = text:sub(1, limit or 512) end
+  return text
+end
+
+local function safe_pointer(value, fallback)
+  local text = safe_browser_text(value, fallback, 512)
+  if text:find("..", 1, true) ~= nil or text:find("\0", 1, true) ~= nil then
+    return fallback
+  end
+  return text
+end
+
+local function priority_allowed(value)
+  return value == "P0" or value == "P1"
+end
+
+local function contains_interactive_auth(value)
+  local text = tostring(value or ""):lower()
+  return text:find("login", 1, true) ~= nil
+    or text:find("mfa", 1, true) ~= nil
+    or text:find("captcha", 1, true) ~= nil
+end
+
+local function ready_browser_session(preflight, role)
+  if type(preflight) ~= "table" or type(preflight.sessions) ~= "table" then return nil end
+  for _, session in ipairs(preflight.sessions) do
+    if type(session) == "table" and session.status == "ready" and session.role ~= "base_url" then
+      if role == nil or role == "" or session.role == role then
+        return session
+      end
+    end
+  end
+  return nil
+end
+
+local function stop_condition_hit(stop_condition, stop_conditions)
+  if type(stop_condition) ~= "string" then return false end
+  for _, value in ipairs(stop_conditions or {}) do
+    if stop_condition == value then return true end
+  end
+  return false
+end
+
+local function exploration_executor(payload)
+  local probe = type(payload.probe) == "table" and payload.probe or {}
+  if type(probe.browser_harness_action) == "function" then
+    return probe.browser_harness_action
+  end
+  if type(probe.cdp_action) == "function" then
+    return probe.cdp_action
+  end
+  return nil
+end
+
+local function browser_action_summary(action, result, artifact_root, index)
+  local fallback_pointer = artifact_root .. "/metadata.json#native_summary.actions." .. tostring(index)
+  result = type(result) == "table" and result or {}
+  return {
+    intent = safe_browser_text(action.intent, "explore", 512),
+    action = safe_label(action.action, "observe"),
+    target = safe_browser_text(action.target, "unknown", 512),
+    url = safe_target(result.url or action.url or "unknown") or "unknown",
+    priority = safe_label(action.priority, "P0"),
+    result = safe_label(result.result or result.status or "passed", "passed"),
+    classification = safe_label(result.classification or "passed", "passed"),
+    observation = safe_browser_text(result.observation, "completed", 512),
+    evidence_pointer = safe_pointer(result.evidence_pointer, fallback_pointer),
+  }
+end
+
+local function browser_exploration_summary(payload, status, classification, actions)
+  local plan = payload.browser_exploration or {}
+  return {
+    schema = "testing-runner.browser-exploration-summary.v1",
+    module = payload.module,
+    driver = payload.e2e_driver,
+    status = status,
+    mode = "bounded-cdp-exploration",
+    classification = classification,
+    step_budget = tonumber(plan.step_budget) or 0,
+    planned_actions = type(plan.actions) == "table" and #plan.actions or 0,
+    executed_actions = #actions,
+    actions = actions,
+    readiness = readiness_summary(payload.preflight_result),
+  }
+end
+
+local function blocked_browser_exploration(payload, context, classification, reason, actions)
+  local result = context.result_payload("blocked", {
+    adapter = adapter("browser-exploration"),
+    stderr = reason,
+  })
+  result.native_summary = browser_exploration_summary(payload, "blocked", classification, actions or {})
+  return result
+end
+
+local function validate_exploration_policy(payload)
+  local plan = payload.browser_exploration
+  if type(plan) ~= "table" then
+    return nil, "boundary", "fkst-native browser_exploration is required"
+  end
+  if type(payload.e2e_driver) ~= "string"
+    or (payload.e2e_driver:find("browser_harness", 1, true) == nil
+      and payload.e2e_driver:find("browser-harness", 1, true) == nil
+      and payload.e2e_driver:lower():find("cdp", 1, true) == nil)
+  then
+    return nil, "harness", "fkst-native browser exploration requires browser-harness/CDP driver"
+  end
+  if plan.module_boundary ~= payload.module then
+    return nil, "boundary", "fkst-native browser exploration module boundary mismatch"
+  end
+  if type(plan.allowed_origins) ~= "table" or #plan.allowed_origins == 0 then
+    return nil, "boundary", "fkst-native browser exploration allowed_origins are required"
+  end
+  local origins = {}
+  for _, value in ipairs(plan.allowed_origins) do
+    local origin = local_origin(value)
+    if origin == nil then
+      return nil, "boundary", "fkst-native browser exploration allowed origin is not local"
+    end
+    table.insert(origins, origin)
+  end
+  if type(plan.step_budget) ~= "number" or plan.step_budget < 1 or plan.step_budget > 16 then
+    return nil, "boundary", "fkst-native browser exploration step_budget is required"
+  end
+  if type(plan.stop_conditions) ~= "table" or #plan.stop_conditions == 0 then
+    return nil, "boundary", "fkst-native browser exploration stop_conditions are required"
+  end
+  if type(plan.actions) ~= "table" then
+    return nil, "boundary", "fkst-native browser exploration actions are required"
+  end
+  if ready_browser_session(payload.preflight_result, plan.session_role) == nil then
+    return nil, "missing-session", "fkst-native browser exploration requires an existing ready browser session"
+  end
+  return origins
+end
+
+local function run_browser_exploration(payload, context)
+  local artifact_root = context.result_payload("planned", {}).artifact_root
+  local origins, classification, reason = validate_exploration_policy(payload)
+  if origins == nil then
+    return blocked_browser_exploration(payload, context, classification, reason)
+  end
+
+  local execute = exploration_executor(payload)
+  if execute == nil then
+    return blocked_browser_exploration(payload, context, "harness", "fkst-native browser exploration harness action path is unavailable")
+  end
+
+  local plan = payload.browser_exploration
+  local actions, status, overall_classification = {}, "passed", "passed"
+  local budget = math.min(plan.step_budget, #plan.actions)
+  for index = 1, budget do
+    local action = plan.actions[index]
+    if not priority_allowed(action.priority) then
+      table.insert(actions, browser_action_summary(action, {
+        result = "blocked",
+        classification = "boundary",
+        observation = "priority is outside safe P0/P1 exploration",
+      }, artifact_root, index))
+      status, overall_classification = "blocked", "boundary"
+      break
+    end
+    if contains_interactive_auth(action.intent) or contains_interactive_auth(action.action) then
+      table.insert(actions, browser_action_summary(action, {
+        result = "blocked",
+        classification = "boundary",
+        observation = "interactive account challenge action is outside scope",
+      }, artifact_root, index))
+      status, overall_classification = "blocked", "boundary"
+      break
+    end
+    if not url_in_origins(action.url, origins) then
+      table.insert(actions, browser_action_summary(action, {
+        result = "blocked",
+        classification = "boundary",
+        observation = "action URL is outside allowed origins",
+      }, artifact_root, index))
+      status, overall_classification = "blocked", "boundary"
+      break
+    end
+
+    local ok, out = pcall(execute, action, {
+      module = payload.module,
+      driver = payload.e2e_driver,
+      allowed_origins = origins,
+      artifact_root = artifact_root,
+      session_role = plan.session_role,
+    })
+    if not ok then
+      out = {
+        result = "blocked",
+        classification = "harness",
+        observation = tostring(out),
+      }
+    end
+    if type(out) ~= "table" then
+      out = {
+        result = "blocked",
+        classification = "harness",
+        observation = "harness returned an unreliable action result",
+      }
+    end
+    if not url_in_origins(out.url or action.url, origins) then
+      out.result = "blocked"
+      out.classification = "boundary"
+      out.observation = "observed URL is outside allowed origins"
+    end
+    if type(out.evidence_pointer) ~= "string" or out.evidence_pointer == "" then
+      out.result = "blocked"
+      out.classification = "harness"
+      out.observation = "harness did not return an evidence pointer"
+    end
+
+    local recorded = browser_action_summary(action, out, artifact_root, index)
+    table.insert(actions, recorded)
+
+    if recorded.result == "failed" and recorded.classification == "product" then
+      status, overall_classification = "failed", "product"
+      break
+    end
+    if recorded.result == "blocked" or recorded.classification == "harness" or recorded.classification == "boundary" then
+      status, overall_classification = "blocked", recorded.classification
+      break
+    end
+    if stop_condition_hit(out.stop_condition, plan.stop_conditions) then
+      overall_classification = "stopped"
+      break
+    end
+  end
+
+  if status == "passed" and #plan.actions > plan.step_budget then
+    status, overall_classification = "blocked", "budget"
+  end
+
+  local result = context.result_payload(status, {
+    adapter = adapter("browser-exploration"),
+    exit_code = status == "passed" and 0 or 1,
+    stderr = status == "passed" and "" or "fkst-native browser exploration did not complete all safe actions",
+  })
+  result.native_summary = browser_exploration_summary(payload, status, overall_classification, actions)
+  return result
+end
+
 local function json_escape(value)
   local text = tostring(value or "")
   text = text:gsub("\\", "\\\\")
@@ -269,6 +542,9 @@ function M.run(job, payload, context, _exec)
     return with_metadata(context.result_payload("planned", { adapter = adapter("no-browser-plan") }), payload, context)
   end
   if job == "module" and payload.e2e_driver ~= nil then
+    if payload.browser_exploration ~= nil then
+      return with_metadata(run_browser_exploration(payload, context), payload, context)
+    end
     if payload.native_argv == nil then
       local result = context.result_payload("planned", { adapter = adapter("browser-driver-plan") })
       result.native_summary = {

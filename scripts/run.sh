@@ -58,12 +58,14 @@ ensure_fkst_packages_checkout() {
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|example|supervise> [args]
+usage: scripts/run.sh <check|test|test-affected|example|supervise> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  test-affected       derive changed paths from git and run test <pkg> for package-only changes,
+                      or full test for broad repo/library/contract/script changes
   example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
@@ -293,6 +295,55 @@ cmd_test() {
   echo "OK: $ran package(s)"
 }
 
+cmd_test_affected() {
+  local base changed path pkg pkg_name only_packages=1 any=0
+  base="$(git merge-base HEAD origin/dev 2>/dev/null || git rev-parse HEAD)"
+  changed="$(git diff --name-only "$base"...HEAD; git diff --name-only)"
+  changed="$(printf '%s\n' "$changed" | sed '/^[[:space:]]*$/d' | sort -u)"
+  if [ -z "$changed" ]; then
+    echo "test-affected: no changed paths; running full test"
+    cmd_test
+    return $?
+  fi
+
+  while IFS= read -r path; do
+    case "$path" in
+      packages/*/*)
+        pkg="${path#packages/}"
+        pkg="${pkg%%/*}"
+        ;;
+      *)
+        only_packages=0
+        ;;
+    esac
+  done <<< "$changed"
+
+  if [ "$only_packages" -ne 1 ]; then
+    echo "test-affected: broad changes detected; running full test"
+    cmd_test
+    return $?
+  fi
+
+  local packages
+  packages="$(printf '%s\n' "$changed" | awk -F/ '$1=="packages" && NF>=3 { print $2 }' | sort -u)"
+  if [ -z "$packages" ]; then
+    echo "test-affected: no package paths detected; running full test"
+    cmd_test
+    return $?
+  fi
+
+  while IFS= read -r pkg_name; do
+    [ -n "$pkg_name" ] || continue
+    any=1
+    echo "test-affected: running package $pkg_name"
+    cmd_test "$pkg_name"
+  done <<< "$packages"
+  if [ "$any" -eq 0 ]; then
+    echo "test-affected: no package paths detected; running full test"
+    cmd_test
+  fi
+}
+
 cmd_example() {
   local name="${1:-generic-host}" example roots work args t
   example="$ROOT/examples/$name"
@@ -337,7 +388,7 @@ cmd_supervise() {
 }
 
 case "${1:-}" in
-  check|test|example|supervise) ;;
+  check|test|test-affected|example|supervise) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -353,6 +404,7 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  test-affected) cmd_test_affected ;;
   example) cmd_example "$@" ;;
   supervise) cmd_supervise "$@" ;;
 esac

@@ -44,6 +44,37 @@ return {
     t.eq(request.preflight_result, preflight)
   end,
 
+  test_browser_exploration_context_flows_to_runner_request = function()
+    local exploration = {
+      schema = "testing-runner.browser-exploration.v1",
+      module_boundary = "module-a",
+      allowed_origins = { "http://localhost:8080" },
+      step_budget = 1,
+      stop_conditions = { "goal-met" },
+      session_role = "admin",
+      actions = {
+        {
+          priority = "P0",
+          intent = "open module dashboard",
+          action = "navigate",
+          target = "/module-a",
+          url = "http://localhost:8080/module-a",
+        },
+      },
+    }
+    local request = core.runner_request({
+      schema = "module-test-loop.start.v1",
+      module = "module-a",
+      backend = "fkst-native",
+      dry_run = false,
+      e2e_driver = "multi_session_browser_harness",
+      browser_exploration = exploration,
+      preflight_result = { schema = "browser-readiness.result.v1", status = "ready" },
+    })
+    t.eq(request.browser_exploration, exploration)
+    t.eq(request.browser_exploration.actions[1].priority, "P0")
+  end,
+
   test_readiness_context_flows_to_runner_request = function()
     local readiness = {
       schema = "browser-readiness.result.v1",

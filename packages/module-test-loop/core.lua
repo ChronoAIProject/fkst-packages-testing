@@ -40,6 +40,7 @@ function M.runner_request(payload)
     dry_run_github = payload.dry_run_github,
     backend = payload.backend,
     native_argv = fallback(payload, "native_argv"),
+    browser_exploration = payload.browser_exploration,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,

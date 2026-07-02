@@ -133,6 +133,83 @@ return {
     t.eq(summary.dedup_key, "dedup-module-a-browser")
   end,
 
+  test_browser_exploration_summary_is_bounded_golden = function()
+    local summary = core.from_testing_result({
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "passed",
+      artifact_root = ".testing/runs/module-a-browser-exploration",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-browser-exploration",
+      dedup_key = "dedup-module-a-browser-exploration",
+      adapter = { name = "fkst-native", mode = "browser-exploration" },
+      native_summary = {
+        schema = "testing-runner.browser-exploration-summary.v1",
+        module = "module-a",
+        driver = "multi_session_browser_harness",
+        status = "passed",
+        mode = "bounded-cdp-exploration",
+        classification = "stopped",
+        step_budget = 2,
+        planned_actions = 2,
+        executed_actions = 2,
+        readiness = {
+          status = "ready",
+          sessions = {
+            { role = "base_url", status = "ready" },
+            { role = "admin", status = "ready" },
+          },
+        },
+        actions = {
+          {
+            intent = "open module dashboard",
+            action = "navigate",
+            target = "/module-a",
+            url = "http://localhost:8080/module-a",
+            priority = "P0",
+            result = "passed",
+            classification = "passed",
+            observation = "navigate completed",
+            evidence_pointer = ".testing/runs/module-a-browser-exploration/evidence/action-1.json",
+          },
+        },
+      },
+    })
+    assert_payload(summary.native_summary, {
+      schema = "testing-runner.browser-exploration-summary.v1",
+      module = "module-a",
+      driver = "multi_session_browser_harness",
+      status = "passed",
+      mode = "bounded-cdp-exploration",
+      classification = "stopped",
+      step_budget = 2,
+      planned_actions = 2,
+      executed_actions = 2,
+      readiness = {
+        status = "ready",
+        sessions = {
+          { role = "base_url", status = "ready" },
+          { role = "admin", status = "ready" },
+        },
+      },
+      actions = {
+        {
+          intent = "open module dashboard",
+          action = "navigate",
+          target = "/module-a",
+          url = "http://localhost:8080/module-a",
+          priority = "P0",
+          result = "passed",
+          classification = "passed",
+          observation = "navigate completed",
+          evidence_pointer = ".testing/runs/module-a-browser-exploration/evidence/action-1.json",
+        },
+      },
+    })
+    t.eq(summary.status, "passed")
+    t.eq(summary.adapter.mode, "browser-exploration")
+  end,
+
   test_missing_trace_and_dedup_are_derived_deterministically = function()
     local result = {
       schema = "testing-runner.result.v1",
@@ -212,6 +289,42 @@ return {
             status = "ready",
             sessions = {
               { role = "admin", status = "ready", checks = { { name = "local_http", status = "ready" } } },
+            },
+          },
+        },
+      })
+    end)
+  end,
+
+  test_browser_exploration_nested_evidence_is_rejected = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "passed",
+        artifact_root = ".testing/runs/module-a",
+        native_summary = {
+          schema = "testing-runner.browser-exploration-summary.v1",
+          module = "module-a",
+          driver = "multi_session_browser_harness",
+          status = "passed",
+          mode = "bounded-cdp-exploration",
+          classification = "passed",
+          step_budget = 1,
+          planned_actions = 1,
+          executed_actions = 1,
+          actions = {
+            {
+              intent = "open module dashboard",
+              action = "navigate",
+              target = "/module-a",
+              url = "http://localhost:8080/module-a",
+              priority = "P0",
+              result = "passed",
+              classification = "passed",
+              observation = "navigate completed",
+              evidence_pointer = ".testing/runs/module-a/evidence/action-1.json",
+              evidence_body = { unsafe = true },
             },
           },
         },

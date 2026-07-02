@@ -118,6 +118,14 @@ local function validate_native_argv(job, value)
   end
 end
 
+local function validate_browser_exploration(job, value)
+  if value == nil then return end
+  if job ~= "module" then
+    error("testing-runner: malformed-request: browser_exploration is only supported for module jobs")
+  end
+  testing_contract.validate_browser_exploration_shape(value)
+end
+
 function M.validate_request(job, payload)
   local spec = spec_for(job)
   if type(payload) ~= "table" then
@@ -129,6 +137,7 @@ function M.validate_request(job, payload)
   M.resolve_backend(payload)
   validate_preflight(payload.preflight_result)
   validate_native_argv(job, payload.native_argv)
+  validate_browser_exploration(job, payload.browser_exploration)
   if job == "module" and not bounded_string(payload.module, max_string) then
     error("testing-runner: malformed-request: module is required")
   end
