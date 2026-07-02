@@ -58,12 +58,14 @@ ensure_fkst_packages_checkout() {
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|example|supervise> [args]
+usage: scripts/run.sh <check|test|test-affected|example|supervise> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  test-affected       derive changed paths and run package tests for package-only changes, or the
+                      full test gate for broad repo changes
   example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
@@ -293,6 +295,48 @@ cmd_test() {
   echo "OK: $ran package(s)"
 }
 
+cmd_test_affected() {
+  local changed path pkg packages="" pkg_count=0 broad=0 fail=0
+  changed="$( { git -C "$ROOT" diff --name-only HEAD; git -C "$ROOT" ls-files --others --exclude-standard; } | LC_ALL=C sort -u)"
+  if [ -z "$changed" ]; then
+    echo "test-affected: no changed paths; running check"
+    cmd_check
+    return $?
+  fi
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      packages/*/*)
+        pkg="${path#packages/}"
+        pkg="${pkg%%/*}"
+        if [ ! -d "$ROOT/packages/$pkg" ]; then broad=1; break; fi
+        case " $packages " in
+          *" $pkg "*) ;;
+          *) packages="${packages:+$packages }$pkg"; pkg_count=$((pkg_count + 1)) ;;
+        esac
+        ;;
+      *)
+        broad=1
+        break
+        ;;
+    esac
+  done <<EOF
+$changed
+EOF
+
+  if [ "$broad" -eq 0 ] && [ "$pkg_count" -gt 0 ]; then
+    for pkg in $packages; do
+      echo "test-affected: package-only change detected: $pkg"
+      cmd_test "$pkg" || fail=1
+    done
+    return "$fail"
+  fi
+
+  echo "test-affected: broad change detected; running full test"
+  cmd_test
+}
+
 cmd_example() {
   local name="${1:-generic-host}" example roots work args t
   example="$ROOT/examples/$name"
@@ -337,7 +381,7 @@ cmd_supervise() {
 }
 
 case "${1:-}" in
-  check|test|example|supervise) ;;
+  check|test|test-affected|example|supervise) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -353,6 +397,7 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  test-affected) cmd_test_affected "$@" ;;
   example) cmd_example "$@" ;;
   supervise) cmd_supervise "$@" ;;
 esac

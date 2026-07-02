@@ -15,6 +15,10 @@ end
 
 local function act(event)
   local request = core.publication_request(event.payload or {})
+  local ok, err = core.write_publication_handoff(request, event.payload and event.payload.artifact_writer)
+  if not ok then
+    error("test-publication: handoff-write-failed: " .. tostring(err))
+  end
   log.info("test-publication dept=prepare_publication tag=REQUEST status=" .. tostring(request.status))
   raise("publication_request", request)
 end

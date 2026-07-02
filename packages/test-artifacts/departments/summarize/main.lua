@@ -15,6 +15,10 @@ end
 
 local function act(event)
   local summary = core.from_testing_result(event.payload or {})
+  local ok, err = core.write_dry_run_artifacts(summary, event.payload and event.payload.artifact_writer)
+  if not ok then
+    error("test-artifacts: artifact-write-failed: " .. tostring(err))
+  end
   log.info("test-artifacts dept=summarize tag=SUMMARY status=" .. tostring(summary.status))
   raise("artifact_summary", summary)
 end

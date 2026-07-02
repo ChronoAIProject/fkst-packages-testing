@@ -35,6 +35,9 @@ return {
     t.eq(request.status, "failed")
     t.eq(request.artifact_root, ".testing/runs/platform")
     t.eq(request.metadata_path, ".testing/runs/platform/metadata.json")
+    t.eq(request.report_path, ".testing/runs/platform/dry-run-report.md")
+    t.eq(request.issue_draft_path, ".testing/runs/platform/issue-draft.md")
+    t.eq(request.publication_handoff_path, ".testing/runs/platform/publication-handoff.md")
     t.eq(request.source_ref.ref, "run/platform")
     t.eq(request.trace_id, "trace-platform")
     t.eq(request.dedup_key, "dedup-platform")
@@ -71,6 +74,9 @@ return {
       job = "module-test-loop",
       artifact_root = ".testing/runs/module-a-failed",
       metadata_path = ".testing/runs/module-a-failed/metadata.json",
+      report_path = ".testing/runs/module-a-failed/dry-run-report.md",
+      issue_draft_path = ".testing/runs/module-a-failed/issue-draft.md",
+      publication_handoff_path = ".testing/runs/module-a-failed/publication-handoff.md",
       source_ref = { kind = "host", ref = "module-a" },
     })
   end,
@@ -98,8 +104,55 @@ return {
       job = "online-regression",
       artifact_root = ".testing/runs/preflight-blocked",
       metadata_path = ".testing/runs/preflight-blocked/metadata.json",
+      report_path = ".testing/runs/preflight-blocked/dry-run-report.md",
+      issue_draft_path = ".testing/runs/preflight-blocked/issue-draft.md",
+      publication_handoff_path = ".testing/runs/preflight-blocked/publication-handoff.md",
       source_ref = { kind = "host", ref = "preflight-blocked" },
     })
+  end,
+
+  test_publication_handoff_is_pointer_only = function()
+    local request = core.publication_request({
+      schema = "test-artifacts.summary.v1",
+      job = "module-test-loop",
+      status = "failed",
+      artifact_root = ".testing/runs/module-a-failed",
+      metadata_path = ".testing/runs/module-a-failed/metadata.json",
+      report_path = ".testing/runs/module-a-failed/dry-run-report.md",
+      issue_draft_path = ".testing/runs/module-a-failed/issue-draft.md",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a",
+      dedup_key = "dedup-module-a-failed",
+    })
+    local body = core.publication_handoff(request)
+    t.is_true(body:find("# Publication Handoff", 1, true) ~= nil)
+    t.is_true(body:find("Dry-run only", 1, true) ~= nil)
+    t.is_true(body:find(".testing/runs/module-a-failed/dry-run-report.md", 1, true) ~= nil)
+    t.is_true(body:find(".testing/runs/module-a-failed/issue-draft.md", 1, true) ~= nil)
+    t.is_true(body:find(".testing/runs/module-a-failed/metadata.json", 1, true) ~= nil)
+    t.eq(body:find("check failed", 1, true), nil)
+  end,
+
+  test_write_publication_handoff_uses_local_writer_only = function()
+    local request = core.publication_request({
+      schema = "test-artifacts.summary.v1",
+      job = "module-test-loop",
+      status = "blocked",
+      artifact_root = ".testing/runs/module-a-blocked",
+      metadata_path = ".testing/runs/module-a-blocked/metadata.json",
+      source_ref = { kind = "host", ref = "module-a" },
+    })
+    local writes = {}
+    local ok = core.write_publication_handoff(request, function(path, body)
+      table.insert(writes, { path = path, body = body })
+      return true
+    end)
+    t.eq(ok, true)
+    t.eq(#writes, 1)
+    t.eq(writes[1].path, ".testing/runs/module-a-blocked/publication-handoff.md")
+    t.is_true(writes[1].body:find("External publication remains disabled", 1, true) ~= nil)
+    t.eq(request.github_issue_url, nil)
+    t.eq(request.comment_url, nil)
   end,
 
   test_publication_derives_ids_deterministically_when_missing = function()
@@ -147,6 +200,14 @@ return {
         status = "passed",
         artifact_root = ".testing/runs/x",
         metadata_path = ".testing/runs/y/metadata.json",
+      })
+    end)
+    t.raises(function()
+      core.publication_request({
+        schema = "test-artifacts.summary.v1",
+        status = "passed",
+        artifact_root = ".testing/runs/x",
+        publication_handoff_path = ".testing/runs/y/publication-handoff.md",
       })
     end)
   end,

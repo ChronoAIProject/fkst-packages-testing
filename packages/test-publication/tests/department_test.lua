@@ -4,6 +4,7 @@ local t = fkst.test
 
 return {
   test_prepare_publication_department_raises_publication_request_golden = function()
+    local writes = {}
     local trace = testing.run_fake(dept, {
       queue = "artifact_summary",
       payload = {
@@ -17,8 +18,16 @@ return {
         dedup_key = "dedup-module-a-blocked",
         adapter = { name = "fkst-native", mode = "legacy-cli-blocked" },
         stderr_excerpt = "blocked before execution",
+        artifact_writer = function(path, body)
+          table.insert(writes, { path = path, body = body })
+          return true
+        end,
       },
     })
+    t.eq(#writes, 1)
+    t.eq(writes[1].path, ".testing/runs/module-a-blocked/publication-handoff.md")
+    t.is_true(writes[1].body:find("Publication Handoff", 1, true) ~= nil)
+    t.is_true(writes[1].body:find(".testing/runs/module-a-blocked/dry-run-report.md", 1, true) ~= nil)
     t.eq(#trace.raises, 1)
     t.eq(trace.raises[1].queue, "publication_request")
     local request = trace.raises[1].payload
@@ -32,7 +41,12 @@ return {
     t.eq(request.status, "blocked")
     t.eq(request.artifact_root, ".testing/runs/module-a-blocked")
     t.eq(request.metadata_path, ".testing/runs/module-a-blocked/metadata.json")
+    t.eq(request.report_path, ".testing/runs/module-a-blocked/dry-run-report.md")
+    t.eq(request.issue_draft_path, ".testing/runs/module-a-blocked/issue-draft.md")
+    t.eq(request.publication_handoff_path, ".testing/runs/module-a-blocked/publication-handoff.md")
     t.eq(request.adapter, nil)
     t.eq(request.stderr_excerpt, nil)
+    t.eq(request.github_issue_url, nil)
+    t.eq(request.comment_url, nil)
   end,
 }

@@ -54,6 +54,13 @@ local function prepare_artifact_dir()
   end
 end
 
+local function file_exists(path)
+  local file = io.open(path, "r")
+  if file == nil then return false end
+  file:close()
+  return true
+end
+
 return {
   test_run_graph_artifact_summary_flows_to_publication_request = function()
     local trace = graph.require_quiescent(graph.run(result_event("failed"), { max_steps = 8 }))
@@ -76,6 +83,8 @@ return {
     t.eq(summary.payload.status, "failed")
     t.eq(summary.payload.artifact_root, ".testing/runs/module-a")
     t.eq(summary.payload.metadata_path, ".testing/runs/module-a/metadata.json")
+    t.eq(summary.payload.report_path, ".testing/runs/module-a/dry-run-report.md")
+    t.eq(summary.payload.issue_draft_path, ".testing/runs/module-a/issue-draft.md")
     t.eq(summary.payload.source_ref.ref, "module-a")
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
@@ -87,6 +96,9 @@ return {
     t.eq(publication.payload.dedup_key, "module-a-run")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
     t.eq(publication.payload.metadata_path, ".testing/runs/module-a/metadata.json")
+    t.eq(publication.payload.report_path, ".testing/runs/module-a/dry-run-report.md")
+    t.eq(publication.payload.issue_draft_path, ".testing/runs/module-a/issue-draft.md")
+    t.eq(publication.payload.publication_handoff_path, ".testing/runs/module-a/publication-handoff.md")
   end,
 
   test_run_graph_no_browser_module_reaches_publication_request = function()
@@ -133,5 +145,13 @@ return {
     t.eq(publication.payload.subject, "Testing passed: module-test-loop")
     t.eq(publication.payload.dedup_key, "module-a-run")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
+    t.eq(publication.payload.report_path, ".testing/runs/module-a/dry-run-report.md")
+    t.eq(publication.payload.issue_draft_path, ".testing/runs/module-a/issue-draft.md")
+    t.eq(publication.payload.publication_handoff_path, ".testing/runs/module-a/publication-handoff.md")
+    t.eq(file_exists(".testing/runs/module-a/dry-run-report.md"), true)
+    t.eq(file_exists(".testing/runs/module-a/issue-draft.md"), true)
+    t.eq(file_exists(".testing/runs/module-a/publication-handoff.md"), true)
+    t.eq(publication.payload.github_issue_url, nil)
+    t.eq(publication.payload.comment_url, nil)
   end,
 }

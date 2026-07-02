@@ -71,6 +71,20 @@ function T.copy_source_ref(value, fallback_kind, fallback_ref)
   }
 end
 
+function T.display_text(value, fallback, limit)
+  local text = tostring(value or fallback or "not_available")
+  text = text:gsub("[%z\1-\31]", " ")
+  text = strings.trim(text)
+  if text == "" then text = fallback or "not_available" end
+  limit = limit or 180
+  if #text > limit then text = text:sub(1, limit) end
+  return text
+end
+
+function T.is_artifact_child_path(path, artifact_root)
+  return strings.is_path_safe_key(path, 4096) and path:sub(1, #artifact_root + 1) == artifact_root .. "/"
+end
+
 function T.copy_scalar_map(value)
   if value == nil then return nil end
   if type(value) ~= "table" then return nil end
