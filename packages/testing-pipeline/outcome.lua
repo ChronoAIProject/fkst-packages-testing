@@ -64,11 +64,25 @@ local function adapter_mode(result)
   return tostring(adapter.mode or adapter.name or "")
 end
 
+function O.valid_evidence_ref(item)
+  return type(item) == "table"
+    and item.kind == "artifact"
+    and strings.is_path_safe_key(item.ref, 512)
+    and item.user_facing == true
+    and item.reproducible == true
+end
+
+local function valid_run_evidence_ref(item, artifact_root)
+  if not O.valid_evidence_ref(item) or not strings.is_artifact_root(artifact_root) then return false end
+  local prefix = artifact_root .. "/evidence/"
+  return item.ref:sub(1, #prefix) == prefix and #item.ref > #prefix
+end
+
 local function evidence_refs(result)
   local refs = {}
   if type(result.evidence_refs) ~= "table" then return refs end
   for _, item in ipairs(result.evidence_refs) do
-    if O.valid_evidence_ref(item) then
+    if valid_run_evidence_ref(item, result.artifact_root) then
       table.insert(refs, {
         kind = item.kind,
         ref = item.ref,
@@ -79,15 +93,6 @@ local function evidence_refs(result)
     end
   end
   return refs
-end
-
-function O.valid_evidence_ref(item)
-  return type(item) == "table"
-    and bounded(item.kind, 80)
-    and has_no_control(item.kind)
-    and strings.is_path_safe_key(item.ref, 512)
-    and item.user_facing == true
-    and item.reproducible == true
 end
 
 local function readiness_status(result)
@@ -236,12 +241,12 @@ function O.validate_outcome_classification(classification)
     error("testing-pipeline: malformed-classification: metadata_ref must point under artifact_root")
   end
   for _, item in ipairs(classification.evidence_refs) do
-    if not O.valid_evidence_ref(item) then
-      error("testing-pipeline: malformed-classification: evidence_refs must be bounded reproducible user-facing refs")
+    if not valid_run_evidence_ref(item, classification.artifact_root) then
+      error("testing-pipeline: malformed-classification: evidence_refs must be run-bound reproducible user-facing artifact refs")
     end
   end
   if classification.category == "product_defect" and #classification.evidence_refs == 0 then
-    error("testing-pipeline: malformed-classification: product_defect requires evidence_refs")
+    error("testing-pipeline: malformed-classification: product_defect requires run-bound evidence_refs")
   end
   return classification
 end

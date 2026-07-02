@@ -47,6 +47,43 @@ return {
     t.eq(classification.evidence_refs[1].ref, ".testing/runs/module-a/evidence/product.json")
   end,
 
+  test_stale_product_evidence_ref_is_not_product_defect = function()
+    local classification = core.classify_testing_result(failed_result({
+      adapter = { name = "fkst-native", mode = "module-no-browser" },
+      native_summary = {
+        schema = "testing-runner.module-no-browser-summary.v1",
+        module = "module-a",
+        status = "failed",
+        mode = "argv",
+      },
+      evidence_refs = {
+        { kind = "artifact", ref = ".testing/runs/other/evidence/product.json", user_facing = true, reproducible = true },
+      },
+    }))
+    t.eq(classification.category, "not_executed_risk")
+    t.eq(#classification.evidence_refs, 0)
+  end,
+
+  test_product_defect_validation_rejects_unbound_evidence_refs = function()
+    t.raises(function()
+      core.validate_outcome_classification({
+        schema = "testing-pipeline.outcome-classification.v1",
+        category = "product_defect",
+        status = "failed",
+        job = "module-test-loop",
+        module = "module-a",
+        reason = "failed run has reproducible user-facing evidence refs",
+        artifact_root = ".testing/runs/module-a",
+        source_ref = { kind = "host", ref = "module-a" },
+        trace_id = "trace-module-a",
+        dedup_key = "dedup-module-a",
+        evidence_refs = {
+          { kind = "artifact", ref = ".testing/runs/other/evidence/product.json", user_facing = true, reproducible = true },
+        },
+      })
+    end)
+  end,
+
   test_failed_browser_driver_without_evidence_is_harness_tooling = function()
     local classification = core.classify_testing_result(failed_result())
     t.eq(classification.category, "harness_tooling_issue")

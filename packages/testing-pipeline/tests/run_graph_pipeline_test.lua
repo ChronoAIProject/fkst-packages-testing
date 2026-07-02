@@ -207,4 +207,27 @@ return {
     t.eq(classification.payload.evidence_refs[1].reproducible, true)
     t.eq(graph.find_raise(trace, "testing-pipeline.gap_backlog"), nil)
   end,
+
+  test_run_graph_rejects_unbound_product_evidence_refs = function()
+    local trace = graph.require_quiescent(graph.run({
+      queue = "testing-runner.testing_result",
+      payload = browser_driver_result({
+        adapter = { name = "fkst-native", mode = "module-no-browser" },
+        native_summary = {
+          schema = "testing-runner.module-no-browser-summary.v1",
+          module = "module-a",
+          status = "failed",
+          mode = "argv",
+        },
+        evidence_refs = {
+          { kind = "artifact", ref = ".testing/runs/other/evidence/product.json", user_facing = true, reproducible = true },
+        },
+      }),
+      source_ref = { kind = "external", reference = "module-a" },
+    }, { max_steps = 10 }))
+
+    local classification = graph.require_raise(trace, "testing-pipeline.outcome_classification")
+    t.eq(classification.payload.category, "not_executed_risk")
+    t.eq(#classification.payload.evidence_refs, 0)
+  end,
 }
