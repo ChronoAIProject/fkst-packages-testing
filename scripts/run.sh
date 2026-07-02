@@ -58,12 +58,14 @@ ensure_fkst_packages_checkout() {
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|example|supervise> [args]
+usage: scripts/run.sh <check|test|test-affected|example|supervise> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  test-affected       derive changed paths and run test <pkg> for package-only changes, or full
+                      test for shared/broad repository changes
   example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
@@ -107,6 +109,13 @@ list_packages() {
     [ -d "$d" ] || continue
     printf '%s\n' "${d%/}"
   done
+}
+
+changed_paths() {
+  {
+    git diff --name-only HEAD --
+    git ls-files --others --exclude-standard
+  } | awk 'NF && !seen[$0]++'
 }
 
 package_dir() {
@@ -293,6 +302,49 @@ cmd_test() {
   echo "OK: $ran package(s)"
 }
 
+cmd_test_affected() {
+  local fail=0 broad=0 count=0 path pkg
+  local packages_file
+  packages_file="$(mktemp "${TMPDIR:-/tmp}/fkst-testing-affected.XXXXXX")"
+
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    count=$((count + 1))
+    case "$path" in
+      packages/*/*)
+        pkg="${path#packages/}"
+        pkg="${pkg%%/*}"
+        if [ -d "$ROOT/packages/$pkg" ]; then
+          printf '%s\n' "$pkg" >> "$packages_file"
+        else
+          broad=1
+        fi
+        ;;
+      *) broad=1 ;;
+    esac
+  done < <(changed_paths)
+
+  if [ "$count" -eq 0 ]; then
+    echo "test-affected: no changed paths"
+    rm -f "$packages_file"
+    return 0
+  fi
+  if [ "$broad" -ne 0 ]; then
+    echo "test-affected: broad changes detected; running full test"
+    rm -f "$packages_file"
+    cmd_test
+    return $?
+  fi
+
+  sort -u "$packages_file" | while IFS= read -r pkg; do
+    [ -n "$pkg" ] || continue
+    echo "test-affected: package $pkg"
+    cmd_test "$pkg" || exit 1
+  done || fail=1
+  rm -f "$packages_file"
+  return "$fail"
+}
+
 cmd_example() {
   local name="${1:-generic-host}" example roots work args t
   example="$ROOT/examples/$name"
@@ -337,7 +389,7 @@ cmd_supervise() {
 }
 
 case "${1:-}" in
-  check|test|example|supervise) ;;
+  check|test|test-affected|example|supervise) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -353,6 +405,7 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  test-affected) cmd_test_affected ;;
   example) cmd_example "$@" ;;
   supervise) cmd_supervise "$@" ;;
 esac

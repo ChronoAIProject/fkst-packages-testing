@@ -1,5 +1,6 @@
 local M = {}
 
+local planning_writer = require("planning_writer")
 local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
 
@@ -30,7 +31,7 @@ end
 function M.module_loop_request(payload)
   payload = M.validate_module_start(payload)
   local src = testing_contract.copy_source_ref(payload.source_ref, "testing-pipeline", payload.module)
-  return {
+  local request = {
     schema = "module-test-loop.start.v1",
     module = payload.module,
     config = payload.config,
@@ -54,6 +55,12 @@ function M.module_loop_request(payload)
       payload.artifact_root or "artifact",
     }),
   }
+  request.planning_artifacts = planning_writer.pointers(payload, request)
+  return request
+end
+
+function M.write_planning_artifacts(payload, request)
+  return planning_writer.write(payload, request)
 end
 
 function M.validate_testing_result(result)

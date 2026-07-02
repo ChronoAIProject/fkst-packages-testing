@@ -15,6 +15,7 @@ end
 
 local function act(event)
   local request = core.module_loop_request(event.payload or {})
+  core.write_planning_artifacts(event.payload or {}, request)
   log.info("testing-pipeline dept=start_module tag=DELEGATE module=" .. tostring(request.module))
   raise("module-test-loop.module_loop_request", request)
 end
