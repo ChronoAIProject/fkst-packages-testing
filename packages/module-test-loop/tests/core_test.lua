@@ -1,6 +1,21 @@
 local core = require("core")
 local t = fkst.test
 
+local function mutation_policy()
+  return {
+    schema = "testing-runner.mutation-policy.v1",
+    priority = "P2",
+    actions = {
+      {
+        action = "edit_test_data",
+        target = "local_test_data",
+        evidence_path = ".testing/runs/module-a",
+        rollback_path = ".testing/runs/module-a",
+      },
+    },
+  }
+end
+
 return {
   test_builds_testing_runner_request = function()
     local request = core.runner_request({
@@ -52,6 +67,8 @@ return {
         native_argv = { "lua", "checks/module-a.lua" },
         dry_run = false,
         no_browser = true,
+        priority = "P2",
+        mutation_policy = mutation_policy(),
       },
     }
     local runner_request = core.runner_request({
@@ -66,6 +83,8 @@ return {
     t.eq(runner_request.native_argv[2], "checks/module-a.lua")
     t.eq(runner_request.dry_run, false)
     t.eq(runner_request.no_browser, true)
+    t.eq(runner_request.priority, "P2")
+    t.eq(runner_request.mutation_policy.actions[1].rollback_path, ".testing/runs/module-a")
     t.eq(runner_request.preflight_result, readiness)
   end,
 
@@ -95,6 +114,25 @@ return {
   test_requires_module = function()
     t.raises(function()
       core.runner_request({ schema = "module-test-loop.start.v1" })
+    end)
+  end,
+
+  test_rejects_malformed_mutation_policy = function()
+    t.raises(function()
+      core.runner_request({
+        schema = "module-test-loop.start.v1",
+        module = "module-a",
+        mutation_policy = {
+          schema = "testing-runner.mutation-policy.v1",
+          actions = {
+            {
+              action = "create_test_data",
+              target = "local_test_data",
+              cleanup_path = "../outside",
+            },
+          },
+        },
+      })
     end)
   end,
 }

@@ -62,6 +62,19 @@ A host repository can keep its app-specific choices outside this package set and
     no_browser = true,
     dry_run = false,
     native_argv = host_module_check_argv,
+    priority = "P2",
+    mutation_policy = {
+      schema = "testing-runner.mutation-policy.v1",
+      priority = "P2",
+      actions = {
+        {
+          action = "create_test_data",
+          target = "local_test_data",
+          evidence_path = ".testing/runs/" .. host_run_key,
+          cleanup_path = ".testing/runs/" .. host_run_key,
+        },
+      },
+    },
   },
 }
 
@@ -87,6 +100,8 @@ For multi-module flows, a host may pass module result pointers to `platform-test
 ### No-browser native constraints
 
 The first executable native paths are intentionally narrow: module no-browser requests run with `backend = "fkst-native"`, `dry_run = false`, `no_browser = true`, and bounded `native_argv`; module browser requests run with `backend = "fkst-native"`, `dry_run = false`, `e2e_driver`, and bounded `native_argv`. Missing module `native_argv` returns `planned`; `native_argv` targeting `agentic_testing.cli` returns `blocked`; `agentic_testing_repo_root` is ignored by `fkst-native`. Online regression supports native no-browser HTTP heartbeat only when `heartbeat_url` is present. Other unsupported native live paths return `blocked` and must not fall back to the legacy CLI.
+
+P2 native module execution is deny-by-default. If a request declares `priority = "P2"`, it must include `testing-runner.mutation-policy.v1`; otherwise the runner returns `blocked` with a `NOT_EXECUTED_RISK` mutation summary before executing. The only allow-listed mutation actions are `create_test_data` and `edit_test_data` against `local_test_data`, and each action must include `evidence_path` plus at least one of `fixture_path`, `cleanup_path`, or `rollback_path`. Delete, permissions, billing, external notification, real-user-impacting, unknown, and non-local actions are recorded as blocked risk or fixture/data gaps, not product defects.
 
 ### Minimal downstream consumption
 

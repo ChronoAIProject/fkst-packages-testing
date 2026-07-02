@@ -20,7 +20,7 @@ Testing packages exchange artifact pointers, not report bodies.
 
 Artifact summaries must carry small control metadata and pointers only. They must not embed report bodies, raw stdout/stderr bodies, screenshots, traces, browser storage, credentials, cookies, or tokens.
 
-`native_summary` is diagnostic metadata, not a downstream consumption requirement. Accepted nested native summaries are bounded `testing-runner.module-no-browser-summary.v1`, `testing-runner.online-heartbeat-summary.v1`, and `testing-runner.browser-driver-summary.v1` payloads. Browser driver summaries may include only a readiness audit: `readiness.status` plus up to 16 session `{ role, status }` entries. Readiness `checks`, report bodies, browser state, credentials, cookies, tokens, screenshots, traces, and arbitrary nested trees must be rejected.
+`native_summary` is diagnostic metadata, not a downstream consumption requirement. Accepted nested native summaries are bounded `testing-runner.module-no-browser-summary.v1`, `testing-runner.online-heartbeat-summary.v1`, `testing-runner.browser-driver-summary.v1`, and `testing-runner.mutation-policy-summary.v1` payloads. Browser driver summaries may include only a readiness audit: `readiness.status` plus up to 16 session `{ role, status }` entries. Mutation policy summaries may include only policy decision/classification fields and pointer-only action evidence. Readiness `checks`, report bodies, browser state, credentials, cookies, tokens, screenshots, traces, and arbitrary nested trees must be rejected.
 
 ## Publication handoff
 

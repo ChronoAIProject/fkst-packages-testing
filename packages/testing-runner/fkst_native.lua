@@ -1,10 +1,40 @@
 local M = {}
 
+local testing_contract = require("contract.testing")
+
 local function adapter(mode)
   return {
     name = "fkst-native",
     mode = mode,
   }
+end
+
+local function mutation_policy_summary(payload)
+  if payload.mutation_policy == nil then
+    if payload.priority == "P2" then
+      return testing_contract.missing_mutation_policy_summary("P2")
+    end
+    return nil
+  end
+  return testing_contract.mutation_policy_summary(payload.mutation_policy)
+end
+
+local function attach_mutation_summary(result, summary)
+  if summary ~= nil then
+    result.native_summary = summary
+  end
+  return result
+end
+
+local function mutation_policy_block(payload, context)
+  local summary = mutation_policy_summary(payload)
+  if summary == nil or summary.decision ~= "blocked" then return nil, summary end
+  local result = context.result_payload("blocked", {
+    adapter = adapter("mutation-policy-blocked"),
+    stderr = "fkst-native mutation policy blocked: " .. tostring(summary.classification),
+  })
+  result.native_summary = summary
+  return result, summary
 end
 
 local function preflight_status(payload)
@@ -249,6 +279,10 @@ function M.run(job, payload, context, _exec)
         stderr = "fkst-native native_argv must not target agentic_testing.cli",
       }), payload, context)
     end
+    local blocked, mutation_summary = mutation_policy_block(payload, context)
+    if blocked ~= nil then
+      return with_metadata(blocked, payload, context)
+    end
     local out = native_exec(payload, context, _exec)
     local code = type(out) == "table" and tonumber(out.exit_code) or nil
     local status = code == 0 and "passed" or "failed"
@@ -263,6 +297,7 @@ function M.run(job, payload, context, _exec)
       status = result.status,
       mode = "argv",
     }
+    attach_mutation_summary(result, mutation_summary)
     return with_metadata(result, payload, context)
   end
   if payload.no_browser == true then
@@ -287,6 +322,10 @@ function M.run(job, payload, context, _exec)
         stderr = "fkst-native native_argv must not target agentic_testing.cli",
       }), payload, context)
     end
+    local blocked, mutation_summary = mutation_policy_block(payload, context)
+    if blocked ~= nil then
+      return with_metadata(blocked, payload, context)
+    end
     local out = native_exec(payload, context, _exec)
     local code = type(out) == "table" and tonumber(out.exit_code) or nil
     local status = code == 0 and "passed" or "failed"
@@ -303,6 +342,7 @@ function M.run(job, payload, context, _exec)
       mode = "argv",
       readiness = readiness_summary(payload.preflight_result),
     }
+    attach_mutation_summary(result, mutation_summary)
     return with_metadata(result, payload, context)
   end
   return with_metadata(context.result_payload("blocked", {

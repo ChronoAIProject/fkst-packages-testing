@@ -24,6 +24,9 @@ function M.validate_module_start(payload)
   if payload.artifact_root ~= nil and not strings.is_artifact_root(payload.artifact_root) then
     error("testing-pipeline: malformed-request: artifact_root must be a safe .testing/runs/... path")
   end
+  if payload.mutation_policy ~= nil and testing_contract.copy_mutation_policy(payload.mutation_policy) == nil then
+    error("testing-pipeline: malformed-request: mutation_policy must be a bounded testing-runner.mutation-policy.v1 payload")
+  end
   return payload
 end
 
@@ -40,6 +43,8 @@ function M.module_loop_request(payload)
     dry_run_github = payload.dry_run_github,
     backend = payload.backend,
     native_argv = payload.native_argv,
+    priority = payload.priority,
+    mutation_policy = payload.mutation_policy,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,

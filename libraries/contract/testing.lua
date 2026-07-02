@@ -11,6 +11,8 @@ T.schemas = {
   module_no_browser_summary = "testing-runner.module-no-browser-summary.v1",
   online_heartbeat_summary = "testing-runner.online-heartbeat-summary.v1",
   browser_driver_summary = "testing-runner.browser-driver-summary.v1",
+  mutation_policy = "testing-runner.mutation-policy.v1",
+  mutation_policy_summary = "testing-runner.mutation-policy-summary.v1",
 }
 
 T.runner_statuses = {
@@ -174,6 +176,151 @@ local function copy_browser_driver(value)
   return copy
 end
 
+local mutation_action_fields = {
+  action = true,
+  target = true,
+  evidence_path = true,
+  fixture_path = true,
+  cleanup_path = true,
+  rollback_path = true,
+}
+
+local function bounded_artifact_pointer(value)
+  return value == nil or strings.is_artifact_root(value)
+end
+
+local function copy_mutation_action(value)
+  if type(value) ~= "table" or not has_only(value, mutation_action_fields) then return nil end
+  if not bounded_field(value.action, 80) or not bounded_field(value.target, 80) then return nil end
+  local copy = {
+    action = value.action,
+    target = value.target,
+  }
+  for _, field in ipairs({ "evidence_path", "fixture_path", "cleanup_path", "rollback_path" }) do
+    if value[field] ~= nil then
+      if not bounded_artifact_pointer(value[field]) then return nil end
+      copy[field] = value[field]
+    end
+  end
+  return copy
+end
+
+local function copy_mutation_actions(value, allow_empty)
+  if not dense_list(value) or #value > 8 then return nil end
+  if #value == 0 and not allow_empty then return nil end
+  local actions = {}
+  for _, action in ipairs(value) do
+    local copied = copy_mutation_action(action)
+    if copied == nil then return nil end
+    table.insert(actions, copied)
+  end
+  return actions
+end
+
+function T.copy_mutation_policy(value)
+  if value == nil then return nil end
+  if type(value) ~= "table" then return nil end
+  if not has_only(value, { schema = true, priority = true, actions = true }) then return nil end
+  if value.schema ~= T.schemas.mutation_policy then return nil end
+  if value.priority ~= nil and not bounded_field(value.priority, 80) then return nil end
+  local actions = copy_mutation_actions(value.actions)
+  if actions == nil then return nil end
+  return {
+    schema = T.schemas.mutation_policy,
+    priority = value.priority or "P2",
+    actions = actions,
+  }
+end
+
+local function action_has_safety_pointer(action)
+  return action.evidence_path ~= nil
+    and (action.fixture_path ~= nil or action.cleanup_path ~= nil or action.rollback_path ~= nil)
+end
+
+local function mutation_block(summary, classification, reason)
+  summary.decision = "blocked"
+  summary.classification = classification
+  summary.reason = reason
+  return summary
+end
+
+function T.mutation_policy_summary(policy)
+  local copy = T.copy_mutation_policy(policy)
+  if copy == nil then return nil end
+  local summary = {
+    schema = T.schemas.mutation_policy_summary,
+    priority = copy.priority,
+    decision = "allowed",
+    classification = "SAFE_MUTATION_ALLOWED",
+    action_count = #copy.actions,
+    actions = copy.actions,
+  }
+  for _, action in ipairs(copy.actions) do
+    if action.action ~= "create_test_data" and action.action ~= "edit_test_data" then
+      return mutation_block(summary, "NOT_EXECUTED_RISK", "mutation action is not allow-listed")
+    end
+    if action.target ~= "local_test_data" then
+      return mutation_block(summary, "NOT_EXECUTED_RISK", "mutation target is not local test data")
+    end
+    if not action_has_safety_pointer(action) then
+      return mutation_block(summary, "FIXTURE_GAP", "safe mutation requires evidence plus fixture, cleanup, or rollback pointer")
+    end
+  end
+  return summary
+end
+
+function T.missing_mutation_policy_summary(priority)
+  return {
+    schema = T.schemas.mutation_policy_summary,
+    priority = priority or "P2",
+    decision = "blocked",
+    classification = "NOT_EXECUTED_RISK",
+    reason = "P2 native execution requires explicit mutation policy",
+    action_count = 0,
+    actions = {},
+  }
+end
+
+function T.copy_mutation_policy_summary(value)
+  if value == nil then return nil end
+  if type(value) ~= "table" then return nil end
+  local allowed = {
+    schema = true,
+    priority = true,
+    decision = true,
+    classification = true,
+    reason = true,
+    action_count = true,
+    actions = true,
+  }
+  if not has_only(value, allowed) then return nil end
+  if value.schema ~= T.schemas.mutation_policy_summary then return nil end
+  if not bounded_field(value.priority, 80) or not bounded_field(value.decision, 80) then return nil end
+  if not bounded_field(value.classification, 80) then return nil end
+  if value.decision ~= "allowed" and value.decision ~= "blocked" then return nil end
+  if value.classification ~= "SAFE_MUTATION_ALLOWED"
+    and value.classification ~= "NOT_EXECUTED_RISK"
+    and value.classification ~= "FIXTURE_GAP"
+  then
+    return nil
+  end
+  if value.reason ~= nil and not bounded_field(value.reason, max_string) then return nil end
+  if type(value.action_count) ~= "number" then return nil end
+  local actions = copy_mutation_actions(value.actions, true)
+  if actions == nil then return nil end
+  if value.action_count ~= #actions then return nil end
+  local copy = {
+    schema = T.schemas.mutation_policy_summary,
+    priority = value.priority,
+    decision = value.decision,
+    classification = value.classification,
+    action_count = value.action_count,
+    actions = actions,
+  }
+  if value.reason ~= nil then copy.reason = value.reason end
+  return copy
+end
+
 function T.copy_native_summary(value)
   if value == nil then return nil end
   if type(value) ~= "table" then return nil end
@@ -185,6 +332,9 @@ function T.copy_native_summary(value)
   end
   if value.schema == T.schemas.browser_driver_summary then
     return copy_browser_driver(value)
+  end
+  if value.schema == T.schemas.mutation_policy_summary then
+    return T.copy_mutation_policy_summary(value)
   end
   return nil
 end

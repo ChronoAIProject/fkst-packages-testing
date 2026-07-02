@@ -1,5 +1,7 @@
 local M = {}
 
+local testing_contract = require("contract.testing")
+
 local function non_empty(value, limit)
   return type(value) == "string" and value ~= "" and #value <= (limit or 512)
 end
@@ -50,6 +52,8 @@ local context_keys = {
   native_argv = true,
   dry_run = true,
   no_browser = true,
+  priority = true,
+  mutation_policy = true,
 }
 
 local function validate_native_argv(value)
@@ -80,6 +84,12 @@ local function validate_request_context(value)
   end
   if value.no_browser ~= nil and type(value.no_browser) ~= "boolean" then
     error("browser-readiness: malformed-request: request_context.no_browser must be boolean")
+  end
+  if value.priority ~= nil and not non_empty(value.priority, 80) then
+    error("browser-readiness: malformed-request: request_context.priority must be a bounded string")
+  end
+  if value.mutation_policy ~= nil and testing_contract.copy_mutation_policy(value.mutation_policy) == nil then
+    error("browser-readiness: malformed-request: request_context.mutation_policy must be a bounded testing-runner.mutation-policy.v1 payload")
   end
 end
 

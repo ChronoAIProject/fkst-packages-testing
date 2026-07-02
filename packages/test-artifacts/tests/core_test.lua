@@ -133,6 +133,51 @@ return {
     t.eq(summary.dedup_key, "dedup-module-a-browser")
   end,
 
+  test_mutation_policy_summary_is_bounded_golden = function()
+    local summary = core.from_testing_result({
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "blocked",
+      artifact_root = ".testing/runs/module-a-risk",
+      source_ref = { kind = "host", ref = "module-a-risk" },
+      trace_id = "trace-module-a-risk",
+      dedup_key = "dedup-module-a-risk",
+      adapter = { name = "fkst-native", mode = "mutation-policy-blocked" },
+      native_summary = {
+        schema = "testing-runner.mutation-policy-summary.v1",
+        priority = "P2",
+        decision = "blocked",
+        classification = "NOT_EXECUTED_RISK",
+        reason = "mutation action is not allow-listed",
+        action_count = 1,
+        actions = {
+          {
+            action = "delete",
+            target = "local_test_data",
+            evidence_path = ".testing/runs/module-a-risk",
+            rollback_path = ".testing/runs/module-a-risk",
+          },
+        },
+      },
+    })
+    assert_payload(summary.native_summary, {
+      schema = "testing-runner.mutation-policy-summary.v1",
+      priority = "P2",
+      decision = "blocked",
+      classification = "NOT_EXECUTED_RISK",
+      reason = "mutation action is not allow-listed",
+      action_count = 1,
+      actions = {
+        {
+          action = "delete",
+          target = "local_test_data",
+          evidence_path = ".testing/runs/module-a-risk",
+          rollback_path = ".testing/runs/module-a-risk",
+        },
+      },
+    })
+  end,
+
   test_missing_trace_and_dedup_are_derived_deterministically = function()
     local result = {
       schema = "testing-runner.result.v1",

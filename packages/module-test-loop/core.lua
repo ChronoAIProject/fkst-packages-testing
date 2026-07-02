@@ -1,6 +1,7 @@
 local M = {}
 
 local strings = require("contract.strings")
+local testing_contract = require("contract.testing")
 
 function M.validate_request(payload)
   if type(payload) ~= "table" then
@@ -11,6 +12,9 @@ function M.validate_request(payload)
   end
   if not strings.is_bounded_string(payload.module, 256) then
     error("module-test-loop: malformed-request: module is required")
+  end
+  if payload.mutation_policy ~= nil and testing_contract.copy_mutation_policy(payload.mutation_policy) == nil then
+    error("module-test-loop: malformed-request: mutation_policy must be a bounded testing-runner.mutation-policy.v1 payload")
   end
   return payload
 end
@@ -40,6 +44,8 @@ function M.runner_request(payload)
     dry_run_github = payload.dry_run_github,
     backend = payload.backend,
     native_argv = fallback(payload, "native_argv"),
+    priority = fallback(payload, "priority"),
+    mutation_policy = fallback(payload, "mutation_policy"),
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,

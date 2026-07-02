@@ -26,6 +26,21 @@ local function probe(env_values, commands, urls)
   }
 end
 
+local function mutation_policy()
+  return {
+    schema = "testing-runner.mutation-policy.v1",
+    priority = "P2",
+    actions = {
+      {
+        action = "create_test_data",
+        target = "local_test_data",
+        evidence_path = ".testing/runs/module-a",
+        cleanup_path = ".testing/runs/module-a",
+      },
+    },
+  }
+end
+
 return {
   test_validates_browser_harness_or_cdp_sessions = function()
     local payload = core.validate_request(request())
@@ -61,6 +76,8 @@ return {
       native_argv = { "lua", "checks/module-a.lua" },
       dry_run = false,
       no_browser = true,
+      priority = "P2",
+      mutation_policy = mutation_policy(),
     }
     local result = core.result(payload, {
       probe = probe(
@@ -73,11 +90,33 @@ return {
     t.eq(result.request_context.native_argv[1], "lua")
     t.eq(result.request_context.dry_run, false)
     t.eq(result.request_context.no_browser, true)
+    t.eq(result.request_context.priority, "P2")
+    t.eq(result.request_context.mutation_policy.actions[1].cleanup_path, ".testing/runs/module-a")
   end,
 
   test_rejects_unsupported_request_context_fields = function()
     local payload = request()
     payload.request_context = { extra = true }
+    t.raises(function()
+      core.result(payload)
+    end)
+  end,
+
+  test_rejects_malformed_mutation_policy_context = function()
+    local payload = request()
+    payload.request_context = {
+      mutation_policy = {
+        schema = "testing-runner.mutation-policy.v1",
+        actions = {
+          {
+            action = "create_test_data",
+            target = "local_test_data",
+            evidence_path = "../outside",
+            cleanup_path = ".testing/runs/module-a",
+          },
+        },
+      },
+    }
     t.raises(function()
       core.result(payload)
     end)

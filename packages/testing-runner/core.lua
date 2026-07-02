@@ -118,6 +118,19 @@ local function validate_native_argv(job, value)
   end
 end
 
+local function validate_mutation_policy(value)
+  if value ~= nil and testing_contract.copy_mutation_policy(value) == nil then
+    error("testing-runner: malformed-request: mutation_policy must be a bounded testing-runner.mutation-policy.v1 payload")
+  end
+end
+
+local function validate_priority(job, value)
+  if value == nil then return end
+  if job == "module" and not bounded_string(value, 80) then
+    error("testing-runner: malformed-request: module priority must be a bounded string")
+  end
+end
+
 function M.validate_request(job, payload)
   local spec = spec_for(job)
   if type(payload) ~= "table" then
@@ -129,6 +142,8 @@ function M.validate_request(job, payload)
   M.resolve_backend(payload)
   validate_preflight(payload.preflight_result)
   validate_native_argv(job, payload.native_argv)
+  validate_mutation_policy(payload.mutation_policy)
+  validate_priority(job, payload.priority)
   if job == "module" and not bounded_string(payload.module, max_string) then
     error("testing-runner: malformed-request: module is required")
   end
