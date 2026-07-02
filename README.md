@@ -60,7 +60,7 @@ A host repository can keep its app-specific choices outside this package set and
   sessions = host_browser_sessions,
   request_context = {
     no_browser = true,
-    dry_run = false,
+    dry_run = true,
     native_argv = host_module_check_argv,
   },
 }
@@ -71,6 +71,18 @@ A host repository can keep its app-specific choices outside this package set and
   module = host_module_name,
   backend = "fkst-native",
   preflight_result = readiness_result,
+  module_ui_loop = {
+    schema = "testing-runner.module-ui-loop.request.v1",
+    base_url = host_base_url,
+    allowed_origins = host_allowed_origins,
+    readiness_ref = readiness_result,
+    artifact_root = ".testing/runs/" .. host_run_key,
+    dry_run = true,
+    priority = { "P0", "P1" },
+    mutation_policy = "read_only",
+    artifact_pointers = { ".testing/runs/" .. host_run_key .. "/evidence-index.json" },
+    gap_pointers = { ".testing/runs/" .. host_run_key .. "/gaps.json" },
+  },
   artifact_root = ".testing/runs/" .. host_run_key,
   source_ref = { kind = "host-module", ref = host_module_name },
   trace_id = host_trace_id,
@@ -83,6 +95,12 @@ A host repository can keep its app-specific choices outside this package set and
 ```
 
 For multi-module flows, a host may pass module result pointers to `platform-test-loop.aggregate.v1`; the aggregate keeps per-module status/pointers and derives a platform status of `planned`, `passed`, `failed`, `blocked`, or `mixed`.
+
+### Native module UI loop contract
+
+The FKST-native module UI loop path is a contract-first adapter boundary on `testing-runner.module-test-loop.request.v1`. Hosts submit the `module_ui_loop` envelope with local base URL intent, allowed origins, browser/CDP readiness reference, artifact root, dry-run mode, priority selection, and mutation policy. The first slice validates and classifies the request, writes `.testing/runs/.../metadata.json`, and returns pointer-only results. It does not yet run discovery, browser exploration, evidence capture, safe mutation, or report generation.
+
+Unsafe runtime inputs are safe outcomes, not fallbacks: non-local `base_url` or non-local `allowed_origins` return `blocked` with classification `blocked_unsafe_input` before browser exploration; non-ready readiness returns `blocked_readiness`; dry-run mode returns `planned` with `degraded_dry_run`; a ready local non-dry-run request returns `planned` with `gap_backlog` and gap pointers for later slices.
 
 ### No-browser native constraints
 

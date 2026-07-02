@@ -69,6 +69,31 @@ return {
     t.eq(runner_request.preflight_result, readiness)
   end,
 
+  test_module_ui_loop_contract_flows_to_runner_request = function()
+    local module_ui_loop = {
+      schema = "testing-runner.module-ui-loop.request.v1",
+      base_url = "http://localhost:3000/",
+      allowed_origins = { "http://localhost:3000" },
+      readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+      artifact_root = ".testing/runs/module-a-ui",
+      dry_run = false,
+      priority = { "P0" },
+      mutation_policy = "read_only",
+      artifact_pointers = { ".testing/runs/module-a-ui/evidence-index.json" },
+      gap_pointers = { ".testing/runs/module-a-ui/gaps.json" },
+    }
+    local runner_request = core.runner_request({
+      schema = "module-test-loop.start.v1",
+      module = "module-a",
+      backend = "fkst-native",
+      module_ui_loop = module_ui_loop,
+    })
+    t.eq(runner_request.backend, "fkst-native")
+    t.eq(runner_request.module_ui_loop, module_ui_loop)
+    t.eq(runner_request.module_ui_loop.priority[1], "P0")
+    t.eq(runner_request.module_ui_loop.mutation_policy, "read_only")
+  end,
+
   test_explicit_execution_context_overrides_readiness_context = function()
     local request = core.runner_request({
       schema = "module-test-loop.start.v1",

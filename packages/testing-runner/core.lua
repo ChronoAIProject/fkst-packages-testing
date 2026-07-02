@@ -7,6 +7,7 @@ local testing_contract = require("contract.testing")
 local max_string = 512
 local max_path = 4096
 local max_excerpt = 600
+local max_list = 16
 
 local jobs = {
   module = {
@@ -103,6 +104,169 @@ local function http_url(value)
   return bounded_string(value, max_string) and value:match("^https?://") ~= nil
 end
 
+local function local_url(value)
+  if not http_url(value) then return false end
+  return value:match("^https?://localhost[:/%?]") ~= nil
+    or value:match("^https?://127%.0%.0%.1[:/%?]") ~= nil
+    or value:match("^https?://%[::1%][:/%?]") ~= nil
+end
+M.local_url = local_url
+
+local function url_origin(value)
+  if type(value) ~= "string" then return nil end
+  return value:match("^(https?://localhost:%d+)")
+    or value:match("^(https?://localhost)")
+    or value:match("^(https?://127%.0%.0%.1:%d+)")
+    or value:match("^(https?://127%.0%.0%.1)")
+    or value:match("^(https?://%[::1%]:%d+)")
+    or value:match("^(https?://%[::1%])")
+end
+
+local function local_origin(value)
+  return bounded_string(value, max_string) and value == url_origin(value)
+end
+M.local_origin = local_origin
+
+local function http_origin(value)
+  if not bounded_string(value, max_string) then return false end
+  if value:match("^https?://[%w%._%-]+$") ~= nil then return true end
+  if value:match("^https?://[%w%._%-]+:%d+$") ~= nil then return true end
+  if value:match("^https?://%[[0-9a-fA-F:]+%]$") ~= nil then return true end
+  return value:match("^https?://%[[0-9a-fA-F:]+%]:%d+$") ~= nil
+end
+
+local function http_origin_for_url(value)
+  if type(value) ~= "string" then return nil end
+  return value:match("^(https?://[%w%._%-]+:%d+)")
+    or value:match("^(https?://[%w%._%-]+)")
+    or value:match("^(https?://%[[0-9a-fA-F:]+%]:%d+)")
+    or value:match("^(https?://%[[0-9a-fA-F:]+%])")
+end
+
+local priorities = {
+  P0 = true,
+  P1 = true,
+  P2 = true,
+}
+
+local mutation_policies = {
+  read_only = true,
+  dry_run_only = true,
+  allow_safe = true,
+}
+
+local classifications = {
+  planned = true,
+  blocked_unsafe_input = true,
+  blocked_readiness = true,
+  blocked_legacy_cli = true,
+  degraded_dry_run = true,
+  gap_backlog = true,
+}
+M.module_ui_loop_classifications = classifications
+
+local function validate_priority_selection(value)
+  if not dense_list(value) or #value == 0 or #value > max_list then
+    error("testing-runner: malformed-request: module_ui_loop.priority must be a non-empty dense list")
+  end
+  for _, item in ipairs(value) do
+    if priorities[item] ~= true then
+      error("testing-runner: malformed-request: module_ui_loop.priority contains unsupported value")
+    end
+  end
+end
+
+local function validate_allowed_origins(value, base_url)
+  if not dense_list(value) or #value == 0 or #value > max_list then
+    error("testing-runner: malformed-request: module_ui_loop.allowed_origins must be a non-empty dense list")
+  end
+  local base_origin = http_origin_for_url(base_url)
+  local saw_base = false
+  for _, origin in ipairs(value) do
+    if not http_origin(origin) then
+      error("testing-runner: malformed-request: module_ui_loop.allowed_origins must contain bounded http origins")
+    end
+    if origin == base_origin then saw_base = true end
+  end
+  if not saw_base then
+    error("testing-runner: malformed-request: module_ui_loop.allowed_origins must include base_url origin")
+  end
+end
+
+local function validate_pointer_list(owner, key, value)
+  if value == nil then return end
+  if not dense_list(value) or #value > max_list then
+    error("testing-runner: malformed-request: " .. owner .. "." .. key .. " must be a dense bounded list")
+  end
+  for _, item in ipairs(value) do
+    if not safe_artifact_root(item) then
+      error("testing-runner: malformed-request: " .. owner .. "." .. key .. " must contain safe .testing/runs/... pointers")
+    end
+  end
+end
+
+local function validate_readiness_ref(value)
+  if type(value) ~= "table" then
+    error("testing-runner: malformed-request: module_ui_loop.readiness_ref is required")
+  end
+  if value.schema ~= nil and value.schema ~= "browser-readiness.result.v1" then
+    error("testing-runner: malformed-request: module_ui_loop.readiness_ref must reference browser-readiness.result.v1")
+  end
+  if not bounded_string(value.status, 80) then
+    error("testing-runner: malformed-request: module_ui_loop.readiness_ref.status is required")
+  end
+end
+
+local function validate_module_ui_loop(payload)
+  local value = payload.module_ui_loop
+  if value == nil then return end
+  if type(value) ~= "table" then
+    error("testing-runner: malformed-request: module_ui_loop must be a table")
+  end
+  for key, _ in pairs(value) do
+    if ({
+      schema = true,
+      base_url = true,
+      allowed_origins = true,
+      readiness_ref = true,
+      artifact_root = true,
+      dry_run = true,
+      priority = true,
+      mutation_policy = true,
+      artifact_pointers = true,
+      gap_pointers = true,
+    })[key] ~= true then
+      error("testing-runner: malformed-request: module_ui_loop has unsupported field")
+    end
+  end
+  if value.schema ~= "testing-runner.module-ui-loop.request.v1" then
+    error("testing-runner: unknown-schema: expected testing-runner.module-ui-loop.request.v1")
+  end
+  if not http_url(value.base_url) then
+    error("testing-runner: malformed-request: module_ui_loop.base_url must be an http URL")
+  end
+  validate_allowed_origins(value.allowed_origins, value.base_url)
+  validate_readiness_ref(value.readiness_ref)
+  validate_priority_selection(value.priority)
+  if mutation_policies[value.mutation_policy] ~= true then
+    error("testing-runner: malformed-request: module_ui_loop.mutation_policy is required")
+  end
+  if type(value.dry_run) ~= "boolean" then
+    error("testing-runner: malformed-request: module_ui_loop.dry_run must be boolean")
+  end
+  if payload.dry_run ~= nil and payload.dry_run ~= value.dry_run then
+    error("testing-runner: malformed-request: module_ui_loop.dry_run conflicts with dry_run")
+  end
+  if not safe_artifact_root(value.artifact_root) then
+    error("testing-runner: malformed-request: module_ui_loop.artifact_root must be a safe .testing/runs/... path")
+  end
+  if payload.artifact_root ~= nil and payload.artifact_root ~= value.artifact_root then
+    error("testing-runner: malformed-request: module_ui_loop.artifact_root conflicts with artifact_root")
+  end
+  validate_pointer_list("module_ui_loop", "artifact_pointers", value.artifact_pointers)
+  validate_pointer_list("module_ui_loop", "gap_pointers", value.gap_pointers)
+end
+
 local function validate_native_argv(job, value)
   if value == nil then return end
   if job ~= "module" then
@@ -129,6 +293,13 @@ function M.validate_request(job, payload)
   M.resolve_backend(payload)
   validate_preflight(payload.preflight_result)
   validate_native_argv(job, payload.native_argv)
+  if payload.module_ui_loop ~= nil and job ~= "module" then
+    error("testing-runner: malformed-request: module_ui_loop is only supported for module jobs")
+  end
+  if payload.module_ui_loop ~= nil and M.resolve_backend(payload) ~= "fkst-native" then
+    error("testing-runner: malformed-request: module_ui_loop requires backend fkst-native")
+  end
+  validate_module_ui_loop(payload)
   if job == "module" and not bounded_string(payload.module, max_string) then
     error("testing-runner: malformed-request: module is required")
   end
@@ -151,6 +322,9 @@ function M.validate_request(job, payload)
 end
 
 function M.artifact_root(job, payload)
+  if type(payload.module_ui_loop) == "table" and bounded_string(payload.module_ui_loop.artifact_root, max_path) then
+    return payload.module_ui_loop.artifact_root
+  end
   if bounded_string(payload.artifact_root, max_path) then
     return payload.artifact_root
   end

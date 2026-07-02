@@ -39,6 +39,7 @@ function M.module_loop_request(payload)
     dry_run = payload.dry_run,
     dry_run_github = payload.dry_run_github,
     backend = payload.backend,
+    module_ui_loop = payload.module_ui_loop,
     native_argv = payload.native_argv,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,

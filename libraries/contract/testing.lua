@@ -11,6 +11,7 @@ T.schemas = {
   module_no_browser_summary = "testing-runner.module-no-browser-summary.v1",
   online_heartbeat_summary = "testing-runner.online-heartbeat-summary.v1",
   browser_driver_summary = "testing-runner.browser-driver-summary.v1",
+  module_ui_loop_summary = "testing-runner.module-ui-loop-summary.v1",
 }
 
 T.runner_statuses = {
@@ -26,6 +27,15 @@ T.summary_statuses = {
   failed = true,
   blocked = true,
   mixed = true,
+}
+
+T.module_ui_loop_classifications = {
+  planned = true,
+  blocked_unsafe_input = true,
+  blocked_readiness = true,
+  blocked_legacy_cli = true,
+  degraded_dry_run = true,
+  gap_backlog = true,
 }
 
 local max_string = 512
@@ -133,6 +143,17 @@ local function copy_readiness(value)
   return copy
 end
 
+local function copy_pointer_list(value)
+  if value == nil then return nil, true end
+  if not dense_list(value) or #value > 16 then return nil end
+  local copy = {}
+  for _, item in ipairs(value) do
+    if not strings.is_artifact_root(item) then return nil end
+    table.insert(copy, item)
+  end
+  return copy, true
+end
+
 local function copy_module_no_browser(value)
   if not has_only(value, { schema = true, module = true, status = true, mode = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) or not bounded_field(value.mode, 80) then return nil end
@@ -174,6 +195,43 @@ local function copy_browser_driver(value)
   return copy
 end
 
+local function copy_module_ui_loop(value)
+  if not has_only(value, {
+    schema = true,
+    module = true,
+    status = true,
+    classification = true,
+    mode = true,
+    artifact_pointers = true,
+    gap_pointers = true,
+    readiness = true,
+  }) then return nil end
+  if not bounded_field(value.module, max_string) then return nil end
+  if not bounded_field(value.status, 80) or not bounded_field(value.classification, 80) or not bounded_field(value.mode, 80) then
+    return nil
+  end
+  if T.module_ui_loop_classifications[value.classification] ~= true then return nil end
+  local copy = {
+    schema = T.schemas.module_ui_loop_summary,
+    module = value.module,
+    status = value.status,
+    classification = value.classification,
+    mode = value.mode,
+  }
+  local artifact_pointers, artifacts_ok = copy_pointer_list(value.artifact_pointers)
+  if not artifacts_ok then return nil end
+  if artifact_pointers ~= nil then copy.artifact_pointers = artifact_pointers end
+  local gap_pointers, gaps_ok = copy_pointer_list(value.gap_pointers)
+  if not gaps_ok then return nil end
+  if gap_pointers ~= nil then copy.gap_pointers = gap_pointers end
+  if value.readiness ~= nil then
+    local readiness = copy_readiness(value.readiness)
+    if readiness == nil then return nil end
+    copy.readiness = readiness
+  end
+  return copy
+end
+
 function T.copy_native_summary(value)
   if value == nil then return nil end
   if type(value) ~= "table" then return nil end
@@ -185,6 +243,9 @@ function T.copy_native_summary(value)
   end
   if value.schema == T.schemas.browser_driver_summary then
     return copy_browser_driver(value)
+  end
+  if value.schema == T.schemas.module_ui_loop_summary then
+    return copy_module_ui_loop(value)
   end
   return nil
 end

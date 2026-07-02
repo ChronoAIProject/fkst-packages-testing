@@ -10,6 +10,8 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+if "__FKST_TEST_ROOT" in globals():
+    ROOT = Path(globals()["__FKST_TEST_ROOT"]).resolve()
 PIN_FILE = ROOT / ".fkst" / "conformance" / "fkst-packages.pin"
 CHECKOUT = ROOT / ".fkst" / "run" / "fkst-packages-conformance"
 EXCLUDED_REF_FILES = {".fkst-substrate-ref"}
@@ -70,6 +72,20 @@ def checkout_head() -> str:
     return head
 
 
+def check_checkout_clean() -> None:
+    result = subprocess.run(
+        ["git", "-C", str(CHECKOUT), "status", "--porcelain"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(f"cannot inspect hydrated checkout status path={CHECKOUT} stderr={result.stderr.strip()}")
+    if result.stdout.strip():
+        fail(f"hydrated checkout has local changes path={CHECKOUT}")
+
+
 def main() -> int:
     expected_rev = pin_rev()
     check_no_second_ref_pin(expected_rev)
@@ -77,6 +93,7 @@ def main() -> int:
     head = checkout_head()
     if head != expected_rev:
         fail(f"checkout_head={head} pin_rev={expected_rev}")
+    check_checkout_clean()
 
     print(f"PASS single-platform-pin pin_rev={expected_rev} checkout_head={head}")
     return 0

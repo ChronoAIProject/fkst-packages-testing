@@ -58,12 +58,14 @@ ensure_fkst_packages_checkout() {
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|example|supervise> [args]
+usage: scripts/run.sh <check|test|test-affected|example|supervise> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  test-affected       derive changed paths from git and run package-scoped tests for package-only
+                      changes, or full `scripts/run.sh test` for broad repo changes
   example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
@@ -264,6 +266,11 @@ cmd_test() {
   echo "=== self-test ==="
   "$BIN" --self-test >/dev/null
 
+  if [ -d "$ROOT/scripts/tests" ]; then
+    echo "=== script tests ==="
+    python3 -m unittest discover -s "$ROOT/scripts/tests" -p '*_test.py'
+  fi
+
   echo "=== package tests (single-root, hermetic) ==="
   while IFS= read -r pkg; do
     name="$(basename "$pkg")"
@@ -291,6 +298,55 @@ cmd_test() {
   if [ "$ran" -eq 0 ]; then echo "error: no packages matched${target:+ for '$target'}" >&2; return 1; fi
   if [ "$fail" -ne 0 ]; then echo "FAILED: $fail package(s)" >&2; return 1; fi
   echo "OK: $ran package(s)"
+}
+
+affected_paths() {
+  {
+    git -C "$ROOT" diff --name-only HEAD -- 2>/dev/null || true
+    git -C "$ROOT" ls-files --others --exclude-standard -- 2>/dev/null || true
+  } | LC_ALL=C sort -u
+}
+
+cmd_test_affected() {
+  local path pkg broad=0 ran=0
+  local packages=()
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      packages/*/*)
+        pkg="${path#packages/}"
+        pkg="${pkg%%/*}"
+        packages+=("$pkg")
+        ;;
+      *)
+        broad=1
+        ;;
+    esac
+  done < <(affected_paths)
+
+  if [ "$broad" -ne 0 ]; then
+    echo "test-affected: broad repo changes detected; running full test suite"
+    cmd_test
+    return $?
+  fi
+
+  if [ "${#packages[@]}" -eq 0 ]; then
+    echo "test-affected: no changed paths; running full test suite"
+    cmd_test
+    return $?
+  fi
+
+  while IFS= read -r pkg; do
+    [ -n "$pkg" ] || continue
+    ran=$((ran + 1))
+    echo "test-affected: package $pkg"
+    cmd_test "$pkg"
+  done < <(printf '%s\n' "${packages[@]}" | LC_ALL=C sort -u)
+
+  if [ "$ran" -eq 0 ]; then
+    echo "test-affected: no package changes after de-duplication; running full test suite"
+    cmd_test
+  fi
 }
 
 cmd_example() {
@@ -337,7 +393,7 @@ cmd_supervise() {
 }
 
 case "${1:-}" in
-  check|test|example|supervise) ;;
+  check|test|test-affected|example|supervise) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -353,6 +409,7 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  test-affected) cmd_test_affected ;;
   example) cmd_example "$@" ;;
   supervise) cmd_supervise "$@" ;;
 esac

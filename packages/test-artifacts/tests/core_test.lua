@@ -133,6 +133,51 @@ return {
     t.eq(summary.dedup_key, "dedup-module-a-browser")
   end,
 
+  test_module_ui_loop_summary_is_pointer_only_golden = function()
+    local summary = core.from_testing_result({
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "planned",
+      artifact_root = ".testing/runs/module-a-ui",
+      source_ref = { kind = "host", ref = "module-a-ui" },
+      trace_id = "trace-module-a-ui",
+      dedup_key = "dedup-module-a-ui",
+      adapter = { name = "fkst-native", mode = "module-ui-loop-contract" },
+      native_summary = {
+        schema = "testing-runner.module-ui-loop-summary.v1",
+        module = "module-a",
+        status = "planned",
+        classification = "gap_backlog",
+        mode = "module-ui-loop-contract",
+        artifact_pointers = { ".testing/runs/module-a-ui/evidence-index.json" },
+        gap_pointers = { ".testing/runs/module-a-ui/gaps.json" },
+        readiness = {
+          status = "ready",
+          sessions = {
+            { role = "base_url", status = "ready" },
+          },
+        },
+      },
+    })
+    assert_payload(summary.native_summary, {
+      schema = "testing-runner.module-ui-loop-summary.v1",
+      module = "module-a",
+      status = "planned",
+      classification = "gap_backlog",
+      mode = "module-ui-loop-contract",
+      artifact_pointers = { ".testing/runs/module-a-ui/evidence-index.json" },
+      gap_pointers = { ".testing/runs/module-a-ui/gaps.json" },
+      readiness = {
+        status = "ready",
+        sessions = {
+          { role = "base_url", status = "ready" },
+        },
+      },
+    })
+    t.eq(summary.status, "planned")
+    t.eq(summary.artifact_root, ".testing/runs/module-a-ui")
+  end,
+
   test_missing_trace_and_dedup_are_derived_deterministically = function()
     local result = {
       schema = "testing-runner.result.v1",
@@ -214,6 +259,43 @@ return {
               { role = "admin", status = "ready", checks = { { name = "local_http", status = "ready" } } },
             },
           },
+        },
+      })
+    end)
+  end,
+
+  test_module_ui_loop_unknown_classification_is_rejected = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "planned",
+        artifact_root = ".testing/runs/module-a-ui",
+        native_summary = {
+          schema = "testing-runner.module-ui-loop-summary.v1",
+          module = "module-a",
+          status = "planned",
+          classification = "unexpected",
+          mode = "module-ui-loop-contract",
+        },
+      })
+    end)
+  end,
+
+  test_module_ui_loop_unsafe_pointer_is_rejected = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "planned",
+        artifact_root = ".testing/runs/module-a-ui",
+        native_summary = {
+          schema = "testing-runner.module-ui-loop-summary.v1",
+          module = "module-a",
+          status = "planned",
+          classification = "gap_backlog",
+          mode = "module-ui-loop-contract",
+          artifact_pointers = { "../outside" },
         },
       })
     end)

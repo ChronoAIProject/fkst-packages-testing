@@ -47,6 +47,33 @@ local function module_start_event()
   }
 end
 
+local function module_ui_loop_start_event()
+  return {
+    queue = "module_start",
+    payload = {
+      schema = "testing-pipeline.module-start.v1",
+      module = "module-a",
+      backend = "fkst-native",
+      dry_run = false,
+      module_ui_loop = {
+        schema = "testing-runner.module-ui-loop.request.v1",
+        base_url = "http://localhost:3000/",
+        allowed_origins = { "http://localhost:3000" },
+        readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+        artifact_root = ".testing/runs/module-a-ui",
+        dry_run = false,
+        priority = { "P0" },
+        mutation_policy = "read_only",
+        artifact_pointers = { ".testing/runs/module-a-ui/evidence-index.json" },
+        gap_pointers = { ".testing/runs/module-a-ui/gaps.json" },
+      },
+      source_ref = { kind = "external", ref = "module-a" },
+      dedup_key = "module-a-ui-run",
+    },
+    source_ref = { kind = "external", reference = "module-a" },
+  }
+end
+
 local function prepare_artifact_dir()
   local ok = os.execute("mkdir -p .testing/runs/module-a")
   if ok ~= true and ok ~= 0 then
@@ -133,5 +160,35 @@ return {
     t.eq(publication.payload.subject, "Testing passed: module-test-loop")
     t.eq(publication.payload.dedup_key, "module-a-run")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
+  end,
+
+  test_run_graph_module_ui_loop_contract_reaches_publication_request = function()
+    local trace = graph.require_quiescent(graph.run(module_ui_loop_start_event(), { max_steps = 12 }))
+
+    graph.require_delivery(trace, {
+      queue = "testing-runner.module_test_request",
+      consumer = "testing-runner.run_module_loop",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-artifacts.testing_result",
+      consumer = "test-artifacts.summarize",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-publication.artifact_summary",
+      consumer = "test-publication.prepare_publication",
+    })
+
+    local result = graph.require_raise(trace, "testing-runner.testing_result")
+    t.eq(result.payload.status, "planned")
+    t.eq(result.payload.artifact_root, ".testing/runs/module-a-ui")
+    t.eq(result.payload.adapter.mode, "module-ui-loop-contract")
+    t.eq(result.payload.native_summary.classification, "gap_backlog")
+    t.eq(result.payload.native_summary.artifact_pointers[1], ".testing/runs/module-a-ui/evidence-index.json")
+
+    local publication = graph.require_raise(trace, "test-publication.publication_request")
+    t.eq(publication.payload.status, "planned")
+    t.eq(publication.payload.severity, "info")
+    t.eq(publication.payload.artifact_root, ".testing/runs/module-a-ui")
+    t.eq(publication.payload.metadata_path, ".testing/runs/module-a-ui/metadata.json")
   end,
 }

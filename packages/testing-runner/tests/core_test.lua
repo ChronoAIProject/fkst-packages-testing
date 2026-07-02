@@ -179,6 +179,260 @@ return {
     end)
   end,
 
+  test_module_ui_loop_requires_native_backend = function()
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        module = "module-a",
+        module_ui_loop = {
+          schema = "testing-runner.module-ui-loop.request.v1",
+          base_url = "http://localhost:3000/",
+          allowed_origins = { "http://localhost:3000" },
+          readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+          artifact_root = ".testing/runs/module-a-ui",
+          dry_run = false,
+          priority = { "P0" },
+          mutation_policy = "read_only",
+        },
+      })
+    end)
+  end,
+
+  test_module_ui_loop_rejects_malformed_contract_inputs = function()
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        module_ui_loop = {
+          schema = "testing-runner.module-ui-loop.request.v1",
+          base_url = "ftp://localhost:3000/",
+          allowed_origins = { "http://localhost:3000" },
+          readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+          artifact_root = ".testing/runs/module-a-ui",
+          dry_run = false,
+          priority = { "P0" },
+          mutation_policy = "read_only",
+        },
+      })
+    end)
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        module_ui_loop = {
+          schema = "testing-runner.module-ui-loop.request.v1",
+          base_url = "http://localhost:3000/",
+          allowed_origins = { "http://localhost:4000" },
+          readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+          artifact_root = ".testing/runs/module-a-ui",
+          dry_run = false,
+          priority = { "P0" },
+          mutation_policy = "read_only",
+        },
+      })
+    end)
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        module_ui_loop = {
+          schema = "testing-runner.module-ui-loop.request.v1",
+          base_url = "http://localhost:3000/",
+          allowed_origins = { "http://localhost:3000" },
+          readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+          artifact_root = ".testing/runs/module-a-ui",
+          dry_run = false,
+          priority = { "P3" },
+          mutation_policy = "read_only",
+        },
+      })
+    end)
+  end,
+  test_module_ui_loop_rejects_conflicting_top_level_fields = function()
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        dry_run = true,
+        module_ui_loop = {
+          schema = "testing-runner.module-ui-loop.request.v1",
+          base_url = "http://localhost:3000/",
+          allowed_origins = { "http://localhost:3000" },
+          readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+          artifact_root = ".testing/runs/module-a-ui",
+          dry_run = false,
+          priority = { "P0" },
+          mutation_policy = "read_only",
+        },
+      })
+    end)
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        artifact_root = ".testing/runs/other",
+        module_ui_loop = {
+          schema = "testing-runner.module-ui-loop.request.v1",
+          base_url = "http://localhost:3000/",
+          allowed_origins = { "http://localhost:3000" },
+          readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+          artifact_root = ".testing/runs/module-a-ui",
+          dry_run = false,
+          priority = { "P0" },
+          mutation_policy = "read_only",
+        },
+      })
+    end)
+  end,
+  test_fkst_native_module_ui_loop_blocks_non_local_runtime_input_before_exec = function()
+    local called = false
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      module_ui_loop = {
+        schema = "testing-runner.module-ui-loop.request.v1",
+        base_url = "https://example.com/app",
+        allowed_origins = { "https://example.com" },
+        readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+        artifact_root = ".testing/runs/module-a-ui-blocked",
+        dry_run = false,
+        priority = { "P0", "P1" },
+        mutation_policy = "read_only",
+        artifact_pointers = { ".testing/runs/module-a-ui/evidence-index.json" },
+        gap_pointers = { ".testing/runs/module-a-ui/gaps.json" },
+      },
+      artifact_writer = function()
+        return true
+      end,
+    }, function()
+      called = true
+      return { exit_code = 0 }
+    end)
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.name, "fkst-native")
+    t.eq(result.adapter.mode, "module-ui-loop-blocked")
+    t.eq(result.native_summary.schema, "testing-runner.module-ui-loop-summary.v1")
+    t.eq(result.native_summary.classification, "blocked_unsafe_input")
+    t.eq(result.native_summary.gap_pointers[1], ".testing/runs/module-a-ui/gaps.json")
+    t.eq(called, false)
+  end,
+  test_fkst_native_module_ui_loop_ready_contract_returns_pointer_only_gap_backlog = function()
+    local called = false
+    local written = {}
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      module_ui_loop = {
+        schema = "testing-runner.module-ui-loop.request.v1",
+        base_url = "http://localhost:3000/app?secret=value#hash",
+        allowed_origins = { "http://localhost:3000" },
+        readiness_ref = {
+          schema = "browser-readiness.result.v1",
+          status = "ready",
+          sessions = {
+            { role = "base_url", status = "ready", checks = { { name = "local_http", status = "ready" } } },
+            { role = "admin", status = "ready", checks = { { name = "cdp_endpoint_env", status = "ready" } } },
+          },
+        },
+        artifact_root = ".testing/runs/module-a-ui",
+        dry_run = false,
+        priority = { "P0", "P1" },
+        mutation_policy = "read_only",
+        artifact_pointers = { ".testing/runs/module-a-ui/evidence-index.json" },
+        gap_pointers = { ".testing/runs/module-a-ui/gaps.json" },
+      },
+      artifact_writer = function(path, body)
+        written.path = path
+        written.body = body
+        return true
+      end,
+    }, function()
+      called = true
+      return { exit_code = 0 }
+    end)
+    t.eq(result.status, "planned")
+    t.eq(result.artifact_root, ".testing/runs/module-a-ui")
+    t.eq(result.adapter.name, "fkst-native")
+    t.eq(result.adapter.command, nil)
+    t.eq(result.adapter.mode, "module-ui-loop-contract")
+    t.eq(result.native_summary.schema, "testing-runner.module-ui-loop-summary.v1")
+    t.eq(result.native_summary.module, "module-a")
+    t.eq(result.native_summary.classification, "gap_backlog")
+    t.eq(result.native_summary.artifact_pointers[1], ".testing/runs/module-a-ui/evidence-index.json")
+    t.eq(result.native_summary.gap_pointers[1], ".testing/runs/module-a-ui/gaps.json")
+    t.eq(result.native_summary.readiness.sessions[2].role, "admin")
+    t.eq(result.native_summary.readiness.sessions[2].checks, nil)
+    t.eq(written.path, ".testing/runs/module-a-ui/metadata.json")
+    t.is_true(written.body:find('"schema":"testing-runner.module-ui-loop-summary.v1"', 1, true) ~= nil)
+    t.is_true(written.body:find('"classification":"gap_backlog"', 1, true) ~= nil)
+    t.eq(written.body:find("localhost", 1, true), nil)
+    t.eq(written.body:find("secret", 1, true), nil)
+    t.eq(written.body:find('"checks"', 1, true), nil)
+    t.eq(called, false)
+  end,
+
+  test_fkst_native_module_ui_loop_legacy_argv_blocks_without_exec = function()
+    local called = false
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      native_argv = { "python3", "-m", "agentic_testing.cli" },
+      module_ui_loop = {
+        schema = "testing-runner.module-ui-loop.request.v1",
+        base_url = "http://localhost:3000/",
+        allowed_origins = { "http://localhost:3000" },
+        readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+        artifact_root = ".testing/runs/module-a-ui-legacy",
+        dry_run = false,
+        priority = { "P0" },
+        mutation_policy = "read_only",
+      },
+      artifact_writer = function()
+        return true
+      end,
+    }, function()
+      called = true
+      return { exit_code = 0 }
+    end)
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.mode, "module-ui-loop-legacy-cli-blocked")
+    t.eq(result.native_summary.classification, "blocked_legacy_cli")
+    t.eq(called, false)
+  end,
+
+  test_fkst_native_module_ui_loop_dry_run_is_degraded_planned = function()
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      module_ui_loop = {
+        schema = "testing-runner.module-ui-loop.request.v1",
+        base_url = "http://localhost:3000/",
+        allowed_origins = { "http://localhost:3000" },
+        readiness_ref = { schema = "browser-readiness.result.v1", status = "ready" },
+        artifact_root = ".testing/runs/module-a-ui-dry-run",
+        dry_run = true,
+        priority = { "P2" },
+        mutation_policy = "dry_run_only",
+      },
+      artifact_writer = function()
+        return true
+      end,
+    })
+    t.eq(result.status, "planned")
+    t.eq(result.adapter.mode, "module-ui-loop-dry-run")
+    t.eq(result.native_summary.classification, "degraded_dry_run")
+  end,
+
   test_fkst_native_online_heartbeat_passes_when_url_is_ready = function()
     local called = false
     local written = {}

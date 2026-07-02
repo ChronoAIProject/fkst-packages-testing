@@ -89,6 +89,128 @@ local function readiness_summary(preflight)
   return summary
 end
 
+local safe_artifact_root
+local with_metadata
+
+local function local_url(value)
+  if type(value) ~= "string" or value == "" or #value > 512 then return false end
+  return value:match("^https?://localhost[:/%?]") ~= nil
+    or value:match("^https?://127%.0%.0%.1[:/%?]") ~= nil
+    or value:match("^https?://%[::1%][:/%?]") ~= nil
+end
+
+local function local_origin(value)
+  if type(value) ~= "string" or value == "" or #value > 512 then return false end
+  return value:match("^https?://localhost$") ~= nil
+    or value:match("^https?://localhost:%d+$") ~= nil
+    or value:match("^https?://127%.0%.0%.1$") ~= nil
+    or value:match("^https?://127%.0%.0%.1:%d+$") ~= nil
+    or value:match("^https?://%[::1%]$") ~= nil
+    or value:match("^https?://%[::1%]:%d+$") ~= nil
+end
+
+local function allowed_origins_are_local(value)
+  if type(value) ~= "table" then return false end
+  for _, origin in ipairs(value) do
+    if not local_origin(origin) then return false end
+  end
+  return true
+end
+
+local function copy_pointer_list(value)
+  local copy = {}
+  if type(value) == "table" then
+    for _, item in ipairs(value) do
+      if safe_artifact_root(item) then
+        table.insert(copy, item)
+      end
+      if #copy >= 16 then break end
+    end
+  end
+  return copy
+end
+
+local function module_ui_loop_summary(payload, result, classification, mode)
+  local request = payload.module_ui_loop or {}
+  local artifacts = copy_pointer_list(request.artifact_pointers)
+  table.insert(artifacts, result.artifact_root)
+  local summary = {
+    schema = "testing-runner.module-ui-loop-summary.v1",
+    module = payload.module,
+    status = result.status,
+    classification = classification,
+    mode = mode,
+    artifact_pointers = artifacts,
+  }
+  local gaps = copy_pointer_list(request.gap_pointers)
+  if #gaps > 0 then summary.gap_pointers = gaps end
+  local readiness = readiness_summary(request.readiness_ref)
+  if readiness ~= nil then summary.readiness = readiness end
+  return summary
+end
+
+local function module_ui_loop_result(payload, context, status, classification, mode, stderr)
+  local result = context.result_payload(status, {
+    adapter = adapter(mode),
+    stderr = stderr,
+  })
+  result.native_summary = module_ui_loop_summary(payload, result, classification, mode)
+  return result
+end
+
+local function run_module_ui_loop(payload, context)
+  local request = payload.module_ui_loop
+  if not local_url(request.base_url) or not allowed_origins_are_local(request.allowed_origins) then
+    return with_metadata(module_ui_loop_result(
+      payload,
+      context,
+      "blocked",
+      "blocked_unsafe_input",
+      "module-ui-loop-blocked",
+      "fkst-native module_ui_loop runtime inputs must be local before browser exploration"
+    ), payload, context)
+  end
+  local readiness = request.readiness_ref.status
+  if readiness ~= "ready" then
+    return with_metadata(module_ui_loop_result(
+      payload,
+      context,
+      "blocked",
+      "blocked_readiness",
+      "module-ui-loop-readiness-blocked",
+      "fkst-native module_ui_loop readiness is " .. tostring(readiness)
+    ), payload, context)
+  end
+  if payload.native_argv ~= nil and targets_legacy_cli(payload.native_argv) then
+    return with_metadata(module_ui_loop_result(
+      payload,
+      context,
+      "blocked",
+      "blocked_legacy_cli",
+      "module-ui-loop-legacy-cli-blocked",
+      "fkst-native module_ui_loop must not target agentic_testing.cli"
+    ), payload, context)
+  end
+  if request.dry_run == true then
+    return with_metadata(module_ui_loop_result(
+      payload,
+      context,
+      "planned",
+      "degraded_dry_run",
+      "module-ui-loop-dry-run",
+      nil
+    ), payload, context)
+  end
+  return with_metadata(module_ui_loop_result(
+    payload,
+    context,
+    "planned",
+    "gap_backlog",
+    "module-ui-loop-contract",
+    nil
+  ), payload, context)
+end
+
 local function json_escape(value)
   local text = tostring(value or "")
   text = text:gsub("\\", "\\\\")
@@ -139,7 +261,7 @@ local function json_encode(value)
 end
 M.json_encode = json_encode
 
-local function safe_artifact_root(path)
+safe_artifact_root = function(path)
   if type(path) ~= "string" or path == "" then
     return false
   end
@@ -205,7 +327,7 @@ local function write_metadata(result, payload, context)
   return writer(result.artifact_root .. "/metadata.json", body)
 end
 
-local function with_metadata(result, payload, context)
+with_metadata = function(result, payload, context)
   local ok, err = write_metadata(result, payload, context)
   if ok then
     return result
@@ -217,6 +339,9 @@ local function with_metadata(result, payload, context)
 end
 
 function M.run(job, payload, context, _exec)
+  if job == "module" and payload.module_ui_loop ~= nil then
+    return run_module_ui_loop(payload, context)
+  end
   local readiness = preflight_status(payload)
   if readiness ~= nil and readiness ~= "ready" then
     return with_metadata(context.result_payload("blocked", {
