@@ -21,6 +21,8 @@
 
 When `preflight_result` comes from `browser-readiness.result.v1`, it may include a bounded `request_context` copied from the original readiness check. This context is only for restoring host-provided execution intent after readiness gating. Supported fields are `native_argv`, `dry_run`, and `no_browser`; unknown fields must be rejected by the readiness package. `request_context` must remain small control metadata and must not carry reports, evidence bodies, browser state, credentials, cookies, or tokens.
 
+The readiness request may carry host-provided `allowed_origins` for the local project boundary. These origins must be local HTTP(S) origins such as `http://localhost:8080`; readiness blocks base URLs that are non-local or outside that allowlist before native execution is planned.
+
 `native_argv` is optional for module requests only and is a bounded argument vector for native module execution. It is ignored by the legacy CLI backend. When present with `backend = "fkst-native"`, `dry_run = false`, and either `no_browser = true` or `e2e_driver` is present, it may be executed directly by the native adapter without constructing `agentic_testing.cli`.
 
 `artifact_root`, when provided, must be a safe relative path under `.testing/runs/...`; paths outside that prefix, parent traversal, NUL bytes, or empty values are malformed. If omitted, the runner derives a safe `.testing/runs/...` pointer from request identity fields.

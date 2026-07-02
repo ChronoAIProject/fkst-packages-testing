@@ -58,12 +58,14 @@ ensure_fkst_packages_checkout() {
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|example|supervise> [args]
+usage: scripts/run.sh <check|test|test-affected|example|supervise> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  test-affected       derive changed paths from git and run package-scoped tests when possible,
+                      otherwise run the full local test gate
   example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
@@ -99,6 +101,10 @@ run_source_ratchets() {
   local args=(--project-root "$ROOT")
   [ -d "$ROOT/.fkst/conformance/allowlists" ] && args+=(--allowlist-dir "$ROOT/.fkst/conformance/allowlists")
   PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -B "$shared/scripts/check_repo.py" "${args[@]}"
+}
+
+check_platform_pin_read_only() {
+  python3 -B "$ROOT/scripts/check_single_platform_pin.py"
 }
 
 list_packages() {
@@ -290,7 +296,50 @@ cmd_test() {
   done < <(list_packages)
   if [ "$ran" -eq 0 ]; then echo "error: no packages matched${target:+ for '$target'}" >&2; return 1; fi
   if [ "$fail" -ne 0 ]; then echo "FAILED: $fail package(s)" >&2; return 1; fi
+  check_platform_pin_read_only
   echo "OK: $ran package(s)"
+}
+
+changed_paths() {
+  {
+    git -C "$ROOT" diff --name-only --diff-filter=ACMRTUXB HEAD
+    git -C "$ROOT" ls-files --others --exclude-standard
+  } | LC_ALL=C sort -u
+}
+
+cmd_test_affected() {
+  local path name broad=0 pkg_names=() seen=" "
+  while IFS= read -r path; do
+    [ -n "$path" ] || continue
+    case "$path" in
+      packages/*/*)
+        name="${path#packages/}"
+        name="${name%%/*}"
+        if [ -d "$ROOT/packages/$name" ] && [[ "$seen" != *" $name "* ]]; then
+          pkg_names+=("$name")
+          seen="$seen$name "
+        else
+          broad=1
+        fi
+        ;;
+      *)
+        broad=1
+        ;;
+    esac
+  done < <(changed_paths)
+
+  if [ "$broad" -ne 0 ] || [ "${#pkg_names[@]}" -eq 0 ]; then
+    echo "test-affected: broad or no package-only changes; running full test"
+    cmd_test
+    return $?
+  fi
+
+  local fail=0
+  for name in "${pkg_names[@]}"; do
+    echo "test-affected: package $name"
+    cmd_test "$name" || fail=1
+  done
+  return "$fail"
 }
 
 cmd_example() {
@@ -337,7 +386,7 @@ cmd_supervise() {
 }
 
 case "${1:-}" in
-  check|test|example|supervise) ;;
+  check|test|test-affected|example|supervise) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -346,13 +395,14 @@ pin="$(read_fkst_packages_pin)"
 shared="$(ensure_fkst_packages_checkout "$pin")"
 [ -f "$shared/scripts/check_repo.py" ] || { echo "error: shared check_repo.py missing: $shared/scripts/check_repo.py" >&2; exit 1; }
 
-# Repo-local guard first: exactly one fkst-packages coordinate, hydrated == pinned.
-python3 -B "$ROOT/scripts/check_single_platform_pin.py"
+# Repo-local guard first: exactly one fkst-packages coordinate, hydrated == pinned and read-only.
+check_platform_pin_read_only
 
 sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  test-affected) cmd_test_affected ;;
   example) cmd_example "$@" ;;
   supervise) cmd_supervise "$@" ;;
 esac

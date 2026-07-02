@@ -57,6 +57,7 @@ A host repository can keep its app-specific choices outside this package set and
 {
   schema = "browser-readiness.check.v1",
   base_url = host_base_url,
+  allowed_origins = host_allowed_local_origins,
   sessions = host_browser_sessions,
   request_context = {
     no_browser = true,

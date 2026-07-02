@@ -21,13 +21,46 @@ local function shell_quote(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 
+local function local_origin(value)
+  if not non_empty(value, 512) then return nil end
+  local scheme, rest = value:match("^(https?)://(.+)$")
+  if scheme == nil then return nil end
+  local hostport = rest:match("^([^/%?#]+)")
+  if hostport == nil or hostport == "" then return nil end
+  local local_host = hostport == "localhost"
+    or hostport:match("^localhost:%d+$") ~= nil
+    or hostport == "127.0.0.1"
+    or hostport:match("^127%.0%.0%.1:%d+$") ~= nil
+    or hostport == "[::1]"
+    or hostport:match("^%[::1%]:%d+$") ~= nil
+  if not local_host then return nil end
+  return scheme .. "://" .. hostport
+end
+M.local_origin = local_origin
+
 local function local_url(value)
-  if not non_empty(value, 512) then return false end
-  return value:match("^https?://localhost[:/%?]") ~= nil
-    or value:match("^https?://127%.0%.0%.1[:/%?]") ~= nil
-    or value:match("^https?://%[::1%][:/%?]") ~= nil
+  return local_origin(value) ~= nil
 end
 M.local_url = local_url
+
+local function allowed_origin_set(value)
+  if value == nil then return nil, true end
+  if not dense_list(value) or #value == 0 then return nil, false end
+  local allowed = {}
+  for _, item in ipairs(value) do
+    local origin = local_origin(item)
+    if origin == nil or origin ~= item then return nil, false end
+    allowed[origin] = true
+  end
+  return allowed, true
+end
+
+local function base_url_allowed(url, allowed)
+  local origin = local_origin(url)
+  if origin == nil then return false end
+  if allowed == nil then return true end
+  return allowed[origin] == true
+end
 
 local function command_name(value)
   if not non_empty(value, 256) then return nil end
@@ -92,6 +125,16 @@ function M.validate_request(payload)
   end
   if payload.base_url ~= nil and not non_empty(payload.base_url, 512) then
     error("browser-readiness: malformed-request: base_url is too large")
+  end
+  if payload.allowed_origins ~= nil then
+    if not dense_list(payload.allowed_origins) or #payload.allowed_origins == 0 then
+      error("browser-readiness: malformed-request: allowed_origins must be a non-empty dense list")
+    end
+    for _, origin in ipairs(payload.allowed_origins) do
+      if not non_empty(origin, 512) or local_origin(origin) ~= origin then
+        error("browser-readiness: malformed-request: allowed_origins items must be local origins")
+      end
+    end
   end
   if not dense_list(payload.sessions) or #payload.sessions == 0 then
     error("browser-readiness: malformed-request: sessions must be a non-empty dense list")
@@ -201,11 +244,16 @@ function M.result(payload, opts)
   opts = opts or {}
   local probe = opts.probe or payload.probe or default_probe()
   local items = {}
+  local allowed, allowed_valid = allowed_origin_set(payload.allowed_origins)
   if payload.base_url ~= nil then
-    if local_url(payload.base_url) and probe.local_http_ready(payload.base_url) then
+    if allowed_valid and base_url_allowed(payload.base_url, allowed) and probe.local_http_ready(payload.base_url) then
       table.insert(items, { role = "base_url", status = "ready", checks = { check("ready", "local_http") } })
     else
-      table.insert(items, { role = "base_url", status = "blocked", checks = { check("blocked", "local_http", "base URL is unavailable or non-local") } })
+      table.insert(items, {
+        role = "base_url",
+        status = "blocked",
+        checks = { check("blocked", "local_http", "base URL is unavailable, non-local, or outside allowed origins") },
+      })
     end
   end
   for _, session in ipairs(payload.sessions) do

@@ -27,6 +27,14 @@ local function probe(env_values, commands, urls)
 end
 
 return {
+  test_local_origin_accepts_only_local_http_origins = function()
+    t.eq(core.local_origin("http://localhost:8080/app?x=1"), "http://localhost:8080")
+    t.eq(core.local_origin("https://127.0.0.1/json/version"), "https://127.0.0.1")
+    t.eq(core.local_origin("http://[::1]:9222/devtools"), "http://[::1]:9222")
+    t.eq(core.local_origin("https://example.com/"), nil)
+    t.eq(core.local_origin("file:///tmp/app.html"), nil)
+  end,
+
   test_validates_browser_harness_or_cdp_sessions = function()
     local payload = core.validate_request(request())
     t.eq(#payload.sessions, 2)
@@ -57,6 +65,7 @@ return {
 
   test_result_preserves_small_request_context = function()
     local payload = request()
+    payload.allowed_origins = { "http://localhost:8080" }
     payload.request_context = {
       native_argv = { "lua", "checks/module-a.lua" },
       dry_run = false,
@@ -73,6 +82,43 @@ return {
     t.eq(result.request_context.native_argv[1], "lua")
     t.eq(result.request_context.dry_run, false)
     t.eq(result.request_context.no_browser, true)
+  end,
+
+  test_rejects_non_local_allowed_origins = function()
+    local payload = request()
+    payload.allowed_origins = { "https://example.com" }
+    t.raises(function()
+      core.result(payload)
+    end)
+  end,
+
+  test_allowed_origins_block_base_url_without_probe = function()
+    local called = false
+    local result = core.result({
+      schema = "browser-readiness.check.v1",
+      base_url = "http://localhost:8081/",
+      allowed_origins = { "http://localhost:8080" },
+      sessions = {
+        { role = "admin", browser_harness_command = "browser-harness" },
+      },
+    }, {
+      probe = {
+        env = function() return nil end,
+        command_exists = function(command)
+          return command == "browser-harness"
+        end,
+        local_http_ready = function()
+          called = true
+          return true
+        end,
+      },
+    })
+
+    t.eq(result.status, "blocked")
+    t.eq(result.sessions[1].role, "base_url")
+    t.eq(result.sessions[1].status, "blocked")
+    t.eq(result.sessions[1].checks[1].reason, "base URL is unavailable, non-local, or outside allowed origins")
+    t.eq(called, false)
   end,
 
   test_rejects_unsupported_request_context_fields = function()
