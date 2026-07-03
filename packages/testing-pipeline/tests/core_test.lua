@@ -32,4 +32,8 @@ return {
     t.eq(request.trace_id, "trace-module-a-ui")
     t.eq(request.dedup_key, "module-a-ui-run")
   end,
+
+  test_saga_conformance_hook_passes = function()
+    t.eq(#core.saga_conformance_errors(), 0)
+  end,
 }

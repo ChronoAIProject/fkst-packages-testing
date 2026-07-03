@@ -31,4 +31,44 @@ function M.runner_request(payload)
   }
 end
 
+local function add_error(errors, id, message)
+  table.insert(errors, { id = id, message = message })
+end
+
+local function expect_equal(errors, id, actual, expected)
+  if actual == expected then return end
+  add_error(errors, id, "online transition expected " .. tostring(expected) .. " but got " .. tostring(actual))
+end
+
+function M.saga_conformance_errors()
+  local ok, request = pcall(M.runner_request, {
+    schema = "online-regression.start.v1",
+    driver = "conformance-driver",
+    heartbeat_url = "http://localhost:8080/health",
+    backend = "fkst-native",
+    no_browser = true,
+    dry_run = false,
+    preflight_result = { status = "ready" },
+    artifact_root = ".testing/runs/conformance-online",
+    source_ref = { kind = "host-online", ref = "conformance-online" },
+    trace_id = "trace-conformance-online",
+    dedup_key = "conformance-online-run",
+  })
+  local errors = {}
+  if not ok then
+    add_error(errors, "online-regression.saga.runner-request", tostring(request))
+    return errors
+  end
+  expect_equal(errors, "online-regression.saga.schema", request.schema, "testing-runner.online-regression.request.v1")
+  expect_equal(errors, "online-regression.saga.driver", request.driver, "conformance-driver")
+  expect_equal(errors, "online-regression.saga.heartbeat-url", request.heartbeat_url, "http://localhost:8080/health")
+  expect_equal(errors, "online-regression.saga.backend", request.backend, "fkst-native")
+  expect_equal(errors, "online-regression.saga.no-browser", request.no_browser, true)
+  expect_equal(errors, "online-regression.saga.dry-run", request.dry_run, false)
+  expect_equal(errors, "online-regression.saga.artifact-root", request.artifact_root, ".testing/runs/conformance-online")
+  expect_equal(errors, "online-regression.saga.trace-id", request.trace_id, "trace-conformance-online")
+  expect_equal(errors, "online-regression.saga.dedup-key", request.dedup_key, "conformance-online-run")
+  return errors
+end
+
 return M

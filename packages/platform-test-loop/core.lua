@@ -222,4 +222,77 @@ function M.aggregate_result(payload)
   }
 end
 
+local function add_error(errors, id, message)
+  table.insert(errors, { id = id, message = message })
+end
+
+local function expect_equal(errors, id, actual, expected)
+  if actual ~= expected then
+    add_error(errors, id, "expected " .. tostring(expected) .. ", got " .. tostring(actual))
+  end
+end
+
+local function conformance_module_result(module)
+  return {
+    schema = testing_contract.schemas.runner_result,
+    job = "module-test-loop",
+    module = module,
+    status = "passed",
+    artifact_root = ".testing/runs/" .. module,
+    source_ref = { kind = "module", ref = module },
+    dedup_key = module .. "-run",
+    exit_code = 0,
+  }
+end
+
+function M.saga_conformance_errors()
+  local errors = {}
+  local ok_request, request = pcall(M.runner_request, {
+    schema = "platform-test-loop.start.v1",
+    modules = { "conformance-a", "conformance-b" },
+    priority = { "P0" },
+    backend = "fkst-native",
+    artifact_root = ".testing/runs/conformance-platform",
+    source_ref = { kind = "platform", ref = "conformance-platform" },
+    trace_id = "trace-conformance-platform",
+    dedup_key = "conformance-platform-run",
+  })
+  if not ok_request then
+    add_error(errors, "platform-test-loop.saga.runner-request", tostring(request))
+  else
+    expect_equal(errors, "platform-test-loop.saga.runner-schema", request.schema, "testing-runner.platform-test-loop.request.v1")
+    expect_equal(errors, "platform-test-loop.saga.runner-module", request.modules and request.modules[2], "conformance-b")
+    expect_equal(errors, "platform-test-loop.saga.runner-backend", request.backend, "fkst-native")
+    expect_equal(errors, "platform-test-loop.saga.runner-trace", request.trace_id, "trace-conformance-platform")
+    expect_equal(errors, "platform-test-loop.saga.runner-dedup", request.dedup_key, "conformance-platform-run")
+  end
+
+  local ok_aggregate, aggregate = pcall(M.aggregate_result, {
+    schema = "platform-test-loop.aggregate.v1",
+    module_results = {
+      conformance_module_result("conformance-a"),
+      conformance_module_result("conformance-b"),
+    },
+    artifact_root = ".testing/runs/conformance-platform",
+    source_ref = { kind = "platform", ref = "conformance-platform" },
+    trace_id = "trace-conformance-platform",
+    dedup_key = "conformance-platform-run",
+  })
+  if not ok_aggregate then
+    add_error(errors, "platform-test-loop.saga.aggregate", tostring(aggregate))
+    return errors
+  end
+  expect_equal(errors, "platform-test-loop.saga.aggregate-schema", aggregate.schema, "platform-test-loop.aggregate.v1")
+  expect_equal(errors, "platform-test-loop.saga.aggregate-status", aggregate.status, "passed")
+  expect_equal(errors, "platform-test-loop.saga.aggregate-total", aggregate.counts and aggregate.counts.total, 2)
+  expect_equal(errors, "platform-test-loop.saga.aggregate-passed", aggregate.counts and aggregate.counts.passed, 2)
+  expect_equal(errors, "platform-test-loop.saga.aggregate-artifact", aggregate.artifact_root, ".testing/runs/conformance-platform")
+  expect_equal(errors, "platform-test-loop.saga.aggregate-metadata", aggregate.metadata_path, ".testing/runs/conformance-platform/metadata.json")
+  expect_equal(errors, "platform-test-loop.saga.aggregate-trace", aggregate.trace_id, "trace-conformance-platform")
+  expect_equal(errors, "platform-test-loop.saga.aggregate-dedup", aggregate.dedup_key, "conformance-platform-run")
+  expect_equal(errors, "platform-test-loop.saga.aggregate-module", aggregate.modules and aggregate.modules[1] and aggregate.modules[1].module, "conformance-a")
+  expect_equal(errors, "platform-test-loop.saga.aggregate-module-dedup", aggregate.modules and aggregate.modules[2] and aggregate.modules[2].dedup_key, "conformance-b-run")
+  return errors
+end
+
 return M

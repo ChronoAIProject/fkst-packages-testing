@@ -13,3 +13,4 @@ packages = ["testing-runner"]
 
 [conformance]
 pack = "conformance/pack.toml"
+function = "core.saga_conformance_errors"

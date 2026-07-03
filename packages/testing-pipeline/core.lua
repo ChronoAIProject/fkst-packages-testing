@@ -84,4 +84,46 @@ function M.validate_artifact_summary(summary)
   return summary
 end
 
+local function add_error(errors, id, message)
+  table.insert(errors, { id = id, message = message })
+end
+
+local function expect_equal(errors, id, actual, expected)
+  if actual == expected then return end
+  add_error(errors, id, "pipeline transition expected " .. tostring(expected) .. " but got " .. tostring(actual))
+end
+
+function M.saga_conformance_errors()
+  local ok, request = pcall(M.module_loop_request, {
+    schema = "testing-pipeline.module-start.v1",
+    module = "conformance-module",
+    backend = "fkst-native",
+    no_browser = true,
+    dry_run = false,
+    native_argv = { "conformance-module-check" },
+    preflight_result = { status = "ready" },
+    artifact_root = ".testing/runs/conformance-module",
+    source_ref = { kind = "host-module", ref = "conformance-module" },
+    trace_id = "trace-conformance-module",
+    dedup_key = "conformance-module-run",
+  })
+  local errors = {}
+  if not ok then
+    add_error(errors, "testing-pipeline.saga.module-loop-request", tostring(request))
+    return errors
+  end
+  expect_equal(errors, "testing-pipeline.saga.schema", request.schema, "module-test-loop.start.v1")
+  expect_equal(errors, "testing-pipeline.saga.module", request.module, "conformance-module")
+  expect_equal(errors, "testing-pipeline.saga.backend", request.backend, "fkst-native")
+  expect_equal(errors, "testing-pipeline.saga.no-browser", request.no_browser, true)
+  expect_equal(errors, "testing-pipeline.saga.dry-run", request.dry_run, false)
+  expect_equal(errors, "testing-pipeline.saga.native-argv", request.native_argv and request.native_argv[1], "conformance-module-check")
+  expect_equal(errors, "testing-pipeline.saga.artifact-root", request.artifact_root, ".testing/runs/conformance-module")
+  expect_equal(errors, "testing-pipeline.saga.source-kind", request.source_ref and request.source_ref.kind, "host-module")
+  expect_equal(errors, "testing-pipeline.saga.source-ref", request.source_ref and request.source_ref.ref, "conformance-module")
+  expect_equal(errors, "testing-pipeline.saga.trace-id", request.trace_id, "trace-conformance-module")
+  expect_equal(errors, "testing-pipeline.saga.dedup-key", request.dedup_key, "conformance-module-run")
+  return errors
+end
+
 return M

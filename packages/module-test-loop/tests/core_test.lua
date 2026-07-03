@@ -122,4 +122,8 @@ return {
       core.runner_request({ schema = "module-test-loop.start.v1" })
     end)
   end,
+
+  test_saga_conformance_hook_passes = function()
+    t.eq(#core.saga_conformance_errors(), 0)
+  end,
 }

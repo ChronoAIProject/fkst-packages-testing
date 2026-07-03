@@ -13,3 +13,4 @@ packages = ["module-test-loop", "testing-runner", "test-artifacts", "test-public
 
 [conformance]
 pack = "conformance/pack.toml"
+function = "core.saga_conformance_errors"
