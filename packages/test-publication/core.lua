@@ -20,7 +20,7 @@ end
 local function severity(status)
   if status == "passed" then return "success" end
   if status == "failed" then return "failure" end
-  if status == "blocked" or status == "mixed" then return "warning" end
+  if status == "blocked" or status == "degraded" or status == "mixed" then return "warning" end
   return "info"
 end
 M.severity = severity

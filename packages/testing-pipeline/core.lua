@@ -8,6 +8,7 @@ local statuses = {
   passed = true,
   failed = true,
   blocked = true,
+  degraded = true,
   mixed = true,
 }
 
@@ -40,6 +41,7 @@ function M.module_loop_request(payload)
     dry_run_github = payload.dry_run_github,
     backend = payload.backend,
     native_argv = payload.native_argv,
+    ui_loop = payload.ui_loop,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,

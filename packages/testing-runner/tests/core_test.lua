@@ -444,6 +444,137 @@ return {
     t.eq(called, false)
   end,
 
+  test_fkst_native_module_ui_loop_returns_degraded_pointer_summary = function()
+    local called = false
+    local written = {}
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      ui_loop = {
+        base_url = "http://localhost:8080/app?token=secret#frag",
+        allowed_origins = { "http://localhost:8080" },
+        browser_readiness_ref = ".testing/runs/readiness",
+        cdp_readiness_ref = "cdp-ready",
+        mutation_policy = "read-only",
+        gap_ref = ".testing/runs/gap",
+        backlog_ref = "backlog-item-1",
+      },
+      artifact_root = ".testing/runs/module-a-ui",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-ui",
+      dedup_key = "dedup-module-a-ui",
+      artifact_writer = function(path, body)
+        written.path = path
+        written.body = body
+        return true
+      end,
+    }, function()
+      called = true
+      return { exit_code = 0 }
+    end)
+    assert_payload(result, {
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "degraded",
+      artifact_root = ".testing/runs/module-a-ui",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-ui",
+      dedup_key = "dedup-module-a-ui",
+      adapter = { name = "fkst-native", mode = "module-ui-loop-contract" },
+      native_summary = {
+        schema = "testing-runner.module-ui-loop-summary.v1",
+        module = "module-a",
+        status = "degraded",
+        classification = "browser-exploration-deferred",
+        mode = "contract-envelope",
+        artifact_root = ".testing/runs/module-a-ui",
+        metadata_path = ".testing/runs/module-a-ui/metadata.json",
+        gap_ref = ".testing/runs/gap",
+        backlog_ref = "backlog-item-1",
+      },
+      stderr_excerpt = "fkst-native module ui loop contract accepted; browser exploration is not implemented in this slice",
+    })
+    t.eq(written.path, ".testing/runs/module-a-ui/metadata.json")
+    t.is_true(written.body:find('"schema":"testing-runner.module-ui-loop-summary.v1"', 1, true) ~= nil)
+    t.eq(written.body:find("secret", 1, true), nil)
+    t.eq(called, false)
+  end,
+
+  test_fkst_native_module_ui_loop_blocks_unsafe_runtime_input = function()
+    local called = false
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      ui_loop = {
+        base_url = "https://example.com/app",
+        allowed_origins = { "https://example.com" },
+        mutation_policy = "read-only",
+      },
+      artifact_root = ".testing/runs/module-a-ui-blocked",
+      artifact_writer = function()
+        return true
+      end,
+    }, function()
+      called = true
+      return { exit_code = 0 }
+    end)
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.name, "fkst-native")
+    t.eq(result.adapter.mode, "module-ui-loop-blocked")
+    t.eq(result.native_summary.schema, "testing-runner.module-ui-loop-summary.v1")
+    t.eq(result.native_summary.classification, "unsafe-runtime-input")
+    t.eq(result.native_summary.status, "blocked")
+    t.is_true(result.stderr_excerpt:find("blocked unsafe runtime input", 1, true) ~= nil)
+    t.eq(called, false)
+  end,
+
+  test_fkst_native_module_ui_loop_blocks_legacy_cli_native_argv = function()
+    local called = false
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      native_argv = { "python3", "-m", "agentic_testing.cli" },
+      ui_loop = {
+        base_url = "http://localhost:8080/app",
+        allowed_origins = { "http://localhost:8080" },
+        mutation_policy = "read-only",
+      },
+      artifact_writer = function()
+        return true
+      end,
+    }, function()
+      called = true
+      return { exit_code = 0 }
+    end)
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.mode, "legacy-cli-blocked")
+    t.is_true(result.stderr_excerpt:find("must not target agentic_testing.cli", 1, true) ~= nil)
+    t.eq(called, false)
+  end,
+
+  test_module_ui_loop_rejects_embedded_non_pointer_payload = function()
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        dry_run = false,
+        ui_loop = {
+          base_url = "http://localhost:8080/app",
+          allowed_origins = { "http://localhost:8080" },
+          mutation_policy = "read-only",
+          screenshot = "base64-inline-browser-state",
+        },
+      })
+    end)
+  end,
+
   test_malformed_native_argv_is_rejected = function()
     t.raises(function()
       core.run("module", {

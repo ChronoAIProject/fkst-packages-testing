@@ -106,6 +106,19 @@ return {
     t.eq(result.counts.blocked, 2)
   end,
 
+  test_aggregate_all_degraded = function()
+    local result = core.aggregate_result({
+      schema = "platform-test-loop.aggregate.v1",
+      module_results = {
+        module_result("module-a", "degraded"),
+        module_result("module-b", "degraded"),
+      },
+      artifact_root = ".testing/runs/platform",
+    })
+    t.eq(result.status, "degraded")
+    t.eq(result.counts.degraded, 2)
+  end,
+
   test_aggregate_mixed_statuses = function()
     local result = core.aggregate_result({
       schema = "platform-test-loop.aggregate.v1",

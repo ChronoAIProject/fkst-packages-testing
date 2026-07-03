@@ -44,6 +44,31 @@ return {
     t.eq(request.preflight_result, preflight)
   end,
 
+  test_module_ui_loop_flows_to_runner_request = function()
+    local ui_loop = {
+      base_url = "http://localhost:8080/app",
+      allowed_origins = { "http://localhost:8080" },
+      browser_readiness_ref = ".testing/runs/readiness",
+      cdp_readiness_ref = "cdp-ready",
+      mutation_policy = "read-only",
+      gap_ref = ".testing/runs/gap",
+      backlog_ref = "backlog-item-1",
+    }
+    local request = core.runner_request({
+      schema = "module-test-loop.start.v1",
+      module = "sample_module",
+      backend = "fkst-native",
+      dry_run = false,
+      ui_loop = ui_loop,
+      artifact_root = ".testing/runs/module-a-ui",
+    })
+    t.eq(request.schema, "testing-runner.module-test-loop.request.v1")
+    t.eq(request.backend, "fkst-native")
+    t.eq(request.dry_run, false)
+    t.eq(request.ui_loop, ui_loop)
+    t.eq(request.artifact_root, ".testing/runs/module-a-ui")
+  end,
+
   test_readiness_context_flows_to_runner_request = function()
     local readiness = {
       schema = "browser-readiness.result.v1",

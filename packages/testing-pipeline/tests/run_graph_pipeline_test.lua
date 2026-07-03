@@ -47,6 +47,31 @@ local function module_start_event()
   }
 end
 
+local function module_ui_loop_start_event()
+  return {
+    queue = "module_start",
+    payload = {
+      schema = "testing-pipeline.module-start.v1",
+      module = "module-a",
+      backend = "fkst-native",
+      dry_run = false,
+      ui_loop = {
+        base_url = "http://localhost:8080/app",
+        allowed_origins = { "http://localhost:8080" },
+        browser_readiness_ref = ".testing/runs/readiness",
+        cdp_readiness_ref = "cdp-ready",
+        mutation_policy = "read-only",
+        gap_ref = ".testing/runs/gap",
+        backlog_ref = "backlog-item-1",
+      },
+      artifact_root = ".testing/runs/module-a-ui",
+      source_ref = { kind = "external", ref = "module-a" },
+      dedup_key = "module-a-ui-run",
+    },
+    source_ref = { kind = "external", reference = "module-a" },
+  }
+end
+
 local function prepare_artifact_dir()
   local ok = os.execute("mkdir -p .testing/runs/module-a")
   if ok ~= true and ok ~= 0 then
@@ -133,5 +158,55 @@ return {
     t.eq(publication.payload.subject, "Testing passed: module-test-loop")
     t.eq(publication.payload.dedup_key, "module-a-run")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
+  end,
+
+  test_run_graph_module_ui_loop_reaches_degraded_publication_request = function()
+    local trace = graph.require_quiescent(graph.run(module_ui_loop_start_event(), { max_steps = 12 }))
+
+    graph.require_delivery(trace, {
+      queue = "testing-pipeline.module_start",
+      consumer = "testing-pipeline.start_module",
+    })
+    graph.require_delivery(trace, {
+      queue = "module-test-loop.module_loop_request",
+      consumer = "module-test-loop.start",
+    })
+    graph.require_delivery(trace, {
+      queue = "testing-runner.module_test_request",
+      consumer = "testing-runner.run_module_loop",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-artifacts.testing_result",
+      consumer = "test-artifacts.summarize",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-publication.artifact_summary",
+      consumer = "test-publication.prepare_publication",
+    })
+
+    local result = graph.require_raise(trace, "testing-runner.testing_result")
+    t.eq(result.payload.status, "degraded")
+    t.eq(result.payload.adapter.name, "fkst-native")
+    t.eq(result.payload.adapter.mode, "module-ui-loop-contract")
+    t.eq(result.payload.native_summary.schema, "testing-runner.module-ui-loop-summary.v1")
+    t.eq(result.payload.native_summary.classification, "browser-exploration-deferred")
+    t.eq(result.payload.native_summary.artifact_root, ".testing/runs/module-a-ui")
+    t.eq(result.payload.native_summary.metadata_path, ".testing/runs/module-a-ui/metadata.json")
+    t.eq(result.payload.native_summary.gap_ref, ".testing/runs/gap")
+    t.eq(result.payload.native_summary.backlog_ref, "backlog-item-1")
+
+    local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
+    t.eq(summary.payload.status, "degraded")
+    t.eq(summary.payload.native_summary.schema, "testing-runner.module-ui-loop-summary.v1")
+    t.eq(summary.payload.native_summary.metadata_path, ".testing/runs/module-a-ui/metadata.json")
+    t.eq(summary.payload.artifact_root, ".testing/runs/module-a-ui")
+
+    local publication = graph.require_raise(trace, "test-publication.publication_request")
+    t.eq(publication.payload.status, "degraded")
+    t.eq(publication.payload.severity, "warning")
+    t.eq(publication.payload.subject, "Testing degraded: module-test-loop")
+    t.eq(publication.payload.dedup_key, "module-a-ui-run")
+    t.eq(publication.payload.artifact_root, ".testing/runs/module-a-ui")
+    t.eq(publication.payload.metadata_path, ".testing/runs/module-a-ui/metadata.json")
   end,
 }

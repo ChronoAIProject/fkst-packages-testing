@@ -62,12 +62,49 @@ local function safe_target(url)
   return text
 end
 
+local function origin_of(url)
+  if type(url) ~= "string" then return nil end
+  return url:match("^(https?://[^/?#]+)")
+end
+
+local function local_http_url(url)
+  if type(url) ~= "string" then return false end
+  local host = url:match("^https?://([^/:?#]+)")
+  return host == "localhost" or host == "127.0.0.1" or host == "::1"
+end
+
+local function origin_allowed(base_url, allowed_origins)
+  local origin = origin_of(base_url)
+  if origin == nil or type(allowed_origins) ~= "table" then return false end
+  for _, allowed in ipairs(allowed_origins) do
+    if allowed == origin then return true end
+  end
+  return false
+end
+
 local function safe_label(value, fallback)
   local text = tostring(value or fallback or "unknown")
   if text == "" then text = fallback or "unknown" end
   text = text:gsub("[^%w%._%-%/#]", "-")
   if #text > 80 then text = text:sub(1, 80) end
   return text
+end
+
+local function module_ui_loop_summary(payload, result, classification)
+  local root = result.artifact_root
+  local ui_loop = payload.ui_loop or {}
+  local summary = {
+    schema = "testing-runner.module-ui-loop-summary.v1",
+    module = payload.module,
+    status = result.status,
+    classification = classification,
+    mode = "contract-envelope",
+    artifact_root = root,
+    metadata_path = root .. "/metadata.json",
+  }
+  if type(ui_loop.gap_ref) == "string" then summary.gap_ref = ui_loop.gap_ref end
+  if type(ui_loop.backlog_ref) == "string" then summary.backlog_ref = ui_loop.backlog_ref end
+  return summary
 end
 
 local function readiness_summary(preflight)
@@ -226,6 +263,29 @@ function M.run(job, payload, context, _exec)
   end
   if payload.dry_run ~= false then
     return with_metadata(context.result_payload("planned", { adapter = adapter("planning-envelope") }), payload, context)
+  end
+  if job == "module" and payload.ui_loop ~= nil then
+    if targets_legacy_cli(payload.native_argv) then
+      return with_metadata(context.result_payload("blocked", {
+        adapter = adapter("legacy-cli-blocked"),
+        stderr = "fkst-native native_argv must not target agentic_testing.cli",
+      }), payload, context)
+    end
+    local ui_loop = payload.ui_loop
+    if not local_http_url(ui_loop.base_url) or not origin_allowed(ui_loop.base_url, ui_loop.allowed_origins) then
+      local result = context.result_payload("blocked", {
+        adapter = adapter("module-ui-loop-blocked"),
+        stderr = "fkst-native module ui loop blocked unsafe runtime input",
+      })
+      result.native_summary = module_ui_loop_summary(payload, result, "unsafe-runtime-input")
+      return with_metadata(result, payload, context)
+    end
+    local result = context.result_payload("degraded", {
+      adapter = adapter("module-ui-loop-contract"),
+      stderr = "fkst-native module ui loop contract accepted; browser exploration is not implemented in this slice",
+    })
+    result.native_summary = module_ui_loop_summary(payload, result, "browser-exploration-deferred")
+    return with_metadata(result, payload, context)
   end
   if job == "online_regression" and payload.no_browser == true and payload.heartbeat_url ~= nil then
     local ok = command_probe(payload)(payload.heartbeat_url, context.quote)

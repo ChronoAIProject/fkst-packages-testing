@@ -9,6 +9,7 @@ T.schemas = {
   artifact_summary = "test-artifacts.summary.v1",
   publication_request = "test-publication.publication-request.v1",
   module_no_browser_summary = "testing-runner.module-no-browser-summary.v1",
+  module_ui_loop_summary = "testing-runner.module-ui-loop-summary.v1",
   online_heartbeat_summary = "testing-runner.online-heartbeat-summary.v1",
   browser_driver_summary = "testing-runner.browser-driver-summary.v1",
 }
@@ -18,6 +19,7 @@ T.runner_statuses = {
   passed = true,
   failed = true,
   blocked = true,
+  degraded = true,
 }
 
 T.summary_statuses = {
@@ -25,6 +27,7 @@ T.summary_statuses = {
   passed = true,
   failed = true,
   blocked = true,
+  degraded = true,
   mixed = true,
 }
 
@@ -144,6 +147,32 @@ local function copy_module_no_browser(value)
   }
 end
 
+local function copy_module_ui_loop(value)
+  if not has_only(value, { schema = true, module = true, status = true, classification = true, mode = true, artifact_root = true, metadata_path = true, gap_ref = true, backlog_ref = true }) then return nil end
+  if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
+  if not bounded_field(value.classification, 80) or not bounded_field(value.mode, 80) then return nil end
+  if not strings.is_artifact_root(value.artifact_root) then return nil end
+  if value.metadata_path ~= value.artifact_root .. "/metadata.json" then return nil end
+  local copy = {
+    schema = T.schemas.module_ui_loop_summary,
+    module = value.module,
+    status = value.status,
+    classification = value.classification,
+    mode = value.mode,
+    artifact_root = value.artifact_root,
+    metadata_path = value.metadata_path,
+  }
+  if value.gap_ref ~= nil then
+    if not bounded_field(value.gap_ref, max_string) then return nil end
+    copy.gap_ref = value.gap_ref
+  end
+  if value.backlog_ref ~= nil then
+    if not bounded_field(value.backlog_ref, max_string) then return nil end
+    copy.backlog_ref = value.backlog_ref
+  end
+  return copy
+end
+
 local function copy_online_heartbeat(value)
   if not has_only(value, { schema = true, target = true, status = true, mode = true }) then return nil end
   if not bounded_field(value.target, max_string) or not bounded_field(value.status, 80) or not bounded_field(value.mode, 80) then return nil end
@@ -179,6 +208,9 @@ function T.copy_native_summary(value)
   if type(value) ~= "table" then return nil end
   if value.schema == T.schemas.module_no_browser_summary then
     return copy_module_no_browser(value)
+  end
+  if value.schema == T.schemas.module_ui_loop_summary then
+    return copy_module_ui_loop(value)
   end
   if value.schema == T.schemas.online_heartbeat_summary then
     return copy_online_heartbeat(value)

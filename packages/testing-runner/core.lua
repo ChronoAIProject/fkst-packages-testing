@@ -7,6 +7,7 @@ local testing_contract = require("contract.testing")
 local max_string = 512
 local max_path = 4096
 local max_excerpt = 600
+local max_ui_list = 16
 
 local jobs = {
   module = {
@@ -103,6 +104,88 @@ local function http_url(value)
   return bounded_string(value, max_string) and value:match("^https?://") ~= nil
 end
 
+local function ui_control_ref(value)
+  return testing_contract.is_bounded_id(value) or safe_artifact_root(value)
+end
+
+local function validate_allowed_origins(value)
+  if not dense_list(value) or #value == 0 or #value > max_ui_list then
+    error("testing-runner: malformed-request: ui_loop.allowed_origins must be a non-empty bounded list")
+  end
+  for _, item in ipairs(value) do
+    if not http_url(item) then
+      error("testing-runner: malformed-request: ui_loop.allowed_origins must contain http origins")
+    end
+  end
+end
+
+local function validate_priority(value)
+  if value == nil then return end
+  if not dense_list(value) or #value > max_ui_list then
+    error("testing-runner: malformed-request: ui_loop.priority must be a bounded dense list")
+  end
+  for _, item in ipairs(value) do
+    if not testing_contract.is_bounded_id(item) then
+      error("testing-runner: malformed-request: ui_loop.priority items must be bounded strings")
+    end
+  end
+end
+
+local function validate_mutation_policy(value)
+  if value == nil then return end
+  if value ~= "read-only" and value ~= "dry-run" and value ~= "host-approved" then
+    error("testing-runner: malformed-request: ui_loop.mutation_policy is unknown")
+  end
+end
+
+local function validate_ui_loop(value)
+  if value == nil then return end
+  if type(value) ~= "table" then
+    error("testing-runner: malformed-request: ui_loop must be a table")
+  end
+  local allowed = {
+    base_url = true,
+    allowed_origins = true,
+    browser_readiness_ref = true,
+    cdp_readiness_ref = true,
+    artifact_root = true,
+    dry_run = true,
+    priority = true,
+    mutation_policy = true,
+    gap_ref = true,
+    backlog_ref = true,
+  }
+  for key, _ in pairs(value) do
+    if allowed[key] ~= true then
+      error("testing-runner: malformed-request: ui_loop contains unsupported field")
+    end
+  end
+  if not bounded_string(value.base_url, max_string) then
+    error("testing-runner: malformed-request: ui_loop.base_url must be a bounded string")
+  end
+  validate_allowed_origins(value.allowed_origins)
+  validate_priority(value.priority)
+  validate_mutation_policy(value.mutation_policy)
+  if value.browser_readiness_ref ~= nil and not ui_control_ref(value.browser_readiness_ref) then
+    error("testing-runner: malformed-request: ui_loop.browser_readiness_ref must be a bounded pointer")
+  end
+  if value.cdp_readiness_ref ~= nil and not ui_control_ref(value.cdp_readiness_ref) then
+    error("testing-runner: malformed-request: ui_loop.cdp_readiness_ref must be a bounded pointer")
+  end
+  if value.artifact_root ~= nil and not safe_artifact_root(value.artifact_root) then
+    error("testing-runner: malformed-request: ui_loop.artifact_root must be a safe .testing/runs/... path")
+  end
+  if value.dry_run ~= nil and type(value.dry_run) ~= "boolean" then
+    error("testing-runner: malformed-request: ui_loop.dry_run must be boolean")
+  end
+  if value.gap_ref ~= nil and not ui_control_ref(value.gap_ref) then
+    error("testing-runner: malformed-request: ui_loop.gap_ref must be a bounded pointer")
+  end
+  if value.backlog_ref ~= nil and not ui_control_ref(value.backlog_ref) then
+    error("testing-runner: malformed-request: ui_loop.backlog_ref must be a bounded pointer")
+  end
+end
+
 local function validate_native_argv(job, value)
   if value == nil then return end
   if job ~= "module" then
@@ -129,6 +212,10 @@ function M.validate_request(job, payload)
   M.resolve_backend(payload)
   validate_preflight(payload.preflight_result)
   validate_native_argv(job, payload.native_argv)
+  if job ~= "module" and payload.ui_loop ~= nil then
+    error("testing-runner: malformed-request: ui_loop is only supported for module jobs")
+  end
+  validate_ui_loop(payload.ui_loop)
   if job == "module" and not bounded_string(payload.module, max_string) then
     error("testing-runner: malformed-request: module is required")
   end

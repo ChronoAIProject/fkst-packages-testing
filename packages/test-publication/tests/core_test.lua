@@ -119,10 +119,38 @@ return {
     t.is_true(first.dedup_key:find("testing-summary-testing-module-test-loop-host-module-a", 1, true) == 1)
   end,
 
+  test_degraded_publication_request_is_warning = function()
+    local request = core.publication_request({
+      schema = "test-artifacts.summary.v1",
+      job = "module-test-loop",
+      status = "degraded",
+      artifact_root = ".testing/runs/module-a-ui",
+      metadata_path = ".testing/runs/module-a-ui/metadata.json",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-ui",
+      dedup_key = "dedup-module-a-ui",
+    })
+    assert_payload(request, {
+      schema = "test-publication.publication-request.v1",
+      publication_kind = "testing-summary",
+      channel = "testing",
+      severity = "warning",
+      subject = "Testing degraded: module-test-loop",
+      trace_id = "trace-module-a-ui",
+      dedup_key = "dedup-module-a-ui",
+      status = "degraded",
+      job = "module-test-loop",
+      artifact_root = ".testing/runs/module-a-ui",
+      metadata_path = ".testing/runs/module-a-ui/metadata.json",
+      source_ref = { kind = "host", ref = "module-a" },
+    })
+  end,
+
   test_publication_maps_summary_status_to_severity = function()
     t.eq(core.severity("passed"), "success")
     t.eq(core.severity("failed"), "failure")
     t.eq(core.severity("blocked"), "warning")
+    t.eq(core.severity("degraded"), "warning")
     t.eq(core.severity("mixed"), "warning")
     t.eq(core.severity("planned"), "info")
   end,

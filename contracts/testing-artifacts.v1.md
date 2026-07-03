@@ -7,7 +7,7 @@ Testing packages exchange artifact pointers, not report bodies.
 `test-artifacts.artifact_summary` uses `test-artifacts.summary.v1`:
 
 - `job`: logical testing job name
-- `status`: `planned`, `passed`, `failed`, `blocked`, or `mixed`
+- `status`: `planned`, `passed`, `failed`, `blocked`, `degraded`, or `mixed`
 - `artifact_root`: stable local or handoff pointer, usually `.testing/runs/<run>`
 - `metadata_path`: optional pointer to runner metadata, normally `<artifact_root>/metadata.json`
 - `source_ref`: optional bounded source reference
@@ -20,7 +20,7 @@ Testing packages exchange artifact pointers, not report bodies.
 
 Artifact summaries must carry small control metadata and pointers only. They must not embed report bodies, raw stdout/stderr bodies, screenshots, traces, browser storage, credentials, cookies, or tokens.
 
-`native_summary` is diagnostic metadata, not a downstream consumption requirement. Accepted nested native summaries are bounded `testing-runner.module-no-browser-summary.v1`, `testing-runner.online-heartbeat-summary.v1`, and `testing-runner.browser-driver-summary.v1` payloads. Browser driver summaries may include only a readiness audit: `readiness.status` plus up to 16 session `{ role, status }` entries. Readiness `checks`, report bodies, browser state, credentials, cookies, tokens, screenshots, traces, and arbitrary nested trees must be rejected.
+`native_summary` is diagnostic metadata, not a downstream consumption requirement. Accepted nested native summaries are bounded `testing-runner.module-no-browser-summary.v1`, `testing-runner.module-ui-loop-summary.v1`, `testing-runner.online-heartbeat-summary.v1`, and `testing-runner.browser-driver-summary.v1` payloads. Module UI loop summaries may include only `schema`, `module`, `status`, `classification`, `mode`, `artifact_root`, `metadata_path`, and optional bounded `gap_ref`/`backlog_ref`; `metadata_path` must equal `<artifact_root>/metadata.json`. Browser driver summaries may include only a readiness audit: `readiness.status` plus up to 16 session `{ role, status }` entries. Readiness `checks`, report bodies, browser state, credentials, cookies, tokens, screenshots, traces, and arbitrary nested trees must be rejected.
 
 ## Publication handoff
 

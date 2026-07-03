@@ -195,6 +195,75 @@ return {
     end)
   end,
 
+  test_module_ui_loop_summary_is_pointer_only_golden = function()
+    local summary = core.from_testing_result({
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "degraded",
+      artifact_root = ".testing/runs/module-a-ui",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-ui",
+      dedup_key = "dedup-module-a-ui",
+      adapter = { name = "fkst-native", mode = "module-ui-loop-contract" },
+      native_summary = {
+        schema = "testing-runner.module-ui-loop-summary.v1",
+        module = "module-a",
+        status = "degraded",
+        classification = "browser-exploration-deferred",
+        mode = "contract-envelope",
+        artifact_root = ".testing/runs/module-a-ui",
+        metadata_path = ".testing/runs/module-a-ui/metadata.json",
+        gap_ref = ".testing/runs/gap",
+        backlog_ref = "backlog-item-1",
+      },
+      stderr_excerpt = "browser exploration deferred",
+    })
+    assert_payload(summary, {
+      schema = "test-artifacts.summary.v1",
+      job = "module-test-loop",
+      status = "degraded",
+      artifact_root = ".testing/runs/module-a-ui",
+      metadata_path = ".testing/runs/module-a-ui/metadata.json",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-ui",
+      dedup_key = "dedup-module-a-ui",
+      adapter = { name = "fkst-native", mode = "module-ui-loop-contract" },
+      native_summary = {
+        schema = "testing-runner.module-ui-loop-summary.v1",
+        module = "module-a",
+        status = "degraded",
+        classification = "browser-exploration-deferred",
+        mode = "contract-envelope",
+        artifact_root = ".testing/runs/module-a-ui",
+        metadata_path = ".testing/runs/module-a-ui/metadata.json",
+        gap_ref = ".testing/runs/gap",
+        backlog_ref = "backlog-item-1",
+      },
+      stderr_excerpt = "browser exploration deferred",
+    })
+  end,
+
+  test_module_ui_loop_summary_rejects_embedded_browser_state = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "degraded",
+        artifact_root = ".testing/runs/module-a-ui",
+        native_summary = {
+          schema = "testing-runner.module-ui-loop-summary.v1",
+          module = "module-a",
+          status = "degraded",
+          classification = "browser-exploration-deferred",
+          mode = "contract-envelope",
+          artifact_root = ".testing/runs/module-a-ui",
+          metadata_path = ".testing/runs/module-a-ui/metadata.json",
+          screenshot = "base64-inline-browser-state",
+        },
+      })
+    end)
+  end,
+
   test_browser_driver_readiness_checks_are_rejected = function()
     t.raises(function()
       core.from_testing_result({

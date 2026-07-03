@@ -7,7 +7,7 @@
 - `testing-runner.module_test_request`
   - `schema`: `testing-runner.module-test-loop.request.v1`
   - required: `module`
-  - optional: `backend`, `config`, `e2e_driver`, `no_browser`, `dry_run`, `dry_run_github`, `native_argv`, `preflight_result`, `artifact_root`, `agentic_testing_repo_root`, `source_ref`, `trace_id`, `dedup_key`
+  - optional: `backend`, `config`, `e2e_driver`, `no_browser`, `dry_run`, `dry_run_github`, `native_argv`, `ui_loop`, `preflight_result`, `artifact_root`, `agentic_testing_repo_root`, `source_ref`, `trace_id`, `dedup_key`
 - `testing-runner.platform_test_request`
   - `schema`: `testing-runner.platform-test-loop.request.v1`
   - optional: `backend`, `modules`, `priority`, `config`, `e2e_driver`, `no_browser`, `dry_run`, `dry_run_github`, `preflight_result`, `artifact_root`, `agentic_testing_repo_root`, `source_ref`, `trace_id`, `dedup_key`
@@ -23,9 +23,24 @@ When `preflight_result` comes from `browser-readiness.result.v1`, it may include
 
 `native_argv` is optional for module requests only and is a bounded argument vector for native module execution. It is ignored by the legacy CLI backend. When present with `backend = "fkst-native"`, `dry_run = false`, and either `no_browser = true` or `e2e_driver` is present, it may be executed directly by the native adapter without constructing `agentic_testing.cli`.
 
+`ui_loop` is optional for module requests only and is the FKST-native module UI loop control envelope. It may contain only small control fields: required `base_url` and non-empty `allowed_origins`; optional `browser_readiness_ref`, `cdp_readiness_ref`, `artifact_root`, `dry_run`, `priority`, `mutation_policy`, `gap_ref`, and `backlog_ref`. `allowed_origins` and `priority` are dense bounded lists of at most 16 items. `mutation_policy` is `read-only`, `dry-run`, or `host-approved`. Pointer fields must be bounded strings and `artifact_root`, when present inside `ui_loop`, must also be a safe `.testing/runs/...` path. Unknown `ui_loop` fields are malformed; inline screenshots, traces, browser storage, credentials, cookies, tokens, report bodies, or browser state must not be accepted.
+
 `artifact_root`, when provided, must be a safe relative path under `.testing/runs/...`; paths outside that prefix, parent traversal, NUL bytes, or empty values are malformed. If omitted, the runner derives a safe `.testing/runs/...` pointer from request identity fields.
 
 `trace_id` and `dedup_key`, when provided, must be bounded strings. `trace_id` identifies one logical testing trace across runner, artifacts, and publication. `dedup_key` is the stable idempotency key that downstream write boundaries can use to collapse replays. If omitted, packages derive deterministic generic values from stable source/artifact fields; timestamps, randomness, product names, and host-specific defaults must not be used.
+
+## Host-owned native module profiles
+
+A native module profile is downstream-owned configuration, not a new fkst event schema. A host profile may translate each module entry into the existing readiness and module-start events with these neutral fields:
+
+- `module`: bounded logical module identifier.
+- `native_argv`: dense non-empty argv list of bounded strings.
+- `artifact_root`: safe `.testing/runs/...` path for that module's result metadata.
+- `trace_id`: bounded logical trace identifier.
+- `dedup_key`: bounded stable idempotency key for that module handoff.
+- `source_ref`: optional bounded source reference; generic examples default to `{ kind = "host-module", ref = module }`.
+
+The executable no-browser posture is `backend = "fkst-native"`, `dry_run = false`, and `no_browser = true`. If readiness gating is used, `browser-readiness.result.v1.request_context` may carry only `native_argv`, `dry_run`, and `no_browser`; later lifecycle packages restore those fields from the preflight result. Product module names, product URLs, host environment variable names, credentials, browser state, large reports, and publication destinations belong in the downstream host repository, not in this package set.
 
 ## Result queue
 
@@ -33,7 +48,7 @@ All request types emit `testing-runner.testing_result` with:
 
 - `schema`: `testing-runner.result.v1`
 - `job`: `module-test-loop`, `platform-test-loop`, or `online-regression`
-- `status`: `planned`, `passed`, `failed`, or `blocked`
+- `status`: `planned`, `passed`, `failed`, `blocked`, or `degraded`
 - `artifact_root`: stable pointer under `.testing/runs/...`
 - `source_ref`: bounded source reference
 - `trace_id`: bounded logical trace identifier
@@ -42,9 +57,11 @@ All request types emit `testing-runner.testing_result` with:
 
 `fkst-native` writes `.testing/runs/.../metadata.json` with schema `testing-runner.native-metadata.v1` for native results. Metadata includes `job`, `status`, `artifact_root`, `source_ref`, `trace_id`, `dedup_key`, bounded `adapter` metadata, and optional `native_summary`. Artifact write failure must return a `blocked` result with an `artifact write failed` stderr excerpt.
 
-`fkst-native` metadata may include `native_summary` for implemented native paths. Online heartbeat summaries use `testing-runner.online-heartbeat-summary.v1`, include only small status fields and a sanitized `target` without query or fragment text. Module no-browser summaries use `testing-runner.module-no-browser-summary.v1`, include only the module name, mode, and status. Browser driver summaries use `testing-runner.browser-driver-summary.v1`, include only module, driver, mode, status, and optional bounded readiness audit fields (`status` plus per-session role/status). Missing browser `native_argv` produces a `planned` readiness-gated plan; provided browser `native_argv` runs directly through `fkst-native` and maps exit code `0` to `passed`, non-zero/unavailable execution to `failed`.
+`fkst-native` metadata may include `native_summary` for implemented native paths. Online heartbeat summaries use `testing-runner.online-heartbeat-summary.v1`, include only small status fields and a sanitized `target` without query or fragment text. Module no-browser summaries use `testing-runner.module-no-browser-summary.v1`, include only the module name, mode, and status. Module UI loop summaries use `testing-runner.module-ui-loop-summary.v1`, include only module, status, classification, mode, `artifact_root`, `metadata_path`, and optional bounded `gap_ref`/`backlog_ref`; they must not embed screenshots, traces, browser state, credentials, cookies, tokens, or inline report data. Browser driver summaries use `testing-runner.browser-driver-summary.v1`, include only module, driver, mode, status, and optional bounded readiness audit fields (`status` plus per-session role/status). Missing browser `native_argv` produces a `planned` readiness-gated plan; provided browser `native_argv` runs directly through `fkst-native` and maps exit code `0` to `passed`, non-zero/unavailable execution to `failed`.
 
 For module no-browser native execution, the executable path is intentionally narrow: `backend = "fkst-native"`, `dry_run = false`, `no_browser = true`, a module request, and bounded `native_argv`. Exit code `0` maps to `passed`; any non-zero, missing, or unavailable execution result maps to `failed` with a bounded `stderr_excerpt`. A native module request with `no_browser = true` and no `native_argv` returns `planned` instead of executing. A `native_argv` targeting `agentic_testing.cli` returns `blocked` before execution.
+
+For native module UI loop requests, the current FKST-native path accepts the contract envelope but does not run browser exploration in this slice. With `backend = "fkst-native"`, `dry_run = false`, a module request, and `ui_loop`, unsafe runtime input returns a normal `blocked` runner result before exploration. Runtime input is unsafe when `base_url` is not local HTTP or the exact origin is not present in `allowed_origins`. Safe runtime input returns `degraded` with adapter mode `module-ui-loop-contract`, classification `browser-exploration-deferred`, and `testing-runner.module-ui-loop-summary.v1` metadata. Unsafe runtime input returns `blocked` with adapter mode `module-ui-loop-blocked`, classification `unsafe-runtime-input`, and the same pointer-only summary shape. A `native_argv` targeting `agentic_testing.cli` returns `blocked` before any UI loop handling; the native UI loop path must not fall back to the legacy CLI.
 
 For native browser driver execution, the executable path is intentionally host-supplied and bounded: `backend = "fkst-native"`, `dry_run = false`, a module request, `e2e_driver`, and bounded `native_argv`. Readiness details are copied only as a small audit summary. Missing browser `native_argv` returns `planned`; a `native_argv` targeting `agentic_testing.cli` returns `blocked` before execution.
 

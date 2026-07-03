@@ -10,6 +10,7 @@ local statuses = {
   passed = true,
   failed = true,
   blocked = true,
+  degraded = true,
 }
 
 local function dense_list(value)
@@ -103,6 +104,7 @@ local function count_statuses(results)
     passed = 0,
     failed = 0,
     blocked = 0,
+    degraded = 0,
   }
   for _, result in ipairs(results) do
     counts[result.status] = counts[result.status] + 1
@@ -115,6 +117,7 @@ local function aggregate_status(counts)
   if counts.passed == counts.total then return "passed" end
   if counts.failed == counts.total then return "failed" end
   if counts.blocked == counts.total then return "blocked" end
+  if counts.degraded == counts.total then return "degraded" end
   return "mixed"
 end
 
