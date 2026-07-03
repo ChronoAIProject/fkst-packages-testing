@@ -14,6 +14,27 @@ local function module_result(module, status)
   }
 end
 
+local function generic_host_module_result(module)
+  return {
+    schema = "testing-runner.result.v1",
+    job = "module-test-loop",
+    module = module,
+    status = "passed",
+    artifact_root = ".testing/runs/generic-host-" .. module,
+    source_ref = { kind = "host-module", ref = module },
+    trace_id = "trace-generic-host-" .. module,
+    dedup_key = "generic-host-" .. module,
+    exit_code = 0,
+    adapter = { name = "fkst-native", mode = "module-no-browser" },
+    native_summary = {
+      schema = "testing-runner.module-no-browser-summary.v1",
+      module = module,
+      status = "passed",
+      mode = "argv",
+    },
+  }
+end
+
 return {
   test_builds_platform_runner_request = function()
     local request = core.runner_request({
@@ -78,6 +99,40 @@ return {
     t.eq(result.counts.passed, 2)
     t.eq(result.modules[1].dedup_key, "module-a-run")
     t.eq(result.modules[2].exit_code, 0)
+  end,
+
+  test_generic_host_module_results_aggregate_to_platform_passed = function()
+    local result = core.aggregate_result({
+      schema = "platform-test-loop.aggregate.v1",
+      module_results = {
+        generic_host_module_result("module-a"),
+        generic_host_module_result("module-b"),
+      },
+      artifact_root = ".testing/runs/generic-host-platform",
+      source_ref = { kind = "host-platform", ref = "generic-host" },
+      trace_id = "trace-generic-host-platform",
+      dedup_key = "generic-host-platform",
+    })
+    t.eq(result.schema, "platform-test-loop.aggregate.v1")
+    t.eq(result.status, "passed")
+    t.eq(result.counts.total, 2)
+    t.eq(result.counts.passed, 2)
+    t.eq(result.modules[1].module, "module-a")
+    t.eq(result.modules[1].status, "passed")
+    t.eq(result.modules[1].artifact_root, ".testing/runs/generic-host-module-a")
+    t.eq(result.modules[1].dedup_key, "generic-host-module-a")
+    t.eq(result.modules[1].exit_code, 0)
+    t.eq(result.modules[2].module, "module-b")
+    t.eq(result.modules[2].status, "passed")
+    t.eq(result.modules[2].artifact_root, ".testing/runs/generic-host-module-b")
+    t.eq(result.modules[2].dedup_key, "generic-host-module-b")
+    t.eq(result.modules[2].exit_code, 0)
+    t.eq(result.artifact_root, ".testing/runs/generic-host-platform")
+    t.eq(result.metadata_path, ".testing/runs/generic-host-platform/metadata.json")
+    t.eq(result.source_ref.kind, "host-platform")
+    t.eq(result.source_ref.ref, "generic-host")
+    t.eq(result.trace_id, "trace-generic-host-platform")
+    t.eq(result.dedup_key, "generic-host-platform")
   end,
 
   test_aggregate_all_failed = function()
