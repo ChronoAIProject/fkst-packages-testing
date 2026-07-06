@@ -1,6 +1,10 @@
 local graph = require("testkit.graph")
 local t = fkst.test
 
+local fixture_origin = "http://localhost:8080"
+local fixture_base_url = fixture_origin .. "/app"
+local module_discovery_start_event
+
 local function testing_result(status)
   return {
     schema = "testing-runner.result.v1",
@@ -56,8 +60,8 @@ local function module_ui_loop_start_event()
       backend = "fkst-native",
       dry_run = false,
       ui_loop = {
-        base_url = "http://localhost:8080/app",
-        allowed_origins = { "http://localhost:8080" },
+        base_url = fixture_base_url,
+        allowed_origins = { fixture_origin },
         browser_readiness_ref = ".testing/runs/readiness",
         cdp_readiness_ref = "cdp-ready",
         mutation_policy = "read-only",
@@ -72,7 +76,21 @@ local function module_ui_loop_start_event()
   }
 end
 
-local function module_discovery_start_event()
+local function module_cdp_execution_start_event()
+  local event = module_discovery_start_event()
+  event.payload.artifact_root = ".testing/runs/module-a-cdp"
+  event.payload.dedup_key = "module-a-cdp-run"
+  event.payload.ui_loop.cdp_readiness_ref = "cdp-ready"
+  event.payload.cdp_execution = {
+    schema = "testing-runner.module-cdp-execution.v1",
+    step_budget = 8,
+    case_priorities = { "P0", "P1" },
+  }
+  table.insert(event.payload.preflight_result.sessions, { role = "admin", status = "ready" })
+  return event
+end
+
+module_discovery_start_event = function()
   return {
     queue = "module_start",
     payload = {
@@ -81,8 +99,8 @@ local function module_discovery_start_event()
       backend = "fkst-native",
       dry_run = false,
       ui_loop = {
-        base_url = "http://localhost:8080/app",
-        allowed_origins = { "http://localhost:8080" },
+        base_url = fixture_base_url,
+        allowed_origins = { fixture_origin },
         mutation_policy = "read-only",
       },
       module_discovery = {
@@ -91,7 +109,7 @@ local function module_discovery_start_event()
           {
             id = "dashboard",
             name = "Dashboard",
-            entry_url = "http://localhost:8080/app/dashboard?user=secret#state",
+            entry_url = fixture_base_url .. "/dashboard?user=secret#state",
             visible_label = "Dashboard",
             discovery_source = "navigation",
             confidence = "high",
@@ -265,6 +283,56 @@ return {
     t.eq(publication.payload.severity, "warning")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a-inventory")
     t.eq(publication.payload.metadata_path, ".testing/runs/module-a-inventory/metadata.json")
+  end,
+
+  test_run_graph_module_cdp_execution_reaches_publication_request = function()
+    local trace = graph.require_quiescent(graph.run(module_cdp_execution_start_event(), { max_steps = 12 }))
+
+    graph.require_delivery(trace, {
+      queue = "testing-pipeline.module_start",
+      consumer = "testing-pipeline.start_module",
+    })
+    graph.require_delivery(trace, {
+      queue = "module-test-loop.module_loop_request",
+      consumer = "module-test-loop.start",
+    })
+    graph.require_delivery(trace, {
+      queue = "testing-runner.module_test_request",
+      consumer = "testing-runner.run_module_loop",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-artifacts.testing_result",
+      consumer = "test-artifacts.summarize",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-publication.artifact_summary",
+      consumer = "test-publication.prepare_publication",
+    })
+
+    local result = graph.require_raise(trace, "testing-runner.testing_result")
+    t.eq(result.payload.status, "passed")
+    t.eq(result.payload.adapter.name, "fkst-native")
+    t.eq(result.payload.adapter.mode, "module-cdp-execution")
+    t.eq(result.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
+    t.eq(result.payload.native_summary.execution_path, ".testing/runs/module-a-cdp/cdp-execution.json")
+    t.eq(result.payload.native_summary.action_count, 5)
+
+    local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
+    t.eq(summary.payload.status, "passed")
+    t.eq(summary.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
+    t.eq(summary.payload.native_summary.execution_path, ".testing/runs/module-a-cdp/cdp-execution.json")
+    t.eq(summary.payload.native_summary.action_count, 5)
+
+    local execution = read_file(".testing/runs/module-a-cdp/cdp-execution.json")
+    t.is_true(execution:find('"action":"navigate"', 1, true) ~= nil)
+    t.is_true(execution:find('"url":"' .. fixture_base_url .. '/dashboard"', 1, true) ~= nil)
+    t.eq(execution:find("secret", 1, true), nil)
+
+    local publication = graph.require_raise(trace, "test-publication.publication_request")
+    t.eq(publication.payload.status, "passed")
+    t.eq(publication.payload.severity, "success")
+    t.eq(publication.payload.artifact_root, ".testing/runs/module-a-cdp")
+    t.eq(publication.payload.metadata_path, ".testing/runs/module-a-cdp/metadata.json")
   end,
 
   test_run_graph_module_ui_loop_reaches_degraded_publication_request = function()

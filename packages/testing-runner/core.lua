@@ -2,6 +2,7 @@ local M = {}
 
 local agentic_cli = require("agentic_cli")
 local fkst_native = require("fkst_native")
+local module_cdp_execution = require("module_cdp_execution")
 local module_inventory = require("module_inventory")
 local testing_contract = require("contract.testing")
 
@@ -217,6 +218,15 @@ function M.validate_request(job, payload)
     error("testing-runner: malformed-request: ui_loop is only supported for module jobs")
   end
   validate_ui_loop(payload.ui_loop)
+  if payload.cdp_execution ~= nil then
+    if job ~= "module" then
+      error("testing-runner: malformed-request: cdp_execution is only supported for module jobs")
+    end
+    if payload.ui_loop == nil then
+      error("testing-runner: malformed-request: cdp_execution requires ui_loop scope")
+    end
+    module_cdp_execution.validate_request(payload.cdp_execution)
+  end
   if payload.module_discovery ~= nil then
     if job ~= "module" then
       error("testing-runner: malformed-request: module_discovery is only supported for module jobs")
