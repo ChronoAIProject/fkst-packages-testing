@@ -16,6 +16,7 @@ local request_fields = {
   step_budget = true,
   case_priorities = true,
   stop_conditions = true,
+  mutation_fixtures = true,
 }
 
 local default_priorities = { "P0", "P1" }
@@ -25,7 +26,21 @@ local default_stop_conditions = {
   "credential-login",
   "mfa",
   "captcha",
+  "mutation-policy",
   "step-budget",
+}
+
+local safe_mutation_kinds = {
+  ["create-test-data"] = true,
+  ["edit-test-data"] = true,
+}
+
+local blocked_mutation_kinds = {
+  delete = true,
+  permissions = true,
+  billing = true,
+  ["external-notification"] = true,
+  ["real-user-impact"] = true,
 }
 
 local function bounded_string(value, limit)
@@ -119,11 +134,55 @@ local function copy_list(value, fallback, validate)
 end
 
 local function priority_ok(value)
-  return value == "P0" or value == "P1"
+  return value == "P0" or value == "P1" or value == "P2"
 end
 
 local function stop_condition_ok(value)
   return bounded_string(value, 80)
+end
+
+local function validate_pointer(value, field)
+  if value ~= nil and not bounded_string(value, max_string) then
+    error("testing-runner: malformed-request: cdp_execution.mutation_fixtures." .. field .. " must be a bounded pointer")
+  end
+end
+
+local function validate_mutation_fixtures(value)
+  if value == nil then return end
+  if not dense_list(value) or #value == 0 or #value > max_list then
+    error("testing-runner: malformed-request: cdp_execution.mutation_fixtures must be a non-empty bounded dense list")
+  end
+  for _, fixture in ipairs(value) do
+    if type(fixture) ~= "table" then
+      error("testing-runner: malformed-request: cdp_execution.mutation_fixtures items must be tables")
+    end
+    local fields = {
+      case_id = true,
+      mutation_kind = true,
+      fixture_ref = true,
+      cleanup_ref = true,
+      rollback_ref = true,
+      evidence_pointer = true,
+    }
+    for key, _ in pairs(fixture) do
+      if fields[key] ~= true then
+        error("testing-runner: malformed-request: cdp_execution.mutation_fixtures contains unsupported field")
+      end
+    end
+    if not bounded_string(fixture.case_id, 180) then
+      error("testing-runner: malformed-request: cdp_execution.mutation_fixtures.case_id is required")
+    end
+    if not bounded_string(fixture.mutation_kind, 80) then
+      error("testing-runner: malformed-request: cdp_execution.mutation_fixtures.mutation_kind is required")
+    end
+    if not safe_mutation_kinds[fixture.mutation_kind] and not blocked_mutation_kinds[fixture.mutation_kind] then
+      error("testing-runner: malformed-request: cdp_execution.mutation_fixtures.mutation_kind is unsupported")
+    end
+    validate_pointer(fixture.fixture_ref, "fixture_ref")
+    validate_pointer(fixture.cleanup_ref, "cleanup_ref")
+    validate_pointer(fixture.rollback_ref, "rollback_ref")
+    validate_pointer(fixture.evidence_pointer, "evidence_pointer")
+  end
 end
 
 function M.validate_request(value)
@@ -146,6 +205,7 @@ function M.validate_request(value)
   end
   copy_list(value.case_priorities, default_priorities, priority_ok)
   copy_list(value.stop_conditions, default_stop_conditions, stop_condition_ok)
+  validate_mutation_fixtures(value.mutation_fixtures)
   return value
 end
 
@@ -178,6 +238,8 @@ local function action_kind(case)
   if id:find("visible-elements", 1, true) then return "inspect-visible-elements" end
   if id:find("console-network-health", 1, true) then return "collect-console-network-health" end
   if id:find("navigation", 1, true) then return "bounded-navigation" end
+  if id:find("write-flow", 1, true) or id:find("state-change", 1, true) then return "safe-mutation-fixture"
+  end
   return "observe"
 end
 
@@ -189,12 +251,15 @@ local function action_target(module, case)
   if kind == "collect-console-network-health" then
     return "console-network-health"
   end
+  if kind == "safe-mutation-fixture" then
+    return ((case.mutation_gate or {}).fixture_ref) or module.entry_url or module.id or "module"
+  end
   return module.entry_url or module.id or "module"
 end
 
 local function append_action(actions, artifact_root, module, case, step)
   local url = strip_url_detail(module.entry_url)
-  table.insert(actions, {
+  local action = {
     step = step,
     module_id = module.id,
     case_id = case.id,
@@ -203,17 +268,29 @@ local function append_action(actions, artifact_root, module, case, step)
     action = action_kind(case),
     target = action_target(module, case),
     url = url,
-    observation = "bounded CDP step recorded without credential, MFA, CAPTCHA, or mutation handling",
+    observation = "bounded CDP step recorded without credential, MFA, CAPTCHA, or unsafe mutation handling",
     evidence_pointer = artifact_root .. "/evidence/cdp/" .. safe_key(case.id) .. ".json",
-  })
+  }
+  local gate = case.mutation_gate
+  if type(gate) == "table" and gate.classification == "safe-local-test-data" then
+    action.observation = "safe local test-data mutation recorded with host fixture and cleanup or rollback evidence"
+    action.mutation_kind = gate.mutation_kind
+    action.fixture_ref = gate.fixture_ref
+    action.cleanup_ref = gate.cleanup_ref
+    action.rollback_ref = gate.rollback_ref
+    action.fixture_evidence_pointer = gate.evidence_pointer
+  end
+  table.insert(actions, action)
 end
 
-local function planning_for(payload, artifact_root, readiness)
+local function planning_for(payload, artifact_root, readiness, request)
   if payload.module_discovery == nil then return nil, nil end
   local inventory = module_inventory.inventory(payload.module_discovery, payload.ui_loop, artifact_root, {
     readiness = readiness,
   })
-  return inventory, module_planning.build(inventory, payload.ui_loop, artifact_root)
+  return inventory, module_planning.build(inventory, payload.ui_loop, artifact_root, {
+    mutation_fixtures = (request or {}).mutation_fixtures,
+  })
 end
 
 local function blocked_artifact(payload, artifact_root, request, classification, reason, readiness)
@@ -248,9 +325,9 @@ function M.build(payload, artifact_root, opts)
     return blocked_artifact(payload, artifact_root, request, "missing-cdp-session", "requires ready reused local CDP/browser session", readiness)
   end
 
-  local inventory, planning = planning_for(payload, artifact_root, readiness)
+  local inventory, planning = planning_for(payload, artifact_root, readiness, request)
   if planning == nil then
-    return blocked_artifact(payload, artifact_root, request, "missing-test-plan", "requires module discovery test plan for bounded P0/P1 execution", readiness)
+    return blocked_artifact(payload, artifact_root, request, "missing-test-plan", "requires module discovery test plan for bounded selected execution", readiness)
   end
 
   local priorities, priority_set = selected_priorities(request)
@@ -287,11 +364,11 @@ function M.build(payload, artifact_root, opts)
   if selected_count == 0 then
     status = "degraded"
     classification = "no-executable-safe-cases"
-    limitations = { "no executable P0/P1 cases were available for bounded CDP execution" }
+    limitations = { "no executable selected cases were available for bounded CDP execution" }
   elseif selected_count > budget then
     status = "degraded"
     classification = "step-budget-exhausted"
-    limitations = { "step budget stopped exploration before all executable P0/P1 cases ran" }
+    limitations = { "step budget stopped exploration before all executable selected cases ran" }
   end
 
   return {
