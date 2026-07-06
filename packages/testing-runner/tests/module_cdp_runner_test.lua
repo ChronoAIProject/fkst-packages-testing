@@ -69,12 +69,18 @@ return {
     t.eq(result.native_summary.classification, "bounded-exploration-complete")
     t.eq(result.native_summary.execution_path, ".testing/runs/module-a-cdp/cdp-execution.json")
     t.eq(result.native_summary.metadata_path, ".testing/runs/module-a-cdp/metadata.json")
+    t.eq(result.native_summary.evidence_bundle_path, ".testing/runs/module-a-cdp/evidence-bundle.json")
     t.eq(result.native_summary.action_count, 5)
     t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find('"action":"navigate"', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find('"url":"' .. fixture_base_url .. '/dashboard"', 1, true) ~= nil)
     t.eq(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find("secret", 1, true), nil)
     t.is_true(written[".testing/runs/module-a-cdp/test-plan.json"]:find('"priority":"P0"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-cdp/evidence-bundle.json"]:find('"execution_trace_path":".testing/runs/module-a-cdp/evidence/action-trace.json"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-cdp/evidence/action-trace.json"]:find('"action":"navigate"', 1, true) ~= nil)
+    t.eq(written[".testing/runs/module-a-cdp/evidence/action-trace.json"]:find("secret", 1, true), nil)
+    t.is_true(written[".testing/runs/module-a-cdp/evidence/console-network-summary.json"]:find('"status":"bounded-summary"', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-cdp/metadata.json"]:find('"schema":"testing-runner.module-cdp-execution-summary.v1"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-cdp/metadata.json"]:find('"evidence_bundle_path":".testing/runs/module-a-cdp/evidence-bundle.json"', 1, true) ~= nil)
   end,
 
   test_fkst_native_module_cdp_execution_blocks_without_reused_session = function()
@@ -128,6 +134,8 @@ return {
     t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find('"action":"safe-mutation-fixture"', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find('"rollback_ref":".testing/runs/fixtures/dashboard-rollback"', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-cdp/test-plan.json"]:find('"classification":"safe-local-test-data"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-cdp/evidence/action-trace.json"]:find('"action":"safe-mutation-fixture"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-cdp/evidence/action-trace.json"]:find('"rollback_ref":".testing/runs/fixtures/dashboard-rollback"', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-cdp/metadata.json"]:find("rollback", 1, true) == nil)
   end,
 }
