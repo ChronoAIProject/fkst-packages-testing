@@ -243,6 +243,63 @@ return {
     })
   end,
 
+  test_module_inventory_summary_is_pointer_only_golden = function()
+    local summary = core.from_testing_result({
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "degraded",
+      artifact_root = ".testing/runs/module-a-inventory",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-inventory",
+      dedup_key = "dedup-module-a-inventory",
+      adapter = { name = "fkst-native", mode = "module-ui-loop-contract" },
+      native_summary = {
+        schema = "testing-runner.module-inventory-summary.v1",
+        module = "module-a",
+        status = "degraded",
+        discovery_status = "complete",
+        artifact_root = ".testing/runs/module-a-inventory",
+        inventory_path = ".testing/runs/module-a-inventory/module-inventory.json",
+        module_count = 1,
+        coverage = "visible-session-only",
+      },
+    })
+    assert_payload(summary.native_summary, {
+      schema = "testing-runner.module-inventory-summary.v1",
+      module = "module-a",
+      status = "degraded",
+      discovery_status = "complete",
+      artifact_root = ".testing/runs/module-a-inventory",
+      inventory_path = ".testing/runs/module-a-inventory/module-inventory.json",
+      module_count = 1,
+      coverage = "visible-session-only",
+    })
+  end,
+
+  test_module_inventory_summary_rejects_embedded_inventory_body = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "degraded",
+        artifact_root = ".testing/runs/module-a-inventory",
+        native_summary = {
+          schema = "testing-runner.module-inventory-summary.v1",
+          module = "module-a",
+          status = "degraded",
+          discovery_status = "complete",
+          artifact_root = ".testing/runs/module-a-inventory",
+          inventory_path = ".testing/runs/module-a-inventory/module-inventory.json",
+          module_count = 1,
+          coverage = "visible-session-only",
+          modules = {
+            { id = "dashboard", entry_url = "http://localhost:8080/app/dashboard" },
+          },
+        },
+      })
+    end)
+  end,
+
   test_module_ui_loop_summary_rejects_embedded_browser_state = function()
     t.raises(function()
       core.from_testing_result({

@@ -15,6 +15,33 @@ local function assert_payload(actual, expected)
   end
 end
 
+local function module_discovery()
+  return {
+    schema = "testing-runner.module-discovery.v1",
+    observations = {
+      {
+        id = "dashboard",
+        name = "Dashboard",
+        entry_url = "http://localhost:8080/app/dashboard?user=secret#state",
+        visible_label = "Dashboard",
+        discovery_source = "navigation",
+        confidence = "high",
+        evidence_pointer = ".testing/runs/evidence/dashboard",
+      },
+      {
+        id = "admin",
+        name = "Admin",
+        entry_url = "http://localhost:8080/admin",
+        visible_label = "Admin",
+        discovery_source = "navigation",
+        confidence = "high",
+        evidence_pointer = ".testing/runs/evidence/admin",
+      },
+    },
+    limitations = { "Routes hidden behind inactive feature flags are not included." },
+  }
+end
+
 return {
   test_legacy_module_argv_uses_agentic_testing_cli = function()
     local argv = core.argv("module", {
@@ -500,6 +527,135 @@ return {
     t.is_true(written.body:find('"schema":"testing-runner.module-ui-loop-summary.v1"', 1, true) ~= nil)
     t.eq(written.body:find("secret", 1, true), nil)
     t.eq(called, false)
+  end,
+
+  test_fkst_native_module_discovery_writes_inventory_and_pointer_summary = function()
+    local called = false
+    local written = {}
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      ui_loop = {
+        base_url = "http://localhost:8080/app?token=secret#frag",
+        allowed_origins = { "http://localhost:8080" },
+        mutation_policy = "read-only",
+      },
+      module_discovery = module_discovery(),
+      artifact_root = ".testing/runs/module-a-inventory",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-inventory",
+      dedup_key = "dedup-module-a-inventory",
+      preflight_result = {
+        schema = "browser-readiness.result.v1",
+        status = "ready",
+        sessions = {
+          { role = "base_url", status = "ready" },
+        },
+      },
+      artifact_writer = function(path, body)
+        written[path] = body
+        return true
+      end,
+    }, function()
+      called = true
+      return { exit_code = 0 }
+    end)
+    t.eq(result.status, "degraded")
+    t.eq(result.adapter.mode, "module-ui-loop-contract")
+    t.eq(result.native_summary.schema, "testing-runner.module-inventory-summary.v1")
+    t.eq(result.native_summary.discovery_status, "complete")
+    t.eq(result.native_summary.inventory_path, ".testing/runs/module-a-inventory/module-inventory.json")
+    t.eq(result.native_summary.module_count, 1)
+    t.eq(result.native_summary.coverage, "visible-session-only")
+    t.eq(called, false)
+
+    local inventory = written[".testing/runs/module-a-inventory/module-inventory.json"]
+    local metadata = written[".testing/runs/module-a-inventory/metadata.json"]
+    t.is_true(inventory:find('"schema":"testing-runner.module-inventory.v1"', 1, true) ~= nil)
+    t.is_true(inventory:find('"artifact_kind":"module-inventory"', 1, true) ~= nil)
+    t.is_true(inventory:find('"entry_url":"http://localhost:8080/app/dashboard"', 1, true) ~= nil)
+    t.is_true(inventory:find('"evidence_pointer":".testing/runs/evidence/dashboard"', 1, true) ~= nil)
+    t.is_true(inventory:find('"module_count":1', 1, true) ~= nil)
+    t.eq(inventory:find("secret", 1, true), nil)
+    t.eq(inventory:find("/admin", 1, true), nil)
+    t.is_true(inventory:find("visible to the current local session", 1, true) ~= nil)
+    t.is_true(metadata:find('"schema":"testing-runner.module-inventory-summary.v1"', 1, true) ~= nil)
+    t.is_true(metadata:find('"inventory_path":".testing/runs/module-a-inventory/module-inventory.json"', 1, true) ~= nil)
+    t.eq(metadata:find("Dashboard", 1, true), nil)
+  end,
+
+  test_fkst_native_module_discovery_degrades_when_readiness_blocks = function()
+    local written = {}
+    local result = core.run("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "fkst-native",
+      module = "module-a",
+      dry_run = false,
+      ui_loop = {
+        base_url = "http://localhost:8080/app",
+        allowed_origins = { "http://localhost:8080" },
+        mutation_policy = "read-only",
+      },
+      module_discovery = module_discovery(),
+      artifact_root = ".testing/runs/module-a-inventory-blocked",
+      preflight_result = {
+        schema = "browser-readiness.result.v1",
+        status = "blocked",
+        sessions = {
+          { role = "base_url", status = "blocked" },
+        },
+      },
+      artifact_writer = function(path, body)
+        written[path] = body
+        return true
+      end,
+    })
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.mode, "readiness-blocked")
+    t.eq(result.native_summary.schema, "testing-runner.module-inventory-summary.v1")
+    t.eq(result.native_summary.discovery_status, "degraded")
+    t.eq(result.native_summary.module_count, 0)
+    local inventory = written[".testing/runs/module-a-inventory-blocked/module-inventory.json"]
+    t.is_true(inventory:find('"modules":[]', 1, true) ~= nil)
+    t.is_true(inventory:find('"readiness":{"sessions":[{"role":"base_url","status":"blocked"}],"status":"blocked"}', 1, true) ~= nil)
+  end,
+
+  test_module_discovery_requires_ui_loop_scope_and_rejects_embedded_payload = function()
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        module_discovery = module_discovery(),
+      })
+    end)
+    t.raises(function()
+      core.run("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        backend = "fkst-native",
+        module = "module-a",
+        ui_loop = {
+          base_url = "http://localhost:8080/app",
+          allowed_origins = { "http://localhost:8080" },
+        },
+        module_discovery = {
+          schema = "testing-runner.module-discovery.v1",
+          observations = {
+            {
+              id = "dashboard",
+              entry_url = "http://localhost:8080/app/dashboard",
+              visible_label = "Dashboard",
+              discovery_source = "navigation",
+              confidence = "high",
+              evidence_pointer = ".testing/runs/evidence/dashboard",
+              screenshot = "inline-browser-state",
+            },
+          },
+        },
+      })
+    end)
   end,
 
   test_fkst_native_module_ui_loop_blocks_unsafe_runtime_input = function()

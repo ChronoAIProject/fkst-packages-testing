@@ -69,6 +69,34 @@ return {
     t.eq(request.artifact_root, ".testing/runs/module-a-ui")
   end,
 
+  test_module_discovery_flows_to_runner_request = function()
+    local module_discovery = {
+      schema = "testing-runner.module-discovery.v1",
+      observations = {
+        {
+          id = "dashboard",
+          entry_url = "http://localhost:8080/app/dashboard",
+          visible_label = "Dashboard",
+          discovery_source = "navigation",
+          evidence_pointer = ".testing/runs/evidence/dashboard",
+        },
+      },
+    }
+    local request = core.runner_request({
+      schema = "module-test-loop.start.v1",
+      module = "sample_module",
+      backend = "fkst-native",
+      dry_run = false,
+      ui_loop = {
+        base_url = "http://localhost:8080/app",
+        allowed_origins = { "http://localhost:8080" },
+      },
+      module_discovery = module_discovery,
+      artifact_root = ".testing/runs/module-a-inventory",
+    })
+    t.eq(request.module_discovery, module_discovery)
+  end,
+
   test_readiness_context_flows_to_runner_request = function()
     local readiness = {
       schema = "browser-readiness.result.v1",

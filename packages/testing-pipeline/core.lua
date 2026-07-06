@@ -42,6 +42,7 @@ function M.module_loop_request(payload)
     backend = payload.backend,
     native_argv = payload.native_argv,
     ui_loop = payload.ui_loop,
+    module_discovery = payload.module_discovery,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,
