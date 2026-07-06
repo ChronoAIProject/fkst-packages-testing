@@ -150,11 +150,12 @@ local function copy_module_no_browser(value)
 end
 
 local function copy_module_ui_loop(value)
-  if not has_only(value, { schema = true, module = true, status = true, classification = true, mode = true, artifact_root = true, metadata_path = true, gap_ref = true, backlog_ref = true }) then return nil end
+  if not has_only(value, { schema = true, module = true, status = true, classification = true, mode = true, artifact_root = true, metadata_path = true, evidence_bundle_path = true, gap_ref = true, backlog_ref = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
   if not bounded_field(value.classification, 80) or not bounded_field(value.mode, 80) then return nil end
   if not strings.is_artifact_root(value.artifact_root) then return nil end
   if value.metadata_path ~= value.artifact_root .. "/metadata.json" then return nil end
+  if value.evidence_bundle_path ~= nil and value.evidence_bundle_path ~= value.artifact_root .. "/evidence-bundle.json" then return nil end
   local copy = {
     schema = T.schemas.module_ui_loop_summary,
     module = value.module,
@@ -164,6 +165,7 @@ local function copy_module_ui_loop(value)
     artifact_root = value.artifact_root,
     metadata_path = value.metadata_path,
   }
+  if value.evidence_bundle_path ~= nil then copy.evidence_bundle_path = value.evidence_bundle_path end
   if value.gap_ref ~= nil then
     if not bounded_field(value.gap_ref, max_string) then return nil end
     copy.gap_ref = value.gap_ref
@@ -176,7 +178,7 @@ local function copy_module_ui_loop(value)
 end
 
 local function copy_module_inventory(value)
-  if not has_only(value, { schema = true, module = true, status = true, discovery_status = true, artifact_root = true, inventory_path = true, module_count = true, coverage = true, feature_inventory_path = true, test_plan_path = true, plan_status = true }) then return nil end
+  if not has_only(value, { schema = true, module = true, status = true, discovery_status = true, artifact_root = true, inventory_path = true, module_count = true, coverage = true, feature_inventory_path = true, test_plan_path = true, plan_status = true, evidence_bundle_path = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
   if value.discovery_status ~= "complete" and value.discovery_status ~= "degraded" then return nil end
   if value.plan_status ~= nil and value.plan_status ~= "complete" and value.plan_status ~= "degraded" then return nil end
@@ -184,6 +186,7 @@ local function copy_module_inventory(value)
   if value.inventory_path ~= value.artifact_root .. "/module-inventory.json" then return nil end
   if value.feature_inventory_path ~= nil and value.feature_inventory_path ~= value.artifact_root .. "/feature-inventory.json" then return nil end
   if value.test_plan_path ~= nil and value.test_plan_path ~= value.artifact_root .. "/test-plan.json" then return nil end
+  if value.evidence_bundle_path ~= nil and value.evidence_bundle_path ~= value.artifact_root .. "/evidence-bundle.json" then return nil end
   if type(value.module_count) ~= "number" or value.module_count < 0 or value.module_count > 64 or math.floor(value.module_count) ~= value.module_count then return nil end
   if value.coverage ~= "visible-session-only" then return nil end
   local copy = {
@@ -199,11 +202,12 @@ local function copy_module_inventory(value)
   if value.feature_inventory_path ~= nil then copy.feature_inventory_path = value.feature_inventory_path end
   if value.test_plan_path ~= nil then copy.test_plan_path = value.test_plan_path end
   if value.plan_status ~= nil then copy.plan_status = value.plan_status end
+  if value.evidence_bundle_path ~= nil then copy.evidence_bundle_path = value.evidence_bundle_path end
   return copy
 end
 
 local function copy_module_cdp_execution(value)
-  if not has_only(value, { schema = true, module = true, status = true, execution_status = true, classification = true, mode = true, artifact_root = true, execution_path = true, metadata_path = true, test_plan_path = true, cdp_readiness_ref = true, action_count = true }) then return nil end
+  if not has_only(value, { schema = true, module = true, status = true, execution_status = true, classification = true, mode = true, artifact_root = true, execution_path = true, metadata_path = true, test_plan_path = true, cdp_readiness_ref = true, action_count = true, evidence_bundle_path = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
   if value.execution_status ~= "passed" and value.execution_status ~= "blocked" and value.execution_status ~= "degraded" then return nil end
   if not bounded_field(value.classification, 80) or not bounded_field(value.mode, 80) then return nil end
@@ -211,6 +215,7 @@ local function copy_module_cdp_execution(value)
   if value.execution_path ~= value.artifact_root .. "/cdp-execution.json" then return nil end
   if value.metadata_path ~= value.artifact_root .. "/metadata.json" then return nil end
   if value.test_plan_path ~= nil and value.test_plan_path ~= value.artifact_root .. "/test-plan.json" then return nil end
+  if value.evidence_bundle_path ~= nil and value.evidence_bundle_path ~= value.artifact_root .. "/evidence-bundle.json" then return nil end
   if type(value.action_count) ~= "number" or value.action_count < 0 or value.action_count > 32 or math.floor(value.action_count) ~= value.action_count then return nil end
   local copy = {
     schema = T.schemas.module_cdp_execution_summary,
@@ -225,6 +230,7 @@ local function copy_module_cdp_execution(value)
     action_count = value.action_count,
   }
   if value.test_plan_path ~= nil then copy.test_plan_path = value.test_plan_path end
+  if value.evidence_bundle_path ~= nil then copy.evidence_bundle_path = value.evidence_bundle_path end
   if value.cdp_readiness_ref ~= nil then
     if not bounded_field(value.cdp_readiness_ref, max_string) then return nil end
     copy.cdp_readiness_ref = value.cdp_readiness_ref

@@ -493,14 +493,15 @@ return {
       trace_id = "trace-module-a-ui",
       dedup_key = "dedup-module-a-ui",
       artifact_writer = function(path, body)
-        written.path = path
-        written.body = body
+        written.path, written.body, written[path] = path, body, body
         return true
       end,
     }, function()
       called = true
       return { exit_code = 0 }
     end)
+    t.is_true(written[".testing/runs/module-a-ui/evidence-bundle.json"]:find('"planning_path":".testing/runs/module-a-ui/evidence/planning.json"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-ui/evidence/failures.json"]:find('"classification":"browser-exploration-deferred"', 1, true) ~= nil)
     assert_payload(result, {
       schema = "testing-runner.result.v1",
       job = "module-test-loop",
@@ -518,6 +519,7 @@ return {
         mode = "contract-envelope",
         artifact_root = ".testing/runs/module-a-ui",
         metadata_path = ".testing/runs/module-a-ui/metadata.json",
+        evidence_bundle_path = ".testing/runs/module-a-ui/evidence-bundle.json",
         gap_ref = ".testing/runs/gap",
         backlog_ref = "backlog-item-1",
       },
@@ -525,6 +527,7 @@ return {
     })
     t.eq(written.path, ".testing/runs/module-a-ui/metadata.json")
     t.is_true(written.body:find('"schema":"testing-runner.module-ui-loop-summary.v1"', 1, true) ~= nil)
+    t.is_true(written.body:find('"evidence_bundle_path":".testing/runs/module-a-ui/evidence-bundle.json"', 1, true) ~= nil)
     t.eq(written.body:find("secret", 1, true), nil)
     t.eq(called, false)
   end,
