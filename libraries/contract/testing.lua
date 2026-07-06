@@ -10,6 +10,7 @@ T.schemas = {
   publication_request = "test-publication.publication-request.v1",
   module_no_browser_summary = "testing-runner.module-no-browser-summary.v1",
   module_ui_loop_summary = "testing-runner.module-ui-loop-summary.v1",
+  module_inventory_summary = "testing-runner.module-inventory-summary.v1",
   online_heartbeat_summary = "testing-runner.online-heartbeat-summary.v1",
   browser_driver_summary = "testing-runner.browser-driver-summary.v1",
 }
@@ -173,6 +174,26 @@ local function copy_module_ui_loop(value)
   return copy
 end
 
+local function copy_module_inventory(value)
+  if not has_only(value, { schema = true, module = true, status = true, discovery_status = true, artifact_root = true, inventory_path = true, module_count = true, coverage = true }) then return nil end
+  if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
+  if value.discovery_status ~= "complete" and value.discovery_status ~= "degraded" then return nil end
+  if not strings.is_artifact_root(value.artifact_root) then return nil end
+  if value.inventory_path ~= value.artifact_root .. "/module-inventory.json" then return nil end
+  if type(value.module_count) ~= "number" or value.module_count < 0 or value.module_count > 64 or math.floor(value.module_count) ~= value.module_count then return nil end
+  if value.coverage ~= "visible-session-only" then return nil end
+  return {
+    schema = T.schemas.module_inventory_summary,
+    module = value.module,
+    status = value.status,
+    discovery_status = value.discovery_status,
+    artifact_root = value.artifact_root,
+    inventory_path = value.inventory_path,
+    module_count = value.module_count,
+    coverage = value.coverage,
+  }
+end
+
 local function copy_online_heartbeat(value)
   if not has_only(value, { schema = true, target = true, status = true, mode = true }) then return nil end
   if not bounded_field(value.target, max_string) or not bounded_field(value.status, 80) or not bounded_field(value.mode, 80) then return nil end
@@ -211,6 +232,9 @@ function T.copy_native_summary(value)
   end
   if value.schema == T.schemas.module_ui_loop_summary then
     return copy_module_ui_loop(value)
+  end
+  if value.schema == T.schemas.module_inventory_summary then
+    return copy_module_inventory(value)
   end
   if value.schema == T.schemas.online_heartbeat_summary then
     return copy_online_heartbeat(value)
