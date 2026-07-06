@@ -90,6 +90,19 @@ local function module_cdp_execution_start_event()
   return event
 end
 
+local function module_missing_cdp_session_start_event()
+  local event = module_discovery_start_event()
+  event.payload.artifact_root = ".testing/runs/module-a-cdp-missing-session"
+  event.payload.dedup_key = "module-a-cdp-missing-session-run"
+  event.payload.ui_loop.cdp_readiness_ref = "cdp-ready"
+  event.payload.cdp_execution = {
+    schema = "testing-runner.module-cdp-execution.v1",
+    step_budget = 8,
+    case_priorities = { "P0" },
+  }
+  return event
+end
+
 local function module_mutation_execution_start_event()
   local event = module_discovery_start_event()
   event.payload.artifact_root = ".testing/runs/module-a-mutation"
@@ -111,6 +124,14 @@ local function module_mutation_execution_start_event()
     },
   }
   table.insert(event.payload.preflight_result.sessions, { role = "admin", status = "ready" })
+  return event
+end
+
+local function module_fixture_gap_execution_start_event()
+  local event = module_mutation_execution_start_event()
+  event.payload.artifact_root = ".testing/runs/module-a-fixture-gap"
+  event.payload.dedup_key = "module-a-fixture-gap-run"
+  event.payload.cdp_execution.mutation_fixtures[1].cleanup_ref = nil
   return event
 end
 
@@ -373,6 +394,42 @@ return {
     t.eq(publication.payload.metadata_path, ".testing/runs/module-a-cdp/metadata.json")
   end,
 
+  test_run_graph_missing_cdp_session_classifies_environment_issue = function()
+    local trace = graph.require_quiescent(graph.run(module_missing_cdp_session_start_event(), { max_steps = 12 }))
+
+    graph.require_delivery(trace, {
+      queue = "testing-pipeline.module_start",
+      consumer = "testing-pipeline.start_module",
+    })
+    graph.require_delivery(trace, {
+      queue = "testing-runner.module_test_request",
+      consumer = "testing-runner.run_module_loop",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-publication.artifact_summary",
+      consumer = "test-publication.prepare_publication",
+    })
+
+    local result = graph.require_raise(trace, "testing-runner.testing_result")
+    t.eq(result.payload.status, "blocked")
+    t.eq(result.payload.native_summary.classification, "missing-cdp-session")
+    t.eq(result.payload.native_summary.outcome_classification, "environment-session-issue")
+    t.eq(result.payload.native_summary.gap_backlog_path, ".testing/runs/module-a-cdp-missing-session/gap-backlog.json")
+
+    local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
+    t.eq(summary.payload.status, "blocked")
+    t.eq(summary.payload.native_summary.outcome_classification, "environment-session-issue")
+    t.eq(summary.payload.native_summary.gap_backlog_path, ".testing/runs/module-a-cdp-missing-session/gap-backlog.json")
+
+    local backlog = read_file(".testing/runs/module-a-cdp-missing-session/gap-backlog.json")
+    t.is_true(backlog:find('"outcome_classification":"environment-session-issue"', 1, true) ~= nil)
+    t.is_true(backlog:find("Restore local server/readiness/login/CDP session inputs", 1, true) ~= nil)
+
+    local publication = graph.require_raise(trace, "test-publication.publication_request")
+    t.eq(publication.payload.status, "blocked")
+    t.eq(publication.payload.severity, "warning")
+  end,
+
   test_run_graph_safe_mutation_execution_reaches_publication_request = function()
     local trace = graph.require_quiescent(graph.run(module_mutation_execution_start_event(), { max_steps = 12 }))
 
@@ -411,6 +468,44 @@ return {
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a-mutation")
   end,
 
+  test_run_graph_fixture_gap_classifies_data_issue = function()
+    local trace = graph.require_quiescent(graph.run(module_fixture_gap_execution_start_event(), { max_steps = 12 }))
+
+    graph.require_delivery(trace, {
+      queue = "testing-pipeline.module_start",
+      consumer = "testing-pipeline.start_module",
+    })
+    graph.require_delivery(trace, {
+      queue = "testing-runner.module_test_request",
+      consumer = "testing-runner.run_module_loop",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-publication.artifact_summary",
+      consumer = "test-publication.prepare_publication",
+    })
+
+    local result = graph.require_raise(trace, "testing-runner.testing_result")
+    t.eq(result.payload.status, "degraded")
+    t.eq(result.payload.native_summary.classification, "no-executable-safe-cases")
+    t.eq(result.payload.native_summary.outcome_classification, "data-fixture-gap")
+    t.eq(result.payload.native_summary.gap_backlog_path, ".testing/runs/module-a-fixture-gap/gap-backlog.json")
+
+    local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
+    t.eq(summary.payload.status, "degraded")
+    t.eq(summary.payload.native_summary.outcome_classification, "data-fixture-gap")
+    t.eq(summary.payload.native_summary.gap_backlog_path, ".testing/runs/module-a-fixture-gap/gap-backlog.json")
+
+    local backlog = read_file(".testing/runs/module-a-fixture-gap/gap-backlog.json")
+    t.is_true(backlog:find('"outcome_classification":"data-fixture-gap"', 1, true) ~= nil)
+    t.is_true(backlog:find("cleanup or rollback", 1, true) ~= nil)
+    local metadata = read_file(".testing/runs/module-a-fixture-gap/metadata.json")
+    t.eq(metadata:find("cleanup_ref", 1, true), nil)
+
+    local publication = graph.require_raise(trace, "test-publication.publication_request")
+    t.eq(publication.payload.status, "degraded")
+    t.eq(publication.payload.severity, "warning")
+  end,
+
   test_run_graph_module_ui_loop_reaches_degraded_publication_request = function()
     local trace = graph.require_quiescent(graph.run(module_ui_loop_start_event(), { max_steps = 12 }))
 
@@ -441,23 +536,31 @@ return {
     t.eq(result.payload.adapter.mode, "module-ui-loop-contract")
     t.eq(result.payload.native_summary.schema, "testing-runner.module-ui-loop-summary.v1")
     t.eq(result.payload.native_summary.classification, "browser-exploration-deferred")
+    t.eq(result.payload.native_summary.outcome_classification, "harness-tooling-issue")
     t.eq(result.payload.native_summary.artifact_root, ".testing/runs/module-a-ui")
     t.eq(result.payload.native_summary.metadata_path, ".testing/runs/module-a-ui/metadata.json")
     t.eq(result.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-ui/evidence-bundle.json")
+    t.eq(result.payload.native_summary.gap_backlog_path, ".testing/runs/module-a-ui/gap-backlog.json")
     t.eq(result.payload.native_summary.gap_ref, ".testing/runs/gap")
     t.eq(result.payload.native_summary.backlog_ref, "backlog-item-1")
 
     local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
     t.eq(summary.payload.status, "degraded")
     t.eq(summary.payload.native_summary.schema, "testing-runner.module-ui-loop-summary.v1")
+    t.eq(summary.payload.native_summary.outcome_classification, "harness-tooling-issue")
     t.eq(summary.payload.native_summary.metadata_path, ".testing/runs/module-a-ui/metadata.json")
     t.eq(summary.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-ui/evidence-bundle.json")
+    t.eq(summary.payload.native_summary.gap_backlog_path, ".testing/runs/module-a-ui/gap-backlog.json")
     t.eq(summary.payload.artifact_root, ".testing/runs/module-a-ui")
 
     local bundle = read_file(".testing/runs/module-a-ui/evidence-bundle.json")
     t.is_true(bundle:find('"failures_path":".testing/runs/module-a-ui/evidence/failures.json"', 1, true) ~= nil)
+    t.is_true(bundle:find('"gap_backlog_path":".testing/runs/module-a-ui/gap-backlog.json"', 1, true) ~= nil)
     local failures = read_file(".testing/runs/module-a-ui/evidence/failures.json")
     t.is_true(failures:find('"classification":"browser-exploration-deferred"', 1, true) ~= nil)
+    local backlog = read_file(".testing/runs/module-a-ui/gap-backlog.json")
+    t.is_true(backlog:find('"outcome_classification":"harness-tooling-issue"', 1, true) ~= nil)
+    t.is_true(backlog:find("browser exploration support", 1, true) ~= nil)
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
     t.eq(publication.payload.status, "degraded")

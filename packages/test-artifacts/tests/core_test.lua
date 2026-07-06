@@ -214,6 +214,8 @@ return {
         artifact_root = ".testing/runs/module-a-ui",
         metadata_path = ".testing/runs/module-a-ui/metadata.json",
         evidence_bundle_path = ".testing/runs/module-a-ui/evidence-bundle.json",
+        gap_backlog_path = ".testing/runs/module-a-ui/gap-backlog.json",
+        outcome_classification = "harness-tooling-issue",
         gap_ref = ".testing/runs/gap",
         backlog_ref = "backlog-item-1",
       },
@@ -238,6 +240,8 @@ return {
         artifact_root = ".testing/runs/module-a-ui",
         metadata_path = ".testing/runs/module-a-ui/metadata.json",
         evidence_bundle_path = ".testing/runs/module-a-ui/evidence-bundle.json",
+        gap_backlog_path = ".testing/runs/module-a-ui/gap-backlog.json",
+        outcome_classification = "harness-tooling-issue",
         gap_ref = ".testing/runs/gap",
         backlog_ref = "backlog-item-1",
       },
@@ -347,6 +351,56 @@ return {
           execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
           metadata_path = ".testing/runs/module-a-cdp/metadata.json",
           evidence_bundle_path = ".testing/runs/other/evidence-bundle.json",
+          action_count = 1,
+        },
+      })
+    end)
+  end,
+
+  test_native_summary_rejects_wrong_gap_backlog_pointer = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "passed",
+        artifact_root = ".testing/runs/module-a-cdp",
+        native_summary = {
+          schema = "testing-runner.module-cdp-execution-summary.v1",
+          module = "module-a",
+          status = "passed",
+          execution_status = "passed",
+          classification = "bounded-exploration-complete",
+          mode = "bounded-cdp-controller",
+          artifact_root = ".testing/runs/module-a-cdp",
+          execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
+          metadata_path = ".testing/runs/module-a-cdp/metadata.json",
+          gap_backlog_path = ".testing/runs/other/gap-backlog.json",
+          outcome_classification = "harness-tooling-issue",
+          action_count = 1,
+        },
+      })
+    end)
+  end,
+
+  test_native_summary_rejects_unknown_outcome_classification = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "passed",
+        artifact_root = ".testing/runs/module-a-cdp",
+        native_summary = {
+          schema = "testing-runner.module-cdp-execution-summary.v1",
+          module = "module-a",
+          status = "passed",
+          execution_status = "passed",
+          classification = "bounded-exploration-complete",
+          mode = "bounded-cdp-controller",
+          artifact_root = ".testing/runs/module-a-cdp",
+          execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
+          metadata_path = ".testing/runs/module-a-cdp/metadata.json",
+          gap_backlog_path = ".testing/runs/module-a-cdp/gap-backlog.json",
+          outcome_classification = "product-ish",
           action_count = 1,
         },
       })

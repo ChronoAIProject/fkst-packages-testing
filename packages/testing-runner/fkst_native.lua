@@ -3,6 +3,7 @@ local M = {}
 local module_cdp_execution = require("module_cdp_execution")
 local module_inventory = require("module_inventory")
 local module_planning = require("module_planning")
+local outcome = require("outcome")
 
 local function adapter(mode)
   return {
@@ -443,8 +444,13 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     console_network = section_path(root, "console-network-summary"),
     screenshots = section_path(root, "screenshot-index"),
     dom_state = section_path(root, "dom-state-summary"),
+    gap_backlog = outcome.path(root),
   }
   result.native_summary.evidence_bundle_path = paths.bundle
+  result.native_summary.gap_backlog_path = paths.gap_backlog
+  local backlog = outcome.build(result, payload, artifact, planning)
+  result.native_summary.outcome_classification = backlog.outcome_classification
+  backlog.evidence_bundle_path = paths.bundle
   local sections = {
     { paths.discovery, discovery_evidence(payload, root) },
     { paths.planning, planning_evidence(planning, root) },
@@ -454,6 +460,7 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     { paths.console_network, console_network_evidence(artifact, root) },
     { paths.screenshots, pointer_index("testing-runner.native-evidence-screenshot-index.v1", "native-evidence-screenshot-index", root, {}) },
     { paths.dom_state, pointer_index("testing-runner.native-evidence-dom-state-summary.v1", "native-evidence-dom-state-summary", root, {}) },
+    { paths.gap_backlog, backlog },
   }
   for _, section in ipairs(sections) do
     local ok, err = write_json(writer, section[1], section[2])
@@ -474,6 +481,7 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     console_network_summary_path = paths.console_network,
     screenshot_index_path = paths.screenshots,
     dom_state_summary_path = paths.dom_state,
+    gap_backlog_path = paths.gap_backlog,
   })
 end
 

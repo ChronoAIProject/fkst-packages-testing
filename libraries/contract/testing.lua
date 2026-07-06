@@ -138,6 +138,26 @@ local function copy_readiness(value)
   return copy
 end
 
+local outcome_classifications = {
+  ["product-defect"] = true,
+  ["harness-tooling-issue"] = true,
+  ["environment-session-issue"] = true,
+  ["data-fixture-gap"] = true,
+  ["not-executed-risk"] = true,
+}
+
+local function copy_outcome_fields(copy, value)
+  if value.outcome_classification ~= nil then
+    if outcome_classifications[value.outcome_classification] ~= true then return nil end
+    copy.outcome_classification = value.outcome_classification
+  end
+  if value.gap_backlog_path ~= nil then
+    if value.gap_backlog_path ~= value.artifact_root .. "/gap-backlog.json" then return nil end
+    copy.gap_backlog_path = value.gap_backlog_path
+  end
+  return copy
+end
+
 local function copy_module_no_browser(value)
   if not has_only(value, { schema = true, module = true, status = true, mode = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) or not bounded_field(value.mode, 80) then return nil end
@@ -150,7 +170,7 @@ local function copy_module_no_browser(value)
 end
 
 local function copy_module_ui_loop(value)
-  if not has_only(value, { schema = true, module = true, status = true, classification = true, mode = true, artifact_root = true, metadata_path = true, evidence_bundle_path = true, gap_ref = true, backlog_ref = true }) then return nil end
+  if not has_only(value, { schema = true, module = true, status = true, classification = true, mode = true, artifact_root = true, metadata_path = true, evidence_bundle_path = true, gap_backlog_path = true, outcome_classification = true, gap_ref = true, backlog_ref = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
   if not bounded_field(value.classification, 80) or not bounded_field(value.mode, 80) then return nil end
   if not strings.is_artifact_root(value.artifact_root) then return nil end
@@ -174,11 +194,11 @@ local function copy_module_ui_loop(value)
     if not bounded_field(value.backlog_ref, max_string) then return nil end
     copy.backlog_ref = value.backlog_ref
   end
-  return copy
+  return copy_outcome_fields(copy, value)
 end
 
 local function copy_module_inventory(value)
-  if not has_only(value, { schema = true, module = true, status = true, discovery_status = true, artifact_root = true, inventory_path = true, module_count = true, coverage = true, feature_inventory_path = true, test_plan_path = true, plan_status = true, evidence_bundle_path = true }) then return nil end
+  if not has_only(value, { schema = true, module = true, status = true, discovery_status = true, artifact_root = true, inventory_path = true, module_count = true, coverage = true, feature_inventory_path = true, test_plan_path = true, plan_status = true, evidence_bundle_path = true, gap_backlog_path = true, outcome_classification = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
   if value.discovery_status ~= "complete" and value.discovery_status ~= "degraded" then return nil end
   if value.plan_status ~= nil and value.plan_status ~= "complete" and value.plan_status ~= "degraded" then return nil end
@@ -203,11 +223,11 @@ local function copy_module_inventory(value)
   if value.test_plan_path ~= nil then copy.test_plan_path = value.test_plan_path end
   if value.plan_status ~= nil then copy.plan_status = value.plan_status end
   if value.evidence_bundle_path ~= nil then copy.evidence_bundle_path = value.evidence_bundle_path end
-  return copy
+  return copy_outcome_fields(copy, value)
 end
 
 local function copy_module_cdp_execution(value)
-  if not has_only(value, { schema = true, module = true, status = true, execution_status = true, classification = true, mode = true, artifact_root = true, execution_path = true, metadata_path = true, test_plan_path = true, cdp_readiness_ref = true, action_count = true, evidence_bundle_path = true }) then return nil end
+  if not has_only(value, { schema = true, module = true, status = true, execution_status = true, classification = true, mode = true, artifact_root = true, execution_path = true, metadata_path = true, test_plan_path = true, cdp_readiness_ref = true, action_count = true, evidence_bundle_path = true, gap_backlog_path = true, outcome_classification = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
   if value.execution_status ~= "passed" and value.execution_status ~= "blocked" and value.execution_status ~= "degraded" then return nil end
   if not bounded_field(value.classification, 80) or not bounded_field(value.mode, 80) then return nil end
@@ -235,7 +255,7 @@ local function copy_module_cdp_execution(value)
     if not bounded_field(value.cdp_readiness_ref, max_string) then return nil end
     copy.cdp_readiness_ref = value.cdp_readiness_ref
   end
-  return copy
+  return copy_outcome_fields(copy, value)
 end
 
 local function copy_online_heartbeat(value)
