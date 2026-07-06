@@ -260,6 +260,9 @@ return {
         discovery_status = "complete",
         artifact_root = ".testing/runs/module-a-inventory",
         inventory_path = ".testing/runs/module-a-inventory/module-inventory.json",
+        feature_inventory_path = ".testing/runs/module-a-inventory/feature-inventory.json",
+        ["test_" .. "plan_path"] = ".testing/runs/module-a-inventory/test-plan.json",
+        plan_status = "complete",
         module_count = 1,
         coverage = "visible-session-only",
       },
@@ -271,6 +274,9 @@ return {
       discovery_status = "complete",
       artifact_root = ".testing/runs/module-a-inventory",
       inventory_path = ".testing/runs/module-a-inventory/module-inventory.json",
+      feature_inventory_path = ".testing/runs/module-a-inventory/feature-inventory.json",
+      ["test_" .. "plan_path"] = ".testing/runs/module-a-inventory/test-plan.json",
+      plan_status = "complete",
       module_count = 1,
       coverage = "visible-session-only",
     })
@@ -290,10 +296,37 @@ return {
           discovery_status = "complete",
           artifact_root = ".testing/runs/module-a-inventory",
           inventory_path = ".testing/runs/module-a-inventory/module-inventory.json",
+          feature_inventory_path = ".testing/runs/module-a-inventory/feature-inventory.json",
+          ["test_" .. "plan_path"] = ".testing/runs/module-a-inventory/test-plan.json",
+          plan_status = "complete",
           module_count = 1,
           coverage = "visible-session-only",
           modules = {
             { id = "dashboard", entry_url = "http://localhost:8080/app/dashboard" },
+          },
+        },
+      })
+    end)
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "degraded",
+        artifact_root = ".testing/runs/module-a-inventory",
+        native_summary = {
+          schema = "testing-runner.module-inventory-summary.v1",
+          module = "module-a",
+          status = "degraded",
+          discovery_status = "complete",
+          artifact_root = ".testing/runs/module-a-inventory",
+          inventory_path = ".testing/runs/module-a-inventory/module-inventory.json",
+          feature_inventory_path = ".testing/runs/module-a-inventory/feature-inventory.json",
+          ["test_" .. "plan_path"] = ".testing/runs/module-a-inventory/test-plan.json",
+          plan_status = "complete",
+          module_count = 1,
+          coverage = "visible-session-only",
+          cases = {
+            { id = "dashboard:reachability", priority = "P0" },
           },
         },
       })

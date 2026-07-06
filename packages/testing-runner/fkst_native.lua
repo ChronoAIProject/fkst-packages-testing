@@ -1,6 +1,7 @@
 local M = {}
 
 local module_inventory = require("module_inventory")
+local module_planning = require("module_planning")
 
 local function adapter(mode)
   return {
@@ -250,11 +251,21 @@ local function write_module_inventory(result, payload, context)
   if not safe_artifact_root(result.artifact_root) then
     return nil, "unsafe artifact_root for fkst-native module inventory"
   end
+  local writer = writer_for(payload, context)
   local inventory = module_inventory.inventory(payload.module_discovery, payload.ui_loop, result.artifact_root, {
     readiness = readiness_summary(payload.preflight_result),
   })
+  local planning = module_planning.build(inventory, payload.ui_loop, result.artifact_root)
   result.native_summary = module_inventory.summary(inventory, result.artifact_root, payload.module, result.status)
-  return writer_for(payload, context)(result.artifact_root .. "/module-inventory.json", json_encode(inventory) .. "\n")
+  result.native_summary.feature_inventory_path = planning.feature_inventory_path
+  result.native_summary.test_plan_path = planning.test_plan_path
+  result.native_summary.plan_status = planning.plan_status
+
+  local ok, err = writer(result.artifact_root .. "/module-inventory.json", json_encode(inventory) .. "\n")
+  if not ok then return nil, err end
+  ok, err = writer(planning.feature_inventory_path, json_encode(planning.feature_inventory) .. "\n")
+  if not ok then return nil, err end
+  return writer(planning.test_plan_path, json_encode(planning.test_plan) .. "\n")
 end
 
 local function with_metadata(result, payload, context)

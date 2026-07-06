@@ -529,7 +529,7 @@ return {
     t.eq(called, false)
   end,
 
-  test_fkst_native_module_discovery_writes_inventory_and_pointer_summary = function()
+  test_fkst_native_module_discovery_writes_inventory_plan_and_pointer_summary = function()
     local called = false
     local written = {}
     local result = core.run("module", {
@@ -567,11 +567,16 @@ return {
     t.eq(result.native_summary.schema, "testing-runner.module-inventory-summary.v1")
     t.eq(result.native_summary.discovery_status, "complete")
     t.eq(result.native_summary.inventory_path, ".testing/runs/module-a-inventory/module-inventory.json")
+    t.eq(result.native_summary.feature_inventory_path, ".testing/runs/module-a-inventory/feature-inventory.json")
+    t.eq(result.native_summary.test_plan_path, ".testing/runs/module-a-inventory/test-plan.json")
+    t.eq(result.native_summary.plan_status, "complete")
     t.eq(result.native_summary.module_count, 1)
     t.eq(result.native_summary.coverage, "visible-session-only")
     t.eq(called, false)
 
     local inventory = written[".testing/runs/module-a-inventory/module-inventory.json"]
+    local feature_inventory = written[".testing/runs/module-a-inventory/feature-inventory.json"]
+    local test_plan = written[".testing/runs/module-a-inventory/test-plan.json"]
     local metadata = written[".testing/runs/module-a-inventory/metadata.json"]
     t.is_true(inventory:find('"schema":"testing-runner.module-inventory.v1"', 1, true) ~= nil)
     t.is_true(inventory:find('"artifact_kind":"module-inventory"', 1, true) ~= nil)
@@ -581,8 +586,13 @@ return {
     t.eq(inventory:find("secret", 1, true), nil)
     t.eq(inventory:find("/admin", 1, true), nil)
     t.is_true(inventory:find("visible to the current local session", 1, true) ~= nil)
+    t.is_true(feature_inventory:find('"schema":"testing-runner.feature-inventory.v1"', 1, true) ~= nil)
+    t.is_true(test_plan:find('"schema":"testing-runner.module-test-plan.v1"', 1, true) ~= nil)
     t.is_true(metadata:find('"schema":"testing-runner.module-inventory-summary.v1"', 1, true) ~= nil)
     t.is_true(metadata:find('"inventory_path":".testing/runs/module-a-inventory/module-inventory.json"', 1, true) ~= nil)
+    t.is_true(metadata:find('"feature_inventory_path":".testing/runs/module-a-inventory/feature-inventory.json"', 1, true) ~= nil)
+    t.is_true(metadata:find('"test_plan_path":".testing/runs/module-a-inventory/test-plan.json"', 1, true) ~= nil)
+    t.eq(metadata:find('"cases"', 1, true), nil)
     t.eq(metadata:find("Dashboard", 1, true), nil)
   end,
 
@@ -616,10 +626,14 @@ return {
     t.eq(result.adapter.mode, "readiness-blocked")
     t.eq(result.native_summary.schema, "testing-runner.module-inventory-summary.v1")
     t.eq(result.native_summary.discovery_status, "degraded")
+    t.eq(result.native_summary.plan_status, "degraded")
     t.eq(result.native_summary.module_count, 0)
     local inventory = written[".testing/runs/module-a-inventory-blocked/module-inventory.json"]
+    local test_plan = written[".testing/runs/module-a-inventory-blocked/test-plan.json"]
     t.is_true(inventory:find('"modules":[]', 1, true) ~= nil)
     t.is_true(inventory:find('"readiness":{"sessions":[{"role":"base_url","status":"blocked"}],"status":"blocked"}', 1, true) ~= nil)
+    t.is_true(test_plan:find('"plan_status":"degraded"', 1, true) ~= nil)
+    t.is_true(test_plan:find('"readiness_status":"blocked"', 1, true) ~= nil)
   end,
 
   test_module_discovery_requires_ui_loop_scope_and_rejects_embedded_payload = function()
