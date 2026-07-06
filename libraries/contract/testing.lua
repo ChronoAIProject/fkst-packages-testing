@@ -175,14 +175,17 @@ local function copy_module_ui_loop(value)
 end
 
 local function copy_module_inventory(value)
-  if not has_only(value, { schema = true, module = true, status = true, discovery_status = true, artifact_root = true, inventory_path = true, module_count = true, coverage = true }) then return nil end
+  if not has_only(value, { schema = true, module = true, status = true, discovery_status = true, artifact_root = true, inventory_path = true, module_count = true, coverage = true, feature_inventory_path = true, test_plan_path = true, plan_status = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
   if value.discovery_status ~= "complete" and value.discovery_status ~= "degraded" then return nil end
+  if value.plan_status ~= nil and value.plan_status ~= "complete" and value.plan_status ~= "degraded" then return nil end
   if not strings.is_artifact_root(value.artifact_root) then return nil end
   if value.inventory_path ~= value.artifact_root .. "/module-inventory.json" then return nil end
+  if value.feature_inventory_path ~= nil and value.feature_inventory_path ~= value.artifact_root .. "/feature-inventory.json" then return nil end
+  if value.test_plan_path ~= nil and value.test_plan_path ~= value.artifact_root .. "/test-plan.json" then return nil end
   if type(value.module_count) ~= "number" or value.module_count < 0 or value.module_count > 64 or math.floor(value.module_count) ~= value.module_count then return nil end
   if value.coverage ~= "visible-session-only" then return nil end
-  return {
+  local copy = {
     schema = T.schemas.module_inventory_summary,
     module = value.module,
     status = value.status,
@@ -192,6 +195,10 @@ local function copy_module_inventory(value)
     module_count = value.module_count,
     coverage = value.coverage,
   }
+  if value.feature_inventory_path ~= nil then copy.feature_inventory_path = value.feature_inventory_path end
+  if value.test_plan_path ~= nil then copy.test_plan_path = value.test_plan_path end
+  if value.plan_status ~= nil then copy.plan_status = value.plan_status end
+  return copy
 end
 
 local function copy_online_heartbeat(value)
