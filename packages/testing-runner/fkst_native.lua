@@ -1,5 +1,7 @@
 local M = {}
 
+local module_inventory = require("module_inventory")
+
 local function adapter(mode)
   return {
     name = "fkst-native",
@@ -228,21 +230,41 @@ local function metadata_for(result)
   return metadata
 end
 
+local function writer_for(payload, context)
+  if payload.artifact_writer ~= nil then return payload.artifact_writer end
+  return function(path, body)
+    return write_file(path, body, context.quote)
+  end
+end
+
 local function write_metadata(result, payload, context)
   if not safe_artifact_root(result.artifact_root) then
     return nil, "unsafe artifact_root for fkst-native metadata"
   end
-  local writer = payload.artifact_writer
-  if writer == nil then
-    writer = function(path, body)
-      return write_file(path, body, context.quote)
-    end
-  end
   local body = json_encode(metadata_for(result)) .. "\n"
-  return writer(result.artifact_root .. "/metadata.json", body)
+  return writer_for(payload, context)(result.artifact_root .. "/metadata.json", body)
+end
+
+local function write_module_inventory(result, payload, context)
+  if payload.module_discovery == nil then return true end
+  if not safe_artifact_root(result.artifact_root) then
+    return nil, "unsafe artifact_root for fkst-native module inventory"
+  end
+  local inventory = module_inventory.inventory(payload.module_discovery, payload.ui_loop, result.artifact_root, {
+    readiness = readiness_summary(payload.preflight_result),
+  })
+  result.native_summary = module_inventory.summary(inventory, result.artifact_root, payload.module, result.status)
+  return writer_for(payload, context)(result.artifact_root .. "/module-inventory.json", json_encode(inventory) .. "\n")
 end
 
 local function with_metadata(result, payload, context)
+  local inventory_ok, inventory_err = write_module_inventory(result, payload, context)
+  if not inventory_ok then
+    return context.result_payload("blocked", {
+      adapter = result.adapter,
+      stderr = "fkst-native artifact write failed: " .. tostring(inventory_err),
+    })
+  end
   local ok, err = write_metadata(result, payload, context)
   if ok then
     return result

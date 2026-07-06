@@ -33,6 +33,34 @@ return {
     t.eq(request.dedup_key, "module-a-ui-run")
   end,
 
+  test_module_discovery_flows_to_module_loop_request = function()
+    local module_discovery = {
+      schema = "testing-runner.module-discovery.v1",
+      observations = {
+        {
+          id = "dashboard",
+          entry_url = "http://localhost:8080/app/dashboard",
+          visible_label = "Dashboard",
+          discovery_source = "navigation",
+          evidence_pointer = ".testing/runs/evidence/dashboard",
+        },
+      },
+    }
+    local request = core.module_loop_request({
+      schema = "testing-pipeline.module-start.v1",
+      module = "module-a",
+      backend = "fkst-native",
+      dry_run = false,
+      ui_loop = {
+        base_url = "http://localhost:8080/app",
+        allowed_origins = { "http://localhost:8080" },
+      },
+      module_discovery = module_discovery,
+      artifact_root = ".testing/runs/module-a-inventory",
+    })
+    t.eq(request.module_discovery, module_discovery)
+  end,
+
   test_saga_conformance_hook_passes = function()
     t.eq(#core.saga_conformance_errors(), 0)
   end,
