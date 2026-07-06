@@ -11,6 +11,7 @@ T.schemas = {
   module_no_browser_summary = "testing-runner.module-no-browser-summary.v1",
   module_ui_loop_summary = "testing-runner.module-ui-loop-summary.v1",
   module_inventory_summary = "testing-runner.module-inventory-summary.v1",
+  module_cdp_execution_summary = "testing-runner.module-cdp-execution-summary.v1",
   online_heartbeat_summary = "testing-runner.online-heartbeat-summary.v1",
   browser_driver_summary = "testing-runner.browser-driver-summary.v1",
 }
@@ -201,6 +202,36 @@ local function copy_module_inventory(value)
   return copy
 end
 
+local function copy_module_cdp_execution(value)
+  if not has_only(value, { schema = true, module = true, status = true, execution_status = true, classification = true, mode = true, artifact_root = true, execution_path = true, metadata_path = true, test_plan_path = true, cdp_readiness_ref = true, action_count = true }) then return nil end
+  if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
+  if value.execution_status ~= "passed" and value.execution_status ~= "blocked" and value.execution_status ~= "degraded" then return nil end
+  if not bounded_field(value.classification, 80) or not bounded_field(value.mode, 80) then return nil end
+  if not strings.is_artifact_root(value.artifact_root) then return nil end
+  if value.execution_path ~= value.artifact_root .. "/cdp-execution.json" then return nil end
+  if value.metadata_path ~= value.artifact_root .. "/metadata.json" then return nil end
+  if value.test_plan_path ~= nil and value.test_plan_path ~= value.artifact_root .. "/test-plan.json" then return nil end
+  if type(value.action_count) ~= "number" or value.action_count < 0 or value.action_count > 32 or math.floor(value.action_count) ~= value.action_count then return nil end
+  local copy = {
+    schema = T.schemas.module_cdp_execution_summary,
+    module = value.module,
+    status = value.status,
+    execution_status = value.execution_status,
+    classification = value.classification,
+    mode = value.mode,
+    artifact_root = value.artifact_root,
+    execution_path = value.execution_path,
+    metadata_path = value.metadata_path,
+    action_count = value.action_count,
+  }
+  if value.test_plan_path ~= nil then copy.test_plan_path = value.test_plan_path end
+  if value.cdp_readiness_ref ~= nil then
+    if not bounded_field(value.cdp_readiness_ref, max_string) then return nil end
+    copy.cdp_readiness_ref = value.cdp_readiness_ref
+  end
+  return copy
+end
+
 local function copy_online_heartbeat(value)
   if not has_only(value, { schema = true, target = true, status = true, mode = true }) then return nil end
   if not bounded_field(value.target, max_string) or not bounded_field(value.status, 80) or not bounded_field(value.mode, 80) then return nil end
@@ -242,6 +273,9 @@ function T.copy_native_summary(value)
   end
   if value.schema == T.schemas.module_inventory_summary then
     return copy_module_inventory(value)
+  end
+  if value.schema == T.schemas.module_cdp_execution_summary then
+    return copy_module_cdp_execution(value)
   end
   if value.schema == T.schemas.online_heartbeat_summary then
     return copy_online_heartbeat(value)

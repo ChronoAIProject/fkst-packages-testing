@@ -1,6 +1,9 @@
 local core = require("core")
 local t = fkst.test
 
+local fixture_origin = "http://localhost:8080"
+local fixture_base_url = fixture_origin .. "/app"
+
 return {
   test_builds_testing_runner_request = function()
     local request = core.runner_request({
@@ -46,8 +49,8 @@ return {
 
   test_module_ui_loop_flows_to_runner_request = function()
     local ui_loop = {
-      base_url = "http://localhost:8080/app",
-      allowed_origins = { "http://localhost:8080" },
+      base_url = fixture_base_url,
+      allowed_origins = { fixture_origin },
       browser_readiness_ref = ".testing/runs/readiness",
       cdp_readiness_ref = "cdp-ready",
       mutation_policy = "read-only",
@@ -75,7 +78,7 @@ return {
       observations = {
         {
           id = "dashboard",
-          entry_url = "http://localhost:8080/app/dashboard",
+          entry_url = fixture_base_url .. "/dashboard",
           visible_label = "Dashboard",
           discovery_source = "navigation",
           evidence_pointer = ".testing/runs/evidence/dashboard",
@@ -88,13 +91,34 @@ return {
       backend = "fkst-native",
       dry_run = false,
       ui_loop = {
-        base_url = "http://localhost:8080/app",
-        allowed_origins = { "http://localhost:8080" },
+        base_url = fixture_base_url,
+        allowed_origins = { fixture_origin },
       },
       module_discovery = module_discovery,
       artifact_root = ".testing/runs/module-a-inventory",
     })
     t.eq(request.module_discovery, module_discovery)
+  end,
+
+  test_cdp_execution_flows_to_runner_request = function()
+    local cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      step_budget = 4,
+      case_priorities = { "P0", "P1" },
+    }
+    local request = core.runner_request({
+      schema = "module-test-loop.start.v1",
+      module = "sample_module",
+      backend = "fkst-native",
+      dry_run = false,
+      ui_loop = {
+        base_url = fixture_base_url,
+        allowed_origins = { fixture_origin },
+      },
+      cdp_execution = cdp_execution,
+      artifact_root = ".testing/runs/module-a-cdp",
+    })
+    t.eq(request.cdp_execution, cdp_execution)
   end,
 
   test_readiness_context_flows_to_runner_request = function()

@@ -282,6 +282,73 @@ return {
     })
   end,
 
+  test_module_cdp_execution_summary_is_pointer_only_golden = function()
+    local summary = core.from_testing_result({
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = "passed",
+      artifact_root = ".testing/runs/module-a-cdp",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-cdp",
+      dedup_key = "dedup-module-a-cdp",
+      adapter = { name = "fkst-native", mode = "module-cdp-execution" },
+      native_summary = {
+        schema = "testing-runner.module-cdp-execution-summary.v1",
+        module = "module-a",
+        status = "passed",
+        execution_status = "passed",
+        classification = "bounded-exploration-complete",
+        mode = "bounded-cdp-controller",
+        artifact_root = ".testing/runs/module-a-cdp",
+        execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
+        metadata_path = ".testing/runs/module-a-cdp/metadata.json",
+        ["test_" .. "plan_path"] = ".testing/runs/module-a-cdp/test-plan.json",
+        cdp_readiness_ref = "cdp-ready",
+        action_count = 5,
+      },
+    })
+    assert_payload(summary.native_summary, {
+      schema = "testing-runner.module-cdp-execution-summary.v1",
+      module = "module-a",
+      status = "passed",
+      execution_status = "passed",
+      classification = "bounded-exploration-complete",
+      mode = "bounded-cdp-controller",
+      artifact_root = ".testing/runs/module-a-cdp",
+      execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
+      metadata_path = ".testing/runs/module-a-cdp/metadata.json",
+      ["test_" .. "plan_path"] = ".testing/runs/module-a-cdp/test-plan.json",
+      cdp_readiness_ref = "cdp-ready",
+      action_count = 5,
+    })
+  end,
+
+  test_module_cdp_execution_summary_rejects_embedded_actions = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "passed",
+        artifact_root = ".testing/runs/module-a-cdp",
+        native_summary = {
+          schema = "testing-runner.module-cdp-execution-summary.v1",
+          module = "module-a",
+          status = "passed",
+          execution_status = "passed",
+          classification = "bounded-exploration-complete",
+          mode = "bounded-cdp-controller",
+          artifact_root = ".testing/runs/module-a-cdp",
+          execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
+          metadata_path = ".testing/runs/module-a-cdp/metadata.json",
+          action_count = 1,
+          actions = {
+            { intent = "Reach Dashboard entry URL", action = "navigate" },
+          },
+        },
+      })
+    end)
+  end,
+
   test_module_inventory_summary_rejects_embedded_inventory_body = function()
     t.raises(function()
       core.from_testing_result({

@@ -42,6 +42,7 @@ function M.runner_request(payload)
     native_argv = fallback(payload, "native_argv"),
     ui_loop = payload.ui_loop,
     module_discovery = payload.module_discovery,
+    cdp_execution = payload.cdp_execution,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
     agentic_testing_repo_root = payload.agentic_testing_repo_root,

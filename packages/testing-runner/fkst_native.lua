@@ -1,5 +1,6 @@
 local M = {}
 
+local module_cdp_execution = require("module_cdp_execution")
 local module_inventory = require("module_inventory")
 local module_planning = require("module_planning")
 
@@ -256,16 +257,25 @@ local function write_module_inventory(result, payload, context)
     readiness = readiness_summary(payload.preflight_result),
   })
   local planning = module_planning.build(inventory, payload.ui_loop, result.artifact_root)
-  result.native_summary = module_inventory.summary(inventory, result.artifact_root, payload.module, result.status)
-  result.native_summary.feature_inventory_path = planning.feature_inventory_path
-  result.native_summary.test_plan_path = planning.test_plan_path
-  result.native_summary.plan_status = planning.plan_status
+  if result.native_summary == nil or result.native_summary.schema ~= module_cdp_execution.summary_schema then
+    result.native_summary = module_inventory.summary(inventory, result.artifact_root, payload.module, result.status)
+    result.native_summary.feature_inventory_path = planning.feature_inventory_path
+    result.native_summary.test_plan_path = planning.test_plan_path
+    result.native_summary.plan_status = planning.plan_status
+  end
 
   local ok, err = writer(result.artifact_root .. "/module-inventory.json", json_encode(inventory) .. "\n")
   if not ok then return nil, err end
   ok, err = writer(planning.feature_inventory_path, json_encode(planning.feature_inventory) .. "\n")
   if not ok then return nil, err end
   return writer(planning.test_plan_path, json_encode(planning.test_plan) .. "\n")
+end
+
+local function write_cdp_execution_artifact(artifact, payload, context)
+  if not safe_artifact_root(artifact.artifact_root) then
+    return nil, "unsafe artifact_root for fkst-native cdp execution"
+  end
+  return writer_for(payload, context)(artifact.execution_path, json_encode(artifact) .. "\n")
 end
 
 local function with_metadata(result, payload, context)
@@ -311,6 +321,32 @@ function M.run(job, payload, context, _exec)
         stderr = "fkst-native module ui loop blocked unsafe runtime input",
       })
       result.native_summary = module_ui_loop_summary(payload, result, "unsafe-runtime-input")
+      return with_metadata(result, payload, context)
+    end
+    if payload.cdp_execution ~= nil then
+      local artifact_root = context.result_payload("planned", {}).artifact_root
+      local artifact = module_cdp_execution.build(payload, artifact_root, {
+        readiness = readiness_summary(payload.preflight_result),
+      })
+      local status = artifact.execution_status
+      local result = context.result_payload(status, {
+        adapter = adapter(status == "blocked" and "module-cdp-execution-blocked" or "module-cdp-execution"),
+        stderr = "fkst-native bounded CDP execution " .. tostring(artifact.classification),
+      })
+      artifact.artifact_root = result.artifact_root
+      artifact.execution_path = result.artifact_root .. "/cdp-execution.json"
+      artifact.metadata_path = result.artifact_root .. "/metadata.json"
+      artifact.inventory_path = artifact.inventory_path and (result.artifact_root .. "/module-inventory.json") or nil
+      artifact.feature_inventory_path = artifact.feature_inventory_path and (result.artifact_root .. "/feature-inventory.json") or nil
+      artifact.test_plan_path = artifact.test_plan_path and (result.artifact_root .. "/test-plan.json") or nil
+      result.native_summary = module_cdp_execution.summary(artifact, payload.module, result.status)
+      local ok, err = write_cdp_execution_artifact(artifact, payload, context)
+      if not ok then
+        return context.result_payload("blocked", {
+          adapter = result.adapter,
+          stderr = "fkst-native artifact write failed: " .. tostring(err),
+        })
+      end
       return with_metadata(result, payload, context)
     end
     local result = context.result_payload("degraded", {
