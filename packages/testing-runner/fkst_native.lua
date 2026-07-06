@@ -239,6 +239,244 @@ local function writer_for(payload, context)
   end
 end
 
+local function bounded_ref(value)
+  return type(value) == "string" and value ~= "" and #value <= 512 and value:find("[%z\1-\31]") == nil and value or nil
+end
+
+local function section_path(root, name)
+  return root .. "/evidence/" .. name .. ".json"
+end
+
+local function evidence_bundle_path(root)
+  return root .. "/evidence-bundle.json"
+end
+
+local function add_if_present(record, key, value)
+  if value ~= nil then record[key] = value end
+end
+
+local function discovery_evidence(payload, root)
+  local observations = {}
+  local discovery = payload.module_discovery or {}
+  for _, observation in ipairs(discovery.observations or {}) do
+    if type(observation) == "table" then
+      local item = {
+        id = safe_label(observation.id, "observation"),
+        entry_url = safe_target(observation.entry_url),
+      }
+      add_if_present(item, "name", bounded_ref(observation.name))
+      add_if_present(item, "visible_label", bounded_ref(observation.visible_label))
+      add_if_present(item, "route", bounded_ref(observation.route))
+      add_if_present(item, "discovery_source", bounded_ref(observation.discovery_source or observation.source))
+      add_if_present(item, "confidence", bounded_ref(observation.confidence))
+      add_if_present(item, "evidence_pointer", bounded_ref(observation.evidence_pointer))
+      table.insert(observations, item)
+      if #observations >= 16 then break end
+    end
+  end
+  return {
+    schema = "testing-runner.native-evidence-discovery.v1",
+    artifact_kind = "native-evidence-discovery",
+    artifact_root = root,
+    observations = observations,
+    observation_count = #observations,
+  }
+end
+
+local function planning_evidence(planning, root)
+  local evidence = {
+    schema = "testing-runner.native-evidence-planning.v1",
+    artifact_kind = "native-evidence-planning",
+    artifact_root = root,
+    plan_status = type(planning) == "table" and planning.plan_status or "not-available",
+  }
+  if type(planning) == "table" then
+    evidence.feature_inventory_path = planning.feature_inventory_path
+    evidence.test_plan_path = planning.test_plan_path
+    if type(planning.test_plan) == "table" then evidence.review_gate = planning.test_plan.review_gate end
+  end
+  return evidence
+end
+
+local function action_trace_evidence(artifact, root)
+  local actions = {}
+  if type(artifact) == "table" then
+    for _, action in ipairs(artifact.actions or {}) do
+      if type(action) == "table" then
+        local item = {
+          step = action.step,
+          module_id = bounded_ref(action.module_id),
+          case_id = bounded_ref(action.case_id),
+          priority = bounded_ref(action.priority),
+          action = bounded_ref(action.action),
+          target = bounded_ref(action.target),
+          url = safe_target(action.url),
+          observation = bounded_ref(action.observation),
+          evidence_pointer = bounded_ref(action.evidence_pointer),
+        }
+        add_if_present(item, "mutation_kind", bounded_ref(action.mutation_kind))
+        add_if_present(item, "fixture_ref", bounded_ref(action.fixture_ref))
+        add_if_present(item, "cleanup_ref", bounded_ref(action.cleanup_ref))
+        add_if_present(item, "rollback_ref", bounded_ref(action.rollback_ref))
+        add_if_present(item, "fixture_evidence_pointer", bounded_ref(action.fixture_evidence_pointer))
+        table.insert(actions, item)
+        if #actions >= 32 then break end
+      end
+    end
+  end
+  return {
+    schema = "testing-runner.native-evidence-action-trace.v1",
+    artifact_kind = "native-evidence-action-trace",
+    artifact_root = root,
+    execution_path = root .. "/cdp-execution.json",
+    actions = actions,
+    action_count = #actions,
+  }
+end
+
+local function skipped_cases_evidence(planning, root)
+  local skipped = {}
+  if type(planning) == "table" and type(planning.test_plan) == "table" then
+    for _, module in ipairs(planning.test_plan.modules or {}) do
+      for _, case in ipairs(module.cases or {}) do
+        if type(case) == "table" and case.review_status ~= "executable" then
+          local item = {
+            module_id = bounded_ref(case.module_id or module.id),
+            case_id = bounded_ref(case.id),
+            priority = bounded_ref(case.priority),
+            review_status = bounded_ref(case.review_status),
+            reason = bounded_ref(case.reason),
+            evidence_pointer = bounded_ref(case.evidence_pointer),
+          }
+          if type(case.mutation_gate) == "table" then
+            item.mutation_gate = {
+              status = bounded_ref(case.mutation_gate.status),
+              classification = bounded_ref(case.mutation_gate.classification),
+              mutation_kind = bounded_ref(case.mutation_gate.mutation_kind),
+            }
+          end
+          table.insert(skipped, item)
+          if #skipped >= 64 then break end
+        end
+      end
+      if #skipped >= 64 then break end
+    end
+  end
+  return {
+    schema = "testing-runner.native-evidence-skipped-cases.v1",
+    artifact_kind = "native-evidence-skipped-cases",
+    artifact_root = root,
+    skipped_cases = skipped,
+    skipped_count = #skipped,
+  }
+end
+
+local function failures_evidence(result, artifact, root)
+  local limitations = type(artifact) == "table" and artifact.limitations or nil
+  return {
+    schema = "testing-runner.native-evidence-failures.v1",
+    artifact_kind = "native-evidence-failures",
+    artifact_root = root,
+    status = result.status,
+    classification = result.native_summary and result.native_summary.classification or nil,
+    limitations = limitations or {},
+  }
+end
+
+local function console_network_evidence(artifact, root)
+  local checks = {}
+  if type(artifact) == "table" then
+    for _, action in ipairs(artifact.actions or {}) do
+      if type(action) == "table" and action.action == "collect-console-network-health" then
+        table.insert(checks, {
+          case_id = bounded_ref(action.case_id),
+          url = safe_target(action.url),
+          observation = bounded_ref(action.observation),
+          evidence_pointer = bounded_ref(action.evidence_pointer),
+        })
+      end
+    end
+  end
+  return {
+    schema = "testing-runner.native-evidence-console-network.v1",
+    artifact_kind = "native-evidence-console-network",
+    artifact_root = root,
+    status = #checks > 0 and "bounded-summary" or "not-collected",
+    checks = checks,
+    check_count = #checks,
+  }
+end
+
+local function pointer_index(schema, kind, root, refs)
+  return {
+    schema = schema,
+    artifact_kind = kind,
+    artifact_root = root,
+    refs = refs or {},
+    ref_count = #(refs or {}),
+  }
+end
+
+local function write_json(writer, path, value)
+  return writer(path, json_encode(value) .. "\n")
+end
+
+local function supports_evidence_bundle(summary)
+  local schema = type(summary) == "table" and summary.schema or nil
+  return schema == "testing-runner.module-ui-loop-summary.v1"
+    or schema == "testing-runner.module-inventory-summary.v1"
+    or schema == module_cdp_execution.summary_schema
+end
+
+local function write_native_evidence_bundle(result, payload, context, artifact, planning)
+  if not supports_evidence_bundle(result.native_summary) then return true end
+  local root = result.artifact_root
+  if not safe_artifact_root(root) then return nil, "unsafe artifact_root for fkst-native evidence bundle" end
+  local writer = writer_for(payload, context)
+  local paths = {
+    bundle = evidence_bundle_path(root),
+    discovery = section_path(root, "discovery"),
+    planning = section_path(root, "planning"),
+    action_trace = section_path(root, "action-trace"),
+    skipped_cases = section_path(root, "skipped-cases"),
+    failures = section_path(root, "failures"),
+    console_network = section_path(root, "console-network-summary"),
+    screenshots = section_path(root, "screenshot-index"),
+    dom_state = section_path(root, "dom-state-summary"),
+  }
+  result.native_summary.evidence_bundle_path = paths.bundle
+  local sections = {
+    { paths.discovery, discovery_evidence(payload, root) },
+    { paths.planning, planning_evidence(planning, root) },
+    { paths.action_trace, action_trace_evidence(artifact, root) },
+    { paths.skipped_cases, skipped_cases_evidence(planning, root) },
+    { paths.failures, failures_evidence(result, artifact, root) },
+    { paths.console_network, console_network_evidence(artifact, root) },
+    { paths.screenshots, pointer_index("testing-runner.native-evidence-screenshot-index.v1", "native-evidence-screenshot-index", root, {}) },
+    { paths.dom_state, pointer_index("testing-runner.native-evidence-dom-state-summary.v1", "native-evidence-dom-state-summary", root, {}) },
+  }
+  for _, section in ipairs(sections) do
+    local ok, err = write_json(writer, section[1], section[2])
+    if not ok then return nil, err end
+  end
+  return write_json(writer, paths.bundle, {
+    schema = "testing-runner.native-evidence-bundle.v1",
+    artifact_kind = "native-evidence-bundle",
+    module = payload.module,
+    status = result.status,
+    artifact_root = root,
+    metadata_path = root .. "/metadata.json",
+    discovery_path = paths.discovery,
+    planning_path = paths.planning,
+    execution_trace_path = paths.action_trace,
+    skipped_cases_path = paths.skipped_cases,
+    failures_path = paths.failures,
+    console_network_summary_path = paths.console_network,
+    screenshot_index_path = paths.screenshots,
+    dom_state_summary_path = paths.dom_state,
+  })
+end
+
 local function write_metadata(result, payload, context)
   if not safe_artifact_root(result.artifact_root) then
     return nil, "unsafe artifact_root for fkst-native metadata"
@@ -270,7 +508,9 @@ local function write_module_inventory(result, payload, context)
   if not ok then return nil, err end
   ok, err = writer(planning.feature_inventory_path, json_encode(planning.feature_inventory) .. "\n")
   if not ok then return nil, err end
-  return writer(planning.test_plan_path, json_encode(planning.test_plan) .. "\n")
+  ok, err = writer(planning.test_plan_path, json_encode(planning.test_plan) .. "\n")
+  if not ok then return nil, err end
+  return true, nil, planning
 end
 
 local function write_cdp_execution_artifact(artifact, payload, context)
@@ -280,12 +520,20 @@ local function write_cdp_execution_artifact(artifact, payload, context)
   return writer_for(payload, context)(artifact.execution_path, json_encode(artifact) .. "\n")
 end
 
-local function with_metadata(result, payload, context)
-  local inventory_ok, inventory_err = write_module_inventory(result, payload, context)
+local function with_metadata(result, payload, context, opts)
+  opts = opts or {}
+  local inventory_ok, inventory_err, planning = write_module_inventory(result, payload, context)
   if not inventory_ok then
     return context.result_payload("blocked", {
       adapter = result.adapter,
       stderr = "fkst-native artifact write failed: " .. tostring(inventory_err),
+    })
+  end
+  local bundle_ok, bundle_err = write_native_evidence_bundle(result, payload, context, opts.artifact, planning)
+  if not bundle_ok then
+    return context.result_payload("blocked", {
+      adapter = result.adapter,
+      stderr = "fkst-native artifact write failed: " .. tostring(bundle_err),
     })
   end
   local ok, err = write_metadata(result, payload, context)
@@ -349,7 +597,7 @@ function M.run(job, payload, context, _exec)
           stderr = "fkst-native artifact write failed: " .. tostring(err),
         })
       end
-      return with_metadata(result, payload, context)
+      return with_metadata(result, payload, context, { artifact = artifact })
     end
     local result = context.result_payload("degraded", {
       adapter = adapter("module-ui-loop-contract"),

@@ -213,6 +213,7 @@ return {
         mode = "contract-envelope",
         artifact_root = ".testing/runs/module-a-ui",
         metadata_path = ".testing/runs/module-a-ui/metadata.json",
+        evidence_bundle_path = ".testing/runs/module-a-ui/evidence-bundle.json",
         gap_ref = ".testing/runs/gap",
         backlog_ref = "backlog-item-1",
       },
@@ -236,6 +237,7 @@ return {
         mode = "contract-envelope",
         artifact_root = ".testing/runs/module-a-ui",
         metadata_path = ".testing/runs/module-a-ui/metadata.json",
+        evidence_bundle_path = ".testing/runs/module-a-ui/evidence-bundle.json",
         gap_ref = ".testing/runs/gap",
         backlog_ref = "backlog-item-1",
       },
@@ -262,6 +264,7 @@ return {
         inventory_path = ".testing/runs/module-a-inventory/module-inventory.json",
         feature_inventory_path = ".testing/runs/module-a-inventory/feature-inventory.json",
         ["test_" .. "plan_path"] = ".testing/runs/module-a-inventory/test-plan.json",
+        evidence_bundle_path = ".testing/runs/module-a-inventory/evidence-bundle.json",
         plan_status = "complete",
         module_count = 1,
         coverage = "visible-session-only",
@@ -276,6 +279,7 @@ return {
       inventory_path = ".testing/runs/module-a-inventory/module-inventory.json",
       feature_inventory_path = ".testing/runs/module-a-inventory/feature-inventory.json",
       ["test_" .. "plan_path"] = ".testing/runs/module-a-inventory/test-plan.json",
+      evidence_bundle_path = ".testing/runs/module-a-inventory/evidence-bundle.json",
       plan_status = "complete",
       module_count = 1,
       coverage = "visible-session-only",
@@ -303,6 +307,7 @@ return {
         execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
         metadata_path = ".testing/runs/module-a-cdp/metadata.json",
         ["test_" .. "plan_path"] = ".testing/runs/module-a-cdp/test-plan.json",
+        evidence_bundle_path = ".testing/runs/module-a-cdp/evidence-bundle.json",
         cdp_readiness_ref = "cdp-ready",
         action_count = 5,
       },
@@ -318,9 +323,34 @@ return {
       execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
       metadata_path = ".testing/runs/module-a-cdp/metadata.json",
       ["test_" .. "plan_path"] = ".testing/runs/module-a-cdp/test-plan.json",
+      evidence_bundle_path = ".testing/runs/module-a-cdp/evidence-bundle.json",
       cdp_readiness_ref = "cdp-ready",
       action_count = 5,
     })
+  end,
+
+  test_native_summary_rejects_wrong_evidence_bundle_pointer = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "passed",
+        artifact_root = ".testing/runs/module-a-cdp",
+        native_summary = {
+          schema = "testing-runner.module-cdp-execution-summary.v1",
+          module = "module-a",
+          status = "passed",
+          execution_status = "passed",
+          classification = "bounded-exploration-complete",
+          mode = "bounded-cdp-controller",
+          artifact_root = ".testing/runs/module-a-cdp",
+          execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
+          metadata_path = ".testing/runs/module-a-cdp/metadata.json",
+          evidence_bundle_path = ".testing/runs/other/evidence-bundle.json",
+          action_count = 1,
+        },
+      })
+    end)
   end,
 
   test_module_cdp_execution_summary_rejects_embedded_actions = function()

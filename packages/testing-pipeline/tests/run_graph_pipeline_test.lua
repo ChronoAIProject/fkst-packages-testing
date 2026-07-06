@@ -282,6 +282,7 @@ return {
     t.eq(result.payload.native_summary.inventory_path, ".testing/runs/module-a-inventory/module-inventory.json")
     t.eq(result.payload.native_summary.feature_inventory_path, ".testing/runs/module-a-inventory/feature-inventory.json")
     t.eq(result.payload.native_summary.test_plan_path, ".testing/runs/module-a-inventory/test-plan.json")
+    t.eq(result.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-inventory/evidence-bundle.json")
     t.eq(result.payload.native_summary.plan_status, "complete")
     t.eq(result.payload.native_summary.module_count, 1)
 
@@ -290,8 +291,15 @@ return {
     t.eq(summary.payload.native_summary.inventory_path, ".testing/runs/module-a-inventory/module-inventory.json")
     t.eq(summary.payload.native_summary.feature_inventory_path, ".testing/runs/module-a-inventory/feature-inventory.json")
     t.eq(summary.payload.native_summary.test_plan_path, ".testing/runs/module-a-inventory/test-plan.json")
+    t.eq(summary.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-inventory/evidence-bundle.json")
     t.eq(summary.payload.native_summary.plan_status, "complete")
     t.eq(summary.payload.native_summary.module_count, 1)
+
+    local bundle = read_file(".testing/runs/module-a-inventory/evidence-bundle.json")
+    t.is_true(bundle:find('"discovery_path":".testing/runs/module-a-inventory/evidence/discovery.json"', 1, true) ~= nil)
+    local discovery = read_file(".testing/runs/module-a-inventory/evidence/discovery.json")
+    t.eq(discovery:find("secret", 1, true), nil)
+    t.is_true(discovery:find('"entry_url":"' .. fixture_base_url .. '/dashboard"', 1, true) ~= nil)
 
     local plan = read_file(".testing/runs/module-a-inventory/test-plan.json")
     t.is_true(plan:find('"schema":"testing-runner.module-test-plan.v1"', 1, true) ~= nil)
@@ -339,13 +347,19 @@ return {
     t.eq(result.payload.adapter.mode, "module-cdp-execution")
     t.eq(result.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
     t.eq(result.payload.native_summary.execution_path, ".testing/runs/module-a-cdp/cdp-execution.json")
+    t.eq(result.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-cdp/evidence-bundle.json")
     t.eq(result.payload.native_summary.action_count, 5)
 
     local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
     t.eq(summary.payload.status, "passed")
     t.eq(summary.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
     t.eq(summary.payload.native_summary.execution_path, ".testing/runs/module-a-cdp/cdp-execution.json")
+    t.eq(summary.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-cdp/evidence-bundle.json")
     t.eq(summary.payload.native_summary.action_count, 5)
+
+    local action_trace = read_file(".testing/runs/module-a-cdp/evidence/action-trace.json")
+    t.is_true(action_trace:find('"action":"navigate"', 1, true) ~= nil)
+    t.eq(action_trace:find("secret", 1, true), nil)
 
     local execution = read_file(".testing/runs/module-a-cdp/cdp-execution.json")
     t.is_true(execution:find('"action":"navigate"', 1, true) ~= nil)
@@ -379,6 +393,7 @@ return {
     t.eq(result.payload.status, "passed")
     t.eq(result.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
     t.eq(result.payload.native_summary.action_count, 1)
+    t.eq(result.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-mutation/evidence-bundle.json")
     t.eq(result.payload.native_summary.cleanup_ref, nil)
 
     local execution = read_file(".testing/runs/module-a-mutation/cdp-execution.json")
@@ -387,6 +402,9 @@ return {
 
     local metadata = read_file(".testing/runs/module-a-mutation/metadata.json")
     t.eq(metadata:find("cleanup_ref", 1, true), nil)
+
+    local action_trace = read_file(".testing/runs/module-a-mutation/evidence/action-trace.json")
+    t.is_true(action_trace:find('"cleanup_ref":".testing/runs/fixtures/dashboard-cleanup"', 1, true) ~= nil)
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
     t.eq(publication.payload.status, "passed")
@@ -425,6 +443,7 @@ return {
     t.eq(result.payload.native_summary.classification, "browser-exploration-deferred")
     t.eq(result.payload.native_summary.artifact_root, ".testing/runs/module-a-ui")
     t.eq(result.payload.native_summary.metadata_path, ".testing/runs/module-a-ui/metadata.json")
+    t.eq(result.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-ui/evidence-bundle.json")
     t.eq(result.payload.native_summary.gap_ref, ".testing/runs/gap")
     t.eq(result.payload.native_summary.backlog_ref, "backlog-item-1")
 
@@ -432,7 +451,13 @@ return {
     t.eq(summary.payload.status, "degraded")
     t.eq(summary.payload.native_summary.schema, "testing-runner.module-ui-loop-summary.v1")
     t.eq(summary.payload.native_summary.metadata_path, ".testing/runs/module-a-ui/metadata.json")
+    t.eq(summary.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-ui/evidence-bundle.json")
     t.eq(summary.payload.artifact_root, ".testing/runs/module-a-ui")
+
+    local bundle = read_file(".testing/runs/module-a-ui/evidence-bundle.json")
+    t.is_true(bundle:find('"failures_path":".testing/runs/module-a-ui/evidence/failures.json"', 1, true) ~= nil)
+    local failures = read_file(".testing/runs/module-a-ui/evidence/failures.json")
+    t.is_true(failures:find('"classification":"browser-exploration-deferred"', 1, true) ~= nil)
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
     t.eq(publication.payload.status, "degraded")
