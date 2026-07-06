@@ -256,7 +256,9 @@ local function write_module_inventory(result, payload, context)
   local inventory = module_inventory.inventory(payload.module_discovery, payload.ui_loop, result.artifact_root, {
     readiness = readiness_summary(payload.preflight_result),
   })
-  local planning = module_planning.build(inventory, payload.ui_loop, result.artifact_root)
+  local planning = module_planning.build(inventory, payload.ui_loop, result.artifact_root, {
+    mutation_fixtures = ((payload.cdp_execution or {}).mutation_fixtures),
+  })
   if result.native_summary == nil or result.native_summary.schema ~= module_cdp_execution.summary_schema then
     result.native_summary = module_inventory.summary(inventory, result.artifact_root, payload.module, result.status)
     result.native_summary.feature_inventory_path = planning.feature_inventory_path

@@ -41,6 +41,13 @@ local function has_case(module, priority, status)
   return false
 end
 
+local function find_case(module, suffix)
+  for _, case in ipairs(module.cases) do
+    if case.id == "dashboard:" .. suffix then return case end
+  end
+  return nil
+end
+
 return {
   test_builds_feature_inventory_and_p0_p1_p2_plan = function()
     local artifacts = planning.build(inventory(), { mutation_policy = "read-only" }, ".testing/runs/module-a-inventory")
@@ -69,7 +76,46 @@ return {
     local artifacts = planning.build(inventory(), { mutation_policy = "host-approved" }, ".testing/runs/module-a-inventory")
     local module = artifacts.test_plan.modules[1]
     t.is_true(has_case(module, "P2", "blocked"))
+    local case = find_case(module, "write-flow")
+    t.eq(case.mutation_gate.classification, "fixture-data-gap")
     t.eq(artifacts.test_plan.review_gate.mutation_policy, "host-approved")
+  end,
+
+  test_host_approved_mutation_policy_executes_safe_fixture_mutation = function()
+    local artifacts = planning.build(inventory(), { mutation_policy = "host-approved" }, ".testing/runs/module-a-inventory", {
+      mutation_fixtures = {
+        {
+          case_id = "dashboard:write-flow",
+          mutation_kind = "create-test-data",
+          fixture_ref = ".testing/runs/fixtures/dashboard-create",
+          cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
+          evidence_pointer = ".testing/runs/evidence/dashboard-create",
+        },
+      },
+    })
+    local module = artifacts.test_plan.modules[1]
+    local case = find_case(module, "write-flow")
+    t.eq(case.review_status, "executable")
+    t.eq(case.mutation_gate.classification, "safe-local-test-data")
+    t.eq(case.mutation_gate.cleanup_ref, ".testing/runs/fixtures/dashboard-cleanup")
+    t.eq(find_case(module, "state-change").review_status, "blocked")
+  end,
+
+  test_destructive_mutation_fixture_is_blocked_by_default = function()
+    local artifacts = planning.build(inventory(), { mutation_policy = "host-approved" }, ".testing/runs/module-a-inventory", {
+      mutation_fixtures = {
+        {
+          case_id = "dashboard:write-flow",
+          mutation_kind = "delete",
+          fixture_ref = ".testing/runs/fixtures/dashboard-delete",
+          cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
+          evidence_pointer = ".testing/runs/evidence/dashboard-delete",
+        },
+      },
+    })
+    local case = find_case(artifacts.test_plan.modules[1], "write-flow")
+    t.eq(case.review_status, "blocked")
+    t.eq(case.mutation_gate.classification, "destructive-or-external-risk")
   end,
 
   test_degraded_inventory_produces_degraded_plan = function()
