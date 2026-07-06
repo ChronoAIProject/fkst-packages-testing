@@ -121,6 +121,13 @@ local function prepare_artifact_dir()
   end
 end
 
+local function read_file(path)
+  local file = assert(io.open(path, "r"))
+  local body = file:read("*a")
+  file:close()
+  return body
+end
+
 return {
   test_run_graph_artifact_summary_flows_to_publication_request = function()
     local trace = graph.require_quiescent(graph.run(result_event("failed"), { max_steps = 8 }))
@@ -231,12 +238,27 @@ return {
     t.eq(result.payload.native_summary.schema, "testing-runner.module-inventory-summary.v1")
     t.eq(result.payload.native_summary.discovery_status, "complete")
     t.eq(result.payload.native_summary.inventory_path, ".testing/runs/module-a-inventory/module-inventory.json")
+    t.eq(result.payload.native_summary.feature_inventory_path, ".testing/runs/module-a-inventory/feature-inventory.json")
+    t.eq(result.payload.native_summary.test_plan_path, ".testing/runs/module-a-inventory/test-plan.json")
+    t.eq(result.payload.native_summary.plan_status, "complete")
     t.eq(result.payload.native_summary.module_count, 1)
 
     local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
     t.eq(summary.payload.native_summary.schema, "testing-runner.module-inventory-summary.v1")
     t.eq(summary.payload.native_summary.inventory_path, ".testing/runs/module-a-inventory/module-inventory.json")
+    t.eq(summary.payload.native_summary.feature_inventory_path, ".testing/runs/module-a-inventory/feature-inventory.json")
+    t.eq(summary.payload.native_summary.test_plan_path, ".testing/runs/module-a-inventory/test-plan.json")
+    t.eq(summary.payload.native_summary.plan_status, "complete")
     t.eq(summary.payload.native_summary.module_count, 1)
+
+    local plan = read_file(".testing/runs/module-a-inventory/test-plan.json")
+    t.is_true(plan:find('"schema":"testing-runner.module-test-plan.v1"', 1, true) ~= nil)
+    t.is_true(plan:find('"priority":"P0"', 1, true) ~= nil)
+    t.is_true(plan:find('"priority":"P1"', 1, true) ~= nil)
+    t.is_true(plan:find('"priority":"P2"', 1, true) ~= nil)
+    t.is_true(plan:find('"review_status":"executable"', 1, true) ~= nil)
+    t.is_true(plan:find('"review_status":"blocked"', 1, true) ~= nil)
+    t.is_true(plan:find('"review_status":"not-executed-risk"', 1, true) ~= nil)
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
     t.eq(publication.payload.status, "degraded")
