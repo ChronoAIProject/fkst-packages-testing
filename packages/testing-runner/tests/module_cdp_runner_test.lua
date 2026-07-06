@@ -92,4 +92,42 @@ return {
     t.eq(result.native_summary.execution_status, "blocked")
     t.eq(result.native_summary.classification, "missing-cdp-session")
   end,
+
+  test_fkst_native_module_cdp_execution_writes_safe_mutation_evidence_only_to_artifact = function()
+    local written = {}
+    local cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      step_budget = 8,
+      case_priorities = { "P2" },
+      mutation_fixtures = {
+        {
+          case_id = "dashboard:write-flow",
+          mutation_kind = "edit-test-data",
+          fixture_ref = ".testing/runs/fixtures/dashboard-edit",
+          rollback_ref = ".testing/runs/fixtures/dashboard-rollback",
+          evidence_pointer = ".testing/runs/evidence/dashboard-edit",
+        },
+      },
+    }
+    local result = core.run("module", request({
+      ui_loop = {
+        base_url = fixture_base_url,
+        allowed_origins = { fixture_origin },
+        cdp_readiness_ref = "cdp-ready",
+        mutation_policy = "host-approved",
+      },
+      cdp_execution = cdp_execution,
+      artifact_writer = function(path, body)
+        written[path] = body
+        return true
+      end,
+    }))
+    t.eq(result.status, "passed")
+    t.eq(result.native_summary.action_count, 1)
+    t.eq(result.native_summary.rollback_ref, nil)
+    t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find('"action":"safe-mutation-fixture"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find('"rollback_ref":".testing/runs/fixtures/dashboard-rollback"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-cdp/test-plan.json"]:find('"classification":"safe-local-test-data"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-cdp/metadata.json"]:find("rollback", 1, true) == nil)
+  end,
 }

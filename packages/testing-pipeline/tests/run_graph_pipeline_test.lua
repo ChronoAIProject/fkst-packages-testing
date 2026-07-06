@@ -90,6 +90,30 @@ local function module_cdp_execution_start_event()
   return event
 end
 
+local function module_mutation_execution_start_event()
+  local event = module_discovery_start_event()
+  event.payload.artifact_root = ".testing/runs/module-a-mutation"
+  event.payload.dedup_key = "module-a-mutation-run"
+  event.payload.ui_loop.cdp_readiness_ref = "cdp-ready"
+  event.payload.ui_loop.mutation_policy = "host-approved"
+  event.payload.cdp_execution = {
+    schema = "testing-runner.module-cdp-execution.v1",
+    step_budget = 8,
+    case_priorities = { "P2" },
+    mutation_fixtures = {
+      {
+        case_id = "dashboard:write-flow",
+        mutation_kind = "create-test-data",
+        fixture_ref = ".testing/runs/fixtures/dashboard-create",
+        cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
+        evidence_pointer = ".testing/runs/evidence/dashboard-create",
+      },
+    },
+  }
+  table.insert(event.payload.preflight_result.sessions, { role = "admin", status = "ready" })
+  return event
+end
+
 module_discovery_start_event = function()
   return {
     queue = "module_start",
@@ -333,6 +357,40 @@ return {
     t.eq(publication.payload.severity, "success")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a-cdp")
     t.eq(publication.payload.metadata_path, ".testing/runs/module-a-cdp/metadata.json")
+  end,
+
+  test_run_graph_safe_mutation_execution_reaches_publication_request = function()
+    local trace = graph.require_quiescent(graph.run(module_mutation_execution_start_event(), { max_steps = 12 }))
+
+    graph.require_delivery(trace, {
+      queue = "testing-pipeline.module_start",
+      consumer = "testing-pipeline.start_module",
+    })
+    graph.require_delivery(trace, {
+      queue = "testing-runner.module_test_request",
+      consumer = "testing-runner.run_module_loop",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-publication.artifact_summary",
+      consumer = "test-publication.prepare_publication",
+    })
+
+    local result = graph.require_raise(trace, "testing-runner.testing_result")
+    t.eq(result.payload.status, "passed")
+    t.eq(result.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
+    t.eq(result.payload.native_summary.action_count, 1)
+    t.eq(result.payload.native_summary.cleanup_ref, nil)
+
+    local execution = read_file(".testing/runs/module-a-mutation/cdp-execution.json")
+    t.is_true(execution:find('"action":"safe-mutation-fixture"', 1, true) ~= nil)
+    t.is_true(execution:find('"cleanup_ref":".testing/runs/fixtures/dashboard-cleanup"', 1, true) ~= nil)
+
+    local metadata = read_file(".testing/runs/module-a-mutation/metadata.json")
+    t.eq(metadata:find("cleanup_ref", 1, true), nil)
+
+    local publication = graph.require_raise(trace, "test-publication.publication_request")
+    t.eq(publication.payload.status, "passed")
+    t.eq(publication.payload.artifact_root, ".testing/runs/module-a-mutation")
   end,
 
   test_run_graph_module_ui_loop_reaches_degraded_publication_request = function()

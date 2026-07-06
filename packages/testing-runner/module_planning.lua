@@ -11,8 +11,21 @@ local function case_id(module, suffix)
   return tostring(module.id or "module") .. ":" .. suffix
 end
 
-local function review_case(module, priority, suffix, title, case_kind, review_status, reason)
-  return {
+local safe_mutation_kinds = {
+  ["create-test-data"] = true,
+  ["edit-test-data"] = true,
+}
+
+local blocked_mutation_kinds = {
+  delete = true,
+  permissions = true,
+  billing = true,
+  ["external-notification"] = true,
+  ["real-user-impact"] = true,
+}
+
+local function review_case(module, priority, suffix, title, case_kind, review_status, reason, extra)
+  local case = {
     id = case_id(module, suffix),
     module_id = module.id,
     priority = priority,
@@ -22,16 +35,67 @@ local function review_case(module, priority, suffix, title, case_kind, review_st
     review_status = review_status,
     reason = reason,
   }
+  if type(extra) == "table" then
+    for key, value in pairs(extra) do case[key] = value end
+  end
+  return case
 end
 
-local function p2_status(mutation_policy)
-  if mutation_policy == "host-approved" then
-    return "blocked", "requires host-approved fixtures before execution"
+local function fixture_complete(fixture)
+  return type(fixture) == "table"
+    and type(fixture.fixture_ref) == "string"
+    and type(fixture.evidence_pointer) == "string"
+    and (type(fixture.cleanup_ref) == "string" or type(fixture.rollback_ref) == "string")
+end
+
+local function mutation_gate(policy, fixture)
+  if policy == "read-only" then
+    return "not-executed-risk", "mutation_policy read-only records this as a gap", {
+      status = "not-executed-risk",
+      classification = "read-only-policy",
+    }
   end
-  if mutation_policy == "dry-run" then
-    return "blocked", "requires dry-run mutation fixture before execution"
+  if type(fixture) ~= "table" then
+    return "blocked", "fixture/data gap: safe mutation requires host fixture and cleanup or rollback evidence", {
+      status = "blocked",
+      classification = "fixture-data-gap",
+    }
   end
-  return "not-executed-risk", "mutation_policy read-only records this as a gap"
+  local kind = fixture.mutation_kind
+  if blocked_mutation_kinds[kind] then
+    return "blocked", "mutation kind " .. kind .. " is destructive or externally visible and blocked by default", {
+      status = "blocked",
+      classification = "destructive-or-external-risk",
+      mutation_kind = kind,
+    }
+  end
+  if not safe_mutation_kinds[kind] or not fixture_complete(fixture) then
+    return "blocked", "fixture/data gap: create/edit test-data mutations require fixture, evidence, and cleanup or rollback pointers", {
+      status = "blocked",
+      classification = "fixture-data-gap",
+      mutation_kind = kind,
+    }
+  end
+  return "executable", "safe local test-data mutation has host fixture and cleanup or rollback evidence", {
+    status = "executable",
+    classification = "safe-local-test-data",
+    mutation_kind = kind,
+    fixture_ref = fixture.fixture_ref,
+    cleanup_ref = fixture.cleanup_ref,
+    rollback_ref = fixture.rollback_ref,
+    evidence_pointer = fixture.evidence_pointer,
+  }
+end
+
+local function mutation_fixture_index(fixtures)
+  local indexed = {}
+  if type(fixtures) ~= "table" then return indexed end
+  for _, fixture in ipairs(fixtures) do
+    if type(fixture) == "table" and type(fixture.case_id) == "string" then
+      indexed[fixture.case_id] = fixture
+    end
+  end
+  return indexed
 end
 
 local function feature_for(module)
@@ -52,8 +116,9 @@ local function feature_for(module)
   }
 end
 
-local function cases_for(module, mutation_policy)
+local function cases_for(module, mutation_policy, fixtures)
   local label = module_label(module)
+  local indexed_fixtures = mutation_fixture_index(fixtures)
   local cases = {
     review_case(module, "P0", "reachability", "Reach " .. label .. " entry URL", "entry-health", "executable", "accepted local inventory module has in-scope entry_url"),
     review_case(module, "P0", "page-load", "Load " .. label .. " without fatal render failure", "entry-health", "executable", "covered by local UI loop readiness and page load observation"),
@@ -63,10 +128,22 @@ local function cases_for(module, mutation_policy)
     review_case(module, "P1", "search-filter", "Exercise visible search or filtering controls for " .. label, "primary-interaction", "blocked", "requires visible search/filter control evidence"),
     review_case(module, "P1", "open-details", "Open visible detail surfaces for " .. label, "primary-interaction", "blocked", "requires visible detail-link evidence"),
   }
-  local status, reason = p2_status(mutation_policy)
-  table.insert(cases, review_case(module, "P2", "write-flow", "Exercise write flow for " .. label, "mutation-or-edge", status, reason))
-  table.insert(cases, review_case(module, "P2", "state-change", "Verify state change handling for " .. label, "mutation-or-edge", status, reason))
-  table.insert(cases, review_case(module, "P2", "negative-edge", "Exercise negative and edge paths for " .. label, "mutation-or-edge", "not-executed-risk", "negative paths require host-selected fixtures and assertions"))
+  local write_id = case_id(module, "write-flow")
+  local state_id = case_id(module, "state-change")
+  local write_status, write_reason, write_gate = mutation_gate(mutation_policy, indexed_fixtures[write_id])
+  local state_status, state_reason, state_gate = mutation_gate(mutation_policy, indexed_fixtures[state_id])
+  table.insert(cases, review_case(module, "P2", "write-flow", "Exercise safe create/edit test-data flow for " .. label, "mutation-or-edge", write_status, write_reason, {
+    mutation_gate = write_gate,
+  }))
+  table.insert(cases, review_case(module, "P2", "state-change", "Verify safe test-data state change handling for " .. label, "mutation-or-edge", state_status, state_reason, {
+    mutation_gate = state_gate,
+  }))
+  table.insert(cases, review_case(module, "P2", "negative-edge", "Exercise negative and edge paths for " .. label, "mutation-or-edge", "not-executed-risk", "negative paths require host-selected fixtures and assertions", {
+    mutation_gate = {
+      status = "not-executed-risk",
+      classification = "host-selected-assertion-gap",
+    },
+  }))
   return cases
 end
 
@@ -80,7 +157,8 @@ local function count_cases(modules)
   return counts
 end
 
-function M.build(inventory, ui_loop, artifact_root)
+function M.build(inventory, ui_loop, artifact_root, opts)
+  opts = opts or {}
   local mutation_policy = (ui_loop or {}).mutation_policy or "read-only"
   local inventory_path = artifact_root .. "/module-inventory.json"
   local feature_inventory_path = artifact_root .. "/feature-inventory.json"
@@ -95,7 +173,7 @@ function M.build(inventory, ui_loop, artifact_root)
       name = module_label(module),
       entry_url = module.entry_url,
       evidence_pointer = module.evidence_pointer,
-      cases = cases_for(module, mutation_policy),
+      cases = cases_for(module, mutation_policy, opts.mutation_fixtures),
     })
   end
 

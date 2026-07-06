@@ -90,6 +90,51 @@ return {
     t.eq(artifact.action_count, 2)
   end,
 
+  test_executes_p2_only_with_safe_mutation_fixture_evidence = function()
+    local value = payload()
+    value.ui_loop.mutation_policy = "host-approved"
+    value.cdp_execution.case_priorities = { "P2" }
+    value.cdp_execution.mutation_fixtures = {
+      {
+        case_id = "dashboard:write-flow",
+        mutation_kind = "create-test-data",
+        fixture_ref = ".testing/runs/fixtures/dashboard-create",
+        cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
+        evidence_pointer = ".testing/runs/evidence/dashboard-create",
+      },
+    }
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
+    t.eq(artifact.execution_status, "passed")
+    t.eq(artifact.planned_case_count, 1)
+    t.eq(artifact.action_count, 1)
+    t.eq(artifact.actions[1].case_id, "dashboard:write-flow")
+    t.eq(artifact.actions[1].priority, "P2")
+    t.eq(artifact.actions[1].action, "safe-mutation-fixture")
+    t.eq(artifact.actions[1].mutation_kind, "create-test-data")
+    t.eq(artifact.actions[1].cleanup_ref, ".testing/runs/fixtures/dashboard-cleanup")
+    t.eq(artifact.actions[1].fixture_evidence_pointer, ".testing/runs/evidence/dashboard-create")
+  end,
+
+  test_destructive_p2_fixture_degrades_without_execution = function()
+    local value = payload()
+    value.ui_loop.mutation_policy = "host-approved"
+    value.cdp_execution.case_priorities = { "P2" }
+    value.cdp_execution.mutation_fixtures = {
+      {
+        case_id = "dashboard:write-flow",
+        mutation_kind = "delete",
+        fixture_ref = ".testing/runs/fixtures/dashboard-delete",
+        cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
+        evidence_pointer = ".testing/runs/evidence/dashboard-delete",
+      },
+    }
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
+    t.eq(artifact.execution_status, "degraded")
+    t.eq(artifact.classification, "no-executable-safe-cases")
+    t.eq(artifact.planned_case_count, 0)
+    t.eq(artifact.action_count, 0)
+  end,
+
   test_rejects_embedded_browser_state_in_execution_request = function()
     t.raises(function()
       cdp.validate_request({
@@ -98,5 +143,23 @@ return {
         screenshot = "inline-browser-state",
       })
     end)
+  end,
+
+  test_records_fixture_gap_when_cleanup_or_rollback_is_missing = function()
+    local value = payload()
+    value.ui_loop.mutation_policy = "host-approved"
+    value.cdp_execution.case_priorities = { "P2" }
+    value.cdp_execution.mutation_fixtures = {
+      {
+        case_id = "dashboard:write-flow",
+        mutation_kind = "create-test-data",
+        fixture_ref = ".testing/runs/fixtures/dashboard-create",
+        evidence_pointer = ".testing/runs/evidence/dashboard-create",
+      },
+    }
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
+    t.eq(artifact.execution_status, "degraded")
+    t.eq(artifact.classification, "no-executable-safe-cases")
+    t.eq(artifact.action_count, 0)
   end,
 }
