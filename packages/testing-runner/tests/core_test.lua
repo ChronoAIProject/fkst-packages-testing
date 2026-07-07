@@ -520,7 +520,7 @@ return {
         artifact_root = ".testing/runs/module-a-ui",
         metadata_path = ".testing/runs/module-a-ui/metadata.json",
         evidence_bundle_path = ".testing/runs/module-a-ui/evidence-bundle.json",
-        gap_backlog_path = ".testing/runs/module-a-ui/gap-backlog.json", outcome_classification = "harness-tooling-issue",
+        gap_backlog_path = ".testing/runs/module-a-ui/gap-backlog.json", outcome_classification = "harness-tooling-issue", stage_report_path = ".testing/runs/module-a-ui/stage-report.md", issue_drafts_path = ".testing/runs/module-a-ui/issue-drafts.json", publication_dry_run = true,
         gap_ref = ".testing/runs/gap",
         backlog_ref = "backlog-item-1",
       },

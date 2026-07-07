@@ -146,6 +146,48 @@ return {
     })
   end,
 
+  test_publication_handoff_carries_dry_run_report_pointers_only = function()
+    local request = core.publication_request({
+      schema = "test-artifacts.summary.v1",
+      job = "module-test-loop",
+      status = "degraded",
+      artifact_root = ".testing/runs/module-a-ui",
+      metadata_path = ".testing/runs/module-a-ui/metadata.json",
+      source_ref = { kind = "host", ref = "module-a" },
+      trace_id = "trace-module-a-ui",
+      dedup_key = "dedup-module-a-ui",
+      native_summary = {
+        schema = "testing-runner.module-ui-loop-summary.v1",
+        module = "module-a",
+        status = "degraded",
+        classification = "browser-exploration-deferred",
+        mode = "contract-envelope",
+        artifact_root = ".testing/runs/module-a-ui",
+        metadata_path = ".testing/runs/module-a-ui/metadata.json",
+        stage_report_path = ".testing/runs/module-a-ui/stage-report.md",
+        issue_drafts_path = ".testing/runs/module-a-ui/issue-drafts.json",
+        publication_dry_run = true,
+      },
+    })
+    assert_payload(request, {
+      schema = "test-publication.publication-request.v1",
+      publication_kind = "testing-summary",
+      channel = "testing",
+      severity = "warning",
+      subject = "Testing degraded: module-test-loop",
+      trace_id = "trace-module-a-ui",
+      dedup_key = "dedup-module-a-ui",
+      status = "degraded",
+      job = "module-test-loop",
+      artifact_root = ".testing/runs/module-a-ui",
+      metadata_path = ".testing/runs/module-a-ui/metadata.json",
+      source_ref = { kind = "host", ref = "module-a" },
+      stage_report_path = ".testing/runs/module-a-ui/stage-report.md",
+      issue_drafts_path = ".testing/runs/module-a-ui/issue-drafts.json",
+      publication_dry_run = true,
+    })
+  end,
+
   test_publication_maps_summary_status_to_severity = function()
     t.eq(core.severity("passed"), "success")
     t.eq(core.severity("failed"), "failure")
