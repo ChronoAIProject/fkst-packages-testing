@@ -376,6 +376,9 @@ return {
     t.eq(summary.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
     t.eq(summary.payload.native_summary.execution_path, ".testing/runs/module-a-cdp/cdp-execution.json")
     t.eq(summary.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-cdp/evidence-bundle.json")
+    t.eq(summary.payload.native_summary.stage_report_path, ".testing/runs/module-a-cdp/stage-report.md")
+    t.eq(summary.payload.native_summary.issue_drafts_path, ".testing/runs/module-a-cdp/issue-drafts.json")
+    t.eq(summary.payload.native_summary.publication_dry_run, true)
     t.eq(summary.payload.native_summary.action_count, 5)
 
     local action_trace = read_file(".testing/runs/module-a-cdp/evidence/action-trace.json")
@@ -387,11 +390,25 @@ return {
     t.is_true(execution:find('"url":"' .. fixture_base_url .. '/dashboard"', 1, true) ~= nil)
     t.eq(execution:find("secret", 1, true), nil)
 
+    local report = read_file(".testing/runs/module-a-cdp/stage-report.md")
+    t.is_true(report:find("Discovered modules", 1, true) ~= nil)
+    t.is_true(report:find("Executed user-facing scenarios", 1, true) ~= nil)
+    t.is_true(report:find("Publication handoff: dry-run pointer handoff only", 1, true) ~= nil)
+    t.eq(report:find("secret", 1, true), nil)
+    local drafts = read_file(".testing/runs/module-a-cdp/issue-drafts.json")
+    t.is_true(drafts:find('"publication_dry_run":true', 1, true) ~= nil)
+    t.is_true(drafts:find('"external_write":false', 1, true) ~= nil)
+
     local publication = graph.require_raise(trace, "test-publication.publication_request")
     t.eq(publication.payload.status, "passed")
     t.eq(publication.payload.severity, "success")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a-cdp")
     t.eq(publication.payload.metadata_path, ".testing/runs/module-a-cdp/metadata.json")
+    t.eq(publication.payload.stage_report_path, ".testing/runs/module-a-cdp/stage-report.md")
+    t.eq(publication.payload.issue_drafts_path, ".testing/runs/module-a-cdp/issue-drafts.json")
+    t.eq(publication.payload.publication_dry_run, true)
+    t.eq(publication.payload.issue_body, nil)
+    t.eq(publication.payload.github_comment, nil)
   end,
 
   test_run_graph_missing_cdp_session_classifies_environment_issue = function()

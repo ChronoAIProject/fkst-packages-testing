@@ -36,6 +36,30 @@ local function source_ref(summary)
   return testing_contract.copy_source_ref(summary.source_ref, "artifact", summary.artifact_root or "unknown")
 end
 
+local function copy_dry_run_pointers(request, summary)
+  local native = type(summary.native_summary) == "table" and summary.native_summary or nil
+  if native == nil then return request end
+  if native.stage_report_path ~= nil then
+    if native.stage_report_path ~= summary.artifact_root .. "/stage-report.md" then
+      error("test-publication: malformed-summary: stage_report_path must point under artifact_root")
+    end
+    request.stage_report_path = native.stage_report_path
+  end
+  if native.issue_drafts_path ~= nil then
+    if native.issue_drafts_path ~= summary.artifact_root .. "/issue-drafts.json" then
+      error("test-publication: malformed-summary: issue_drafts_path must point under artifact_root")
+    end
+    request.issue_drafts_path = native.issue_drafts_path
+  end
+  if native.publication_dry_run ~= nil then
+    if native.publication_dry_run ~= true then
+      error("test-publication: malformed-summary: publication_dry_run must be true when present")
+    end
+    request.publication_dry_run = true
+  end
+  return request
+end
+
 function M.validate_artifact_summary(summary)
   if type(summary) ~= "table" then
     error("test-publication: malformed-summary: summary must be a table")
@@ -86,7 +110,7 @@ function M.publication_request(summary)
     metadata_path = summary.metadata_path,
     source_ref = src,
   }
-  return request
+  return copy_dry_run_pointers(request, summary)
 end
 
 return M
