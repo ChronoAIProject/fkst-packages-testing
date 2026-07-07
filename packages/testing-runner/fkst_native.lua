@@ -4,6 +4,7 @@ local module_cdp_execution = require("module_cdp_execution")
 local module_inventory = require("module_inventory")
 local module_planning = require("module_planning")
 local outcome = require("outcome")
+local reporting = require("reporting")
 
 local function adapter(mode)
   return {
@@ -445,12 +446,24 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     screenshots = section_path(root, "screenshot-index"),
     dom_state = section_path(root, "dom-state-summary"),
     gap_backlog = outcome.path(root),
+    stage_report = reporting.stage_report_path(root),
+    issue_drafts = reporting.issue_drafts_path(root),
   }
   result.native_summary.evidence_bundle_path = paths.bundle
   result.native_summary.gap_backlog_path = paths.gap_backlog
+  result.native_summary.stage_report_path = paths.stage_report
+  result.native_summary.issue_drafts_path = paths.issue_drafts
+  result.native_summary.publication_dry_run = true
   local backlog = outcome.build(result, payload, artifact, planning)
   result.native_summary.outcome_classification = backlog.outcome_classification
   backlog.evidence_bundle_path = paths.bundle
+  local reports = reporting.build(result, payload, artifact, planning, backlog, {
+    metadata = root .. "/metadata.json",
+    bundle = paths.bundle,
+    gap_backlog = paths.gap_backlog,
+    stage_report = paths.stage_report,
+    issue_drafts = paths.issue_drafts,
+  })
   local sections = {
     { paths.discovery, discovery_evidence(payload, root) },
     { paths.planning, planning_evidence(planning, root) },
@@ -461,11 +474,14 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     { paths.screenshots, pointer_index("testing-runner.native-evidence-screenshot-index.v1", "native-evidence-screenshot-index", root, {}) },
     { paths.dom_state, pointer_index("testing-runner.native-evidence-dom-state-summary.v1", "native-evidence-dom-state-summary", root, {}) },
     { paths.gap_backlog, backlog },
+    { paths.issue_drafts, reports.issue_drafts },
   }
   for _, section in ipairs(sections) do
     local ok, err = write_json(writer, section[1], section[2])
     if not ok then return nil, err end
   end
+  local report_ok, report_err = writer(paths.stage_report, reports.stage_report)
+  if not report_ok then return nil, report_err end
   return write_json(writer, paths.bundle, {
     schema = "testing-runner.native-evidence-bundle.v1",
     artifact_kind = "native-evidence-bundle",
@@ -482,6 +498,9 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     screenshot_index_path = paths.screenshots,
     dom_state_summary_path = paths.dom_state,
     gap_backlog_path = paths.gap_backlog,
+    stage_report_path = paths.stage_report,
+    issue_drafts_path = paths.issue_drafts,
+    publication_dry_run = true,
   })
 end
 
