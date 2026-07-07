@@ -46,7 +46,7 @@ A typical host flow is:
 3. Let `module-test-loop` emit `testing-runner.module-test-loop.request.v1`.
 4. Run it through `testing-runner` with `backend = "fkst-native"` or the legacy `agentic-testing-cli` backend.
 
-Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixture in `examples/generic-host/host_native_module_profile.lua` shows how a host-owned native module profile can translate into these existing events without adding product facts to this repo.
+Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixtures under `examples/generic-host/` show how host-owned native module, browser-driver, and UI-loop profiles can translate into these existing events without adding product facts to this repo.
 
 ### Generic downstream integration example
 

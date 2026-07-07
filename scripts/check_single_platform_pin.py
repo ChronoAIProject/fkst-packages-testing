@@ -70,6 +70,20 @@ def checkout_head() -> str:
     return head
 
 
+def check_checkout_read_only() -> None:
+    result = subprocess.run(
+        ["git", "-C", str(CHECKOUT), "status", "--porcelain=v1"],
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        check=False,
+    )
+    if result.returncode != 0:
+        fail(f"cannot read hydrated checkout status path={CHECKOUT} stderr={result.stderr.strip()}")
+    if result.stdout.strip():
+        fail(f"hydrated fkst-packages checkout must remain read-only dirty={result.stdout.strip()!r}")
+
+
 def main() -> int:
     expected_rev = pin_rev()
     check_no_second_ref_pin(expected_rev)
@@ -77,8 +91,9 @@ def main() -> int:
     head = checkout_head()
     if head != expected_rev:
         fail(f"checkout_head={head} pin_rev={expected_rev}")
+    check_checkout_read_only()
 
-    print(f"PASS single-platform-pin pin_rev={expected_rev} checkout_head={head}")
+    print(f"PASS single-platform-pin pin_rev={expected_rev} checkout_head={head} checkout=read-only")
     return 0
 
 
