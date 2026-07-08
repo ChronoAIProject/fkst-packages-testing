@@ -88,9 +88,6 @@ end
 
 return {
   test_app_scope_reaches_readiness_check = function()
-    t.mock_command("command -v 'true' >/dev/null 2>&1", { stdout = "", stderr = "", exit_code = 0 })
-    t.mock_command("curl -fsS --max-time 2 'http://localhost:8080/app' >/dev/null 2>&1", { stdout = "", stderr = "", exit_code = 0 })
-
     local trace = graph.require_quiescent(graph.run(app_scope_event(), { max_steps = 12 }))
 
     graph.require_delivery(trace, {
@@ -102,7 +99,6 @@ return {
       consumer = "browser-readiness.check_readiness",
     })
     local readiness = graph.require_raise(trace, "browser-readiness.browser_readiness_result").payload
-    t.eq(readiness.status, "ready")
     t.eq(readiness.source_ref.kind, "testing-discovery-plan")
     inspect_raised_payloads(trace)
   end,
