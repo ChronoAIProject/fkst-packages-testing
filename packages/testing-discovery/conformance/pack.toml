@@ -1,0 +1,21 @@
+schema = 1
+runner_protocol = "fkst-declarative-rulepack@1"
+owner_package = "testing-discovery"
+
+[[rules]]
+id = "testing-discovery-no-product-hardcoding"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["**/*.lua"]
+exclude = ["tests/**"]
+pattern = "ornn|ORNN|redemption"
+message = "testing discovery must stay host-neutral and must not encode product-specific defaults"
+
+[[rules]]
+id = "testing-discovery-pointer-only"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["**/*.lua"]
+exclude = ["tests/**"]
+pattern = "raw_report|raw_stdout|raw_stderr|raw_dom|dom_body|html_body|screenshot_body|trace_body|model_transcript|raw_model_response|browser_storage|localStorage|sessionStorage"
+message = "testing discovery events and implementation must carry bounded facts and artifact pointers only"

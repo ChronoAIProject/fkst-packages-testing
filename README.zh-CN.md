@@ -4,7 +4,7 @@
 
 本仓有意独立于 [`fkst-packages`](https://github.com/ChronoAIProject/fkst-packages)。它负责 testing / QA 领域边界：测试 runner 编排、浏览器 readiness、测试 artifact contract、发布 handoff、模块/平台测试 loop 生命周期，以及在线回归入口。
 
-runtime adapter 现在同时包含显式 `fkst-native` backend 和 legacy [`ChronoAIProject/agentic-testing`](https://github.com/ChronoAIProject/agentic-testing) Python CLI 兼容 backend。native 覆盖会在不改变 queue contract 的前提下逐步扩展；尚未支持的 native live path 会返回 `blocked`，不会静默 fallback 到 legacy CLI。
+runtime adapter 默认走 `fkst-native`。旧 `agentic-testing` Python CLI 和 host wrapper 不再是可执行 backend；legacy 请求会返回 `blocked`，不会静默 fallback。
 
 本仓不包含 engine Rust，也不保存 host 应用状态。
 
@@ -12,11 +12,12 @@ runtime adapter 现在同时包含显式 `fkst-native` backend 和 legacy [`Chro
 
 | Package | 形态 | 作用 | 状态 |
 | --- | --- | --- | --- |
-| `testing-runner` | flat adapter | 通过 `fkst-native` 或 legacy `agentic-testing-cli` backend 运行测试任务，并输出标准 testing result payload。 | migrating |
+| `testing-runner` | flat adapter | 通过 FKST-native runtime boundary 运行测试任务并输出标准 testing result payload；legacy `agentic-testing` 请求会被 blocked。 | migrating |
 | `browser-readiness` | flat adapter | 检查本地 browser-harness/CDP/base URL readiness，并可透传 bounded execution context。 | migrating |
 | `test-artifacts` | flat library package | 定义标准 `.testing` artifact summary contract。 | skeleton |
 | `test-publication` | flat adapter | 将 testing publication handoff artifacts 转换为 publication requests，后续用于组合 `github-proxy`。 | skeleton |
 | `testing-pipeline` | composed lifecycle | 组合 module loop、runner、artifact summary 和 publication handoff，用于 graph-level testing flows。 | skeleton |
+| `testing-discovery` | composed lifecycle | 将本地 app scope 的 bounded observations 转成 FKST-native module starts，不需要手写产品 module catalog。 | experimental |
 | `module-test-loop` | composed lifecycle | 模块级测试生命周期编排，并委托 `testing-runner` 执行 runner path。 | migrating |
 | `platform-test-loop` | composed lifecycle | 平台级多模块测试生命周期编排；初始委托给 `module-test-loop` / `testing-runner`。 | skeleton |
 | `online-regression` | flat adapter | 在线回归 / heartbeat 入口，已具备第一条 native no-browser heartbeat path。 | migrating |
@@ -30,9 +31,11 @@ Host 仓负责组合这些 packages，并提供自己的应用默认值。本仓
 1. 产生 `browser-readiness.check.v1` 请求，包含 host 提供的 sessions、本地 base URL，以及可选的 bounded `request_context`。
 2. 将 `browser-readiness.result.v1` 传给 `module-test-loop.start.v1`。
 3. 由 `module-test-loop` 发出 `testing-runner.module-test-loop.request.v1`。
-4. 由 `testing-runner` 通过 `backend = "fkst-native"` 或 legacy `agentic-testing-cli` backend 执行。
+4. 由 `testing-runner` 执行；省略 `backend` 时默认解析为唯一可执行 backend `fkst-native`。
 
 产品特定 profile 应放在 downstream host 仓。本仓只提供可复用的 testing/QA building blocks 和中性 contract。
+
+对于无人手写 module catalog 的覆盖，host 可以提交 `testing-discovery.app-scope.v1`，只包含本地 scope、sessions、安全策略，以及 bounded AI/browser/navigation/accessibility observations。`testing-discovery` 会自动推导 module starts，把 sanitized discovery plan 写到 `.testing/runs/...`，并复用现有 `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication 路径。host 只提供 bootstrap scope 和 safety policy；产品模块目录不属于本 package set。
 
 ### 下游 generic 接入示例
 
@@ -72,7 +75,7 @@ Host 仓可以把应用特定选择留在自己仓内，只向本 package set �
 
 ### no-browser native 约束
 
-第一批可执行 native path 有意保持很窄：module no-browser request 只有在 `backend = "fkst-native"`、`dry_run = false`、`no_browser = true` 且提供 bounded `native_argv` 时才执行；module browser request 只有在 `backend = "fkst-native"`、`dry_run = false`、提供 `e2e_driver` 和 bounded `native_argv` 时才执行。缺少 module `native_argv` 返回 `planned`；`native_argv` 指向 `agentic_testing.cli` 返回 `blocked`；`agentic_testing_repo_root` 会被 `fkst-native` 忽略。online regression 只在提供 `heartbeat_url` 时支持 native no-browser HTTP heartbeat。其他 unsupported native live path 返回 `blocked`，不得 fallback 到 legacy CLI。
+可执行 native path 有意保持很窄：module UI-loop request 使用 bounded `ui_loop`、`module_discovery` 和 `cdp_execution` facts；module no-browser request 只有在 `dry_run = false`、`no_browser = true` 且提供 bounded `native_argv` 时才执行；module browser request 只有在 `dry_run = false`、提供 `e2e_driver` 和 bounded `native_argv` 时才执行。缺少 module `native_argv` 返回 `planned`；`native_argv` 指向 legacy `agentic-testing` CLI 或 host wrapper 返回 `blocked`；`agentic_testing_repo_root` 不再是 active field。online regression 只在提供 `heartbeat_url` 时支持 native no-browser HTTP heartbeat。其他 unsupported native live path 返回 `blocked`，不得 fallback 到 legacy code。
 
 ### 下游最小消费协议
 

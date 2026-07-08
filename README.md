@@ -4,7 +4,7 @@ Testing and QA building-block packages for the **fkst** ecosystem.
 
 This repository is intentionally separate from [`fkst-packages`](https://github.com/ChronoAIProject/fkst-packages). It owns the testing / QA domain boundary: test runner orchestration, browser readiness, testing artifact contracts, publication handoff, module and platform test-loop lifecycle, and online regression entry points.
 
-The runtime adapter now has an explicit `fkst-native` backend alongside the legacy [`ChronoAIProject/agentic-testing`](https://github.com/ChronoAIProject/agentic-testing) Python CLI compatibility backend. Native coverage is being expanded incrementally without changing queue contracts; unsupported native live paths return `blocked` rather than falling back to the legacy CLI.
+The runtime adapter is FKST-native by default. The old `agentic-testing` Python CLI and host wrapper are no longer executable backends; legacy requests are blocked rather than silently falling back.
 
 This repository contains no engine Rust and no host application state.
 
@@ -12,11 +12,12 @@ This repository contains no engine Rust and no host application state.
 
 | Package | Shape | What it does | Status |
 | --- | --- | --- | --- |
-| `testing-runner` | flat adapter | Runs configured testing jobs through `fkst-native` or the legacy `agentic-testing-cli` backend and emits normalized testing result payloads. | migrating |
+| `testing-runner` | flat adapter | Runs configured testing jobs through the FKST-native runtime boundary and emits normalized testing result payloads; legacy `agentic-testing` requests are blocked. | migrating |
 | `browser-readiness` | flat adapter | Checks local browser-harness/CDP/base URL readiness and can carry bounded execution context through the readiness gate. | migrating |
 | `test-artifacts` | flat library package | Defines the normalized `.testing` artifact summary contract. | skeleton |
 | `test-publication` | flat adapter | Converts testing publication handoff artifacts into publication requests, intended to compose with `github-proxy`. | skeleton |
 | `testing-pipeline` | composed lifecycle | Composes module loop, runner, artifact summary, and publication handoff for graph-level testing flows. | skeleton |
+| `testing-discovery` | composed lifecycle | Converts bounded local app-scope observations into FKST-native module starts without a hand-authored product module catalog. | experimental |
 | `module-test-loop` | composed lifecycle | Module-level testing lifecycle orchestration that delegates runner execution to `testing-runner`. | migrating |
 | `platform-test-loop` | composed lifecycle | Platform-level multi-module testing lifecycle orchestration. Initially delegates to `module-test-loop` / `testing-runner`. | skeleton |
 | `online-regression` | flat adapter | Online regression / heartbeat entry point with a first native no-browser heartbeat path. | migrating |
@@ -31,6 +32,7 @@ packages/<name>/
   tests/*_test.lua
 contracts/
   testing-runner.v1.md
+  testing-discovery.v1.md
 libraries/
   contract/ workflow/ testkit/
 ```
@@ -44,9 +46,11 @@ A typical host flow is:
 1. Produce a `browser-readiness.check.v1` request with host-provided sessions, local base URL, and optional bounded `request_context`.
 2. Feed the `browser-readiness.result.v1` into a `module-test-loop.start.v1` request.
 3. Let `module-test-loop` emit `testing-runner.module-test-loop.request.v1`.
-4. Run it through `testing-runner` with `backend = "fkst-native"` or the legacy `agentic-testing-cli` backend.
+4. Run it through `testing-runner`; omitted `backend` resolves to `fkst-native`, the only executable backend.
 
 Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixtures under `examples/generic-host/` show how host-owned native module, browser-driver, and UI-loop profiles can translate into these existing events without adding product facts to this repo.
+
+For autonomous coverage, a host can submit `testing-discovery.app-scope.v1` with local scope, sessions, policy, and bounded AI/browser/navigation/accessibility observations. `testing-discovery` derives module starts automatically, writes a sanitized discovery plan under `.testing/runs/...`, and reuses the existing `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication path. Hosts provide only bootstrap scope and safety policy; product-specific module catalogs are not required in this package set.
 
 ### Generic downstream integration example
 
@@ -86,7 +90,7 @@ For multi-module flows, a host may pass module result pointers to `platform-test
 
 ### No-browser native constraints
 
-The first executable native paths are intentionally narrow: module no-browser requests run with `backend = "fkst-native"`, `dry_run = false`, `no_browser = true`, and bounded `native_argv`; module browser requests run with `backend = "fkst-native"`, `dry_run = false`, `e2e_driver`, and bounded `native_argv`. Missing module `native_argv` returns `planned`; `native_argv` targeting `agentic_testing.cli` returns `blocked`; `agentic_testing_repo_root` is ignored by `fkst-native`. Online regression supports native no-browser HTTP heartbeat only when `heartbeat_url` is present. Other unsupported native live paths return `blocked` and must not fall back to the legacy CLI.
+The executable native paths are intentionally narrow: module UI-loop requests use bounded `ui_loop`, `module_discovery`, and `cdp_execution` facts; module no-browser requests run with `dry_run = false`, `no_browser = true`, and bounded `native_argv`; module browser requests run with `dry_run = false`, `e2e_driver`, and bounded `native_argv`. Missing module `native_argv` returns `planned`; `native_argv` targeting the legacy `agentic-testing` CLI or host wrapper returns `blocked`; `agentic_testing_repo_root` is not an active field. Online regression supports native no-browser HTTP heartbeat only when `heartbeat_url` is present. Other unsupported native live paths return `blocked` and must not fall back to legacy code.
 
 ### Minimal downstream consumption
 

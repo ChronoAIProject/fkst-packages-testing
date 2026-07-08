@@ -13,6 +13,8 @@ local max_modules = 64
 local allowed_sources = {
   accessibility = true,
   ["a11y-visible"] = true,
+  browser = true,
+  ["browser-visible"] = true,
   navigation = true,
   ["nav-link"] = true,
   route = true,
@@ -295,7 +297,7 @@ function M.inventory(request, ui_loop, artifact_root, opts)
     coverage = "visible-session-only",
     readiness = readiness,
     provenance = {
-      discovery_sources = { "route", "navigation", "accessibility" },
+      discovery_sources = { "route", "navigation", "accessibility", "browser", "browser-visible" },
       rejected_observation_count = rejected_count,
     },
   }

@@ -13,14 +13,14 @@ local function dense_list(value)
     if type(key) ~= "number" or key < 1 or key % 1 ~= 0 then return false end
     if key > count then count = key end
   end
-  for i = 1, count do
-    if value[i] == nil then return false end
+  for index = 1, count do
+    if value[index] == nil then return false end
   end
   return true, count
 end
 
 local function safe_artifact_root(value)
-  return type(value) == "string"
+  return bounded_string(value)
     and value:match("^%.testing/runs/[^%z]+$") ~= nil
     and value:find("..", 1, true) == nil
 end
@@ -32,50 +32,88 @@ local function local_url(value)
       or value:match("^https?://%[::1%][:/%?]") ~= nil)
 end
 
-local function targets_legacy_cli(argv)
-  for _, value in ipairs(argv or {}) do
-    if tostring(value):find("agentic_testing.cli", 1, true) ~= nil then
-      return true
-    end
-  end
-  return false
+local function origin_from_url(value)
+  if not bounded_string(value) then return nil end
+  local scheme, authority = value:match("^(https?)://([^/%?#]+)")
+  if scheme == nil or authority == nil or authority == "" then return nil end
+  if authority:find("%s") ~= nil or authority:find("\\", 1, true) ~= nil or authority:find("@", 1, true) ~= nil then return nil end
+  return scheme:lower() .. "://" .. authority:lower()
 end
 
-local function validate_argv(argv)
-  local ok, count = dense_list(argv)
-  if not ok or count == 0 then error("agentic-testing-host: native_argv must be a non-empty dense list") end
-  for _, item in ipairs(argv) do
-    if not bounded_string(item) then error("agentic-testing-host: native_argv items must be bounded strings") end
-  end
-  if targets_legacy_cli(argv) then error("agentic-testing-host: native_argv must not target agentic_testing.cli") end
+local function base_scope(value)
+  if origin_from_url(value) == nil then return nil end
+  return tostring(value):gsub("[#?].*$", "")
 end
 
-local function validate_session(session)
-  if type(session) ~= "table" then return false end
-  if not bounded_string(session.role) then return false end
-  return bounded_string(session.browser_harness_command)
-    or bounded_string(session.browser_harness_command_env)
-    or bounded_string(session.cdp_endpoint_env)
-    or local_url(session.cdp_url)
+local function within_base_scope(entry_url, base_url)
+  local scope = base_scope(base_url)
+  if scope == nil or not bounded_string(entry_url) then return false end
+  local clean = entry_url:gsub("[#?].*$", "")
+  if scope:sub(-1) == "/" then return clean:sub(1, #scope) == scope end
+  return clean == scope or clean:sub(1, #scope + 1) == scope .. "/"
+end
+
+local function validate_allowed_origins(base_url, origins)
+  local ok, count = dense_list(origins)
+  if not ok or count == 0 or count > 16 then error("agentic-testing-host: allowed_origins must be a non-empty bounded dense list") end
+  local base_origin = origin_from_url(base_url)
+  local includes_base = false
+  for _, origin in ipairs(origins) do
+    if not local_url(origin) then error("agentic-testing-host: allowed_origins must contain local http origins") end
+    if origin_from_url(origin) == base_origin then includes_base = true end
+  end
+  if not includes_base then error("agentic-testing-host: allowed_origins must include base_url origin") end
 end
 
 local function validate_sessions(sessions)
   local ok, count = dense_list(sessions)
   if not ok or count == 0 then error("agentic-testing-host: sessions must be a non-empty dense list") end
   for _, session in ipairs(sessions) do
-    if not validate_session(session) then error("agentic-testing-host: invalid browser readiness session") end
+    if type(session) ~= "table" or not bounded_string(session.role) then error("agentic-testing-host: invalid readiness session") end
+    if not bounded_string(session.browser_harness_command)
+      and not bounded_string(session.browser_harness_command_env)
+      and not bounded_string(session.cdp_endpoint_env)
+      and not local_url(session.cdp_url) then
+      error("agentic-testing-host: invalid readiness session")
+    end
+  end
+end
+
+local function validate_observations(base_url, observations)
+  local ok, count = dense_list(observations)
+  if not ok or count == 0 or count > 64 then error("agentic-testing-host: observations must be a non-empty bounded dense list") end
+  for _, item in ipairs(observations) do
+    if type(item) ~= "table" then error("agentic-testing-host: observation must be a table") end
+    if not bounded_string(item.id) or not bounded_string(item.name) then error("agentic-testing-host: observation id/name must be bounded strings") end
+    if not within_base_scope(item.entry_url, base_url) then error("agentic-testing-host: observation entry_url must stay within base_url scope") end
+    if not bounded_string(item.evidence_pointer) then error("agentic-testing-host: observation evidence_pointer must be a bounded string") end
+  end
+end
+
+local function validate_cdp_execution(value)
+  if type(value) ~= "table" then error("agentic-testing-host: cdp_execution must be a table") end
+  if value.schema ~= "testing-runner.module-cdp-execution.v1" then error("agentic-testing-host: cdp_execution schema is invalid") end
+  if type(value.step_budget) ~= "number" or value.step_budget < 1 or value.step_budget > 32 or value.step_budget % 1 ~= 0 then
+    error("agentic-testing-host: cdp_execution.step_budget must be an integer from 1 to 32")
+  end
+  local ok, count = dense_list(value.case_priorities)
+  if not ok or count == 0 or count > 3 then error("agentic-testing-host: cdp_execution.case_priorities must be a bounded dense list") end
+  for _, priority in ipairs(value.case_priorities) do
+    if priority ~= "P0" and priority ~= "P1" and priority ~= "P2" then error("agentic-testing-host: cdp_execution.case_priorities is invalid") end
   end
 end
 
 local function validate_profile(profile)
-  if type(profile) ~= "table" then error("agentic-testing-host: module profile must be a table") end
+  if type(profile) ~= "table" then error("agentic-testing-host: native module profile must be a table") end
   if not bounded_string(profile.module) then error("agentic-testing-host: module must be a bounded string") end
   if not local_url(profile.base_url) then error("agentic-testing-host: base_url must be a local http URL") end
-  if not bounded_string(profile.config_path) then error("agentic-testing-host: config_path must be a bounded string") end
-  if not bounded_string(profile.wrapper) then error("agentic-testing-host: wrapper must be a bounded string") end
-  if not bounded_string(profile.e2e_driver) then error("agentic-testing-host: e2e_driver must be a bounded string") end
+  validate_allowed_origins(profile.base_url, profile.allowed_origins)
   validate_sessions(profile.sessions)
-  validate_argv(profile.native_argv)
+  validate_observations(profile.base_url, profile.observations)
+  if profile.mutation_policy ~= nil and profile.mutation_policy ~= "read-only" and profile.mutation_policy ~= "dry-run" and profile.mutation_policy ~= "host-approved" then
+    error("agentic-testing-host: mutation_policy is invalid")
+  end
+  validate_cdp_execution(profile.cdp_execution)
   if not safe_artifact_root(profile.artifact_root) then error("agentic-testing-host: artifact_root must be under .testing/runs/") end
   if not bounded_string(profile.trace_id) then error("agentic-testing-host: trace_id must be a bounded string") end
   if not bounded_string(profile.dedup_key) then error("agentic-testing-host: dedup_key must be a bounded string") end
@@ -104,26 +142,18 @@ M.host_config = {
     id = "sample_project",
     name = "Sample Project",
     artifact_namespace = "sample-project",
-    bug_repo = "ChronoAIProject/sample-project",
     loop_issue_repo = "ChronoAIProject/agentic-testing",
   },
   module_test_loop = {
     local_runtime = {
-      repo_root_env = "PROJECT_LOCAL_REPO_ROOT",
-      base_url_env = "PROJECT_LOCAL_BASE_URL",
-      web_base_url_env = "PROJECT_WEB_BASE_URL",
-      browser_harness_command_env = "PROJECT_BROWSER_HARNESS_COMMAND",
       base_url_default = "http://localhost:8080/",
       browser_harness_command_default = "true",
+      cdp_url_default = "http://127.0.0.1:9222",
     },
-    config_path = "config/generic-exploratory-functional.yaml",
-    wrapper = "scripts/fkst-host-module-ui-check",
-    e2e_driver = "browser_harness",
     modules = {
       {
         id = "project_public_navigation",
         name = "Public navigation",
-        test_mode = "http_smoke",
         surface_routes = { "/" },
       },
     },
@@ -141,32 +171,44 @@ local function module_profile(config, module_config)
   local loop = config.module_test_loop or {}
   local runtime = loop.local_runtime or {}
   local module_id = tostring(module_config.id or "")
-  local base_url = tostring(module_config.base_url or runtime.web_base_url_default or runtime.base_url_default or "")
-  local wrapper = tostring(module_config.wrapper or loop.wrapper or "")
-  local config_path = tostring(module_config.config_path or loop.config_path or "")
-  local artifact_namespace = tostring(project.artifact_namespace or project.id or "agentic-testing-host")
+  local base_url = tostring(module_config.base_url or runtime.base_url_default or "")
+  local artifact_namespace = tostring(project.artifact_namespace or project.id or "native-host")
+  local origin = origin_from_url(base_url)
+  local route = tostring((module_config.surface_routes or {})[1] or "/")
+  local entry_url = base_url:gsub("/$", "") .. route
   return validate_profile({
     module = module_id,
     module_name = tostring(module_config.name or module_id),
     base_url = base_url,
-    config_path = config_path,
-    wrapper = wrapper,
-    e2e_driver = tostring(module_config.e2e_driver or loop.e2e_driver or "browser_harness"),
+    allowed_origins = { origin },
     sessions = {
       {
-        role = "default",
+        role = "base",
         browser_harness_command = tostring(runtime.browser_harness_command_default or "true"),
       },
+      {
+        role = "cdp",
+        cdp_url = tostring(runtime.cdp_url_default or "http://127.0.0.1:9222"),
+      },
     },
-    native_argv = {
-      wrapper,
-      "--config",
-      config_path,
-      "--module",
-      module_id,
-      "--base-url",
-      base_url,
+    observations = {
+      {
+        id = module_id .. "-surface",
+        name = tostring(module_config.name or module_id),
+        entry_url = entry_url,
+        visible_label = tostring(module_config.name or module_id),
+        route = route,
+        discovery_source = "navigation",
+        confidence = "high",
+        evidence_pointer = ".testing/runs/" .. artifact_namespace .. "-" .. module_id .. "/evidence/discovery",
+      },
     },
+    cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      step_budget = 8,
+      case_priorities = { "P0", "P1" },
+    },
+    mutation_policy = "read-only",
     artifact_root = ".testing/runs/" .. artifact_namespace .. "-" .. module_id,
     trace_id = "trace-" .. artifact_namespace .. "-" .. module_id,
     dedup_key = artifact_namespace .. "-" .. module_id,
@@ -197,11 +239,28 @@ function M.readiness_check(profile)
       request_context = {
         no_browser = false,
         dry_run = false,
-        native_argv = profile.native_argv,
       },
       source_ref = source_ref(profile),
     },
     source_ref = { kind = "external", reference = profile.module },
+  }
+end
+
+function M.ready_result(profile)
+  profile = validate_profile(profile)
+  return {
+    schema = "browser-readiness.result.v1",
+    status = "ready",
+    sessions = {
+      { role = "base_url", status = "ready" },
+      { role = "base", status = "ready" },
+      { role = "cdp", status = "ready" },
+    },
+    source_ref = source_ref(profile),
+    request_context = {
+      no_browser = false,
+      dry_run = false,
+    },
   }
 end
 
@@ -213,10 +272,20 @@ function M.module_start(profile, readiness)
       schema = "testing-pipeline.module-start.v1",
       module = profile.module,
       backend = "fkst-native",
-      e2e_driver = profile.e2e_driver,
-      no_browser = false,
       dry_run = false,
       preflight_result = readiness,
+      ui_loop = {
+        base_url = profile.base_url,
+        allowed_origins = profile.allowed_origins,
+        browser_readiness_ref = profile.artifact_root .. "/readiness.json",
+        cdp_readiness_ref = "cdp-ready",
+        mutation_policy = profile.mutation_policy or "read-only",
+      },
+      module_discovery = {
+        schema = "testing-runner.module-discovery.v1",
+        observations = profile.observations,
+      },
+      cdp_execution = profile.cdp_execution,
       artifact_root = profile.artifact_root,
       source_ref = source_ref(profile),
       trace_id = profile.trace_id,
