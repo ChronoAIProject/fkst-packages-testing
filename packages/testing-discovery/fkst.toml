@@ -1,0 +1,16 @@
+kind = "package.composed"
+name = "testing-discovery"
+persistence_class = "saga"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow", "testkit"]
+
+[event_deps]
+packages = ["browser-readiness", "testing-pipeline", "module-test-loop", "testing-runner", "test-artifacts", "test-publication"]
+
+[conformance]
+pack = "conformance/pack.toml"
+function = "core.saga_conformance_errors"

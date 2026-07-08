@@ -46,7 +46,6 @@ function M.module_loop_request(payload)
     cdp_execution = payload.cdp_execution,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
-    agentic_testing_repo_root = payload.agentic_testing_repo_root,
     source_ref = src,
     trace_id = testing_contract.trace_id(payload.trace_id, src, payload.artifact_root),
     dedup_key = testing_contract.dedup_key(payload.dedup_key, {

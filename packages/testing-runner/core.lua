@@ -1,6 +1,5 @@
 local M = {}
 
-local agentic_cli = require("agentic_cli")
 local fkst_native = require("fkst_native")
 local module_cdp_execution = require("module_cdp_execution")
 local module_inventory = require("module_inventory")
@@ -85,7 +84,7 @@ M.spec_for = spec_for
 
 function M.resolve_backend(payload)
   local backend = type(payload) == "table" and payload.backend or nil
-  backend = backend or "agentic-testing-cli"
+  backend = backend or "fkst-native"
   if backend ~= "agentic-testing-cli" and backend ~= "fkst-native" then
     error("testing-runner: unknown-backend: " .. tostring(backend))
   end
@@ -266,12 +265,17 @@ end
 
 function M.argv(job, payload)
   M.validate_request(job, payload)
-  return agentic_cli.argv(job, payload, spec_for(job), dense_list)
+  if payload.native_argv ~= nil then return payload.native_argv end
+  return {}
 end
 
 function M.command(job, payload)
   M.validate_request(job, payload)
-  return agentic_cli.command(job, payload, spec_for(job), dense_list, quote)
+  local quoted = {}
+  for _, value in ipairs(M.argv(job, payload)) do
+    table.insert(quoted, quote(value))
+  end
+  return table.concat(quoted, " ")
 end
 
 local function excerpt(value)
@@ -343,7 +347,10 @@ function M.run(job, payload, exec)
   if backend == "fkst-native" then
     return fkst_native.run(job, payload, context, exec)
   end
-  return agentic_cli.run(job, payload, context, exec)
+  return M.result_payload(job, payload, "blocked", {
+    adapter = { name = "fkst-native", mode = "legacy-backend-blocked" },
+    stderr = "testing-runner legacy agentic-testing backend is not executable",
+  })
 end
 
 return M

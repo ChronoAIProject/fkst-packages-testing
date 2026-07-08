@@ -125,10 +125,12 @@ end
 
 local function classify(result, artifact, skipped, has_fixture_gap, has_risk)
   local native_classification = type(result.native_summary) == "table" and result.native_summary.classification or nil
+  local adapter_mode = type(result.adapter) == "table" and result.adapter.mode or nil
   if product_defect_evidence(artifact) ~= nil then return category.product_defect end
   if native_classification == "unsafe-runtime-input"
     or native_classification == "readiness-blocked"
-    or native_classification == "missing-cdp-session" then
+    or native_classification == "missing-cdp-session"
+    or adapter_mode == "readiness-blocked" then
     return category.environment_session
   end
   if has_fixture_gap then return category.data_fixture end

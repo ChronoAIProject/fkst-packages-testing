@@ -24,7 +24,6 @@ function M.runner_request(payload)
     backend = payload.backend,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
-    agentic_testing_repo_root = payload.agentic_testing_repo_root,
     source_ref = payload.source_ref,
     trace_id = payload.trace_id,
     dedup_key = payload.dedup_key,

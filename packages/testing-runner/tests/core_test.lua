@@ -43,19 +43,18 @@ local function module_discovery()
 end
 
 return {
-  test_legacy_module_argv_uses_agentic_testing_cli = function()
+  test_module_argv_uses_supplied_native_argv = function()
     local argv = core.argv("module", {
       schema = "testing-runner.module-test-loop.request.v1",
       module = "sample_module",
-      e2e_driver = "multi_session_browser_harness",
-      agentic_testing_repo_root = "/repo/agentic-testing",
+      backend = "fkst-native",
+      dry_run = false,
+      no_browser = true,
+      native_argv = { "lua", "checks/sample_module.lua" },
     })
-    t.eq(argv[1], "python3")
-    t.eq(argv[3], "agentic_testing.cli")
-    t.eq(argv[8], "module-test-loop")
-    t.eq(argv[10], "--dry-run-github")
-    t.is_true(table.concat(argv, " "):find("sample_module", 1, true) ~= nil)
-    t.is_true(table.concat(argv, " "):find("multi_session_browser_harness", 1, true) ~= nil)
+    t.eq(argv[1], "lua")
+    t.eq(argv[2], "checks/sample_module.lua")
+    t.eq(#argv, 2)
   end,
 
   test_module_requires_module = function()
@@ -64,28 +63,33 @@ return {
     end)
   end,
 
-  test_platform_argv_repeats_modules_and_priorities = function()
-    local argv = core.argv("platform", {
-      schema = "testing-runner.platform-test-loop.request.v1",
-      modules = { "a", "b" },
-      priority = { "P0", "P1" },
+  test_command_does_not_synthesize_legacy_cli = function()
+    local command = core.command("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      module = "sample_module",
+      backend = "fkst-native",
+      dry_run = false,
+      no_browser = true,
+      native_argv = { "lua", "checks/sample_module.lua" },
     })
-    local text = table.concat(argv, " ")
-    t.is_true(text:find("platform-test-loop", 1, true) ~= nil)
-    t.is_true(text:find("--module a --module b", 1, true) ~= nil)
-    t.is_true(text:find("--priority P0 --priority P1", 1, true) ~= nil)
+    t.eq(command, "'lua' 'checks/sample_module.lua'")
+    t.eq(command:find("agentic_testing", 1, true), nil)
   end,
 
-  test_online_result_is_planned_by_default_on_legacy_backend = function()
+  test_online_result_is_planned_by_default_on_native_backend = function()
     local result = core.run("online_regression", {
       schema = "testing-runner.online-regression.request.v1",
       driver = "ego_browser",
+      artifact_writer = function()
+        return true
+      end,
     })
     t.eq(result.schema, "testing-runner.result.v1")
     t.eq(result.job, "online-regression")
     t.eq(result.status, "planned")
-    t.eq(result.adapter.name, "agentic-testing-cli")
-    t.is_true(result.adapter.command:find("agentic_testing.cli", 1, true) ~= nil)
+    t.eq(result.adapter.name, "fkst-native")
+    t.eq(result.adapter.mode, "planning-envelope")
+    t.eq(result.adapter.command, nil)
     t.is_true(result.artifact_root:find(".testing/runs/", 1, true) == 1)
   end,
 
@@ -272,7 +276,6 @@ return {
       module = "module-a",
       dry_run = false,
       no_browser = true,
-      agentic_testing_repo_root = "/legacy/root",
       artifact_writer = function()
         return true
       end,
@@ -305,7 +308,6 @@ return {
           no_browser = true,
         },
       },
-      agentic_testing_repo_root = "/legacy/root",
       artifact_writer = function(path, body)
         written.path = path
         written.body = body
@@ -410,26 +412,18 @@ return {
     })
   end,
 
-  test_fkst_native_module_no_browser_blocks_legacy_cli_native_argv = function()
-    local called = false
-    local result = core.run("module", {
-      schema = "testing-runner.module-test-loop.request.v1",
-      backend = "fkst-native",
-      module = "module-a",
-      dry_run = false,
-      no_browser = true,
-      native_argv = { "python3", "-m", "agentic_testing.cli" },
-      artifact_writer = function()
-        return true
-      end,
-    }, function()
-      called = true
-      return { exit_code = 0 }
-    end)
-    t.eq(result.status, "blocked")
-    t.eq(result.adapter.mode, "legacy-cli-blocked")
-    t.is_true(result.stderr_excerpt:find("must not target agentic_testing.cli", 1, true) ~= nil)
-    t.eq(called, false)
+  test_fkst_native_module_no_browser_blocks_legacy_runner_native_argv = function()
+    for _, argv in ipairs({ { "python3", "-m", "agentic_testing.cli" }, { "scripts/fkst-host-module-ui-check", "--module", "module-a" } }) do
+      local called = false
+      local result = core.run("module", { schema = "testing-runner.module-test-loop.request.v1", backend = "fkst-native", module = "module-a", dry_run = false, no_browser = true, native_argv = argv, artifact_writer = function() return true end }, function()
+        called = true
+        return { exit_code = 0 }
+      end)
+      t.eq(result.status, "blocked")
+      t.eq(result.adapter.mode, "legacy-cli-blocked")
+      t.is_true(result.stderr_excerpt:find("must not target the legacy agentic-testing host runner", 1, true) ~= nil)
+      t.eq(called, false)
+    end
   end,
 
   test_fkst_native_legacy_cli_block_payload_and_metadata_are_golden = function()
@@ -464,7 +458,7 @@ return {
       trace_id = "trace-module-a",
       dedup_key = "dedup-module-a",
       adapter = { name = "fkst-native", mode = "legacy-cli-blocked" },
-      stderr_excerpt = "fkst-native native_argv must not target agentic_testing.cli",
+      stderr_excerpt = "fkst-native native_argv must not target the legacy agentic-testing host runner",
     })
     t.eq(written.path, ".testing/runs/module-a/metadata.json")
     t.eq(written.body, "{\"adapter\":{\"mode\":\"legacy-cli-blocked\",\"name\":\"fkst-native\"},\"artifact_root\":\".testing/runs/module-a\",\"dedup_key\":\"dedup-module-a\",\"job\":\"module-test-loop\",\"schema\":\"testing-runner.native-metadata.v1\",\"source_ref\":{\"kind\":\"host\",\"ref\":\"module-a\"},\"status\":\"blocked\",\"trace_id\":\"trace-module-a\"}\n")
@@ -640,6 +634,7 @@ return {
     t.is_true(test_plan:find('"readiness_status":"blocked"', 1, true) ~= nil)
   end,
 
+
   test_module_discovery_requires_ui_loop_scope_and_rejects_embedded_payload = function()
     t.raises(function()
       core.run("module", {
@@ -728,7 +723,7 @@ return {
     end)
     t.eq(result.status, "blocked")
     t.eq(result.adapter.mode, "legacy-cli-blocked")
-    t.is_true(result.stderr_excerpt:find("must not target agentic_testing.cli", 1, true) ~= nil)
+    t.is_true(result.stderr_excerpt:find("must not target the legacy agentic-testing host runner", 1, true) ~= nil)
     t.eq(called, false)
   end,
 
@@ -965,33 +960,33 @@ return {
     end)
   end,
 
-  test_legacy_execution_maps_exit_zero_to_passed = function()
-    local result = core.run("module", {
-      schema = "testing-runner.module-test-loop.request.v1",
-      backend = "agentic-testing-cli",
-      module = "module-a",
-      dry_run = false,
-    }, function(command)
-      t.is_true(command:find("agentic_testing.cli", 1, true) ~= nil)
-      return { exit_code = 0, stderr = "" }
-    end)
-    t.eq(result.status, "passed")
-    t.eq(result.exit_code, 0)
-    t.eq(result.adapter.name, "agentic-testing-cli")
-  end,
-
-  test_legacy_execution_maps_nonzero_to_failed = function()
+  test_legacy_backend_is_blocked_without_exec = function()
+    local called = false
     local result = core.run("module", {
       schema = "testing-runner.module-test-loop.request.v1",
       backend = "agentic-testing-cli",
       module = "module-a",
       dry_run = false,
     }, function()
-      return { exit_code = 7, stderr = "boom" }
+      called = true
+      return { exit_code = 0, stderr = "" }
     end)
-    t.eq(result.status, "failed")
-    t.eq(result.exit_code, 7)
-    t.eq(result.stderr_excerpt, "boom")
+    t.eq(result.status, "blocked")
+    t.eq(result.exit_code, nil)
+    t.eq(result.adapter.name, "fkst-native")
+    t.eq(result.adapter.mode, "legacy-backend-blocked")
+    t.is_true(result.stderr_excerpt:find("legacy agentic-testing backend is not executable", 1, true) ~= nil)
+    t.eq(called, false)
+  end,
+
+  test_legacy_backend_command_helpers_do_not_construct_cli = function()
+    local command = core.command("module", {
+      schema = "testing-runner.module-test-loop.request.v1",
+      backend = "agentic-testing-cli",
+      module = "module-a",
+      dry_run = false,
+    })
+    t.eq(command, "")
   end,
 
   test_shell_quote_handles_single_quotes = function()

@@ -27,7 +27,11 @@ end
 
 local function targets_legacy_cli(argv)
   for _, value in ipairs(argv or {}) do
-    if tostring(value):find("agentic_testing.cli", 1, true) ~= nil then
+    local text = tostring(value)
+    if text:find("agentic_testing", 1, true) ~= nil
+      or text:find("scripts/fkst-host-module-ui-check", 1, true) ~= nil
+      or text == "fkst-host-module-ui-check"
+      or text:match("/fkst%-host%-module%-ui%-check$") ~= nil then
       return true
     end
   end
@@ -42,7 +46,7 @@ local function validate_profile(profile)
   for _, item in ipairs(profile.native_argv) do
     if not bounded_string(item) then error("generic-host: native_argv items must be bounded strings") end
   end
-  if targets_legacy_cli(profile.native_argv) then error("generic-host: native_argv must not target agentic_testing.cli") end
+  if targets_legacy_cli(profile.native_argv) then error("generic-host: native_argv must not target the legacy agentic-testing host runner") end
   if not safe_artifact_root(profile.artifact_root) then error("generic-host: artifact_root must be under .testing/runs/") end
   if not bounded_string(profile.trace_id) then error("generic-host: trace_id must be a bounded string") end
   if not bounded_string(profile.dedup_key) then error("generic-host: dedup_key must be a bounded string") end

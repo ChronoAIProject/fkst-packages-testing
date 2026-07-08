@@ -73,6 +73,23 @@ return {
     t.eq(written[".testing/runs/module-a-outcome/metadata.json"]:find("blocked_modules", 1, true), nil)
   end,
 
+  test_blocked_readiness_inventory_classifies_as_environment_session = function()
+    local result = core.run("module", request({
+      preflight_result = {
+        schema = "browser-readiness.result.v1",
+        status = "blocked",
+        sessions = {
+          { role = "base_url", status = "blocked" },
+        },
+      },
+    }))
+
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.mode, "readiness-blocked")
+    t.eq(result.native_summary.schema, "testing-runner.module-inventory-summary.v1")
+    t.eq(result.native_summary.outcome_classification, "environment-session-issue")
+  end,
+
   test_missing_cdp_session_classifies_as_environment_session = function()
     local written = {}
     local cdp_execution = {

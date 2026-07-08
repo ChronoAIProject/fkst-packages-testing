@@ -54,7 +54,11 @@ end
 
 local function targets_legacy_cli(argv)
   for _, value in ipairs(argv or {}) do
-    if tostring(value):find("agentic_testing.cli", 1, true) ~= nil then
+    local text = tostring(value)
+    if text:find("agentic_testing", 1, true) ~= nil
+      or text:find("scripts/fkst-host-module-ui-check", 1, true) ~= nil
+      or text == "fkst-host-module-ui-check"
+      or text:match("/fkst%-host%-module%-ui%-check$") ~= nil then
       return true
     end
   end
@@ -588,7 +592,7 @@ function M.run(job, payload, context, _exec)
     if targets_legacy_cli(payload.native_argv) then
       return with_metadata(context.result_payload("blocked", {
         adapter = adapter("legacy-cli-blocked"),
-        stderr = "fkst-native native_argv must not target agentic_testing.cli",
+        stderr = "fkst-native native_argv must not target the legacy agentic-testing host runner",
       }), payload, context)
     end
     local ui_loop = payload.ui_loop
@@ -652,7 +656,7 @@ function M.run(job, payload, context, _exec)
     if targets_legacy_cli(payload.native_argv) then
       return with_metadata(context.result_payload("blocked", {
         adapter = adapter("legacy-cli-blocked"),
-        stderr = "fkst-native native_argv must not target agentic_testing.cli",
+        stderr = "fkst-native native_argv must not target the legacy agentic-testing host runner",
       }), payload, context)
     end
     local out = native_exec(payload, context, _exec)
@@ -690,7 +694,7 @@ function M.run(job, payload, context, _exec)
     if targets_legacy_cli(payload.native_argv) then
       return with_metadata(context.result_payload("blocked", {
         adapter = adapter("legacy-cli-blocked"),
-        stderr = "fkst-native native_argv must not target agentic_testing.cli",
+        stderr = "fkst-native native_argv must not target the legacy agentic-testing host runner",
       }), payload, context)
     end
     local out = native_exec(payload, context, _exec)
