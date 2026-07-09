@@ -2,11 +2,14 @@ local M = {}
 
 local strings = require("contract.strings")
 local workflow_codex = require("workflow.codex")
+local ai_agents = require("module_ai_agents")
 
 M.request_schema = "testing-runner.ai-case-generation.request.v1"
 M.context_schema = "testing-runner.ai-context-manifest.v1"
 M.generated_cases_schema = "testing-runner.generated-test-cases.v1"
 M.gate_schema = "testing-runner.generated-case-gate.v1"
+M.agent_generation_schema = ai_agents.agent_generation_schema
+M.agent_review_schema = ai_agents.agent_review_schema
 M.prompt_template_ref = "testing-runner.ai-case-generation.prompt.v1"
 
 local max_string = 512
@@ -84,6 +87,7 @@ local request_fields = {
   allowed_action_kinds = true,
   allowed_case_kinds = true,
   case_budget = true,
+  consensus_angles = true,
   context_manifest_path = true,
   dedup_key = true,
   generated_cases_path = true,
@@ -102,6 +106,8 @@ local action_fields = {
 }
 
 local provenance_fields = {
+  agent_generation_path = true,
+  agent_review_path = true,
   context_manifest_path = true,
   model_invocation_digest = true,
   origin = true,
@@ -312,6 +318,7 @@ function M.validate_request(value)
   end
   copy_string_list(value.allowed_case_kinds, nil, allowed_case_kinds, "testing-runner: malformed-request: ai_generation.allowed_case_kinds", max_actions)
   copy_string_list(value.allowed_action_kinds, nil, allowed_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)
+  copy_string_list(value.consensus_angles, nil, nil, "testing-runner: malformed-request: ai_generation.consensus_angles", 4)
   if value.context_manifest_path ~= nil and not safe_artifact_pointer(value.context_manifest_path) then
     error("testing-runner: malformed-request: ai_generation.context_manifest_path must be a safe artifact pointer")
   end
@@ -333,6 +340,8 @@ local function context_paths(artifact_root)
     context = artifact_root .. "/ai-context-manifest.json",
     generated = artifact_root .. "/generated-test-cases.json",
     gate = artifact_root .. "/generated-case-gate.json",
+    agent_generation = artifact_root .. "/ai-agent-generation.json",
+    agent_review = artifact_root .. "/generated-case-agent-review.json",
   }
 end
 
@@ -360,6 +369,8 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
     context_manifest_path = request.context_manifest_path or paths.context,
     generated_cases_path = request.generated_cases_path or paths.generated,
     generated_case_gate_path = paths.gate,
+    ai_agent_generation_path = paths.agent_generation,
+    generated_case_agent_review_path = paths.agent_review,
     base_url = base_url,
     allowed_origins = origins,
     mutation_policy = (ui_loop or {}).mutation_policy or "read-only",
@@ -377,6 +388,18 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
     input_digest = "ctx-" .. strings.decimal_checksum(seed),
     generation_mode = request.mode or "disabled",
   }
+end
+
+function M.build_generation_proposal(context, request)
+  request = default_request(request)
+  M.validate_request(request)
+  return ai_agents.build_generation_proposal(context, request)
+end
+
+function M.build_review_proposal(context, generated, gate, request)
+  request = default_request(request)
+  M.validate_request(request)
+  return ai_agents.build_review_proposal(context, generated, gate, request)
 end
 
 local function generated_case(context, module, suffix, title, action_items, blocked_expected)
@@ -571,6 +594,22 @@ function M.validate_generated_cases(value)
   return value
 end
 
+function M.generation_from_agent_results(context, agent_result)
+  return ai_agents.generation_from_agent_results(context, agent_result)
+end
+
+function M.validate_agent_generation(value)
+  return ai_agents.validate_agent_generation(value)
+end
+
+function M.review_from_agent_results(context, gate, agent_result)
+  return ai_agents.review_from_agent_results(context, gate, agent_result)
+end
+
+function M.validate_agent_review(value)
+  return ai_agents.validate_agent_review(value)
+end
+
 function M.gate_generated_cases(generated, context, request)
   request = default_request(request)
   M.validate_request(request)
@@ -626,26 +665,40 @@ function M.gate_generated_cases(generated, context, request)
   }
 end
 
-function M.merge_generated_cases(plan_modules, gate)
+function M.agent_review_allows_merge(review, case)
+  return ai_agents.agent_review_allows_merge(review, case)
+end
+
+function M.merge_generated_cases(plan_modules, gate, agent_review)
   local by_module = {}
   for _, module in ipairs(plan_modules or {}) do by_module[module.id] = module end
   for _, case in ipairs((gate or {}).cases or {}) do
     local module = by_module[case.module_id]
-    if module ~= nil then table.insert(module.cases, case) end
+    if module ~= nil and M.agent_review_allows_merge(agent_review, case) then table.insert(module.cases, case) end
   end
   return plan_modules
 end
 
-function M.summary(context, generated, gate)
+function M.summary(context, generated, gate, agent_generation, agent_review)
   if context == nil then
     return { status = "disabled", mode = "disabled", generated_case_count = 0, executable_generated_case_count = 0, blocked_generated_case_count = 0 }
   end
+  local status = gate and gate.status or "disabled"
+  if agent_review ~= nil then
+    if agent_review.status == "approved" then
+      status = status == "reviewed" and "reviewed" or status
+    elseif agent_review.status == "rejected" or agent_review.status == "converged" or agent_review.status == "unavailable" then
+      status = "blocked"
+    end
+  end
   return {
-    status = gate and gate.status or "disabled",
+    status = status,
     mode = context.generation_mode or "disabled",
     context_manifest_path = context.context_manifest_path,
     generated_cases_path = context.generated_cases_path,
     generated_case_gate_path = context.generated_case_gate_path,
+    ai_agent_generation_path = agent_generation and context.ai_agent_generation_path or nil,
+    generated_case_agent_review_path = agent_review and context.generated_case_agent_review_path or nil,
     prompt_template_ref = context.prompt_template_ref,
     input_digest = context.input_digest,
     generated_case_count = generated and generated.case_count or 0,
@@ -653,6 +706,11 @@ function M.summary(context, generated, gate)
     executable_generated_case_count = gate and gate.executable_count or 0,
     blocked_generated_case_count = gate and gate.blocked_count or 0,
     rejected_generated_case_count = gate and gate.rejected_count or 0,
+    agent_generation_status = agent_generation and agent_generation.status or nil,
+    agent_generation_seat_count = agent_generation and agent_generation.seat_count or nil,
+    agent_review_status = agent_review and agent_review.status or nil,
+    agent_review_seat_count = agent_review and agent_review.seat_count or nil,
+    agent_approved_generated_case_count = agent_review and agent_review.approved_case_count or nil,
   }
 end
 

@@ -434,6 +434,8 @@ local function ai_generation_evidence(planning, root)
     context_manifest_path = summary and summary.context_manifest_path or nil,
     generated_cases_path = summary and summary.generated_cases_path or nil,
     generated_case_gate_path = summary and summary.generated_case_gate_path or nil,
+    ai_agent_generation_path = summary and summary.ai_agent_generation_path or nil,
+    generated_case_agent_review_path = summary and summary.generated_case_agent_review_path or nil,
     prompt_template_ref = summary and summary.prompt_template_ref or nil,
     input_digest = summary and summary.input_digest or nil,
     generated_case_count = summary and summary.generated_case_count or 0,
@@ -441,6 +443,11 @@ local function ai_generation_evidence(planning, root)
     executable_generated_case_count = summary and summary.executable_generated_case_count or 0,
     blocked_generated_case_count = summary and summary.blocked_generated_case_count or 0,
     rejected_generated_case_count = summary and summary.rejected_generated_case_count or 0,
+    agent_generation_status = summary and summary.agent_generation_status or nil,
+    agent_generation_seat_count = summary and summary.agent_generation_seat_count or nil,
+    agent_review_status = summary and summary.agent_review_status or nil,
+    agent_review_seat_count = summary and summary.agent_review_seat_count or nil,
+    agent_approved_generated_case_count = summary and summary.agent_approved_generated_case_count or nil,
   }
 end
 
@@ -563,7 +570,9 @@ local function write_module_inventory(result, payload, context)
   local planning = module_planning.build(inventory, payload.ui_loop, result.artifact_root, {
     mutation_fixtures = ((payload.cdp_execution or {}).mutation_fixtures),
     ai_generation = ((payload.cdp_execution or {}).ai_generation),
+    ai_agent_generation = ((payload.cdp_execution or {}).ai_agent_generation),
     generated_cases = ((payload.cdp_execution or {}).generated_cases),
+    generated_case_agent_review = ((payload.cdp_execution or {}).generated_case_agent_review),
     step_budget = ((payload.cdp_execution or {}).step_budget),
     case_priorities = ((payload.cdp_execution or {}).case_priorities),
   })
@@ -590,6 +599,14 @@ local function write_module_inventory(result, payload, context)
   end
   if planning.generated_case_gate ~= nil then
     ok, err = writer(planning.ai_context.generated_case_gate_path, json_encode(planning.generated_case_gate) .. "\n")
+    if not ok then return nil, err end
+  end
+  if planning.ai_agent_generation ~= nil then
+    ok, err = writer(planning.ai_context.ai_agent_generation_path, json_encode(planning.ai_agent_generation) .. "\n")
+    if not ok then return nil, err end
+  end
+  if planning.generated_case_agent_review ~= nil then
+    ok, err = writer(planning.ai_context.generated_case_agent_review_path, json_encode(planning.generated_case_agent_review) .. "\n")
     if not ok then return nil, err end
   end
   return true, nil, planning

@@ -19,7 +19,9 @@ local request_fields = {
   stop_conditions = true,
   mutation_fixtures = true,
   ai_generation = true,
+  ai_agent_generation = true,
   generated_cases = true,
+  generated_case_agent_review = true,
 }
 
 local default_priorities = { "P0", "P1" }
@@ -234,6 +236,8 @@ function M.validate_request(value)
   copy_list(value.stop_conditions, default_stop_conditions, stop_condition_ok)
   validate_mutation_fixtures(value.mutation_fixtures)
   module_ai_generation.validate_request(value.ai_generation)
+  module_ai_generation.validate_agent_generation(value.ai_agent_generation)
+  module_ai_generation.validate_agent_review(value.generated_case_agent_review)
   if value.generated_cases ~= nil then
     module_ai_generation.validate_generated_cases(value.generated_cases)
   end
@@ -343,7 +347,9 @@ local function planning_for(payload, artifact_root, readiness, request)
   return inventory, module_planning.build(inventory, payload.ui_loop, artifact_root, {
     mutation_fixtures = (request or {}).mutation_fixtures,
     ai_generation = (request or {}).ai_generation,
+    ai_agent_generation = (request or {}).ai_agent_generation,
     generated_cases = (request or {}).generated_cases,
+    generated_case_agent_review = (request or {}).generated_case_agent_review,
     step_budget = (request or {}).step_budget,
     case_priorities = (request or {}).case_priorities,
   })
@@ -443,6 +449,8 @@ function M.build(payload, artifact_root, opts)
     ai_context_manifest_path = planning.ai_context and planning.ai_context.context_manifest_path or nil,
     generated_cases_path = planning.generated_cases and planning.generated_cases.generated_cases_path or (planning.ai_context and planning.ai_context.generated_cases_path or nil),
     generated_case_gate_path = planning.generated_case_gate and planning.generated_case_gate.generated_case_gate_path or (planning.ai_context and planning.ai_context.generated_case_gate_path or nil),
+    ai_agent_generation_path = planning.ai_agent_generation and (planning.ai_context and planning.ai_context.ai_agent_generation_path or nil) or nil,
+    generated_case_agent_review_path = planning.generated_case_agent_review and (planning.ai_context and planning.ai_context.generated_case_agent_review_path or nil) or nil,
     ai_generation = planning.test_plan.ai_generation,
     base_url = strip_url_detail(payload.ui_loop.base_url),
     allowed_origins = payload.ui_loop.allowed_origins,
@@ -476,6 +484,8 @@ function M.summary(artifact, module, status)
   if artifact.ai_context_manifest_path ~= nil then summary.ai_context_manifest_path = artifact.ai_context_manifest_path end
   if artifact.generated_cases_path ~= nil then summary.generated_cases_path = artifact.generated_cases_path end
   if artifact.generated_case_gate_path ~= nil then summary.generated_case_gate_path = artifact.generated_case_gate_path end
+  if artifact.ai_agent_generation_path ~= nil then summary.ai_agent_generation_path = artifact.ai_agent_generation_path end
+  if artifact.generated_case_agent_review_path ~= nil then summary.generated_case_agent_review_path = artifact.generated_case_agent_review_path end
   if artifact.ai_generation ~= nil then summary.ai_generation = artifact.ai_generation end
   if artifact.cdp_readiness_ref ~= nil then summary.cdp_readiness_ref = artifact.cdp_readiness_ref end
   return summary

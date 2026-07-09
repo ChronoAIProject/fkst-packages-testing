@@ -37,8 +37,39 @@ local function request(overrides)
       case_priorities = { "P0", "P1" },
       ai_generation = {
         schema = "testing-runner.ai-case-generation.request.v1",
-        mode = "draft",
+        mode = "autonomous-reviewed",
         case_budget = 1,
+      },
+      ai_agent_generation = {
+        schema = "testing-runner.ai-agent-generation.v1",
+        artifact_kind = "ai-agent-generation",
+        artifact_root = ".testing/runs/module-a-report",
+        context_manifest_path = ".testing/runs/module-a-report/ai-context-manifest.json",
+        generated_cases_path = ".testing/runs/module-a-report/generated-test-cases.json",
+        status = "approved",
+        mode = "autonomous-reviewed",
+        generation_digest = "agent-gen-dashboard",
+        generated_case_count = 1,
+        seat_count = 4,
+        seat_names = { "teleology", "parsimony", "fidelity", "high-risk" },
+      },
+      generated_case_agent_review = {
+        schema = "testing-runner.generated-case-agent-review.v1",
+        artifact_kind = "generated-case-agent-review",
+        artifact_root = ".testing/runs/module-a-report",
+        context_manifest_path = ".testing/runs/module-a-report/ai-context-manifest.json",
+        generated_cases_path = ".testing/runs/module-a-report/generated-test-cases.json",
+        generated_case_gate_path = ".testing/runs/module-a-report/generated-case-gate.json",
+        generated_case_agent_review_path = ".testing/runs/module-a-report/generated-case-agent-review.json",
+        status = "approved",
+        mode = "autonomous-reviewed",
+        decision_digest = "agent-review-dashboard",
+        approved_case_ids = { "dashboard:ai-visible-surface" },
+        approved_case_count = 1,
+        rejected_case_count = 0,
+        blocked_case_count = 0,
+        seat_count = 4,
+        seat_names = { "teleology", "parsimony", "fidelity", "high-risk" },
       },
     },
     preflight_result = {
@@ -75,6 +106,10 @@ return {
     t.is_true(report:find("Coverage status", 1, true) ~= nil)
     t.is_true(report:find("AI generated coverage", 1, true) ~= nil)
     t.is_true(report:find("ai-generated", 1, true) ~= nil)
+    t.is_true(report:find("Agent generation: approved", 1, true) ~= nil)
+    t.is_true(report:find("Agent review: approved", 1, true) ~= nil)
+    t.is_true(report:find("ai-agent-generation.json", 1, true) ~= nil)
+    t.is_true(report:find("generated-case-agent-review.json", 1, true) ~= nil)
     t.is_true(report:find("Executed user-facing scenarios", 1, true) ~= nil)
     t.is_true(report:find("Publication handoff: dry-run pointer handoff only", 1, true) ~= nil)
     t.eq(report:find("secret", 1, true), nil)
@@ -92,9 +127,17 @@ return {
     local ai_generation = written[".testing/runs/module-a-report/evidence/ai-generation.json"]
     t.is_true(ai_generation:find('"schema":"testing-runner.native-evidence-ai-generation.v1"', 1, true) ~= nil)
     t.is_true(ai_generation:find('"generated_case_count":1', 1, true) ~= nil)
+    t.is_true(ai_generation:find('"ai_agent_generation_path":".testing/runs/module-a-report/ai-agent-generation.json"', 1, true) ~= nil)
+    t.is_true(ai_generation:find('"generated_case_agent_review_path":".testing/runs/module-a-report/generated-case-agent-review.json"', 1, true) ~= nil)
+    t.is_true(ai_generation:find('"agent_generation_status":"approved"', 1, true) ~= nil)
+    t.is_true(ai_generation:find('"agent_review_status":"approved"', 1, true) ~= nil)
+    t.eq(ai_generation:find("model_transcript", 1, true), nil)
+    t.eq(ai_generation:find("raw_prompt", 1, true), nil)
     t.is_true(written[".testing/runs/module-a-report/ai-context-manifest.json"]:find('"schema":"testing-runner.ai-context-manifest.v1"', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-report/generated-test-cases.json"]:find('"schema":"testing-runner.generated-test-cases.v1"', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-report/generated-case-gate.json"]:find('"schema":"testing-runner.generated-case-gate.v1"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-report/ai-agent-generation.json"]:find('"schema":"testing-runner.ai-agent-generation.v1"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-report/generated-case-agent-review.json"]:find('"schema":"testing-runner.generated-case-agent-review.v1"', 1, true) ~= nil)
 
     local metadata = written[".testing/runs/module-a-report/metadata.json"]
     t.is_true(metadata:find('"stage_report_path":".testing/runs/module-a-report/stage-report.md"', 1, true) ~= nil)
