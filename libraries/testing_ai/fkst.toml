@@ -1,0 +1,22 @@
+kind = "library"
+name = "testing_ai"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow"]
+
+[dependency_constraints]
+allowed_lib_deps = ["contract", "workflow"]
+
+[library]
+name = "testing_ai"
+stable_id = "fkst.library.testing_ai"
+version = "workspace"
+
+[exports]
+public = ["testing_ai.*"]
+
+[visibility]
+public = false

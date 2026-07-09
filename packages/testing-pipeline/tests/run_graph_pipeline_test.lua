@@ -1,6 +1,7 @@
 local graph = require("testkit.graph")
 local testing = require("testkit.testing")
 local start_module = require("departments.start_module.main")
+local ai_consensus = require("departments.ai_consensus.main")
 local t = fkst.test
 
 local fixture_origin = "http://localhost:8080"
@@ -204,6 +205,44 @@ local function read_file(path)
   local body = file:read("*a")
   file:close()
   return body
+end
+
+local function consensus_reached_event(proposal, decision)
+  return {
+    queue = "consensus.consensus_reached",
+    payload = {
+      schema = "consensus.consensus_reached.v1",
+      proposal_id = proposal.proposal_id,
+      decision = decision or "approve",
+      body = "raw_prompt token password raw_response must not persist",
+      source_ref = proposal.source_ref,
+      angle_results = {
+        { angle = "teleology", verdict = decision or "approve" },
+        { angle = "parsimony", verdict = decision or "approve" },
+      },
+    },
+    source_ref = proposal.source_ref,
+  }
+end
+
+local function consensus_converge_event(proposal)
+  return {
+    queue = "consensus.consensus_converge",
+    payload = {
+      schema = "consensus.consensus_converge.v1",
+      proposal_id = proposal.proposal_id,
+      source_ref = proposal.source_ref,
+      narrowed_question = "bounded follow-up",
+    },
+    source_ref = proposal.source_ref,
+  }
+end
+
+local function start_ai_generation_proposal()
+  local trace = testing.run_fake(start_module, module_ai_consensus_start_event())
+  t.eq(#trace.raises, 1)
+  t.eq(trace.raises[1].queue, "consensus.proposal")
+  return trace.raises[1].payload
 end
 
 return {
@@ -427,10 +466,7 @@ return {
   end,
 
   test_start_module_raises_consensus_for_autonomous_reviewed_ai_generation = function()
-    local trace = testing.run_fake(start_module, module_ai_consensus_start_event())
-    t.eq(#trace.raises, 1)
-    t.eq(trace.raises[1].queue, "consensus.proposal")
-    local proposal = trace.raises[1].payload
+    local proposal = start_ai_generation_proposal()
     t.eq(proposal.schema, "consensus.proposal.v1")
     t.eq(proposal.verdict_mode, "converge")
     t.eq(#proposal.angles, 2)
@@ -439,6 +475,72 @@ return {
     t.is_true(proposal.body:find(".testing/runs/module-a-ai/ai-context-manifest.json", 1, true) ~= nil)
     t.is_true(proposal.context:find("generated-test-cases.json", 1, true) ~= nil)
     t.eq(proposal.body:find("secret", 1, true), nil)
+
+    local context = read_file(".testing/runs/module-a-ai/ai-context-manifest.json")
+    t.is_true(context:find('"schema":"testing-runner.ai-context-manifest.v1"', 1, true) ~= nil)
+    t.is_true(context:find('"entry_url":"' .. fixture_base_url .. '/dashboard"', 1, true) ~= nil)
+    t.eq(context:find("secret", 1, true), nil)
+    t.eq(context:find("token", 1, true), nil)
+
+    local state = read_file(".testing/runs/module-a-ai/ai-orchestration-state.json")
+    t.is_true(state:find('"schema":"testing-pipeline.ai-orchestration-state.v1"', 1, true) ~= nil)
+    t.is_true(state:find('"phase":"generation-proposed"', 1, true) ~= nil)
+    t.eq(state:find("secret", 1, true), nil)
+    t.eq(state:find("token", 1, true), nil)
+    t.eq(state:find("unsafe", 1, true), nil)
+  end,
+
+  test_ai_consensus_department_raises_review_then_module_loop_request = function()
+    local generation_proposal = start_ai_generation_proposal()
+    local generation_trace = testing.run_fake(ai_consensus, consensus_reached_event(generation_proposal))
+    t.eq(#generation_trace.raises, 1)
+    t.eq(generation_trace.raises[1].queue, "consensus.proposal")
+    local review_proposal = generation_trace.raises[1].payload
+    t.eq(review_proposal.schema, "consensus.proposal.v1")
+    t.eq(review_proposal.verdict_mode, "gate")
+    t.eq(review_proposal.source_ref.kind, "testing-ai-review")
+
+    local generated = read_file(".testing/runs/module-a-ai/generated-test-cases.json")
+    t.is_true(generated:find('"schema":"testing-runner.generated-test-cases.v1"', 1, true) ~= nil)
+    local gate = read_file(".testing/runs/module-a-ai/generated-case-gate.json")
+    t.is_true(gate:find('"schema":"testing-runner.generated-case-gate.v1"', 1, true) ~= nil)
+    local agent_generation = read_file(".testing/runs/module-a-ai/ai-agent-generation.json")
+    t.is_true(agent_generation:find('"generated_case_count":1', 1, true) ~= nil)
+
+    local review_trace = testing.run_fake(ai_consensus, consensus_reached_event(review_proposal))
+    t.eq(#review_trace.raises, 1)
+    t.eq(review_trace.raises[1].queue, "module-test-loop.module_loop_request")
+    local request = review_trace.raises[1].payload
+    t.eq(request.schema, "module-test-loop.start.v1")
+    t.eq(request.cdp_execution.generated_cases.schema, "testing-runner.generated-test-cases.v1")
+    t.eq(request.cdp_execution.ai_agent_generation.schema, "testing-runner.ai-agent-generation.v1")
+    t.eq(request.cdp_execution.generated_case_agent_review.schema, "testing-runner.generated-case-agent-review.v1")
+
+    local closure = read_file(".testing/runs/module-a-ai/ai-test-design-loop.json")
+    t.is_true(closure:find('"schema":"testing-runner.ai-test-design-loop.v1"', 1, true) ~= nil)
+    t.eq(closure:find("raw_prompt", 1, true), nil)
+    t.eq(closure:find("token", 1, true), nil)
+  end,
+
+  test_ai_consensus_generation_converge_fails_closed_to_local_result = function()
+    local generation_proposal = start_ai_generation_proposal()
+    local trace = testing.run_fake(ai_consensus, consensus_converge_event(generation_proposal))
+    t.eq(#trace.raises, 1)
+    t.eq(trace.raises[1].queue, "testing_result")
+    t.eq(trace.raises[1].payload.status, "blocked")
+    t.eq(trace.raises[1].payload.adapter.mode, "ai-orchestration-fail-closed")
+    local state = read_file(".testing/runs/module-a-ai/ai-orchestration-state.json")
+    t.is_true(state:find('"phase":"blocked"', 1, true) ~= nil)
+  end,
+
+  test_ai_consensus_review_reject_fails_closed_without_module_loop_request = function()
+    local generation_proposal = start_ai_generation_proposal()
+    local generation_trace = testing.run_fake(ai_consensus, consensus_reached_event(generation_proposal))
+    local review_proposal = generation_trace.raises[1].payload
+    local trace = testing.run_fake(ai_consensus, consensus_reached_event(review_proposal, "reject"))
+    t.eq(#trace.raises, 1)
+    t.eq(trace.raises[1].queue, "testing_result")
+    t.eq(trace.raises[1].payload.status, "blocked")
   end,
 
   test_run_graph_missing_cdp_session_classifies_environment_issue = function()

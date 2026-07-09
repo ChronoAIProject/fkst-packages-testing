@@ -165,8 +165,7 @@ copy_tree() {
   local src="$1" dest="$2" exclude_tests="${3:-0}"
   mkdir -p "$dest"
   if [ "$exclude_tests" = "1" ]; then
-    (cd "$src" && LC_ALL=C tar --exclude './tests' --exclude './tests/*' --exclude 'tests' --exclude 'tests/*' -cf - .) | (cd "$dest" && LC_ALL=C tar xf -)
-    rm -rf "$dest/tests"
+    (cd "$src" && LC_ALL=C tar --exclude './tests/*_test.lua' --exclude 'tests/*_test.lua' -cf - .) | (cd "$dest" && LC_ALL=C tar xf -)
   else
     (cd "$src" && LC_ALL=C tar -cf - .) | (cd "$dest" && LC_ALL=C tar xf -)
   fi
