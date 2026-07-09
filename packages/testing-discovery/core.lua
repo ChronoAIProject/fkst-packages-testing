@@ -7,6 +7,7 @@ local testing_contract = require("contract.testing")
 M.scope_schema = "testing-discovery.app-scope.v1"
 M.plan_schema = "testing-discovery.plan.v1"
 M.plan_filename = "testing-discovery-plan.json"
+M.relation_graph_filename = "relation-graph.json"
 
 local max_string = 512
 local max_id = 180
@@ -32,6 +33,9 @@ local budget_fields = {
   module_limit = true,
   observation_limit = true,
   step_budget = true,
+  flow_budget = true,
+  module_depth = true,
+  relationship_limit = true,
 }
 
 local observation_fields = {
@@ -121,6 +125,7 @@ local function host_from_url(value)
 end
 
 local function local_http_url(value)
+  if type(value) ~= "string" or value:match("^http://") == nil then return false end
   local host = host_from_url(value)
   return host == "localhost" or host == "127.0.0.1" or host == "::1"
 end
@@ -184,6 +189,9 @@ local function validate_budgets(value)
   local module_limit = budgets.module_limit or 16
   local observation_limit = budgets.observation_limit or max_observations
   local step_budget = budgets.step_budget or 8
+  local flow_budget = budgets.flow_budget or 4
+  local module_depth = budgets.module_depth or 2
+  local relationship_limit = budgets.relationship_limit or 16
   if type(module_limit) ~= "number" or module_limit < 1 or module_limit > max_modules or math.floor(module_limit) ~= module_limit then
     error("testing-discovery: malformed-request: budgets.module_limit must be an integer from 1 to 64")
   end
@@ -192,6 +200,15 @@ local function validate_budgets(value)
   end
   if type(step_budget) ~= "number" or step_budget < 1 or step_budget > 32 or math.floor(step_budget) ~= step_budget then
     error("testing-discovery: malformed-request: budgets.step_budget must be an integer from 1 to 32")
+  end
+  if type(flow_budget) ~= "number" or flow_budget < 0 or flow_budget > 32 or math.floor(flow_budget) ~= flow_budget then
+    error("testing-discovery: malformed-request: budgets.flow_budget must be an integer from 0 to 32")
+  end
+  if type(module_depth) ~= "number" or module_depth < 1 or module_depth > 8 or math.floor(module_depth) ~= module_depth then
+    error("testing-discovery: malformed-request: budgets.module_depth must be an integer from 1 to 8")
+  end
+  if type(relationship_limit) ~= "number" or relationship_limit < 0 or relationship_limit > 64 or math.floor(relationship_limit) ~= relationship_limit then
+    error("testing-discovery: malformed-request: budgets.relationship_limit must be an integer from 0 to 64")
   end
   local priorities = budgets.case_priorities or { "P0", "P1" }
   local ok, count = dense_list(priorities)
@@ -204,6 +221,9 @@ local function validate_budgets(value)
     observation_limit = observation_limit,
     step_budget = step_budget,
     case_priorities = copy_list(priorities),
+    flow_budget = flow_budget,
+    module_depth = module_depth,
+    relationship_limit = relationship_limit,
   }
 end
 
@@ -348,6 +368,65 @@ local function module_artifact_root(root, id)
   return root .. "/modules/" .. strings.runtime_safe_segment(id)
 end
 
+local function parent_route(route)
+  local text = tostring(route or "")
+  if text == "" or text == "/" then return nil end
+  local parent = text:gsub("/+$", ""):match("^(.*)/[^/]+$")
+  if parent == nil or parent == "" then return "/" end
+  return parent
+end
+
+local function relation_id(kind, from_id, to_id)
+  return strings.sanitize_key(kind .. "-" .. tostring(from_id or "from") .. "-" .. tostring(to_id or "to"), max_id)
+end
+
+local function add_relation(relations, seen, kind, from_module, to_module, artifact_root)
+  if from_module == nil or to_module == nil or from_module.id == to_module.id then return end
+  local key = kind .. ":" .. from_module.id .. ":" .. to_module.id
+  if seen[key] == true then return end
+  seen[key] = true
+  table.insert(relations, {
+    id = relation_id(kind, from_module.id, to_module.id),
+    relation_type = kind,
+    from_module_id = from_module.id,
+    to_module_id = to_module.id,
+    evidence_pointer = artifact_root .. "/relations/" .. strings.runtime_safe_segment(relation_id(kind, from_module.id, to_module.id)) .. ".json",
+  })
+end
+
+local function relation_graph(modules, budgets, artifact_root)
+  local relations, seen = {}, {}
+  local by_route = {}
+  for _, module in ipairs(modules or {}) do
+    if type(module.route) == "string" then by_route[module.route:gsub("/+$", "")] = module end
+  end
+  for index, module in ipairs(modules or {}) do
+    if #relations >= budgets.relationship_limit then break end
+    local parent = by_route[parent_route(module.route)]
+    if parent ~= nil then add_relation(relations, seen, "parent-route", parent, module, artifact_root) end
+    if #relations >= budgets.relationship_limit then break end
+    local next_module = modules[index + 1]
+    if next_module ~= nil then add_relation(relations, seen, "same-nav-cluster", module, next_module, artifact_root) end
+    if #relations >= budgets.relationship_limit then break end
+    for _, observation in ipairs(module.observations or {}) do
+      local route = normalize_route(observation.route)
+      local target = by_route[route and route:gsub("/+$", "") or nil]
+      if target ~= nil then add_relation(relations, seen, "links-to", module, target, artifact_root) end
+      if #relations >= budgets.relationship_limit then break end
+    end
+  end
+  return {
+    schema = "testing-discovery.relation-graph.v1",
+    artifact_kind = "discovery-relation-graph",
+    artifact_root = artifact_root,
+    relations = relations,
+    relation_count = #relations,
+    flow_budget = budgets.flow_budget,
+    module_depth = budgets.module_depth,
+    relationship_limit = budgets.relationship_limit,
+  }
+end
+
 local function module_identity(plan, id)
   local safe = strings.runtime_safe_segment(id)
   local base_trace = plan.trace_id or testing_contract.trace_id(nil, plan.source_ref, plan.artifact_root)
@@ -443,6 +522,8 @@ function M.plan(payload, _opts)
     table.insert(plan.limitations, "Some observed entries were omitted because they were outside scope or lacked required evidence.")
   end
   plan.module_count = #plan.modules
+  plan.relation_graph_path = payload.artifact_root .. "/" .. M.relation_graph_filename
+  plan.relation_graph = relation_graph(plan.modules, budgets, payload.artifact_root)
   return plan
 end
 
@@ -474,6 +555,7 @@ function M.module_starts(plan, readiness_result)
         cdp_readiness_ref = plan.artifact_root .. "/cdp-ready",
         mutation_policy = plan.mutation_policy,
         gap_ref = module.artifact_root .. "/gap-backlog.json",
+        platform_flow_ref = plan.relation_graph_path,
       },
       module_discovery = {
         schema = "testing-runner.module-discovery.v1",

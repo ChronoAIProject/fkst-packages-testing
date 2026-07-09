@@ -11,6 +11,9 @@ local category = {
   environment_session = "environment-session-issue",
   data_fixture = "data-fixture-gap",
   not_executed_risk = "not-executed-risk",
+  ai_generation = "ai-generation-gap",
+  unsafe_generated_case = "unsafe-generated-case",
+  multi_module_flow = "multi-module-flow-gap",
 }
 M.category = category
 
@@ -43,6 +46,10 @@ end
 local function not_executed_risk(case, gate)
   return case.review_status == "not-executed-risk"
     or (type(gate) == "table" and gate.status == "not-executed-risk")
+end
+
+local function ai_gap(case)
+  return type(case) == "table" and case.case_origin == "ai-generated" and case.review_status ~= "executable"
 end
 
 local function selected_priority_map(artifact)
@@ -85,8 +92,9 @@ local function collect_skipped_cases(planning, artifact)
   local executed = executed_case_map(artifact)
   local has_fixture_gap = false
   local has_risk = false
+  local has_ai_gap = false
   if type(planning) ~= "table" or type(planning.test_plan) ~= "table" then
-    return skipped, has_fixture_gap, has_risk
+    return skipped, has_fixture_gap, has_risk, has_ai_gap
   end
   for _, module in ipairs(planning.test_plan.modules or {}) do
     for _, case in ipairs(module.cases or {}) do
@@ -98,6 +106,7 @@ local function collect_skipped_cases(planning, artifact)
       if skipped_status ~= "executable" then
         if fixture_gap(gate) then has_fixture_gap = true end
         if not_executed_risk(case, gate) then has_risk = true end
+        if ai_gap(case) then has_ai_gap = true end
         table.insert(skipped, {
           module_id = bounded(case.module_id or module.id),
           case_id = bounded(case.id),
@@ -106,13 +115,14 @@ local function collect_skipped_cases(planning, artifact)
           reason = bounded(case.reason),
           gap_classification = bounded(type(gate) == "table" and gate.classification or nil),
           evidence_pointer = bounded(case.evidence_pointer),
+          case_origin = bounded(case.case_origin),
           required_follow_up = follow_up_for_case(case, gate),
         })
-        if #skipped >= max_items then return skipped, has_fixture_gap, has_risk end
+        if #skipped >= max_items then return skipped, has_fixture_gap, has_risk, has_ai_gap end
       end
     end
   end
-  return skipped, has_fixture_gap, has_risk
+  return skipped, has_fixture_gap, has_risk, has_ai_gap
 end
 
 local function product_defect_evidence(artifact)
@@ -123,7 +133,7 @@ local function product_defect_evidence(artifact)
   return defect
 end
 
-local function classify(result, artifact, skipped, has_fixture_gap, has_risk)
+local function classify(result, artifact, skipped, has_fixture_gap, has_risk, has_ai_gap)
   local native_classification = type(result.native_summary) == "table" and result.native_summary.classification or nil
   local adapter_mode = type(result.adapter) == "table" and result.adapter.mode or nil
   if product_defect_evidence(artifact) ~= nil then return category.product_defect end
@@ -134,6 +144,7 @@ local function classify(result, artifact, skipped, has_fixture_gap, has_risk)
     return category.environment_session
   end
   if has_fixture_gap then return category.data_fixture end
+  if has_ai_gap then return category.ai_generation end
   if has_risk then return category.not_executed_risk end
   if type(artifact) == "table" and artifact.classification == "missing-cdp-session" then
     return category.environment_session
@@ -174,6 +185,10 @@ local function required_follow_up(outcome, skipped)
     add_unique(follow_up, seen, "Provide safe fixture, evidence, and cleanup or rollback pointers for blocked data cases.")
   elseif outcome == category.not_executed_risk then
     add_unique(follow_up, seen, "Host review is required for not-executed risk before expanding executable coverage.")
+  elseif outcome == category.ai_generation then
+    add_unique(follow_up, seen, "Review generated cases blocked by FKST safety gates before expanding executable AI coverage.")
+  elseif outcome == category.multi_module_flow then
+    add_unique(follow_up, seen, "Add bounded relation evidence before executing multi-module platform flows.")
   elseif outcome == category.harness_tooling then
     add_unique(follow_up, seen, "Complete bounded native browser exploration support or provide the missing harness input, then rerun.")
   end
@@ -186,8 +201,8 @@ function M.path(artifact_root)
 end
 
 function M.build(result, payload, artifact, planning)
-  local skipped, has_fixture_gap, has_risk = collect_skipped_cases(planning, artifact)
-  local outcome = classify(result, artifact, skipped, has_fixture_gap, has_risk)
+  local skipped, has_fixture_gap, has_risk, has_ai_gap = collect_skipped_cases(planning, artifact)
+  local outcome = classify(result, artifact, skipped, has_fixture_gap, has_risk, has_ai_gap)
   return {
     schema = M.schema,
     artifact_kind = "gap-backlog",

@@ -1,5 +1,6 @@
 local M = {}
 
+local module_ai_generation = require("module_ai_generation")
 local module_inventory = require("module_inventory")
 local module_planning = require("module_planning")
 
@@ -17,6 +18,8 @@ local request_fields = {
   case_priorities = true,
   stop_conditions = true,
   mutation_fixtures = true,
+  ai_generation = true,
+  generated_cases = true,
 }
 
 local default_priorities = { "P0", "P1" }
@@ -26,6 +29,10 @@ local default_stop_conditions = {
   "credential-login",
   "mfa",
   "captcha",
+  "admin-destructive-billing",
+  "external-notification",
+  "unknown-generated-action",
+  "fixture-evidence",
   "mutation-policy",
   "step-budget",
 }
@@ -66,6 +73,26 @@ local function strip_url_detail(url)
   local text = url:gsub("[#?].*$", "")
   if #text > max_string then text = text:sub(1, max_string) end
   return text
+end
+
+local blocked_route_segments = {
+  admin = true,
+  auth = true,
+  billing = true,
+  delete = true,
+  login = true,
+  logout = true,
+  oauth = true,
+  permissions = true,
+  remove = true,
+}
+
+local function blocked_route_target(value)
+  local text = tostring(value or ""):lower()
+  for segment in text:gmatch("[^/%s]+") do
+    if blocked_route_segments[segment] == true then return segment end
+  end
+  return nil
 end
 
 local function origin_of(url)
@@ -206,6 +233,10 @@ function M.validate_request(value)
   copy_list(value.case_priorities, default_priorities, priority_ok)
   copy_list(value.stop_conditions, default_stop_conditions, stop_condition_ok)
   validate_mutation_fixtures(value.mutation_fixtures)
+  module_ai_generation.validate_request(value.ai_generation)
+  if value.generated_cases ~= nil then
+    module_ai_generation.validate_generated_cases(value.generated_cases)
+  end
   return value
 end
 
@@ -231,7 +262,14 @@ local function stop_conditions(request)
   return copy_list((request or {}).stop_conditions, default_stop_conditions, stop_condition_ok)
 end
 
+local function generated_action_kind(case)
+  if case.case_origin ~= "ai-generated" or type(case.actions) ~= "table" or type(case.actions[1]) ~= "table" then return nil end
+  return case.actions[1].action
+end
+
 local function action_kind(case)
+  local generated = generated_action_kind(case)
+  if generated ~= nil then return generated end
   local id = tostring(case.id or "")
   if id:find("reachability", 1, true) then return "navigate" end
   if id:find("page-load", 1, true) then return "wait-for-load" end
@@ -245,6 +283,9 @@ end
 
 local function action_target(module, case)
   local kind = action_kind(case)
+  if case.case_origin == "ai-generated" and type(case.actions) == "table" and type(case.actions[1]) == "table" then
+    return case.actions[1].target or module.entry_url or module.id or "module"
+  end
   if kind == "inspect-visible-elements" then
     return module.name or module.id or "module"
   end
@@ -259,6 +300,7 @@ end
 
 local function append_action(actions, artifact_root, module, case, step)
   local url = strip_url_detail(module.entry_url)
+  local target = action_target(module, case)
   local action = {
     step = step,
     module_id = module.id,
@@ -266,11 +308,21 @@ local function append_action(actions, artifact_root, module, case, step)
     priority = case.priority,
     intent = case.title,
     action = action_kind(case),
-    target = action_target(module, case),
+    target = target,
     url = url,
     observation = "bounded CDP step recorded without credential, MFA, CAPTCHA, or unsafe mutation handling",
     evidence_pointer = artifact_root .. "/evidence/cdp/" .. safe_key(case.id) .. ".json",
   }
+  if case.case_origin == "ai-generated" then
+    action.case_origin = "ai-generated"
+    action.provenance_digest = ((case.provenance or {}).model_invocation_digest)
+    action.observation = "AI-generated read-only case executed through FKST bounded action schema"
+    action.expected_observable = case.expected_observable
+    local blocked_segment = blocked_route_target(target)
+    if blocked_segment ~= nil then
+      action.observation = "blocked route segment " .. blocked_segment .. " stopped before execution"
+    end
+  end
   local gate = case.mutation_gate
   if type(gate) == "table" and gate.classification == "safe-local-test-data" then
     action.observation = "safe local test-data mutation recorded with host fixture and cleanup or rollback evidence"
@@ -290,6 +342,10 @@ local function planning_for(payload, artifact_root, readiness, request)
   })
   return inventory, module_planning.build(inventory, payload.ui_loop, artifact_root, {
     mutation_fixtures = (request or {}).mutation_fixtures,
+    ai_generation = (request or {}).ai_generation,
+    generated_cases = (request or {}).generated_cases,
+    step_budget = (request or {}).step_budget,
+    case_priorities = (request or {}).case_priorities,
   })
 end
 
@@ -384,6 +440,10 @@ function M.build(payload, artifact_root, opts)
     inventory_path = artifact_root .. "/module-inventory.json",
     feature_inventory_path = artifact_root .. "/feature-inventory.json",
     test_plan_path = artifact_root .. "/test-plan.json",
+    ai_context_manifest_path = planning.ai_context and planning.ai_context.context_manifest_path or nil,
+    generated_cases_path = planning.generated_cases and planning.generated_cases.generated_cases_path or (planning.ai_context and planning.ai_context.generated_cases_path or nil),
+    generated_case_gate_path = planning.generated_case_gate and planning.generated_case_gate.generated_case_gate_path or (planning.ai_context and planning.ai_context.generated_case_gate_path or nil),
+    ai_generation = planning.test_plan.ai_generation,
     base_url = strip_url_detail(payload.ui_loop.base_url),
     allowed_origins = payload.ui_loop.allowed_origins,
     cdp_readiness_ref = payload.ui_loop.cdp_readiness_ref,
@@ -413,6 +473,10 @@ function M.summary(artifact, module, status)
     action_count = artifact.action_count,
   }
   if artifact.test_plan_path ~= nil then summary.test_plan_path = artifact.test_plan_path end
+  if artifact.ai_context_manifest_path ~= nil then summary.ai_context_manifest_path = artifact.ai_context_manifest_path end
+  if artifact.generated_cases_path ~= nil then summary.generated_cases_path = artifact.generated_cases_path end
+  if artifact.generated_case_gate_path ~= nil then summary.generated_case_gate_path = artifact.generated_case_gate_path end
+  if artifact.ai_generation ~= nil then summary.ai_generation = artifact.ai_generation end
   if artifact.cdp_readiness_ref ~= nil then summary.cdp_readiness_ref = artifact.cdp_readiness_ref end
   return summary
 end

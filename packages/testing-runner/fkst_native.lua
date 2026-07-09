@@ -320,6 +320,9 @@ local function action_trace_evidence(artifact, root)
           observation = bounded_ref(action.observation),
           evidence_pointer = bounded_ref(action.evidence_pointer),
         }
+        add_if_present(item, "case_origin", bounded_ref(action.case_origin))
+        add_if_present(item, "provenance_digest", bounded_ref(action.provenance_digest))
+        add_if_present(item, "expected_observable", bounded_ref(action.expected_observable))
         add_if_present(item, "mutation_kind", bounded_ref(action.mutation_kind))
         add_if_present(item, "fixture_ref", bounded_ref(action.fixture_ref))
         add_if_present(item, "cleanup_ref", bounded_ref(action.cleanup_ref))
@@ -354,11 +357,18 @@ local function skipped_cases_evidence(planning, root)
             reason = bounded_ref(case.reason),
             evidence_pointer = bounded_ref(case.evidence_pointer),
           }
+          add_if_present(item, "case_origin", bounded_ref(case.case_origin))
           if type(case.mutation_gate) == "table" then
             item.mutation_gate = {
               status = bounded_ref(case.mutation_gate.status),
               classification = bounded_ref(case.mutation_gate.classification),
               mutation_kind = bounded_ref(case.mutation_gate.mutation_kind),
+            }
+          end
+          if type(case.ai_gate) == "table" then
+            item.ai_gate = {
+              status = bounded_ref(case.ai_gate.status),
+              classification = bounded_ref(case.ai_gate.classification),
             }
           end
           table.insert(skipped, item)
@@ -413,6 +423,27 @@ local function console_network_evidence(artifact, root)
   }
 end
 
+local function ai_generation_evidence(planning, root)
+  local summary = type(planning) == "table" and type(planning.test_plan) == "table" and planning.test_plan.ai_generation or nil
+  return {
+    schema = "testing-runner.native-evidence-ai-generation.v1",
+    artifact_kind = "native-evidence-ai-generation",
+    artifact_root = root,
+    status = summary and summary.status or "disabled",
+    mode = summary and summary.mode or "disabled",
+    context_manifest_path = summary and summary.context_manifest_path or nil,
+    generated_cases_path = summary and summary.generated_cases_path or nil,
+    generated_case_gate_path = summary and summary.generated_case_gate_path or nil,
+    prompt_template_ref = summary and summary.prompt_template_ref or nil,
+    input_digest = summary and summary.input_digest or nil,
+    generated_case_count = summary and summary.generated_case_count or 0,
+    accepted_generated_case_count = summary and summary.accepted_generated_case_count or 0,
+    executable_generated_case_count = summary and summary.executable_generated_case_count or 0,
+    blocked_generated_case_count = summary and summary.blocked_generated_case_count or 0,
+    rejected_generated_case_count = summary and summary.rejected_generated_case_count or 0,
+  }
+end
+
 local function pointer_index(schema, kind, root, refs)
   return {
     schema = schema,
@@ -447,6 +478,7 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     skipped_cases = section_path(root, "skipped-cases"),
     failures = section_path(root, "failures"),
     console_network = section_path(root, "console-network-summary"),
+    ai_generation = section_path(root, "ai-generation"),
     screenshots = section_path(root, "screenshot-index"),
     dom_state = section_path(root, "dom-state-summary"),
     gap_backlog = outcome.path(root),
@@ -467,6 +499,7 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     gap_backlog = paths.gap_backlog,
     stage_report = paths.stage_report,
     issue_drafts = paths.issue_drafts,
+    ai_generation = paths.ai_generation,
   })
   local sections = {
     { paths.discovery, discovery_evidence(payload, root) },
@@ -475,6 +508,7 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     { paths.skipped_cases, skipped_cases_evidence(planning, root) },
     { paths.failures, failures_evidence(result, artifact, root) },
     { paths.console_network, console_network_evidence(artifact, root) },
+    { paths.ai_generation, ai_generation_evidence(planning, root) },
     { paths.screenshots, pointer_index("testing-runner.native-evidence-screenshot-index.v1", "native-evidence-screenshot-index", root, {}) },
     { paths.dom_state, pointer_index("testing-runner.native-evidence-dom-state-summary.v1", "native-evidence-dom-state-summary", root, {}) },
     { paths.gap_backlog, backlog },
@@ -499,6 +533,7 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     skipped_cases_path = paths.skipped_cases,
     failures_path = paths.failures,
     console_network_summary_path = paths.console_network,
+    ai_generation_path = paths.ai_generation,
     screenshot_index_path = paths.screenshots,
     dom_state_summary_path = paths.dom_state,
     gap_backlog_path = paths.gap_backlog,
@@ -527,6 +562,10 @@ local function write_module_inventory(result, payload, context)
   })
   local planning = module_planning.build(inventory, payload.ui_loop, result.artifact_root, {
     mutation_fixtures = ((payload.cdp_execution or {}).mutation_fixtures),
+    ai_generation = ((payload.cdp_execution or {}).ai_generation),
+    generated_cases = ((payload.cdp_execution or {}).generated_cases),
+    step_budget = ((payload.cdp_execution or {}).step_budget),
+    case_priorities = ((payload.cdp_execution or {}).case_priorities),
   })
   if result.native_summary == nil or result.native_summary.schema ~= module_cdp_execution.summary_schema then
     result.native_summary = module_inventory.summary(inventory, result.artifact_root, payload.module, result.status)
@@ -541,6 +580,18 @@ local function write_module_inventory(result, payload, context)
   if not ok then return nil, err end
   ok, err = writer(planning.test_plan_path, json_encode(planning.test_plan) .. "\n")
   if not ok then return nil, err end
+  if planning.ai_context ~= nil then
+    ok, err = writer(planning.ai_context.context_manifest_path, json_encode(planning.ai_context) .. "\n")
+    if not ok then return nil, err end
+  end
+  if planning.generated_cases ~= nil then
+    ok, err = writer(planning.generated_cases.generated_cases_path or (result.artifact_root .. "/generated-test-cases.json"), json_encode(planning.generated_cases) .. "\n")
+    if not ok then return nil, err end
+  end
+  if planning.generated_case_gate ~= nil then
+    ok, err = writer(planning.ai_context.generated_case_gate_path, json_encode(planning.generated_case_gate) .. "\n")
+    if not ok then return nil, err end
+  end
   return true, nil, planning
 end
 

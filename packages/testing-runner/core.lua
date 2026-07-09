@@ -155,6 +155,7 @@ local function validate_ui_loop(value)
     mutation_policy = true,
     gap_ref = true,
     backlog_ref = true,
+    platform_flow_ref = true,
   }
   for key, _ in pairs(value) do
     if allowed[key] ~= true then
@@ -184,6 +185,9 @@ local function validate_ui_loop(value)
   end
   if value.backlog_ref ~= nil and not ui_control_ref(value.backlog_ref) then
     error("testing-runner: malformed-request: ui_loop.backlog_ref must be a bounded pointer")
+  end
+  if value.platform_flow_ref ~= nil and not ui_control_ref(value.platform_flow_ref) then
+    error("testing-runner: malformed-request: ui_loop.platform_flow_ref must be a bounded pointer")
   end
 end
 

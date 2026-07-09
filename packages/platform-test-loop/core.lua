@@ -112,6 +112,57 @@ local function count_statuses(results)
   return counts
 end
 
+local function number_or_zero(value)
+  return type(value) == "number" and value or 0
+end
+
+local function native_summary(result)
+  return type(result) == "table" and type(result.native_summary) == "table" and result.native_summary or nil
+end
+
+local function outcome_classification(result)
+  local summary = native_summary(result)
+  return summary and summary.outcome_classification or nil
+end
+
+local function flow_summary(results)
+  local summary = {
+    schema = "platform-test-loop.flow-summary.v1",
+    planned = 0,
+    executed = 0,
+    skipped = 0,
+    blocked_by_safety_gate = 0,
+    blocked_by_fixture_gap = 0,
+    blocked_by_environment_readiness = 0,
+  }
+  local saw_flow_signal = false
+  for _, result in ipairs(results) do
+    local native = native_summary(result)
+    local flow = native and native.platform_flow_summary or nil
+    if type(flow) == "table" then
+      saw_flow_signal = true
+      summary.planned = summary.planned + number_or_zero(flow.planned or flow.flows_planned)
+      summary.executed = summary.executed + number_or_zero(flow.executed or flow.flows_executed)
+      summary.skipped = summary.skipped + number_or_zero(flow.skipped or flow.flows_skipped)
+      summary.blocked_by_safety_gate = summary.blocked_by_safety_gate + number_or_zero(flow.blocked_by_safety_gate or flow.safety_blocked)
+      summary.blocked_by_fixture_gap = summary.blocked_by_fixture_gap + number_or_zero(flow.blocked_by_fixture_gap or flow.fixture_gap_blocked)
+      summary.blocked_by_environment_readiness = summary.blocked_by_environment_readiness + number_or_zero(flow.blocked_by_environment_readiness or flow.environment_readiness_blocked)
+    else
+      local classification = outcome_classification(result)
+      if result.status == "passed" or result.status == "degraded" then summary.executed = summary.executed + 1 end
+      if result.status == "blocked" or result.status == "degraded" or classification ~= nil then summary.skipped = summary.skipped + 1 end
+      if classification == "data-fixture-gap" then summary.blocked_by_fixture_gap = summary.blocked_by_fixture_gap + 1 end
+      if classification == "environment-session-issue" or classification == "environment-readiness-gap" then summary.blocked_by_environment_readiness = summary.blocked_by_environment_readiness + 1 end
+      if classification == "ai-generation-gap" or classification == "unsafe-generated-case" or classification == "not-executed-risk" or classification == "multi-module-flow-gap" then
+        summary.blocked_by_safety_gate = summary.blocked_by_safety_gate + 1
+      end
+    end
+  end
+  summary.planned = math.max(summary.planned, summary.executed + summary.skipped)
+  if saw_flow_signal or summary.planned > 0 or summary.skipped > 0 then return summary end
+  return nil
+end
+
 local function aggregate_status(counts)
   if counts.total == 0 or counts.planned == counts.total then return "planned" end
   if counts.passed == counts.total then return "passed" end
@@ -202,11 +253,14 @@ function M.aggregate_result(payload)
   end
 
   local counts = count_statuses(modules)
+  local flows = flow_summary(payload.module_results or {})
   return {
     schema = "platform-test-loop.aggregate.v1",
     status = aggregate_status(counts),
     counts = counts,
     modules = modules,
+    flow_summary = flows,
+    platform_flows = flows,
     artifact_root = artifact_root,
     metadata_path = artifact_root .. "/metadata.json",
     source_ref = src,
