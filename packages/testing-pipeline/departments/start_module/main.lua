@@ -14,7 +14,14 @@ local function done(_event)
 end
 
 local function act(event)
-  local request = core.module_loop_request(event.payload or {})
+  local payload = event.payload or {}
+  if core.requires_ai_consensus(payload) then
+    local proposal = core.ai_generation_proposal(payload)
+    log.info("testing-pipeline dept=start_module tag=AI_CONSENSUS module=" .. tostring(payload.module))
+    raise("consensus.proposal", proposal)
+    return
+  end
+  local request = core.module_loop_request(payload)
   log.info("testing-pipeline dept=start_module tag=DELEGATE module=" .. tostring(request.module))
   raise("module-test-loop.module_loop_request", request)
 end

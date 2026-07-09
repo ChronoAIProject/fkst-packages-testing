@@ -1,4 +1,6 @@
 local graph = require("testkit.graph")
+local testing = require("testkit.testing")
+local start_module = require("departments.start_module.main")
 local t = fkst.test
 
 local fixture_origin = "http://localhost:8080"
@@ -87,6 +89,19 @@ local function module_cdp_execution_start_event()
     case_priorities = { "P0", "P1" },
   }
   table.insert(event.payload.preflight_result.sessions, { role = "admin", status = "ready" })
+  return event
+end
+
+local function module_ai_consensus_start_event()
+  local event = module_cdp_execution_start_event()
+  event.payload.artifact_root = ".testing/runs/module-a-ai"
+  event.payload.dedup_key = "module-a-ai-run"
+  event.payload.cdp_execution.ai_generation = {
+    schema = "testing-runner.ai-case-generation.request.v1",
+    mode = "autonomous-reviewed",
+    case_budget = 1,
+    consensus_angles = { "teleology", "parsimony" },
+  }
   return event
 end
 
@@ -409,6 +424,21 @@ return {
     t.eq(publication.payload.publication_dry_run, true)
     t.eq(publication.payload.issue_body, nil)
     t.eq(publication.payload.github_comment, nil)
+  end,
+
+  test_start_module_raises_consensus_for_autonomous_reviewed_ai_generation = function()
+    local trace = testing.run_fake(start_module, module_ai_consensus_start_event())
+    t.eq(#trace.raises, 1)
+    t.eq(trace.raises[1].queue, "consensus.proposal")
+    local proposal = trace.raises[1].payload
+    t.eq(proposal.schema, "consensus.proposal.v1")
+    t.eq(proposal.verdict_mode, "converge")
+    t.eq(#proposal.angles, 2)
+    t.eq(proposal.angles[1], "teleology")
+    t.is_true(proposal.body:find("Generate bounded local UI test case candidates", 1, true) ~= nil)
+    t.is_true(proposal.body:find(".testing/runs/module-a-ai/ai-context-manifest.json", 1, true) ~= nil)
+    t.is_true(proposal.context:find("generated-test-cases.json", 1, true) ~= nil)
+    t.eq(proposal.body:find("secret", 1, true), nil)
   end,
 
   test_run_graph_missing_cdp_session_classifies_environment_issue = function()

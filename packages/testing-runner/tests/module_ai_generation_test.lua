@@ -96,6 +96,73 @@ local function ai_request(overrides)
   return value
 end
 
+local function consensus_reached(overrides)
+  local value = {
+    schema = "consensus.consensus_reached.v1",
+    proposal_id = "testing-ai-generation",
+    decision = "approve",
+    body = "approved",
+    source_ref = { kind = "testing-ai-generation", ref = ".testing/runs/module-a-inventory/ai-context-manifest.json" },
+    angle_results = {
+      { angle = "teleology", verdict = "approve" },
+      { angle = "parsimony", verdict = "approve" },
+      { angle = "fidelity", verdict = "approve" },
+      { angle = "natural-ownership", verdict = "approve" },
+      { angle = "proportional-containment", verdict = "approve" },
+    },
+  }
+  for key, item in pairs(overrides or {}) do value[key] = item end
+  return value
+end
+
+local function agent_generation_artifact(overrides)
+  local value = {
+    schema = ai.agent_generation_schema,
+    artifact_kind = "ai-agent-generation",
+    artifact_root = ".testing/runs/module-a-inventory",
+    context_manifest_path = ".testing/runs/module-a-inventory/ai-context-manifest.json",
+    generated_cases_path = ".testing/runs/module-a-inventory/generated-test-cases.json",
+    status = "approved",
+    mode = "autonomous-reviewed",
+    proposal_id = "testing-ai-generation",
+    consensus_proposal_ref = "testing-ai/generation/ctx",
+    generation_digest = "agent-gen-dashboard",
+    generated_case_count = 1,
+    seat_count = 5,
+    seat_names = { "teleology", "parsimony", "fidelity", "natural-ownership", "proportional-containment" },
+  }
+  for key, item in pairs(overrides or {}) do value[key] = item end
+  return value
+end
+
+local function agent_review_artifact(overrides)
+  local value = {
+    schema = ai.agent_review_schema,
+    artifact_kind = "generated-case-agent-review",
+    artifact_root = ".testing/runs/module-a-inventory",
+    context_manifest_path = ".testing/runs/module-a-inventory/ai-context-manifest.json",
+    generated_cases_path = ".testing/runs/module-a-inventory/generated-test-cases.json",
+    generated_case_gate_path = ".testing/runs/module-a-inventory/generated-case-gate.json",
+    generated_case_agent_review_path = ".testing/runs/module-a-inventory/generated-case-agent-review.json",
+    status = "approved",
+    mode = "autonomous-reviewed",
+    proposal_id = "testing-ai-review",
+    consensus_proposal_ref = "testing-ai/review/ctx",
+    decision_digest = "agent-review-dashboard",
+    approved_case_ids = { "dashboard:ai-visible-surface" },
+    approved_case_count = 1,
+    rejected_case_count = 0,
+    blocked_case_count = 0,
+    seat_count = 5,
+    seat_names = { "teleology", "parsimony", "fidelity", "natural-ownership", "proportional-containment" },
+    review_decisions = {
+      { case_id = "dashboard:ai-visible-surface", status = "approved", classification = "agent-approved", reason = "agent review approved deterministic executable case" },
+    },
+  }
+  for key, item in pairs(overrides or {}) do value[key] = item end
+  return value
+end
+
 return {
   test_build_context_manifest_uses_sanitized_pointer_only_fields = function()
     local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
@@ -182,5 +249,81 @@ return {
     t.eq(artifacts.test_plan.review_gate.ai_generation.executable_generated_case_count, 1)
     t.eq(artifacts.ai_context.schema, "testing-runner.ai-context-manifest.v1")
     t.eq(artifacts.generated_case_gate.accepted_count, 1)
+  end,
+
+  test_agent_proposals_are_pointer_only_and_count_agnostic = function()
+    local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request({ mode = "autonomous-reviewed", consensus_angles = { "teleology", "parsimony" } }),
+    })
+    local generation = ai.build_generation_proposal(context, ai_request({ mode = "autonomous-reviewed", consensus_angles = { "teleology", "parsimony" } }))
+    t.eq(generation.schema, "consensus.proposal.v1")
+    t.eq(generation.verdict_mode, "converge")
+    t.eq(#generation.angles, 2)
+    t.eq(generation.body:find("http://localhost:8080/app/dashboard", 1, true) ~= nil, true)
+    t.eq(generation.body:find("secret", 1, true), nil)
+
+    local gate = ai.gate_generated_cases(generated_payload(), context, ai_request({ mode = "autonomous-reviewed" }))
+    local review = ai.build_review_proposal(context, generated_payload(), gate, ai_request({ mode = "autonomous-reviewed" }))
+    t.eq(review.verdict_mode, "gate")
+    t.eq(review.angles, nil)
+    t.eq(review.body:find("generated-case-gate.json", 1, true) ~= nil, true)
+  end,
+
+  test_agent_generation_and_review_artifacts_parse_variable_seats = function()
+    local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request({ mode = "autonomous-reviewed" }),
+    })
+    local gate = ai.gate_generated_cases(generated_payload(), context, ai_request({ mode = "autonomous-reviewed" }))
+    local generation = ai.generation_from_agent_results(context, consensus_reached({ angle_results = {
+      { angle = "one", verdict = "approve" },
+      { angle = "two", verdict = "approve" },
+      { angle = "three", verdict = "approve" },
+      { angle = "four", verdict = "approve" },
+      { angle = "five", verdict = "approve" },
+    } }))
+    local review = ai.review_from_agent_results(context, gate, consensus_reached({ proposal_id = "testing-ai-review", angle_results = {
+      { angle = "one", verdict = "approve" },
+      { angle = "two", verdict = "approve" },
+      { angle = "three", verdict = "approve" },
+      { angle = "four", verdict = "approve" },
+      { angle = "five", verdict = "approve" },
+    } }))
+    t.eq(generation.status, "approved")
+    t.eq(generation.seat_count, 5)
+    t.eq(review.status, "approved")
+    t.eq(review.approved_case_count, 1)
+    t.eq(ai.agent_review_allows_merge(review, gate.cases[1]), true)
+  end,
+
+  test_autonomous_review_requires_agent_approval_before_merge = function()
+    local artifacts = planning.build(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request({ mode = "autonomous-reviewed" }),
+      generated_cases = generated_payload(),
+      ai_agent_generation = agent_generation_artifact(),
+      generated_case_agent_review = agent_review_artifact({ status = "rejected", approved_case_ids = {}, approved_case_count = 0, rejected_case_count = 1, blocked_case_count = 1 }),
+    })
+    local generated = 0
+    for _, case in ipairs(artifacts.test_plan.modules[1].cases) do
+      if case.case_origin == "ai-generated" then generated = generated + 1 end
+    end
+    t.eq(generated, 0)
+    t.eq(artifacts.test_plan.ai_generation.status, "blocked")
+    t.eq(artifacts.test_plan.ai_generation.agent_review_status, "rejected")
+  end,
+
+  test_autonomous_review_merges_agent_approved_cases = function()
+    local artifacts = planning.build(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request({ mode = "autonomous-reviewed" }),
+      generated_cases = generated_payload(),
+      ai_agent_generation = agent_generation_artifact(),
+      generated_case_agent_review = agent_review_artifact(),
+    })
+    local generated = 0
+    for _, case in ipairs(artifacts.test_plan.modules[1].cases) do
+      if case.case_origin == "ai-generated" then generated = generated + 1 end
+    end
+    t.eq(generated, 1)
+    t.eq(artifacts.test_plan.ai_generation.agent_review_status, "approved")
+    t.eq(artifacts.test_plan.ai_generation.agent_approved_generated_case_count, 1)
   end,
 }

@@ -181,7 +181,7 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     })
   end
 
-  local ai_context, generated_cases, generated_case_gate
+  local ai_context, generated_cases, generated_case_gate, agent_generation, agent_review
   if ai_generation.enabled(opts.ai_generation) then
     ai_context = ai_generation.build_context(inventory, ui_loop, artifact_root, {
       ai_generation = opts.ai_generation,
@@ -190,11 +190,19 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     })
     generated_cases = opts.generated_cases or ai_generation.generate_cases(ai_context, opts.ai_generation)
     generated_case_gate = ai_generation.gate_generated_cases(generated_cases, ai_context, opts.ai_generation)
-    ai_generation.merge_generated_cases(plan_modules, generated_case_gate)
+    agent_generation = opts.ai_agent_generation
+    agent_review = opts.generated_case_agent_review
+    if (opts.ai_generation or {}).mode == "autonomous-reviewed" then
+      ai_generation.validate_agent_generation(agent_generation)
+      ai_generation.validate_agent_review(agent_review)
+      ai_generation.merge_generated_cases(plan_modules, generated_case_gate, agent_review)
+    else
+      ai_generation.merge_generated_cases(plan_modules, generated_case_gate)
+    end
   end
 
   local counts = count_cases(plan_modules)
-  local ai_summary = ai_generation.summary(ai_context, generated_cases, generated_case_gate)
+  local ai_summary = ai_generation.summary(ai_context, generated_cases, generated_case_gate, agent_generation, agent_review)
   local plan_status = inventory.discovery_status == "complete" and "complete" or "degraded"
   local review_status = plan_status == "complete" and "reviewed" or "degraded"
   local readiness_status = type(inventory.readiness) == "table" and inventory.readiness.status or "unknown"
@@ -242,6 +250,8 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     ai_context = ai_context,
     generated_cases = generated_cases,
     generated_case_gate = generated_case_gate,
+    ai_agent_generation = agent_generation,
+    generated_case_agent_review = agent_review,
   }
 end
 
