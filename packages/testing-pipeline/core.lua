@@ -2,6 +2,7 @@ local M = {}
 
 local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
+local ai_orchestration = require("ai_orchestration")
 
 local statuses = {
   planned = true,
@@ -139,6 +140,23 @@ function M.ai_generation_proposal(payload)
   }
   proposal.angles = copy_angles(generation.consensus_angles)
   return proposal
+end
+
+function M.start_ai_orchestration(payload, io)
+  M.validate_module_start(payload)
+  return ai_orchestration.start(payload, io)
+end
+
+function M.handle_ai_consensus_reached(payload, io)
+  return ai_orchestration.handle_consensus_reached(payload, io)
+end
+
+function M.handle_ai_consensus_converge(payload, io)
+  return ai_orchestration.handle_consensus_converge(payload, io)
+end
+
+function M.is_testing_ai_consensus(payload)
+  return ai_orchestration.is_testing_ai_consensus(payload)
 end
 
 function M.validate_testing_result(result)

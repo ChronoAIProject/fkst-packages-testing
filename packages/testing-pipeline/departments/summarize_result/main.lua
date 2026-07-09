@@ -2,9 +2,9 @@ local core = require("core")
 local saga = require("workflow.saga")
 
 local spec = {
-  consumes = { "testing-runner.testing_result" },
+  consumes = { "testing-runner.testing_result", "testing_result" },
   produces = { "test-artifacts.testing_result" },
-  fanout = { "testing-runner.testing_result" },
+  fanout = { "testing-runner.testing_result", "testing_result" },
   stall_window = "5m",
   retry = false,
 }
