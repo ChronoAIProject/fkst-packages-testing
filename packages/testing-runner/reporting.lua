@@ -99,6 +99,32 @@ local function append_coverage(lines, cases, executed)
   end
 end
 
+local function origin_coverage_for(cases, executed)
+  local coverage = {
+    deterministic = { planned = 0, executed = 0, skipped = 0 },
+    ["ai-generated"] = { planned = 0, executed = 0, skipped = 0 },
+  }
+  for _, case in ipairs(cases or {}) do
+    local origin = case.case_origin == "ai-generated" and "ai-generated" or "deterministic"
+    local bucket = coverage[origin]
+    bucket.planned = bucket.planned + 1
+    if executed[case.id] then
+      bucket.executed = bucket.executed + 1
+    elseif case.review_status ~= "executable" then
+      bucket.skipped = bucket.skipped + 1
+    end
+  end
+  return coverage
+end
+
+local function append_origin_coverage(lines, cases, executed)
+  local coverage = origin_coverage_for(cases, executed)
+  for _, origin in ipairs({ "deterministic", "ai-generated" }) do
+    local bucket = coverage[origin]
+    add_line(lines, "- " .. origin .. ": " .. bucket.executed .. " executed / " .. bucket.planned .. " planned, " .. bucket.skipped .. " skipped")
+  end
+end
+
 local function append_executed(lines, artifact)
   local actions = type(artifact) == "table" and artifact.actions or nil
   if type(actions) ~= "table" or #actions == 0 then
@@ -132,6 +158,7 @@ local function evidence_paths(paths, backlog)
   add("gap backlog", paths.gap_backlog)
   add("stage report", paths.stage_report)
   add("issue drafts", paths.issue_drafts)
+  add("AI generation", paths.ai_generation)
   if type(backlog) == "table" then
     add("execution", backlog.execution_path)
   end
@@ -208,7 +235,15 @@ local function markdown(result, payload, artifact, planning, backlog, paths)
   for _, module in ipairs(modules) do
     add_line(lines, "### " .. line_value(module.name, module.id))
     append_coverage(lines, module.cases, executed)
+    append_origin_coverage(lines, module.cases, executed)
   end
+  add_line(lines, "")
+  add_line(lines, "## AI generated coverage")
+  local ai_summary = type(planning) == "table" and type(planning.test_plan) == "table" and planning.test_plan.ai_generation or nil
+  add_line(lines, "- Status: " .. line_value(ai_summary and ai_summary.status, "disabled"))
+  add_line(lines, "- Generated cases: " .. tostring(ai_summary and ai_summary.generated_case_count or 0))
+  add_line(lines, "- Executable generated cases: " .. tostring(ai_summary and ai_summary.executable_generated_case_count or 0))
+  add_line(lines, "- Blocked/rejected generated cases: " .. tostring((ai_summary and ai_summary.blocked_generated_case_count or 0) + (ai_summary and ai_summary.rejected_generated_case_count or 0)))
   add_line(lines, "")
   add_line(lines, "## Executed user-facing scenarios")
   append_executed(lines, artifact)

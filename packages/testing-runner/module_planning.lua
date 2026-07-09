@@ -1,5 +1,7 @@
 local M = {}
 
+local ai_generation = require("module_ai_generation")
+
 M.feature_inventory_schema = "testing-runner.feature-inventory.v1"
 M.test_plan_schema = "testing-runner.module-test-plan.v1"
 
@@ -30,7 +32,9 @@ local function review_case(module, priority, suffix, title, case_kind, review_st
     module_id = module.id,
     priority = priority,
     title = title,
+    objective = title,
     case_kind = case_kind,
+    case_origin = "deterministic",
     evidence_pointer = module.evidence_pointer,
     review_status = review_status,
     reason = reason,
@@ -177,7 +181,20 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     })
   end
 
+  local ai_context, generated_cases, generated_case_gate
+  if ai_generation.enabled(opts.ai_generation) then
+    ai_context = ai_generation.build_context(inventory, ui_loop, artifact_root, {
+      ai_generation = opts.ai_generation,
+      step_budget = opts.step_budget,
+      case_priorities = opts.case_priorities,
+    })
+    generated_cases = opts.generated_cases or ai_generation.generate_cases(ai_context, opts.ai_generation)
+    generated_case_gate = ai_generation.gate_generated_cases(generated_cases, ai_context, opts.ai_generation)
+    ai_generation.merge_generated_cases(plan_modules, generated_case_gate)
+  end
+
   local counts = count_cases(plan_modules)
+  local ai_summary = ai_generation.summary(ai_context, generated_cases, generated_case_gate)
   local plan_status = inventory.discovery_status == "complete" and "complete" or "degraded"
   local review_status = plan_status == "complete" and "reviewed" or "degraded"
   local readiness_status = type(inventory.readiness) == "table" and inventory.readiness.status or "unknown"
@@ -210,7 +227,9 @@ function M.build(inventory, ui_loop, artifact_root, opts)
       executable_count = counts.executable,
       blocked_count = counts.blocked,
       not_executed_risk_count = counts["not-executed-risk"],
+      ai_generation = ai_summary,
     },
+    ai_generation = ai_summary,
     limitations = inventory.limitations,
   }
 
@@ -220,6 +239,9 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     plan_status = plan_status,
     feature_inventory = feature_inventory,
     test_plan = test_plan,
+    ai_context = ai_context,
+    generated_cases = generated_cases,
+    generated_case_gate = generated_case_gate,
   }
 end
 

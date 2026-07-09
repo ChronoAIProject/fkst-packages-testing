@@ -162,4 +162,57 @@ return {
     t.eq(artifact.classification, "no-executable-safe-cases")
     t.eq(artifact.action_count, 0)
   end,
+
+  test_executes_ai_generated_read_only_actions_through_bounded_schema = function()
+    local value = payload()
+    value.module_discovery.observations[1].route = "/app/dashboard"
+    value.cdp_execution.ai_generation = {
+      schema = "testing-runner.ai-case-generation.request.v1",
+      mode = "draft",
+      case_budget = 1,
+    }
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
+    t.eq(artifact.execution_status, "passed")
+    t.eq(artifact.classification, "bounded-exploration-complete")
+    t.eq(artifact.ai_generation.executable_generated_case_count, 1)
+    t.eq(artifact.ai_context_manifest_path, ".testing/runs/module-a-cdp/ai-context-manifest.json")
+    t.eq(artifact.generated_cases_path, ".testing/runs/module-a-cdp/generated-test-cases.json")
+    t.eq(artifact.generated_case_gate_path, ".testing/runs/module-a-cdp/generated-case-gate.json")
+    t.eq(artifact.actions[6].case_origin, "ai-generated")
+    t.eq(artifact.actions[6].action, "open-visible-surface")
+    t.eq(artifact.actions[6].provenance_digest:find("local-reviewed", 1, true) ~= nil, true)
+  end,
+
+  test_ai_generated_unknown_action_is_rejected_before_execution = function()
+    local value = payload()
+    value.cdp_execution.ai_generation = {
+      schema = "testing-runner.ai-case-generation.request.v1",
+      mode = "draft",
+      case_budget = 1,
+    }
+    value.cdp_execution.generated_cases = {
+      schema = "testing-runner.generated-test-cases.v1",
+      artifact_kind = "generated-test-cases",
+      artifact_root = ".testing/runs/module-a-cdp",
+      context_manifest_path = ".testing/runs/module-a-cdp/ai-context-manifest.json",
+      generation_mode = "draft",
+      generation_digest = "gen-dashboard",
+      cases = {
+        {
+          id = "dashboard:ai-unknown",
+          module_id = "dashboard",
+          priority = "P1",
+          title = "Unknown action",
+          objective = "Unknown action",
+          case_kind = "read-only-interaction",
+          actions = { { action = "click-anything", target = "Dashboard" } },
+          expected_observable = "bounded result",
+        },
+      },
+      case_count = 1,
+    }
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
+    t.eq(artifact.ai_generation.rejected_generated_case_count, 1)
+    t.eq(artifact.planned_case_count, 5)
+  end,
 }

@@ -247,6 +247,14 @@ cmd_check() {
   return "$fail"
 }
 
+run_browser_observation_self_test() {
+  local target="${1:-}"
+  if [ -z "$target" ] || [ "$target" = "browser-observation" ]; then
+    echo "=== browser-observation JS self-test ==="
+    node "$ROOT/packages/browser-observation/bin/fkst-cdp-observer.js" --self-test
+  fi
+}
+
 cmd_test() {
   local target="${1:-}" fail=0 ran=0 pkg name
   cmd_check
@@ -263,6 +271,7 @@ cmd_test() {
 
   echo "=== self-test ==="
   "$BIN" --self-test >/dev/null
+  run_browser_observation_self_test "$target"
 
   echo "=== package tests (single-root, hermetic) ==="
   while IFS= read -r pkg; do

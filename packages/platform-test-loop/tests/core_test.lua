@@ -35,6 +35,18 @@ local function generic_host_module_result(module)
   }
 end
 
+local function flow_module_result(module, status, flow_summary, outcome)
+  local result = module_result(module, status)
+  result.native_summary = {
+    schema = "testing-runner.module-cdp-execution-summary.v1",
+    module = module,
+    status = status,
+    outcome_classification = outcome,
+    platform_flow_summary = flow_summary,
+  }
+  return result
+end
+
 return {
   test_builds_platform_runner_request = function()
     local request = core.runner_request({
@@ -188,6 +200,54 @@ return {
     t.eq(result.counts.passed, 1)
     t.eq(result.counts.failed, 1)
     t.eq(result.counts.blocked, 1)
+  end,
+
+  test_aggregate_counts_multi_module_flow_summaries = function()
+    local result = core.aggregate_result({
+      schema = "platform-test-loop.aggregate.v1",
+      module_results = {
+        flow_module_result("module-a", "passed", {
+          planned = 2,
+          executed = 1,
+          skipped = 1,
+          blocked_by_safety_gate = 1,
+        }),
+        flow_module_result("module-b", "degraded", {
+          flows_planned = 3,
+          flows_executed = 1,
+          flows_skipped = 2,
+          fixture_gap_blocked = 1,
+          environment_readiness_blocked = 1,
+        }),
+      },
+      artifact_root = ".testing/runs/platform",
+    })
+    t.eq(result.flow_summary.schema, "platform-test-loop.flow-summary.v1")
+    t.eq(result.flow_summary.planned, 5)
+    t.eq(result.flow_summary.executed, 2)
+    t.eq(result.flow_summary.skipped, 3)
+    t.eq(result.flow_summary.blocked_by_safety_gate, 1)
+    t.eq(result.flow_summary.blocked_by_fixture_gap, 1)
+    t.eq(result.flow_summary.blocked_by_environment_readiness, 1)
+    t.eq(result.platform_flows.planned, 5)
+  end,
+
+  test_aggregate_derives_flow_gaps_from_outcomes_without_breaking_status = function()
+    local result = core.aggregate_result({
+      schema = "platform-test-loop.aggregate.v1",
+      module_results = {
+        flow_module_result("module-a", "blocked", nil, "data-fixture-gap"),
+        flow_module_result("module-b", "blocked", nil, "ai-generation-gap"),
+        flow_module_result("module-c", "blocked", nil, "environment-session-issue"),
+      },
+      artifact_root = ".testing/runs/platform",
+    })
+    t.eq(result.status, "blocked")
+    t.eq(result.flow_summary.planned, 3)
+    t.eq(result.flow_summary.skipped, 3)
+    t.eq(result.flow_summary.blocked_by_fixture_gap, 1)
+    t.eq(result.flow_summary.blocked_by_safety_gate, 1)
+    t.eq(result.flow_summary.blocked_by_environment_readiness, 1)
   end,
 
   test_aggregate_rejects_sparse_module_results = function()

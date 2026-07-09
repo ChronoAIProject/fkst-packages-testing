@@ -35,6 +35,11 @@ local function request(overrides)
       schema = "testing-runner.module-cdp-execution.v1",
       step_budget = 8,
       case_priorities = { "P0", "P1" },
+      ai_generation = {
+        schema = "testing-runner.ai-case-generation.request.v1",
+        mode = "draft",
+        case_budget = 1,
+      },
     },
     preflight_result = {
       schema = "browser-readiness.result.v1",
@@ -68,6 +73,8 @@ return {
     local report = written[".testing/runs/module-a-report/stage-report.md"]
     t.is_true(report:find("Discovered modules", 1, true) ~= nil)
     t.is_true(report:find("Coverage status", 1, true) ~= nil)
+    t.is_true(report:find("AI generated coverage", 1, true) ~= nil)
+    t.is_true(report:find("ai-generated", 1, true) ~= nil)
     t.is_true(report:find("Executed user-facing scenarios", 1, true) ~= nil)
     t.is_true(report:find("Publication handoff: dry-run pointer handoff only", 1, true) ~= nil)
     t.eq(report:find("secret", 1, true), nil)
@@ -80,6 +87,14 @@ return {
     local bundle = written[".testing/runs/module-a-report/evidence-bundle.json"]
     t.is_true(bundle:find('"stage_report_path":".testing/runs/module-a-report/stage-report.md"', 1, true) ~= nil)
     t.is_true(bundle:find('"issue_drafts_path":".testing/runs/module-a-report/issue-drafts.json"', 1, true) ~= nil)
+    t.is_true(bundle:find('"ai_generation_path":".testing/runs/module-a-report/evidence/ai-generation.json"', 1, true) ~= nil)
+
+    local ai_generation = written[".testing/runs/module-a-report/evidence/ai-generation.json"]
+    t.is_true(ai_generation:find('"schema":"testing-runner.native-evidence-ai-generation.v1"', 1, true) ~= nil)
+    t.is_true(ai_generation:find('"generated_case_count":1', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-report/ai-context-manifest.json"]:find('"schema":"testing-runner.ai-context-manifest.v1"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-report/generated-test-cases.json"]:find('"schema":"testing-runner.generated-test-cases.v1"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-report/generated-case-gate.json"]:find('"schema":"testing-runner.generated-case-gate.v1"', 1, true) ~= nil)
 
     local metadata = written[".testing/runs/module-a-report/metadata.json"]
     t.is_true(metadata:find('"stage_report_path":".testing/runs/module-a-report/stage-report.md"', 1, true) ~= nil)
