@@ -10,6 +10,7 @@ M.generated_cases_schema = "testing-runner.generated-test-cases.v1"
 M.gate_schema = "testing-runner.generated-case-gate.v1"
 M.agent_generation_schema = ai_agents.agent_generation_schema
 M.agent_review_schema = ai_agents.agent_review_schema
+M.review_closure_schema = "testing-runner.ai-test-design-loop.v1"
 M.prompt_template_ref = "testing-runner.ai-case-generation.prompt.v1"
 
 local max_string = 512
@@ -17,6 +18,7 @@ local max_id = 180
 local max_modules = 64
 local max_cases = 32
 local max_actions = 8
+local max_follow_ups = 16
 
 local allowed_modes = {
   disabled = true,
@@ -342,6 +344,7 @@ local function context_paths(artifact_root)
     gate = artifact_root .. "/generated-case-gate.json",
     agent_generation = artifact_root .. "/ai-agent-generation.json",
     agent_review = artifact_root .. "/generated-case-agent-review.json",
+    review_closure = artifact_root .. "/ai-test-design-loop.json",
   }
 end
 
@@ -371,6 +374,7 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
     generated_case_gate_path = paths.gate,
     ai_agent_generation_path = paths.agent_generation,
     generated_case_agent_review_path = paths.agent_review,
+    ai_test_design_loop_path = paths.review_closure,
     base_url = base_url,
     allowed_origins = origins,
     mutation_policy = (ui_loop or {}).mutation_policy or "read-only",
@@ -679,6 +683,112 @@ function M.merge_generated_cases(plan_modules, gate, agent_review)
   return plan_modules
 end
 
+local function append_unique(list, seen, value)
+  if value == nil or seen[value] == true then return end
+  if #list >= max_follow_ups then return end
+  table.insert(list, value)
+  seen[value] = true
+end
+
+local function follow_up_for(classification, final_status)
+  if final_status == "execution-eligible" then return "Generated case is eligible for bounded deterministic execution." end
+  if classification == "missing-control-evidence" then return "Add bounded local evidence for the visible control before execution."
+  elseif classification == "read-only-policy" then return "Keep mutation or write paths recorded as not-executed risk, or provide host-approved safe fixtures."
+  elseif classification == "fixture-data-gap" then return "Provide host-approved fixture, evidence, and cleanup or rollback pointers."
+  elseif classification == "schema-or-safety-rejected" then return "Drop or repair the generated case; deterministic schema and safety rejection is authoritative."
+  elseif classification == "agent-review-required" then return "Run agent review before merging autonomous-reviewed generated cases."
+  elseif classification == "agent-review-blocked" then return "Generated case remains blocked until agent review approves it."
+  end
+  return "Review bounded local evidence before promoting this generated case to execution."
+end
+
+function M.build_review_closure(context, generated, gate, agent_generation, agent_review)
+  if context == nil or generated == nil or gate == nil then return nil end
+  local mode = context.generation_mode or "disabled"
+  local approved_ids = set_from_list(agent_review and agent_review.approved_case_ids or {})
+  local rows, follow_ups, seen_follow_up = {}, {}, {}
+  local counts = {
+    deterministic_executable = 0,
+    execution_eligible = 0,
+    blocked = 0,
+    rejected = 0,
+    ["not-executed-risk"] = 0,
+  }
+
+  for _, decision in ipairs(gate.decisions or {}) do
+    local deterministic_status = decision.review_status or "blocked"
+    local classification = decision.classification or "unknown"
+    local agent_status = agent_review and agent_review.status or (mode == "autonomous-reviewed" and "missing" or "not-required")
+    local final_status = "blocked"
+    if deterministic_status == "executable" then
+      counts.deterministic_executable = counts.deterministic_executable + 1
+      if mode == "autonomous-reviewed" then
+        if agent_review ~= nil and agent_review.status == "approved" and approved_ids[decision.case_id] == true then
+          final_status = "execution-eligible"
+          counts.execution_eligible = counts.execution_eligible + 1
+        else
+          classification = agent_review == nil and "agent-review-required" or "agent-review-blocked"
+          counts.blocked = counts.blocked + 1
+        end
+      else
+        final_status = "execution-eligible"
+        counts.execution_eligible = counts.execution_eligible + 1
+      end
+    elseif deterministic_status == "not-executed-risk" then
+      final_status = "not-executed-risk"
+      counts["not-executed-risk"] = counts["not-executed-risk"] + 1
+    elseif deterministic_status == "rejected" then
+      final_status = "rejected"
+      counts.rejected = counts.rejected + 1
+    else
+      final_status = "blocked"
+      counts.blocked = counts.blocked + 1
+    end
+    local follow_up = follow_up_for(classification, final_status)
+    if final_status ~= "execution-eligible" then append_unique(follow_ups, seen_follow_up, follow_up) end
+    table.insert(rows, {
+      case_id = bounded_id(decision.case_id) and decision.case_id or "generated-case",
+      module_id = bounded_id(decision.module_id) and decision.module_id or nil,
+      deterministic_status = deterministic_status,
+      classification = classification,
+      agent_review_status = agent_status,
+      final_status = final_status,
+      required_follow_up = follow_up,
+    })
+    if #rows >= max_cases then break end
+  end
+
+  local status = "reviewed"
+  if counts.rejected > 0 then status = "degraded" end
+  if (generated.case_count or 0) > 0 and counts.execution_eligible == 0 then status = "blocked" end
+  if mode == "autonomous-reviewed" and (agent_review == nil or agent_review.status ~= "approved") then status = "blocked" end
+
+  return {
+    schema = M.review_closure_schema,
+    artifact_kind = "ai-test-design-loop",
+    artifact_root = context.artifact_root,
+    context_manifest_path = context.context_manifest_path,
+    generated_cases_path = context.generated_cases_path,
+    generated_case_gate_path = context.generated_case_gate_path,
+    ai_agent_generation_path = agent_generation and context.ai_agent_generation_path or nil,
+    generated_case_agent_review_path = agent_review and context.generated_case_agent_review_path or nil,
+    ai_test_design_loop_path = context.ai_test_design_loop_path,
+    status = status,
+    mode = mode,
+    generated_case_count = generated.case_count or 0,
+    reviewed_case_count = #rows,
+    deterministic_executable_generated_case_count = counts.deterministic_executable,
+    execution_eligible_generated_case_count = counts.execution_eligible,
+    blocked_generated_case_count = counts.blocked,
+    not_executed_risk_generated_case_count = counts["not-executed-risk"],
+    rejected_generated_case_count = counts.rejected,
+    agent_approved_generated_case_count = agent_review and agent_review.approved_case_count or 0,
+    required_follow_up = follow_ups,
+    required_follow_up_count = #follow_ups,
+    reviewed_cases = rows,
+  }
+end
+
 function M.summary(context, generated, gate, agent_generation, agent_review)
   if context == nil then
     return { status = "disabled", mode = "disabled", generated_case_count = 0, executable_generated_case_count = 0, blocked_generated_case_count = 0 }
@@ -699,6 +809,7 @@ function M.summary(context, generated, gate, agent_generation, agent_review)
     generated_case_gate_path = context.generated_case_gate_path,
     ai_agent_generation_path = agent_generation and context.ai_agent_generation_path or nil,
     generated_case_agent_review_path = agent_review and context.generated_case_agent_review_path or nil,
+    ai_test_design_loop_path = context.ai_test_design_loop_path,
     prompt_template_ref = context.prompt_template_ref,
     input_digest = context.input_digest,
     generated_case_count = generated and generated.case_count or 0,

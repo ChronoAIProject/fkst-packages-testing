@@ -181,7 +181,7 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     })
   end
 
-  local ai_context, generated_cases, generated_case_gate, agent_generation, agent_review
+  local ai_context, generated_cases, generated_case_gate, agent_generation, agent_review, ai_review_closure
   if ai_generation.enabled(opts.ai_generation) then
     ai_context = ai_generation.build_context(inventory, ui_loop, artifact_root, {
       ai_generation = opts.ai_generation,
@@ -199,6 +199,7 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     else
       ai_generation.merge_generated_cases(plan_modules, generated_case_gate)
     end
+    ai_review_closure = ai_generation.build_review_closure(ai_context, generated_cases, generated_case_gate, agent_generation, agent_review)
   end
 
   local counts = count_cases(plan_modules)
@@ -238,6 +239,7 @@ function M.build(inventory, ui_loop, artifact_root, opts)
       ai_generation = ai_summary,
     },
     ai_generation = ai_summary,
+    ai_test_design_loop = ai_review_closure,
     limitations = inventory.limitations,
   }
 
@@ -252,6 +254,7 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     generated_case_gate = generated_case_gate,
     ai_agent_generation = agent_generation,
     generated_case_agent_review = agent_review,
+    ai_review_closure = ai_review_closure,
   }
 end
 

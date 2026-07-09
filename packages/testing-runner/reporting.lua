@@ -159,6 +159,7 @@ local function evidence_paths(paths, backlog)
   add("stage report", paths.stage_report)
   add("issue drafts", paths.issue_drafts)
   add("AI generation", paths.ai_generation)
+  add("AI test design loop", paths.ai_test_design_loop)
   if type(backlog) == "table" then
     add("execution", backlog.execution_path)
   end
@@ -246,6 +247,8 @@ local function markdown(result, payload, artifact, planning, backlog, paths)
   add_line(lines, "- Blocked/rejected generated cases: " .. tostring((ai_summary and ai_summary.blocked_generated_case_count or 0) + (ai_summary and ai_summary.rejected_generated_case_count or 0)))
   add_line(lines, "- Agent generation: " .. line_value(ai_summary and ai_summary.agent_generation_status, "not-recorded") .. " (seats " .. tostring(ai_summary and ai_summary.agent_generation_seat_count or 0) .. ") — " .. line_value(ai_summary and ai_summary.ai_agent_generation_path, "not recorded"))
   add_line(lines, "- Agent review: " .. line_value(ai_summary and ai_summary.agent_review_status, "not-recorded") .. " (seats " .. tostring(ai_summary and ai_summary.agent_review_seat_count or 0) .. ", approved " .. tostring(ai_summary and ai_summary.agent_approved_generated_case_count or 0) .. ") — " .. line_value(ai_summary and ai_summary.generated_case_agent_review_path, "not recorded"))
+  local loop = type(planning) == "table" and planning.ai_review_closure or nil
+  add_line(lines, "- AI test design loop: " .. line_value(loop and loop.status, "not-recorded") .. " (eligible " .. tostring(loop and loop.execution_eligible_generated_case_count or 0) .. ", blocked " .. tostring(loop and loop.blocked_generated_case_count or 0) .. ", risk " .. tostring(loop and loop.not_executed_risk_generated_case_count or 0) .. ") — " .. line_value(ai_summary and ai_summary.ai_test_design_loop_path, "not recorded"))
   add_line(lines, "")
   add_line(lines, "## Executed user-facing scenarios")
   append_executed(lines, artifact)

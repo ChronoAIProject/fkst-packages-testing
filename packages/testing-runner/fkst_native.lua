@@ -436,6 +436,7 @@ local function ai_generation_evidence(planning, root)
     generated_case_gate_path = summary and summary.generated_case_gate_path or nil,
     ai_agent_generation_path = summary and summary.ai_agent_generation_path or nil,
     generated_case_agent_review_path = summary and summary.generated_case_agent_review_path or nil,
+    ai_test_design_loop_path = summary and summary.ai_test_design_loop_path or nil,
     prompt_template_ref = summary and summary.prompt_template_ref or nil,
     input_digest = summary and summary.input_digest or nil,
     generated_case_count = summary and summary.generated_case_count or 0,
@@ -448,6 +449,10 @@ local function ai_generation_evidence(planning, root)
     agent_review_status = summary and summary.agent_review_status or nil,
     agent_review_seat_count = summary and summary.agent_review_seat_count or nil,
     agent_approved_generated_case_count = summary and summary.agent_approved_generated_case_count or nil,
+    ai_test_design_loop_status = type(planning) == "table" and type(planning.ai_review_closure) == "table" and planning.ai_review_closure.status or nil,
+    execution_eligible_generated_case_count = type(planning) == "table" and type(planning.ai_review_closure) == "table" and planning.ai_review_closure.execution_eligible_generated_case_count or nil,
+    not_executed_risk_generated_case_count = type(planning) == "table" and type(planning.ai_review_closure) == "table" and planning.ai_review_closure.not_executed_risk_generated_case_count or nil,
+    required_follow_up_count = type(planning) == "table" and type(planning.ai_review_closure) == "table" and planning.ai_review_closure.required_follow_up_count or nil,
   }
 end
 
@@ -486,6 +491,7 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     failures = section_path(root, "failures"),
     console_network = section_path(root, "console-network-summary"),
     ai_generation = section_path(root, "ai-generation"),
+    ai_test_design_loop = root .. "/ai-test-design-loop.json",
     screenshots = section_path(root, "screenshot-index"),
     dom_state = section_path(root, "dom-state-summary"),
     gap_backlog = outcome.path(root),
@@ -507,6 +513,7 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     stage_report = paths.stage_report,
     issue_drafts = paths.issue_drafts,
     ai_generation = paths.ai_generation,
+    ai_test_design_loop = paths.ai_test_design_loop,
   })
   local sections = {
     { paths.discovery, discovery_evidence(payload, root) },
@@ -541,6 +548,7 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     failures_path = paths.failures,
     console_network_summary_path = paths.console_network,
     ai_generation_path = paths.ai_generation,
+    ai_test_design_loop_path = paths.ai_test_design_loop,
     screenshot_index_path = paths.screenshots,
     dom_state_summary_path = paths.dom_state,
     gap_backlog_path = paths.gap_backlog,
@@ -607,6 +615,10 @@ local function write_module_inventory(result, payload, context)
   end
   if planning.generated_case_agent_review ~= nil then
     ok, err = writer(planning.ai_context.generated_case_agent_review_path, json_encode(planning.generated_case_agent_review) .. "\n")
+    if not ok then return nil, err end
+  end
+  if planning.ai_review_closure ~= nil then
+    ok, err = writer(planning.ai_context.ai_test_design_loop_path, json_encode(planning.ai_review_closure) .. "\n")
     if not ok then return nil, err end
   end
   return true, nil, planning

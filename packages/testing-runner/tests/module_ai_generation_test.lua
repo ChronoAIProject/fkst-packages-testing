@@ -326,4 +326,26 @@ return {
     t.eq(artifacts.test_plan.ai_generation.agent_review_status, "approved")
     t.eq(artifacts.test_plan.ai_generation.agent_approved_generated_case_count, 1)
   end,
+
+  test_review_closure_records_final_ai_loop_state = function()
+    local artifacts = planning.build(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request({ mode = "autonomous-reviewed", case_budget = 2 }),
+      generated_cases = generated_payload({
+        id = "dashboard:ai-search-filter",
+        actions = { { action = "search-or-filter-readonly", target = "Dashboard" } },
+      }),
+      ai_agent_generation = agent_generation_artifact(),
+      generated_case_agent_review = agent_review_artifact({ approved_case_ids = {}, approved_case_count = 0, blocked_case_count = 1 }),
+    })
+    local closure = artifacts.ai_review_closure
+    t.eq(closure.schema, ai.review_closure_schema)
+    t.eq(closure.ai_test_design_loop_path, ".testing/runs/module-a-inventory/ai-test-design-loop.json")
+    t.eq(closure.status, "blocked")
+    t.eq(closure.generated_case_count, 1)
+    t.eq(closure.blocked_generated_case_count, 1)
+    t.eq(closure.execution_eligible_generated_case_count, 0)
+    t.eq(closure.reviewed_cases[1].classification, "agent-review-blocked")
+    t.eq(closure.reviewed_cases[1].final_status, "blocked")
+    t.is_true(closure.required_follow_up[1]:find("agent review", 1, true) ~= nil)
+  end,
 }
