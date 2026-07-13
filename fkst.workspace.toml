@@ -1,9 +1,40 @@
 [workspace]
-# fkst-packages-testing is a Lua-primary testing-domain package workspace. Platform libraries under
-# libraries/ are vendored from fkst-packages at the sha in .fkst/conformance/fkst-packages.pin.
-units = ["packages/*", "libraries/*"]
+# fkst-packages-testing owns testing-domain packages and local testing libraries. The generic
+# development control plane is consumed from the pinned, read-only fkst-packages source below.
+units = [
+  "packages/*",
+  "libraries/contract",
+  "libraries/forge",
+  "libraries/testing_ai",
+  "libraries/testing_runtime",
+  "libraries/testkit",
+  "libraries/workflow",
+]
 packages = ["packages/*"]
-libraries = ["libraries/*"]
+libraries = [
+  "libraries/contract",
+  "libraries/forge",
+  "libraries/testing_ai",
+  "libraries/testing_runtime",
+  "libraries/testkit",
+  "libraries/workflow",
+]
 
 [registries]
 workspace = "workspace"
+
+[[external_sources]]
+id = "fkst-packages-platform"
+git = "https://github.com/ChronoAIProject/fkst-packages.git"
+rev = "7bbe14a80148c323b2106af5a010bd10d4950c89"
+libraries = ["forge", "devloop"]
+packages = [
+  "github-proxy",
+  "consensus",
+  "github-devloop-intake",
+  "github-devloop-workflow",
+  "github-devloop",
+  "github-devloop-pr",
+  "github-devloop-decompose",
+  "github-devloop-integration",
+]

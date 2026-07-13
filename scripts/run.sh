@@ -1,11 +1,9 @@
 #!/usr/bin/env bash
-# Thin runner for fkst-packages-testing (a testing-domain library of FLAT building-block
-# packages that run on the fkst-substrate engine, built on fkst-packages / library B).
+# Runner for fkst-packages-testing, a testing-domain package workspace on fkst-substrate.
 #
-# This repo owns its testing packages + the vendored platform libraries (libraries/). It hydrates
-# the `.fkst/conformance/fkst-packages.pin` checkout and REUSES two shared, engine-independent pieces
-# from it — the BIN-resolution contract (bin_bootstrap.sh) and the source ratchets (check_repo.py) —
-# then drives the engine itself, once per package.
+# This repository owns its testing packages and local testing libraries. It hydrates the revision in
+# `.fkst/conformance/fkst-packages.pin` as a clean, read-only platform checkout, reuses its binary and
+# source-ratchet contracts, and can delegate repository-level host commands to that pinned checkout.
 #
 # Conformance posture (why single-root, not a composed host graph): each flat package's public entry
 # queue (for example module_test_request, browser_readiness_check, or artifact_summary) is produced
@@ -14,7 +12,7 @@
 # CLOSED-WORLD over the roots listed in .fkst/conformance/composed-roots. Closing a full production
 # graph is a host's job; this repo owns reusable testing-domain building blocks.
 #
-# The engine source is pinned by .fkst-substrate-ref (a reproducible fkst-substrate SHA kept coherent
+# The engine source is pinned by .fkst/substrate-ref (a reproducible fkst-substrate SHA kept coherent
 # with the fkst-packages pin's own .fkst/substrate-ref), not a floating branch.
 set -euo pipefail
 
@@ -28,9 +26,8 @@ PIN_FILE="$ROOT/.fkst/conformance/fkst-packages.pin"
 CHECKOUT="$ROOT/.fkst/run/fkst-packages-conformance"
 REPO_URL="https://github.com/ChronoAIProject/fkst-packages.git"
 
-# The fkst-packages pin is a dedicated single-line file (the first 40-hex line), kept out of
-# fkst.lock so the engine sees a plain self-contained workspace (vendored libraries, no external
-# source). Comments (`#`) are ignored.
+# The dedicated pin is the hydration coordinate. The workspace and lock repeat the same source
+# identity so host composition is explicit and mechanically checked. Comments (`#`) are ignored.
 read_fkst_packages_pin() {
   local pin
   pin="$(sed -n '/^[0-9a-fA-F]\{40\}$/{p;q;}' "$PIN_FILE" 2>/dev/null || true)"
@@ -56,9 +53,29 @@ ensure_fkst_packages_checkout() {
   printf '%s\n' "$CHECKOUT"
 }
 
+resolve_python() {
+  local candidate
+  if [ -n "${PYTHON:-}" ]; then
+    printf '%s\n' "$PYTHON"
+    return 0
+  fi
+  for candidate in python3.13 python3.12 python3.11 python3; do
+    if command -v "$candidate" >/dev/null 2>&1 && "$candidate" - <<'PY' >/dev/null 2>&1
+import sys
+raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
+PY
+    then
+      command -v "$candidate"
+      return 0
+    fi
+  done
+  echo "error: Python 3.11+ is required for TOML-aware platform and source ratchets" >&2
+  return 1
+}
+
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|live-cdp-smoke|example|supervise> [args]
+usage: scripts/run.sh <check|test|live-cdp-smoke|example|supervise|host> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
@@ -68,6 +85,8 @@ usage: scripts/run.sh <check|test|live-cdp-smoke|example|supervise> [args]
   example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
+  host -- <command>   delegate repository-level check, test, or supervise to the pinned read-only
+                      fkst-packages host runner using .fkst/compose/package-roots
 
 Most packages are flat building blocks, validated single-root (--project-root == --package-root) the
 way fkst-packages validates its own flat packages; a host closes their graph by producing their entry
@@ -99,7 +118,7 @@ run_source_ratchets() {
   echo "=== source ratchets ==="
   local args=(--project-root "$ROOT")
   [ -d "$ROOT/.fkst/conformance/allowlists" ] && args+=(--allowlist-dir "$ROOT/.fkst/conformance/allowlists")
-  PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" python3 -B "$shared/scripts/check_repo.py" "${args[@]}"
+  PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -B "$shared/scripts/check_repo.py" "${args[@]}"
 }
 
 list_packages() {
@@ -172,6 +191,44 @@ copy_tree() {
   fi
 }
 
+flat_test_workspace() {
+  local name="$1" source_root="$2" parent work lib
+  parent="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-flat.XXXXXX")"
+  work="$parent/$name"
+  mkdir -p "$work/packages/$name" "$work/libraries"
+  copy_tree "$source_root" "$work/packages/$name" 0
+  cp "$source_root/fkst.toml" "$work/fkst.toml"
+  [ ! -f "$source_root/core.lua" ] || cp "$source_root/core.lua" "$work/core.lua"
+  [ ! -d "$source_root/departments" ] || copy_tree "$source_root/departments" "$work/departments" 0
+  [ ! -d "$source_root/raisers" ] || copy_tree "$source_root/raisers" "$work/raisers" 0
+  [ ! -d "$source_root/tests" ] || copy_tree "$source_root/tests" "$work/tests" 0
+  "$PYTHON_BIN" - "$work/fkst.toml" "$name" <<'PY'
+from pathlib import Path
+import sys
+
+manifest = Path(sys.argv[1])
+name = sys.argv[2]
+text = manifest.read_text(encoding="utf-8")
+text = text.replace('root = "."', f'root = "packages/{name}"', 1)
+text = text.replace('pack = "conformance/pack.toml"', f'pack = "packages/{name}/conformance/pack.toml"', 1)
+manifest.write_text(text, encoding="utf-8")
+PY
+  cat > "$work/fkst.workspace.toml" <<'TOML'
+[workspace]
+units = [".", "libraries/*"]
+packages = ["."]
+libraries = ["libraries/*"]
+
+[registries]
+workspace = "workspace"
+TOML
+  for lib in "$ROOT"/libraries/*/; do
+    [ -d "$lib" ] || continue
+    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
+  done
+  printf '%s\n' "$work"
+}
+
 composed_test_workspace() {
   local name="$1" roots="$2" work lib t src dep_name source_root="${3:-$ROOT/packages/$name}"
   work="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-composed.XXXXXX")"
@@ -188,6 +245,14 @@ TOML
   for lib in "$ROOT"/libraries/*/; do
     [ -d "$lib" ] || continue
     copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
+  done
+  # Platform packages use source-scoped forge/devloop libraries. The local forge mirror wins for
+  # host-owned packages; copy any missing platform library so composed package tests close the same
+  # library graph as host conformance.
+  for dep_name in forge devloop; do
+    [ -d "$work/libraries/$dep_name" ] && continue
+    [ -d "$shared/libraries/$dep_name" ] || { echo "error: pinned platform library missing: $dep_name" >&2; return 1; }
+    copy_tree "$shared/libraries/$dep_name" "$work/libraries/$dep_name" 0
   done
   copy_tree "$source_root" "$work/packages/$name" 0
   for t in $roots; do
@@ -207,7 +272,7 @@ TOML
 #   undeclared composed ([event_deps] but no entry) -> hard error (tells the maintainer to declare it);
 #   flat -> SINGLE-ROOT (partial-graph), the repo default for self-contained blocks.
 run_pkg_engine() {
-  local sub="$1" pkg="$2" name roots t dir
+  local sub="$1" pkg="$2" name roots t dir work rc
   name="$(basename "$pkg")"
   roots="$(composed_roots_for "$name")"
   if [ -n "$roots" ]; then
@@ -229,7 +294,13 @@ run_pkg_engine() {
     echo "error: $name declares [event_deps] but has no .fkst/conformance/composed-roots entry; declare its closed-world package roots" >&2
     return 1
   fi
-  run_engine "$BIN" "$sub" --project-root "$pkg" --package-root "$pkg"
+  work="$(flat_test_workspace "$name" "$pkg")" || return 1
+  set +e
+  run_engine "$BIN" "$sub" --project-root "$work" --package-root "$work"
+  rc=$?
+  set -e
+  rm -rf "$(dirname "$work")"
+  return "$rc"
 }
 
 cmd_check() {
@@ -294,7 +365,9 @@ cmd_test() {
       echo "    (composed tests, closed-world: $name + $roots)"
       run_engine "$BIN" test "${args[@]}" || fail=1
     else
-      run_engine "$BIN" test --project-root "$pkg" --package-root "$pkg" || fail=1
+      work="$(flat_test_workspace "$name" "$pkg")" || { fail=1; continue; }
+      if ! run_engine "$BIN" test --project-root "$work" --package-root "$work"; then fail=1; fi
+      rm -rf "$(dirname "$work")"
     fi
   done < <(list_packages)
   if [ "$ran" -eq 0 ]; then echo "error: no packages matched${target:+ for '$target'}" >&2; return 1; fi
@@ -303,15 +376,15 @@ cmd_test() {
 }
 
 cmd_live_cdp_smoke() {
-  local work rc run_id artifact_rel artifact_source artifact_target package_root
+  local source_root="$ROOT/packages/testing-runner" work parent rc run_id artifact_rel artifact_source artifact_target
   [ -n "${FKST_LIVE_BASE_URL:-}" ] || { echo "error: FKST_LIVE_BASE_URL is required" >&2; return 1; }
   [ -n "${FKST_LIVE_CDP_URL:-}" ] || { echo "error: FKST_LIVE_CDP_URL is required" >&2; return 1; }
   resolve_testing_bin
-  work="$(composed_test_workspace "testing-runner" "" "$ROOT/packages/testing-runner")" || return 1
-  package_root="$work/packages/testing-runner"
-  rm -f "$package_root/tests/"*_test.lua
-  mkdir -p "$package_root/departments/live_cdp_smoke"
-  cp "$ROOT/scripts/live_cdp_smoke.lua" "$package_root/departments/live_cdp_smoke/main.lua"
+  work="$(flat_test_workspace "testing-runner" "$source_root")" || return 1
+  parent="$(dirname "$work")"
+  rm -f "$work/tests/"*_test.lua
+  mkdir -p "$work/departments/live_cdp_smoke"
+  cp "$ROOT/scripts/live_cdp_smoke.lua" "$work/departments/live_cdp_smoke/main.lua"
   run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
   artifact_rel=".testing/runs/live-cdp-smoke-$run_id"
   export FKST_LIVE_ARTIFACT_ROOT="$artifact_rel"
@@ -320,9 +393,9 @@ cmd_live_cdp_smoke() {
   set +e
   (
     cd "$work"
-    run_engine "$BIN" run "$package_root/departments/live_cdp_smoke/main.lua" \
+    run_engine "$BIN" run "$work/departments/live_cdp_smoke/main.lua" \
       --project-root "$work" \
-      --package-root "$package_root" \
+      --package-root "$work" \
       --owner-namespace testing-runner \
       --event '{"queue":"live_cdp_smoke","payload":{}}'
   )
@@ -344,7 +417,7 @@ cmd_live_cdp_smoke() {
       echo "live CDP smoke artifacts: $artifact_target"
     fi
   fi
-  rm -rf "$work"
+  rm -rf "$parent"
   return "$rc"
 }
 
@@ -391,8 +464,42 @@ cmd_supervise() {
   exec "$BIN" supervise --project-root "$pkg" --package-root "$pkg" --framework-bin "$BIN"
 }
 
+cmd_host() {
+  local python_shim_dir="$ROOT/.fkst/run/python-bin"
+  local catalog_root="${FKST_WORKFLOW_CATALOG_ROOT:-$ROOT/.fkst/workflow}"
+  case "$catalog_root" in
+    /*) ;;
+    *) echo "error: FKST_WORKFLOW_CATALOG_ROOT must be an absolute path: $catalog_root" >&2; exit 1 ;;
+  esac
+  [ -d "$catalog_root" ] || { echo "error: workflow catalog root does not exist: $catalog_root" >&2; exit 1; }
+  export FKST_WORKFLOW_CATALOG_ROOT="$catalog_root"
+  resolve_testing_bin
+  mkdir -p "$python_shim_dir"
+  ln -sfn "$PYTHON_BIN" "$python_shim_dir/python3"
+
+  if [ "${1:-}" = "--" ] && [ "${2:-}" = "test" ]; then
+    if [ -n "${3:-}" ] && [ "${3:-}" != "github-devloop-workflow" ]; then
+      echo "error: unknown workflow host test package: ${3:-}" >&2
+      return 2
+    fi
+    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" host \
+      --host-root "$ROOT" \
+      --platform-root "$shared" \
+      --local-packages "$ROOT/packages" \
+      -- check
+    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" test github-devloop-workflow
+    return
+  fi
+
+  PATH="$python_shim_dir:$PATH" exec "$shared/scripts/run.sh" host \
+    --host-root "$ROOT" \
+    --platform-root "$shared" \
+    --local-packages "$ROOT/packages" \
+    "$@"
+}
+
 case "${1:-}" in
-  check|test|live-cdp-smoke|example|supervise) ;;
+  check|test|live-cdp-smoke|example|supervise|host) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -401,8 +508,10 @@ pin="$(read_fkst_packages_pin)"
 shared="$(ensure_fkst_packages_checkout "$pin")"
 [ -f "$shared/scripts/check_repo.py" ] || { echo "error: shared check_repo.py missing: $shared/scripts/check_repo.py" >&2; exit 1; }
 
+PYTHON_BIN="$(resolve_python)"
+
 # Repo-local guard first: exactly one fkst-packages coordinate, hydrated == pinned.
-python3 -B "$ROOT/scripts/check_single_platform_pin.py"
+"$PYTHON_BIN" -B "$ROOT/scripts/check_single_platform_pin.py"
 
 sub="$1"; shift
 case "$sub" in
@@ -411,4 +520,5 @@ case "$sub" in
   live-cdp-smoke) cmd_live_cdp_smoke ;;
   example) cmd_example "$@" ;;
   supervise) cmd_supervise "$@" ;;
+  host) cmd_host "$@" ;;
 esac

@@ -107,7 +107,7 @@ cp env.example .env
 $EDITOR .env
 ```
 
-Set `BIN` to a built `fkst-framework`, then run:
+Set `BIN` to a built `fkst-framework`, then run package verification:
 
 ```sh
 scripts/run.sh check
@@ -115,7 +115,15 @@ scripts/run.sh test
 scripts/run.sh test testing-runner
 ```
 
-CI builds `fkst-framework` from `fkst-substrate` pinned by `.fkst-substrate-ref` and runs `scripts/run.sh check && scripts/run.sh test`.
+The repository host topology is separate from package verification. It loads the pinned `fkst-packages` development control plane and defaults `FKST_WORKFLOW_CATALOG_ROOT` to `.fkst/workflow`:
+
+```sh
+scripts/run.sh host -- check
+scripts/run.sh host -- test
+scripts/run.sh host -- supervise --durable-root "$FKST_DURABLE_ROOT" --restart
+```
+
+CI builds `fkst-framework` from the full SHA in `.fkst/substrate-ref` and runs both host-topology and package verification.
 
 ## Runtime posture
 
