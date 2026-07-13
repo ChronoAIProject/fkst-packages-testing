@@ -510,7 +510,12 @@ shared="$(ensure_fkst_packages_checkout "$pin")"
 
 PYTHON_BIN="$(resolve_python)"
 
-# Repo-local guard first: exactly one fkst-packages coordinate, hydrated == pinned.
+# Resolve the declared external source before validating it. fkst.lock is generated evidence and is
+# intentionally absent from clean checkouts, so every command recreates it from the pinned workspace.
+resolve_testing_bin
+"$BIN" host lock --project-root "$ROOT"
+
+# Repo-local guard: exactly one fkst-packages coordinate, resolved == hydrated == pinned.
 "$PYTHON_BIN" -B "$ROOT/scripts/check_single_platform_pin.py"
 
 sub="$1"; shift
