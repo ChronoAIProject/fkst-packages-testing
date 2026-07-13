@@ -67,84 +67,13 @@ function M.requires_ai_consensus(payload)
   return type(generation) == "table" and generation.mode == "autonomous-reviewed"
 end
 
-local function artifact_root_for(payload)
-  local root = payload.artifact_root or (".testing/runs/" .. strings.sanitize_key(payload.module, 180))
-  if not strings.is_artifact_root(root) then
-    error("testing-pipeline: malformed-ai-consensus: artifact_root must be safe")
-  end
-  return root
-end
-
-local function stripped_url(value)
-  if type(value) ~= "string" then return "not-recorded" end
-  local text = value:gsub("[#?].*$", "")
-  if #text > 512 then text = text:sub(1, 512) end
-  return text
-end
-
-local function copy_angles(value)
-  if value == nil then return nil end
-  if type(value) ~= "table" or #value == 0 or #value > 4 then
-    error("testing-pipeline: malformed-ai-consensus: consensus_angles must be a bounded dense list")
-  end
-  local out = {}
-  for index, item in ipairs(value) do
-    if not strings.is_bounded_string(item, 200) then
-      error("testing-pipeline: malformed-ai-consensus: consensus_angles contains unsupported item")
-    end
-    out[index] = item
-  end
-  return out
-end
-
-function M.ai_generation_proposal(payload)
-  payload = M.validate_module_start(payload)
-  local cdp = type(payload.cdp_execution) == "table" and payload.cdp_execution or {}
-  local generation = type(cdp.ai_generation) == "table" and cdp.ai_generation or {}
-  local root = artifact_root_for(payload)
-  local src = testing_contract.copy_source_ref(payload.source_ref, "testing-pipeline", payload.module)
-  local context_path = root .. "/ai-context-manifest.json"
-  local generated_path = root .. "/generated-test-cases.json"
-  local gate_path = root .. "/generated-case-gate.json"
-  local seed = table.concat({ tostring(payload.module), src.kind, src.ref, root, tostring(payload.dedup_key or "") }, ":")
-  local body = table.concat({
-    "Generate bounded local UI test case candidates for the sanitized FKST testing context.",
-    "Use only same-origin local scope, allowed FKST action enums, and pointer evidence.",
-    "Return advice only; FKST deterministic schemas and safety gates decide executability.",
-    "Module: " .. tostring(payload.module),
-    "Base URL: " .. stripped_url(type(payload.ui_loop) == "table" and payload.ui_loop.base_url or nil),
-    "Context manifest: " .. context_path,
-    "Generated cases artifact: " .. generated_path,
-    "Deterministic gate artifact: " .. gate_path,
-    "Reply with concise candidate case IDs and action enums only; do not include sensitive browser data, transcripts, screenshots, or storage contents.",
-  }, "\n")
-  local proposal = {
-    schema = "consensus.proposal.v1",
-    proposal_id = "testing-ai/generation/" .. strings.decimal_checksum(seed),
-    title = "Generate FKST UI test case candidates",
-    body = body,
-    context = "artifact_root=" .. root .. " context_manifest_path=" .. context_path .. " generated_cases_path=" .. generated_path,
-    dedup_key = testing_contract.dedup_key(generation.dedup_key or payload.dedup_key, {
-      "testing-pipeline",
-      "ai-generation",
-      payload.module,
-      src.kind,
-      src.ref,
-      root,
-    }),
-    source_ref = {
-      kind = "testing-ai-generation",
-      ref = context_path,
-    },
-    verdict_mode = "converge",
-  }
-  proposal.angles = copy_angles(generation.consensus_angles)
-  return proposal
-end
-
 function M.start_ai_orchestration(payload, io)
   M.validate_module_start(payload)
   return ai_orchestration.start(payload, io)
+end
+
+function M.generate_ai_cases(payload, io)
+  return ai_orchestration.generate(payload, io)
 end
 
 function M.handle_ai_consensus_reached(payload, io)

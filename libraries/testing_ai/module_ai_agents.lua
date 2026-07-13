@@ -19,6 +19,7 @@ local agent_generation_fields = {
   status = true,
   mode = true,
   proposal_id = true,
+  candidate_generation_digest = true,
   consensus_proposal_ref = true,
   generation_digest = true,
   generated_case_count = true,
@@ -33,11 +34,13 @@ local agent_review_fields = {
   artifact_kind = true,
   artifact_root = true,
   blocked_case_count = true,
+  candidate_generation_digest = true,
   context_manifest_path = true,
   decision_digest = true,
   generated_case_agent_review_path = true,
   generated_case_gate_path = true,
   generated_cases_path = true,
+  gate_digest = true,
   mode = true,
   proposal_id = true,
   consensus_proposal_ref = true,
@@ -162,13 +165,6 @@ local function proposal_source_ref(context, purpose)
   }
 end
 
-local function apply_consensus_angles(proposal, request)
-  if type(request) == "table" and request.consensus_angles ~= nil then
-    proposal.angles = copy_string_list(request.consensus_angles, nil, "testing-runner: malformed-request: ai_generation.consensus_angles", 4)
-  end
-  return proposal
-end
-
 local function module_summary_lines(context)
   local lines = {}
   for _, module in ipairs((context or {}).modules or {}) do
@@ -179,33 +175,33 @@ local function module_summary_lines(context)
   return lines
 end
 
-function A.build_generation_proposal(context, request)
+function A.build_generation_proposal(context, generated, request, content_fetch)
   local body = {
-    "Generate bounded local UI test case candidates for the sanitized FKST testing context.",
-    "Use only same-origin local scope, allowed FKST action enums, and pointer evidence.",
-    "Return advice only; FKST deterministic schemas and safety gates decide executability.",
+    "Review the exact AI-authored FKST UI test case artifact before deterministic gating.",
+    "Approve only when the candidate set is relevant, complete enough for its bounded scope, and grounded in the sanitized context.",
+    "Reject invented modules, unsupported behavior, unsafe scope, weak observables, or cases that do not test meaningful behavior.",
+    "FKST deterministic schemas and safety gates remain authoritative after this judgment.",
     "Context manifest: " .. tostring((context or {}).context_manifest_path or "not-recorded"),
-    "Generated cases artifact: " .. tostring((context or {}).generated_cases_path or "not-recorded"),
-    "Module count: " .. tostring((context or {}).module_count or 0),
-    "Sanitized modules:",
+    "Generated cases artifact: " .. tostring((generated or {}).generated_cases_path or (context or {}).generated_cases_path or "not-recorded"),
+    "Generated case count: " .. tostring((generated or {}).case_count or 0),
+    "Generation digest: " .. tostring((generated or {}).generation_digest or "not-recorded"),
   }
-  for _, line in ipairs(module_summary_lines(context)) do table.insert(body, line) end
-  table.insert(body, "Reply with concise candidate case IDs and action enums only; do not include sensitive browser data, transcripts, screenshots, or storage contents.")
-  return apply_consensus_angles({
+  return {
     schema = "consensus.proposal.v1",
     proposal_id = proposal_id(context, "generation"),
-    title = "Generate FKST UI test case candidates",
+    title = "Review AI-authored FKST test case candidates",
     body = table.concat(body, "\n"),
     context = "artifact_root=" .. tostring((context or {}).artifact_root or "not-recorded")
       .. " context_manifest_path=" .. tostring((context or {}).context_manifest_path or "not-recorded")
       .. " generated_cases_path=" .. tostring((context or {}).generated_cases_path or "not-recorded"),
+    content_fetch = content_fetch,
     dedup_key = proposal_dedup(context, request, "generation"),
     source_ref = proposal_source_ref(context, "generation"),
     verdict_mode = "converge",
-  }, request)
+  }
 end
 
-function A.build_review_proposal(context, generated, gate, request)
+function A.build_review_proposal(context, generated, gate, request, content_fetch)
   local body = {
     "Review FKST generated UI test cases after deterministic schema and safety gating.",
     "Approve only if executable generated cases should be eligible for deterministic CDP execution.",
@@ -221,17 +217,18 @@ function A.build_review_proposal(context, generated, gate, request)
     table.insert(body, "- " .. tostring(decision.case_id or "case") .. " status=" .. tostring(decision.review_status or "unknown") .. " classification=" .. tostring(decision.classification or "unknown"))
     if #body >= 28 then break end
   end
-  return apply_consensus_angles({
+  return {
     schema = "consensus.proposal.v1",
     proposal_id = proposal_id(context, "review"),
     title = "Review FKST generated test cases",
     body = table.concat(body, "\n"),
     context = "artifact_root=" .. tostring((context or {}).artifact_root or "not-recorded")
       .. " generated_case_gate_path=" .. tostring((gate or {}).generated_case_gate_path or (context or {}).generated_case_gate_path or "not-recorded"),
+    content_fetch = content_fetch,
     dedup_key = proposal_dedup(context, request, "review"),
     source_ref = proposal_source_ref(context, "review"),
     verdict_mode = "gate",
-  }, request)
+  }
 end
 
 local function seat_names_from_result(agent_result)
@@ -279,6 +276,7 @@ function A.generation_from_agent_results(context, agent_result)
     proposal_id = (agent_result or {}).proposal_id,
     consensus_proposal_ref = proposal_id(context, "generation"),
     generation_digest = decision_digest("agent-gen", context, agent_result, status),
+    candidate_generation_digest = (agent_result or {}).candidate_generation_digest,
     generated_case_count = type((agent_result or {}).generated_case_count) == "number" and agent_result.generated_case_count or 0,
     seat_count = seats and #seats or 0,
     seat_names = seats,
@@ -294,6 +292,7 @@ function A.validate_agent_generation(value)
   if not safe_artifact_pointer(value.context_manifest_path) or not safe_artifact_pointer(value.generated_cases_path) then error("testing-runner: malformed-agent-generation: artifact pointers must be safe") end
   if value.status ~= "approved" and value.status ~= "blocked" and value.status ~= "degraded" and value.status ~= "converged" and value.status ~= "unavailable" then error("testing-runner: malformed-agent-generation: status is invalid") end
   if type(value.generated_case_count) ~= "number" or value.generated_case_count < 0 or value.generated_case_count > max_cases or math.floor(value.generated_case_count) ~= value.generated_case_count then error("testing-runner: malformed-agent-generation: generated_case_count must be bounded") end
+  if value.candidate_generation_digest ~= nil and not bounded_text(value.candidate_generation_digest, max_id) then error("testing-runner: malformed-agent-generation: candidate_generation_digest must be bounded") end
   if value.seat_count ~= nil and (type(value.seat_count) ~= "number" or value.seat_count < 0 or value.seat_count > max_agent_seats or math.floor(value.seat_count) ~= value.seat_count) then error("testing-runner: malformed-agent-generation: seat_count must be bounded") end
   copy_string_list(value.seat_names, {}, "testing-runner: malformed-agent-artifact: seat_names", max_agent_seats)
   if forbidden_term(value) ~= nil then error("testing-runner: malformed-agent-generation: contains forbidden payload term") end
@@ -337,6 +336,8 @@ function A.review_from_agent_results(context, gate, agent_result)
     proposal_id = (agent_result or {}).proposal_id,
     consensus_proposal_ref = proposal_id(context, "review"),
     decision_digest = decision_digest("agent-review", context, agent_result, status),
+    candidate_generation_digest = (gate or {}).generation_digest,
+    gate_digest = (gate or {}).gate_digest,
     approved_case_ids = approved_ids,
     approved_case_count = #approved_ids,
     rejected_case_count = status == "rejected" and ((gate or {}).executable_count or 0) or 0,
@@ -365,6 +366,8 @@ function A.validate_agent_review(value)
     if type(count) ~= "number" or count < 0 or count > limit or math.floor(count) ~= count then error("testing-runner: malformed-agent-review: count field is invalid") end
   end
   copy_string_list(value.seat_names, {}, "testing-runner: malformed-agent-artifact: seat_names", max_agent_seats)
+  if value.candidate_generation_digest ~= nil and not bounded_text(value.candidate_generation_digest, max_id) then error("testing-runner: malformed-agent-review: candidate_generation_digest must be bounded") end
+  if value.gate_digest ~= nil and not bounded_text(value.gate_digest, max_id) then error("testing-runner: malformed-agent-review: gate_digest must be bounded") end
   local decision_count = dense_count(value.review_decisions or {})
   if decision_count == nil or decision_count > max_review_decisions then error("testing-runner: malformed-agent-review: review_decisions must be bounded") end
   for _, decision in ipairs(value.review_decisions or {}) do

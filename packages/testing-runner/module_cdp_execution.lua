@@ -19,9 +19,6 @@ local request_fields = {
   stop_conditions = true,
   mutation_fixtures = true,
   ai_generation = true,
-  ai_agent_generation = true,
-  generated_cases = true,
-  generated_case_agent_review = true,
 }
 
 local default_priorities = { "P0", "P1" }
@@ -234,11 +231,6 @@ function M.validate_request(value)
   copy_list(value.stop_conditions, default_stop_conditions, stop_condition_ok)
   validate_mutation_fixtures(value.mutation_fixtures)
   module_ai_generation.validate_request(value.ai_generation)
-  module_ai_generation.validate_agent_generation(value.ai_agent_generation)
-  module_ai_generation.validate_agent_review(value.generated_case_agent_review)
-  if value.generated_cases ~= nil then
-    module_ai_generation.validate_generated_cases(value.generated_cases)
-  end
   return value
 end
 
@@ -339,7 +331,94 @@ local function append_action(actions, artifact_root, module, case, step)
   table.insert(actions, action)
 end
 
-local function planning_for(payload, artifact_root, readiness, request)
+local function read_artifact_json(path, opts)
+  local reader = opts and opts.artifact_reader
+  local body
+  if reader ~= nil then
+    body = reader(path)
+  elseif type(file) == "table" and type(file.read) == "function" then
+    body = file.read(path)
+  else
+    local handle, err = io.open(path, "r")
+    if handle == nil then error(err or "testing-runner: ai-artifact-missing") end
+    body = handle:read("*a")
+    handle:close()
+  end
+  if type(body) ~= "string" or body == "" then
+    error("testing-runner: ai-artifact-missing: artifact body is empty")
+  end
+  if type(json) ~= "table" or type(json.decode) ~= "function" then
+    error("testing-runner: ai-artifact-decoder-unavailable: json.decode is required")
+  end
+  return json.decode(body)
+end
+
+local function required_ai_pointer(ai_request, key)
+  local value = type(ai_request) == "table" and ai_request[key] or nil
+  if not bounded_string(value, max_string) or value:sub(1, 14) ~= ".testing/runs/" then
+    error("testing-runner: ai-artifact-missing: " .. key)
+  end
+  return value
+end
+
+local function load_ai_artifacts(request, opts)
+  local ai_request = request.ai_generation
+  if not module_ai_generation.enabled(ai_request) then return nil end
+  local context_path = required_ai_pointer(ai_request, "context_manifest_path")
+  local generated_path = required_ai_pointer(ai_request, "generated_cases_path")
+  local gate_path = required_ai_pointer(ai_request, "generated_case_gate_path")
+  local generation_review_path = required_ai_pointer(ai_request, "ai_agent_generation_path")
+  local execution_review_path = required_ai_pointer(ai_request, "generated_case_agent_review_path")
+  local closure_path = required_ai_pointer(ai_request, "ai_test_design_loop_path")
+
+  local context = read_artifact_json(context_path, opts)
+  local generated = module_ai_generation.validate_generated_cases(read_artifact_json(generated_path, opts))
+  local gate = read_artifact_json(gate_path, opts)
+  local generation_review = module_ai_generation.validate_agent_generation(read_artifact_json(generation_review_path, opts))
+  local execution_review = module_ai_generation.validate_agent_review(read_artifact_json(execution_review_path, opts))
+  local closure = read_artifact_json(closure_path, opts)
+
+  if type(context) ~= "table" or context.schema ~= module_ai_generation.context_schema then error("testing-runner: ai-artifact-corrupt: context") end
+  if type(gate) ~= "table" or gate.schema ~= module_ai_generation.gate_schema then error("testing-runner: ai-artifact-corrupt: gate") end
+  if type(closure) ~= "table" or closure.schema ~= module_ai_generation.review_closure_schema then error("testing-runner: ai-artifact-corrupt: closure") end
+  if context.context_manifest_path ~= context_path
+    or generated.context_manifest_path ~= context_path
+    or generated.generated_cases_path ~= generated_path
+    or gate.context_manifest_path ~= context_path
+    or gate.generated_cases_path ~= generated_path
+    or gate.generated_case_gate_path ~= gate_path
+    or generation_review.context_manifest_path ~= context_path
+    or generation_review.generated_cases_path ~= generated_path
+    or execution_review.context_manifest_path ~= context_path
+    or execution_review.generated_cases_path ~= generated_path
+    or execution_review.generated_case_gate_path ~= gate_path
+    or closure.context_manifest_path ~= context_path
+    or closure.generated_cases_path ~= generated_path
+    or closure.generated_case_gate_path ~= gate_path then
+    error("testing-runner: ai-artifact-mismatch: pointer binding")
+  end
+  if gate.generation_digest ~= generated.generation_digest
+    or generation_review.candidate_generation_digest ~= generated.generation_digest
+    or execution_review.candidate_generation_digest ~= generated.generation_digest
+    or execution_review.gate_digest ~= gate.gate_digest
+    or closure.generation_digest ~= generated.generation_digest
+    or closure.gate_digest ~= gate.gate_digest then
+    error("testing-runner: ai-artifact-mismatch: digest binding")
+  end
+  if generation_review.status ~= "approved" or execution_review.status ~= "approved" or closure.status ~= "reviewed" then
+    error("testing-runner: ai-artifact-blocked: adversarial review did not approve execution")
+  end
+  return {
+    context = context,
+    generated_cases = generated,
+    gate = gate,
+    agent_generation = generation_review,
+    agent_review = execution_review,
+    closure = closure,
+  }
+end
+
+local function planning_for(payload, artifact_root, readiness, request, ai_artifacts)
   if payload.module_discovery == nil then return nil, nil end
   local inventory = module_inventory.inventory(payload.module_discovery, payload.ui_loop, artifact_root, {
     readiness = readiness,
@@ -347,9 +426,10 @@ local function planning_for(payload, artifact_root, readiness, request)
   return inventory, module_planning.build(inventory, payload.ui_loop, artifact_root, {
     mutation_fixtures = (request or {}).mutation_fixtures,
     ai_generation = (request or {}).ai_generation,
-    ai_agent_generation = (request or {}).ai_agent_generation,
-    generated_cases = (request or {}).generated_cases,
-    generated_case_agent_review = (request or {}).generated_case_agent_review,
+    ai_agent_generation = ai_artifacts and ai_artifacts.agent_generation or nil,
+    generated_cases = ai_artifacts and ai_artifacts.generated_cases or nil,
+    generated_case_gate = ai_artifacts and ai_artifacts.gate or nil,
+    generated_case_agent_review = ai_artifacts and ai_artifacts.agent_review or nil,
     step_budget = (request or {}).step_budget,
     case_priorities = (request or {}).case_priorities,
   })
@@ -390,7 +470,16 @@ function M.build(payload, artifact_root, opts)
     return blocked_artifact(payload, artifact_root, request, "missing-cdp-session", "requires ready reused local CDP/browser session", readiness)
   end
 
-  local inventory, planning = planning_for(payload, artifact_root, readiness, request)
+  local ai_artifacts
+  if module_ai_generation.enabled(request.ai_generation) then
+    local ok, loaded = pcall(load_ai_artifacts, request, opts)
+    if not ok then
+      return blocked_artifact(payload, artifact_root, request, "ai-artifact-invalid", tostring(loaded):sub(1, max_string), readiness)
+    end
+    ai_artifacts = loaded
+  end
+
+  local inventory, planning = planning_for(payload, artifact_root, readiness, request, ai_artifacts)
   if planning == nil then
     return blocked_artifact(payload, artifact_root, request, "missing-test-plan", "requires module discovery test plan for bounded selected execution", readiness)
   end

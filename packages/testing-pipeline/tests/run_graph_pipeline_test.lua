@@ -1,6 +1,8 @@
 local graph = require("testkit.graph")
 local testing = require("testkit.testing")
+local ai_orchestration = require("ai_orchestration")
 local start_module = require("departments.start_module.main")
+local ai_generate = require("departments.ai_generate.main")
 local ai_consensus = require("departments.ai_consensus.main")
 local t = fkst.test
 
@@ -142,7 +144,6 @@ local function module_ai_consensus_start_event()
     schema = "testing-runner.ai-case-generation.request.v1",
     mode = "autonomous-reviewed",
     case_budget = 1,
-    consensus_angles = { "teleology", "parsimony" },
   }
   return event
 end
@@ -262,6 +263,9 @@ local function consensus_reached_event(proposal, decision)
       angle_results = {
         { angle = "teleology", verdict = decision or "approve" },
         { angle = "parsimony", verdict = decision or "approve" },
+        { angle = "fidelity", verdict = decision or "approve" },
+        { angle = "natural-ownership", verdict = decision or "approve" },
+        { angle = "proportional-containment", verdict = decision or "approve" },
       },
     },
     source_ref = proposal.source_ref,
@@ -284,8 +288,39 @@ end
 local function start_ai_generation_proposal()
   local trace = testing.run_fake(start_module, module_ai_consensus_start_event())
   t.eq(#trace.raises, 1)
-  t.eq(trace.raises[1].queue, "consensus.proposal")
-  return trace.raises[1].payload
+  t.eq(trace.raises[1].queue, "ai_generation_request")
+  t.mock_command("codex exec", {
+    stdout = ai_orchestration.json_encode({
+      schema = "testing-runner.ai-case-candidates.v1",
+      cases = {
+        {
+          module_id = "dashboard",
+          priority = "P1",
+          title = "Navigate the dashboard detail surface",
+          objective = "Verify bounded navigation exposes the dashboard detail surface.",
+          case_kind = "primary-interaction",
+          actions = {
+            {
+              action = "bounded-navigation",
+              target = fixture_base_url .. "/dashboard/detail",
+              expected = "The dashboard detail surface becomes visible.",
+            },
+          },
+          expected_observable = "The dashboard detail surface remains visible and stable.",
+        },
+      },
+    }),
+    stderr = "",
+    exit_code = 0,
+  })
+  local generated = testing.run_fake(ai_generate, {
+    queue = "ai_generation_request",
+    payload = trace.raises[1].payload,
+    source_ref = trace.raises[1].payload.source_ref,
+  })
+  t.eq(#generated.raises, 1)
+  t.eq(generated.raises[1].queue, "consensus.proposal")
+  return generated.raises[1].payload
 end
 
 return {
@@ -525,15 +560,15 @@ return {
     t.eq(publication.payload.github_comment, nil)
   end,
 
-  test_start_module_raises_consensus_for_autonomous_reviewed_ai_generation = function()
+  test_start_module_authors_cases_before_consensus_review = function()
     local proposal = start_ai_generation_proposal()
     t.eq(proposal.schema, "consensus.proposal.v1")
     t.eq(proposal.verdict_mode, "converge")
-    t.eq(#proposal.angles, 2)
-    t.eq(proposal.angles[1], "teleology")
-    t.is_true(proposal.body:find("Generate bounded local UI test case candidates", 1, true) ~= nil)
+    t.eq(proposal.angles, nil)
+    t.is_true(proposal.body:find("Review the exact AI-authored", 1, true) ~= nil)
     t.is_true(proposal.body:find(".testing/runs/module-a-ai/ai-context-manifest.json", 1, true) ~= nil)
     t.is_true(proposal.context:find("generated-test-cases.json", 1, true) ~= nil)
+    t.is_true(proposal.content_fetch:find("UNTRUSTED-NOTICE.txt", 1, true) ~= nil)
     t.eq(proposal.body:find("secret", 1, true), nil)
 
     local context = read_file(".testing/runs/module-a-ai/ai-context-manifest.json")
@@ -542,6 +577,8 @@ return {
     t.eq(context:find("secret", 1, true), nil)
     t.eq(context:find("token", 1, true), nil)
 
+    local generated = read_file(".testing/runs/module-a-ai/generated-test-cases.json")
+    t.is_true(generated:find('"action":"bounded-navigation"', 1, true) ~= nil)
     local state = read_file(".testing/runs/module-a-ai/ai-orchestration-state.json")
     t.is_true(state:find('"schema":"testing-pipeline.ai-orchestration-state.v1"', 1, true) ~= nil)
     t.is_true(state:find('"phase":"generation-proposed"', 1, true) ~= nil)
@@ -572,9 +609,9 @@ return {
     t.eq(review_trace.raises[1].queue, "module-test-loop.module_loop_request")
     local request = review_trace.raises[1].payload
     t.eq(request.schema, "module-test-loop.start.v1")
-    t.eq(request.cdp_execution.generated_cases.schema, "testing-runner.generated-test-cases.v1")
-    t.eq(request.cdp_execution.ai_agent_generation.schema, "testing-runner.ai-agent-generation.v1")
-    t.eq(request.cdp_execution.generated_case_agent_review.schema, "testing-runner.generated-case-agent-review.v1")
+    t.eq(request.cdp_execution.ai_generation.generated_cases_path, ".testing/runs/module-a-ai/generated-test-cases.json")
+    t.eq(request.cdp_execution.ai_generation.ai_agent_generation_path, ".testing/runs/module-a-ai/ai-agent-generation.json")
+    t.eq(request.cdp_execution.ai_generation.generated_case_agent_review_path, ".testing/runs/module-a-ai/generated-case-agent-review.json")
 
     local closure = read_file(".testing/runs/module-a-ai/ai-test-design-loop.json")
     t.is_true(closure:find('"schema":"testing-runner.ai-test-design-loop.v1"', 1, true) ~= nil)

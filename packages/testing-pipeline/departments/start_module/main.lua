@@ -5,8 +5,8 @@ local spec = {
   consumes = { "module_start" },
   published_seam = { "module_start" },
   produces = {
+    "ai_generation_request",
     "module-test-loop.module_loop_request",
-    "consensus.proposal",
     "testing_result",
   },
   stall_window = "5m",
@@ -21,9 +21,9 @@ local function act(event)
   local payload = event.payload or {}
   if core.requires_ai_consensus(payload) then
     local action = core.start_ai_orchestration(payload)
-    if action.kind == "generation-proposal" then
-      log.info("testing-pipeline dept=start_module tag=AI_CONSENSUS module=" .. tostring(payload.module))
-      raise("consensus.proposal", action.proposal)
+    if action.kind == "generation-request" then
+      log.info("testing-pipeline dept=start_module tag=AI_AUTHOR module=" .. tostring(payload.module))
+      raise("ai_generation_request", action.request)
       return
     end
     if action.kind == "blocked-result" then

@@ -1,4 +1,7 @@
+local ai = require("module_ai_generation")
 local cdp = require("module_cdp_execution")
+local inventory_module = require("module_inventory")
+local native = require("fkst_native")
 local t = fkst.test
 
 local fixture_origin = "http://localhost:8080"
@@ -44,6 +47,122 @@ local function payload(overrides)
   }
   for key, item in pairs(overrides or {}) do value[key] = item end
   return value
+end
+
+local function reviewed_artifacts(value, review_status)
+  local root = ".testing/runs/module-a-cdp"
+  local request = {
+    schema = ai.request_schema,
+    mode = "autonomous-reviewed",
+    case_budget = 1,
+    context_manifest_path = root .. "/ai-context-manifest.json",
+    generated_cases_path = root .. "/generated-test-cases.json",
+    generated_case_gate_path = root .. "/generated-case-gate.json",
+    ai_agent_generation_path = root .. "/ai-agent-generation.json",
+    generated_case_agent_review_path = root .. "/generated-case-agent-review.json",
+    ai_test_design_loop_path = root .. "/ai-test-design-loop.json",
+  }
+  value.cdp_execution.ai_generation = request
+  value.module_discovery.observations[1].route = "/app/dashboard"
+  local inventory = inventory_module.inventory(value.module_discovery, value.ui_loop, root, {
+    readiness = { status = "ready" },
+  })
+  local context = ai.build_context(inventory, value.ui_loop, root, { ai_generation = request })
+  local generated = {
+    schema = ai.generated_cases_schema,
+    artifact_kind = "generated-test-cases",
+    artifact_root = root,
+    context_manifest_path = context.context_manifest_path,
+    prompt_template_ref = context.prompt_template_ref,
+    generation_mode = "autonomous-reviewed",
+    generation_digest = "gen-dashboard-reviewed",
+    generated_cases_path = context.generated_cases_path,
+    cases = {
+      {
+        id = "dashboard:ai-visible-surface",
+        module_id = "dashboard",
+        priority = "P1",
+        title = "Exercise visible dashboard surface",
+        objective = "Exercise visible dashboard surface",
+        case_kind = "read-only-interaction",
+        actions = {
+          {
+            action = "open-visible-surface",
+            target = "Dashboard",
+            expected = "visible surface opens without mutation",
+          },
+        },
+        expected_observable = "Dashboard remains visible and same-origin.",
+        provenance = {
+          origin = "ai-generated",
+          context_manifest_path = context.context_manifest_path,
+          prompt_template_ref = context.prompt_template_ref,
+          model_invocation_digest = "model-dashboard-reviewed",
+        },
+      },
+    },
+    case_count = 1,
+  }
+  local gate = ai.gate_generated_cases(generated, context, request)
+  local approved = review_status ~= "rejected"
+  local generation = {
+    schema = ai.agent_generation_schema,
+    artifact_kind = "ai-agent-generation",
+    artifact_root = root,
+    context_manifest_path = context.context_manifest_path,
+    generated_cases_path = context.generated_cases_path,
+    status = "approved",
+    mode = "autonomous-reviewed",
+    proposal_id = "testing-ai-generation",
+    consensus_proposal_ref = "testing-ai/generation/context",
+    generation_digest = "agent-generation-dashboard",
+    candidate_generation_digest = generated.generation_digest,
+    generated_case_count = 1,
+    seat_count = 5,
+    seat_names = { "teleology", "parsimony", "fidelity", "natural-ownership", "proportional-containment" },
+  }
+  local review = {
+    schema = ai.agent_review_schema,
+    artifact_kind = "generated-case-agent-review",
+    artifact_root = root,
+    context_manifest_path = context.context_manifest_path,
+    generated_cases_path = context.generated_cases_path,
+    generated_case_gate_path = context.generated_case_gate_path,
+    generated_case_agent_review_path = context.generated_case_agent_review_path,
+    status = approved and "approved" or "rejected",
+    mode = "autonomous-reviewed",
+    proposal_id = "testing-ai-review",
+    consensus_proposal_ref = "testing-ai/review/context",
+    decision_digest = "agent-review-dashboard",
+    candidate_generation_digest = generated.generation_digest,
+    gate_digest = gate.gate_digest,
+    approved_case_ids = approved and { "dashboard:ai-visible-surface" } or {},
+    approved_case_count = approved and 1 or 0,
+    rejected_case_count = approved and 0 or 1,
+    blocked_case_count = approved and 0 or 1,
+    seat_count = 5,
+    seat_names = { "teleology", "parsimony", "fidelity", "natural-ownership", "proportional-containment" },
+    review_decisions = {
+      {
+        case_id = "dashboard:ai-visible-surface",
+        status = approved and "approved" or "rejected",
+        classification = approved and "agent-approved" or "agent-rejected",
+        reason = approved and "approved for bounded execution" or "rejected by agent review",
+      },
+    },
+  }
+  local closure = ai.build_review_closure(context, generated, gate, generation, review)
+  local documents = {
+    [context.context_manifest_path] = context,
+    [context.generated_cases_path] = generated,
+    [context.generated_case_gate_path] = gate,
+    [context.ai_agent_generation_path] = generation,
+    [context.generated_case_agent_review_path] = review,
+    [context.ai_test_design_loop_path] = closure,
+  }
+  return function(path)
+    return native.json_encode(documents[path])
+  end
 end
 
 return {
@@ -160,13 +279,11 @@ return {
 
   test_executes_ai_generated_read_only_actions_through_bounded_schema = function()
     local value = payload()
-    value.module_discovery.observations[1].route = "/app/dashboard"
-    value.cdp_execution.ai_generation = {
-      schema = "testing-runner.ai-case-generation.request.v1",
-      mode = "draft",
-      case_budget = 1,
-    }
-    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
+    local reader = reviewed_artifacts(value, "approved")
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", {
+      readiness = { status = "ready" },
+      artifact_reader = reader,
+    })
     t.eq(artifact.execution_status, "planned")
     t.eq(artifact.classification, "bounded-exploration-planned")
     t.eq(artifact.ai_generation.executable_generated_case_count, 1)
@@ -175,82 +292,25 @@ return {
     t.eq(artifact.generated_case_gate_path, ".testing/runs/module-a-cdp/generated-case-gate.json")
     t.eq(artifact.actions[6].case_origin, "ai-generated")
     t.eq(artifact.actions[6].action, "open-visible-surface")
-    t.eq(artifact.actions[6].provenance_digest:find("local-reviewed", 1, true) ~= nil, true)
+    t.eq(artifact.actions[6].provenance_digest, "model-dashboard-reviewed")
   end,
 
-  test_ai_generated_unknown_action_is_rejected_before_execution = function()
-    local value = payload()
-    value.cdp_execution.ai_generation = {
-      schema = "testing-runner.ai-case-generation.request.v1",
-      mode = "draft",
-      case_budget = 1,
-    }
-    value.cdp_execution.generated_cases = {
-      schema = "testing-runner.generated-test-cases.v1",
-      artifact_kind = "generated-test-cases",
-      artifact_root = ".testing/runs/module-a-cdp",
-      context_manifest_path = ".testing/runs/module-a-cdp/ai-context-manifest.json",
-      generation_mode = "draft",
-      generation_digest = "gen-dashboard",
-      cases = {
-        {
-          id = "dashboard:ai-unknown",
-          module_id = "dashboard",
-          priority = "P1",
-          title = "Unknown action",
-          objective = "Unknown action",
-          case_kind = "read-only-interaction",
-          actions = { { action = "click-anything", target = "Dashboard" } },
-          expected_observable = "bounded result",
-        },
-      },
-      case_count = 1,
-    }
-    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
-    t.eq(artifact.ai_generation.rejected_generated_case_count, 1)
-    t.eq(artifact.planned_case_count, 5)
+  test_rejects_legacy_inline_ai_artifacts_before_execution = function()
+    t.raises(function()
+      cdp.validate_request({
+        schema = "testing-runner.module-cdp-execution.v1",
+        generated_cases = { schema = "testing-runner.generated-test-cases.v1" },
+      })
+    end)
   end,
 
   test_autonomous_reviewed_generated_case_executes_only_after_agent_approval = function()
     local value = payload()
-    value.module_discovery.observations[1].route = "/app/dashboard"
-    value.cdp_execution.ai_generation = {
-      schema = "testing-runner.ai-case-generation.request.v1",
-      mode = "autonomous-reviewed",
-      case_budget = 1,
-    }
-    value.cdp_execution.ai_agent_generation = {
-      schema = "testing-runner.ai-agent-generation.v1",
-      artifact_kind = "ai-agent-generation",
-      artifact_root = ".testing/runs/module-a-cdp",
-      context_manifest_path = ".testing/runs/module-a-cdp/ai-context-manifest.json",
-      generated_cases_path = ".testing/runs/module-a-cdp/generated-test-cases.json",
-      status = "approved",
-      mode = "autonomous-reviewed",
-      generation_digest = "agent-gen-dashboard",
-      generated_case_count = 1,
-      seat_count = 4,
-      seat_names = { "teleology", "parsimony", "fidelity", "high-risk" },
-    }
-    value.cdp_execution.generated_case_agent_review = {
-      schema = "testing-runner.generated-case-agent-review.v1",
-      artifact_kind = "generated-case-agent-review",
-      artifact_root = ".testing/runs/module-a-cdp",
-      context_manifest_path = ".testing/runs/module-a-cdp/ai-context-manifest.json",
-      generated_cases_path = ".testing/runs/module-a-cdp/generated-test-cases.json",
-      generated_case_gate_path = ".testing/runs/module-a-cdp/generated-case-gate.json",
-      generated_case_agent_review_path = ".testing/runs/module-a-cdp/generated-case-agent-review.json",
-      status = "approved",
-      mode = "autonomous-reviewed",
-      decision_digest = "agent-review-dashboard",
-      approved_case_ids = { "dashboard:ai-visible-surface" },
-      approved_case_count = 1,
-      rejected_case_count = 0,
-      blocked_case_count = 0,
-      seat_count = 4,
-      seat_names = { "teleology", "parsimony", "fidelity", "high-risk" },
-    }
-    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
+    local reader = reviewed_artifacts(value, "approved")
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", {
+      readiness = { status = "ready" },
+      artifact_reader = reader,
+    })
     t.eq(artifact.ai_generation.agent_review_status, "approved")
     t.eq(artifact.ai_agent_generation_path, ".testing/runs/module-a-cdp/ai-agent-generation.json")
     t.eq(artifact.generated_case_agent_review_path, ".testing/runs/module-a-cdp/generated-case-agent-review.json")
@@ -259,46 +319,13 @@ return {
 
   test_autonomous_reviewed_rejection_blocks_generated_execution = function()
     local value = payload()
-    value.module_discovery.observations[1].route = "/app/dashboard"
-    value.cdp_execution.ai_generation = {
-      schema = "testing-runner.ai-case-generation.request.v1",
-      mode = "autonomous-reviewed",
-      case_budget = 1,
-    }
-    value.cdp_execution.ai_agent_generation = {
-      schema = "testing-runner.ai-agent-generation.v1",
-      artifact_kind = "ai-agent-generation",
-      artifact_root = ".testing/runs/module-a-cdp",
-      context_manifest_path = ".testing/runs/module-a-cdp/ai-context-manifest.json",
-      generated_cases_path = ".testing/runs/module-a-cdp/generated-test-cases.json",
-      status = "approved",
-      mode = "autonomous-reviewed",
-      generation_digest = "agent-gen-dashboard",
-      generated_case_count = 1,
-      seat_count = 5,
-    }
-    value.cdp_execution.generated_case_agent_review = {
-      schema = "testing-runner.generated-case-agent-review.v1",
-      artifact_kind = "generated-case-agent-review",
-      artifact_root = ".testing/runs/module-a-cdp",
-      context_manifest_path = ".testing/runs/module-a-cdp/ai-context-manifest.json",
-      generated_cases_path = ".testing/runs/module-a-cdp/generated-test-cases.json",
-      generated_case_gate_path = ".testing/runs/module-a-cdp/generated-case-gate.json",
-      generated_case_agent_review_path = ".testing/runs/module-a-cdp/generated-case-agent-review.json",
-      status = "rejected",
-      mode = "autonomous-reviewed",
-      decision_digest = "agent-review-dashboard",
-      approved_case_ids = {},
-      approved_case_count = 0,
-      rejected_case_count = 1,
-      blocked_case_count = 1,
-      seat_count = 5,
-    }
-    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
-    t.eq(artifact.ai_generation.agent_review_status, "rejected")
-    t.eq(artifact.planned_case_count, 5)
-    for _, action in ipairs(artifact.actions) do
-      t.eq(action.case_origin, nil)
-    end
+    local reader = reviewed_artifacts(value, "rejected")
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", {
+      readiness = { status = "ready" },
+      artifact_reader = reader,
+    })
+    t.eq(artifact.execution_status, "blocked")
+    t.eq(artifact.classification, "ai-artifact-invalid")
+    t.eq(artifact.executed_action_count, 0)
   end,
 }

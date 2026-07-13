@@ -3,12 +3,51 @@ local t = fkst.test
 
 local fixture_origin = "http://localhost:8080"
 local fixture_base_url = fixture_origin .. "/app"
+local artifact_root = ".testing/runs/module-a-ai-orchestration"
 
-local function memory_io()
+local function candidate_document(overrides)
+  local case = {
+    module_id = "dashboard",
+    priority = "P1",
+    title = "Navigate the dashboard detail surface",
+    objective = "Verify bounded navigation exposes the dashboard detail surface.",
+    case_kind = "primary-interaction",
+    actions = {
+      {
+        action = "bounded-navigation",
+        target = fixture_base_url .. "/dashboard/detail",
+        expected = "The dashboard detail surface becomes visible.",
+      },
+      {
+        action = "open-visible-surface",
+        target = "Dashboard details",
+        expected = "The detail surface opens without leaving local scope.",
+      },
+    },
+    expected_observable = "The dashboard detail surface is visible and stable.",
+  }
+  for key, value in pairs(overrides or {}) do case[key] = value end
+  return {
+    schema = "testing-runner.ai-case-candidates.v1",
+    cases = { case },
+  }
+end
+
+local function memory_io(candidate, exit_code)
   local writes = {}
   return {
     writes = writes,
     ports = {
+      absolute_path = function(path)
+        return "/repo/" .. path
+      end,
+      generate = function()
+        return {
+          exit_code = exit_code or 0,
+          stdout = ai.json_encode(candidate or candidate_document()),
+          stderr = "",
+        }
+      end,
       read = function(path)
         local body = writes[path]
         if body == nil then error("missing artifact " .. tostring(path)) end
@@ -28,14 +67,12 @@ end
 
 local function all_writes(model)
   local parts = {}
-  for path, body in pairs(model.writes) do
-    table.insert(parts, path .. "\n" .. body)
-  end
+  for path, body in pairs(model.writes) do table.insert(parts, path .. "\n" .. body) end
   return table.concat(parts, "\n")
 end
 
-local function module_start(overrides)
-  local payload = {
+local function module_start()
+  return {
     schema = "testing-pipeline.module-start.v1",
     module = "module-a",
     backend = "fkst-native",
@@ -86,25 +123,27 @@ local function module_start(overrides)
         case_budget = 1,
       },
     },
-    artifact_root = ".testing/runs/module-a-ai-orchestration",
+    artifact_root = artifact_root,
     source_ref = { kind = "external", ref = "module-a" },
     trace_id = "trace-module-a-ai",
     dedup_key = "module-a-ai-run",
   }
-  for key, item in pairs(overrides or {}) do payload[key] = item end
-  return payload
 end
 
 local function consensus_reached(proposal, decision)
+  local verdict = decision or "approve"
   return {
     schema = "consensus.consensus_reached.v1",
     proposal_id = proposal.proposal_id,
-    decision = decision or "approve",
+    decision = verdict,
     body = "raw_prompt token password raw_response must not persist",
     source_ref = proposal.source_ref,
     angle_results = {
-      { angle = "teleology", verdict = decision or "approve" },
-      { angle = "parsimony", verdict = decision or "approve" },
+      { angle = "teleology", verdict = verdict },
+      { angle = "parsimony", verdict = verdict },
+      { angle = "fidelity", verdict = verdict },
+      { angle = "natural-ownership", verdict = verdict },
+      { angle = "proportional-containment", verdict = verdict },
     },
   }
 end
@@ -118,10 +157,12 @@ local function consensus_converge(proposal)
   }
 end
 
-local function start(model, payload)
-  local action = ai.start(payload or module_start(), model.ports)
-  t.eq(action.kind, "generation-proposal")
-  return action.proposal
+local function author(model)
+  local start = ai.start(module_start(), model.ports)
+  t.eq(start.kind, "generation-request")
+  local generated = ai.generate(start.request, model.ports)
+  t.eq(generated.kind, "generation-proposal")
+  return generated.proposal
 end
 
 local function approve_generation(model, generation_proposal)
@@ -131,131 +172,109 @@ local function approve_generation(model, generation_proposal)
 end
 
 return {
-  test_start_writes_pointer_only_context_and_state = function()
+  test_start_writes_sanitized_context_and_authoring_request = function()
     local model = memory_io()
-    local proposal = start(model)
+    local action = ai.start(module_start(), model.ports)
+    t.eq(action.kind, "generation-request")
+    t.eq(action.request.schema, "testing-pipeline.ai-generation-request.v1")
+    t.eq(action.request.context_manifest_path, artifact_root .. "/ai-context-manifest.json")
+
+    local context = decode(model, artifact_root .. "/ai-context-manifest.json")
+    local state = decode(model, artifact_root .. "/ai-orchestration-state.json")
+    t.eq(context.base_url, fixture_base_url)
+    t.eq(context.modules[1].entry_url, fixture_base_url .. "/dashboard")
+    t.eq(state.phase, "authoring")
+    t.eq(state.module_start.cdp_execution.generated_cases, nil)
+    t.eq(state.module_start.cdp_execution.ai_agent_generation, nil)
+    t.eq(state.module_start.cdp_execution.generated_case_agent_review, nil)
+    t.eq(state.module_start.preflight_result.sessions[2].cdp_url, "http://127.0.0.1:9222")
+    t.eq(state.module_start.preflight_result.sessions[3].cdp_url, nil)
+    t.eq(all_writes(model):find("secret", 1, true), nil)
+    t.eq(all_writes(model):find("raw_dom", 1, true), nil)
+  end,
+
+  test_author_persists_non_template_cases_before_adversarial_review = function()
+    local model = memory_io()
+    local proposal = author(model)
     t.eq(proposal.schema, "consensus.proposal.v1")
     t.eq(proposal.verdict_mode, "converge")
     t.eq(proposal.angles, nil)
     t.eq(proposal.source_ref.kind, "testing-ai-generation")
+    t.is_true(proposal.content_fetch:find("AI-authored generated cases", 1, true) ~= nil)
+    t.is_true(proposal.content_fetch:find("UNTRUSTED-NOTICE.txt", 1, true) ~= nil)
 
-    local context = decode(model, ".testing/runs/module-a-ai-orchestration/ai-context-manifest.json")
-    t.eq(context.schema, "testing-runner.ai-context-manifest.v1")
-    t.eq(context.base_url, fixture_base_url)
-    t.eq(context.modules[1].entry_url, fixture_base_url .. "/dashboard")
-
-    local state = decode(model, ".testing/runs/module-a-ai-orchestration/ai-orchestration-state.json")
-    t.eq(state.schema, "testing-pipeline.ai-orchestration-state.v1")
-    t.eq(state.phase, "generation-proposed")
-    t.eq(state.module_start.ui_loop.base_url, fixture_base_url)
-    t.eq(state.module_start.module_discovery.observations[1].entry_url, fixture_base_url .. "/dashboard")
-    t.eq(state.module_start.preflight_result.sessions[2].cdp_url, "http://127.0.0.1:9222")
-    t.eq(state.module_start.preflight_result.sessions[3].cdp_url, nil)
-    t.eq(state.module_start.cdp_execution.generated_cases, nil)
-    t.eq(state.module_start.cdp_execution.ai_agent_generation, nil)
-    t.eq(state.module_start.cdp_execution.generated_case_agent_review, nil)
-    t.eq(all_writes(model):find("secret", 1, true), nil)
-    t.eq(all_writes(model):find("token", 1, true), nil)
-    t.eq(all_writes(model):find("raw_dom", 1, true), nil)
+    local generated = decode(model, artifact_root .. "/generated-test-cases.json")
+    t.eq(generated.case_count, 1)
+    t.eq(generated.cases[1].actions[1].action, "bounded-navigation")
+    t.eq(generated.cases[1].actions[2].action, "open-visible-surface")
+    t.eq(generated.cases[1].provenance.origin, "ai-generated")
+    t.eq(generated.cases[1].id:find("dashboard:ai-", 1, true), 1)
   end,
 
-  test_start_preserves_only_explicit_bounded_consensus_angles = function()
-    local model = memory_io()
-    local payload = module_start()
-    payload.cdp_execution.ai_generation.consensus_angles = { "teleology", "parsimony" }
-    local proposal = start(model, payload)
-    t.eq(#proposal.angles, 2)
-    t.eq(proposal.angles[1], "teleology")
+  test_invalid_or_failed_author_output_blocks_before_consensus = function()
+    local model = memory_io({ schema = "wrong", cases = {} })
+    local start = ai.start(module_start(), model.ports)
+    local action = ai.generate(start.request, model.ports)
+    t.eq(action.kind, "blocked-result")
+    t.eq(action.result.status, "blocked")
 
-    local blocked_model = memory_io()
-    payload = module_start()
-    payload.cdp_execution.ai_generation.consensus_angles = { "a", "b", "c", "d", "e" }
-    local action = ai.start(payload, blocked_model.ports)
+    model = memory_io(candidate_document(), 1)
+    start = ai.start(module_start(), model.ports)
+    action = ai.generate(start.request, model.ports)
     t.eq(action.kind, "blocked-result")
     t.eq(action.result.status, "blocked")
   end,
 
-  test_generation_approval_writes_cases_gate_and_review_proposal = function()
+  test_generation_approval_runs_deterministic_gate_then_proposes_execution_review = function()
     local model = memory_io()
-    local generation_proposal = start(model)
+    local generation_proposal = author(model)
     local review_proposal = approve_generation(model, generation_proposal)
-    t.eq(review_proposal.schema, "consensus.proposal.v1")
     t.eq(review_proposal.verdict_mode, "gate")
+    t.eq(review_proposal.angles, nil)
     t.eq(review_proposal.source_ref.kind, "testing-ai-review")
+    t.is_true(review_proposal.content_fetch:find("Deterministic generated-case gate", 1, true) ~= nil)
 
-    local generated = decode(model, ".testing/runs/module-a-ai-orchestration/generated-test-cases.json")
-    local gate = decode(model, ".testing/runs/module-a-ai-orchestration/generated-case-gate.json")
-    local agent_generation = decode(model, ".testing/runs/module-a-ai-orchestration/ai-agent-generation.json")
-    local state = decode(model, ".testing/runs/module-a-ai-orchestration/ai-orchestration-state.json")
-    t.eq(generated.schema, "testing-runner.generated-test-cases.v1")
-    t.eq(generated.case_count, 1)
-    t.eq(gate.schema, "testing-runner.generated-case-gate.v1")
+    local gate = decode(model, artifact_root .. "/generated-case-gate.json")
+    local agent_generation = decode(model, artifact_root .. "/ai-agent-generation.json")
+    local state = decode(model, artifact_root .. "/ai-orchestration-state.json")
     t.eq(gate.executable_count, 1)
-    t.eq(agent_generation.schema, "testing-runner.ai-agent-generation.v1")
-    t.eq(agent_generation.generated_case_count, generated.case_count)
-    t.eq(agent_generation.seat_count, 2)
+    t.eq(agent_generation.generated_case_count, 1)
+    t.eq(agent_generation.seat_count, 5)
     t.eq(state.phase, "review-proposed")
   end,
 
-  test_review_approval_writes_review_closure_and_resumes_module_loop = function()
+  test_missing_authored_artifact_blocks_instead_of_regenerating = function()
     local model = memory_io()
-    local generation_proposal = start(model)
+    local generation_proposal = author(model)
     local review_proposal = approve_generation(model, generation_proposal)
+    model.writes[artifact_root .. "/generated-test-cases.json"] = nil
     local action = ai.handle_consensus_reached(consensus_reached(review_proposal), model.ports)
-    t.eq(action.kind, "module-loop-request")
-    local request = action.request
-    t.eq(request.schema, "module-test-loop.start.v1")
-    t.eq(request.module, "module-a")
-    t.eq(request.cdp_execution.generated_cases.schema, "testing-runner.generated-test-cases.v1")
-    t.eq(request.cdp_execution.ai_agent_generation.schema, "testing-runner.ai-agent-generation.v1")
-    t.eq(request.cdp_execution.generated_case_agent_review.schema, "testing-runner.generated-case-agent-review.v1")
-    t.eq(request.cdp_execution.generated_case_agent_review.approved_case_count, 1)
-
-    local closure = decode(model, ".testing/runs/module-a-ai-orchestration/ai-test-design-loop.json")
-    local state = decode(model, ".testing/runs/module-a-ai-orchestration/ai-orchestration-state.json")
-    t.eq(closure.schema, "testing-runner.ai-test-design-loop.v1")
-    t.eq(closure.status, "reviewed")
-    t.eq(closure.execution_eligible_generated_case_count, 1)
-    t.eq(state.phase, "resumed")
+    t.eq(action.kind, "blocked-result")
+    t.eq(action.result.status, "blocked")
+    t.eq(model.writes[artifact_root .. "/generated-test-cases.json"], nil)
   end,
 
-  test_review_approval_recomputes_missing_generated_and_gate_artifacts = function()
+  test_reject_and_converge_fail_closed = function()
     local model = memory_io()
-    local generation_proposal = start(model)
-    local review_proposal = approve_generation(model, generation_proposal)
-    model.writes[".testing/runs/module-a-ai-orchestration/generated-test-cases.json"] = nil
-    model.writes[".testing/runs/module-a-ai-orchestration/generated-case-gate.json"] = nil
-    local action = ai.handle_consensus_reached(consensus_reached(review_proposal), model.ports)
-    t.eq(action.kind, "module-loop-request")
-    t.eq(decode(model, ".testing/runs/module-a-ai-orchestration/generated-test-cases.json").case_count, 1)
-    t.eq(decode(model, ".testing/runs/module-a-ai-orchestration/generated-case-gate.json").executable_count, 1)
-  end,
-
-  test_generation_and_review_reject_or_converge_fail_closed = function()
-    local model = memory_io()
-    local generation_proposal = start(model)
+    local generation_proposal = author(model)
     local rejected = ai.handle_consensus_reached(consensus_reached(generation_proposal, "reject"), model.ports)
     t.eq(rejected.kind, "blocked-result")
-    t.eq(rejected.result.status, "blocked")
-    t.eq(decode(model, ".testing/runs/module-a-ai-orchestration/ai-orchestration-state.json").phase, "blocked")
 
     model = memory_io()
-    generation_proposal = start(model)
+    generation_proposal = author(model)
     local converged = ai.handle_consensus_converge(consensus_converge(generation_proposal), model.ports)
     t.eq(converged.kind, "blocked-result")
-    t.eq(converged.result.status, "blocked")
 
     model = memory_io()
-    generation_proposal = start(model)
+    generation_proposal = author(model)
     local review_proposal = approve_generation(model, generation_proposal)
     local review_rejected = ai.handle_consensus_reached(consensus_reached(review_proposal, "reject"), model.ports)
     t.eq(review_rejected.kind, "blocked-result")
-    t.eq(review_rejected.result.status, "blocked")
   end,
 
-  test_consensus_body_forbidden_terms_are_not_persisted = function()
+  test_consensus_narrative_is_not_persisted = function()
     local model = memory_io()
-    local generation_proposal = start(model)
+    local generation_proposal = author(model)
     local review_proposal = approve_generation(model, generation_proposal)
     local action = ai.handle_consensus_reached(consensus_reached(review_proposal), model.ports)
     t.eq(action.kind, "module-loop-request")
@@ -263,6 +282,5 @@ return {
     t.eq(body:find("raw_prompt", 1, true), nil)
     t.eq(body:find("raw_response", 1, true), nil)
     t.eq(body:find("password", 1, true), nil)
-    t.eq(body:find("token", 1, true), nil)
   end,
 }

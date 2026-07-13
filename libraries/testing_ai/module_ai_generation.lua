@@ -6,6 +6,7 @@ local ai_agents = require("testing_ai.module_ai_agents")
 
 M.request_schema = "testing-runner.ai-case-generation.request.v1"
 M.context_schema = "testing-runner.ai-context-manifest.v1"
+M.candidate_schema = "testing-runner.ai-case-candidates.v1"
 M.generated_cases_schema = "testing-runner.generated-test-cases.v1"
 M.gate_schema = "testing-runner.generated-case-gate.v1"
 M.agent_generation_schema = ai_agents.agent_generation_schema
@@ -22,7 +23,6 @@ local max_follow_ups = 16
 
 local allowed_modes = {
   disabled = true,
-  draft = true,
   ["autonomous-reviewed"] = true,
 }
 
@@ -88,10 +88,13 @@ local generated_payload_fields = {
 local request_fields = {
   allowed_action_kinds = true,
   allowed_case_kinds = true,
+  ai_agent_generation_path = true,
+  ai_test_design_loop_path = true,
   case_budget = true,
-  consensus_angles = true,
   context_manifest_path = true,
   dedup_key = true,
+  generated_case_agent_review_path = true,
+  generated_case_gate_path = true,
   generated_cases_path = true,
   mode = true,
   schema = true,
@@ -102,6 +105,28 @@ local request_fields = {
 local action_fields = {
   action = true,
   evidence_pointer = true,
+  expected = true,
+  target = true,
+  target_module_id = true,
+}
+
+local candidate_document_fields = {
+  cases = true,
+  schema = true,
+}
+
+local candidate_case_fields = {
+  actions = true,
+  case_kind = true,
+  expected_observable = true,
+  module_id = true,
+  objective = true,
+  priority = true,
+  title = true,
+}
+
+local candidate_action_fields = {
+  action = true,
   expected = true,
   target = true,
   target_module_id = true,
@@ -320,12 +345,17 @@ function M.validate_request(value)
   end
   copy_string_list(value.allowed_case_kinds, nil, allowed_case_kinds, "testing-runner: malformed-request: ai_generation.allowed_case_kinds", max_actions)
   copy_string_list(value.allowed_action_kinds, nil, allowed_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)
-  copy_string_list(value.consensus_angles, nil, nil, "testing-runner: malformed-request: ai_generation.consensus_angles", 4)
-  if value.context_manifest_path ~= nil and not safe_artifact_pointer(value.context_manifest_path) then
-    error("testing-runner: malformed-request: ai_generation.context_manifest_path must be a safe artifact pointer")
-  end
-  if value.generated_cases_path ~= nil and not safe_artifact_pointer(value.generated_cases_path) then
-    error("testing-runner: malformed-request: ai_generation.generated_cases_path must be a safe artifact pointer")
+  for _, key in ipairs({
+    "context_manifest_path",
+    "generated_cases_path",
+    "generated_case_gate_path",
+    "ai_agent_generation_path",
+    "generated_case_agent_review_path",
+    "ai_test_design_loop_path",
+  }) do
+    if value[key] ~= nil and not safe_artifact_pointer(value[key]) then
+      error("testing-runner: malformed-request: ai_generation." .. key .. " must be a safe artifact pointer")
+    end
   end
   if contains_forbidden(value) ~= nil then error("testing-runner: malformed-request: ai_generation contains forbidden payload term") end
   return value
@@ -394,76 +424,145 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
   }
 end
 
-function M.build_generation_proposal(context, request)
+function M.build_generation_proposal(context, generated, request, content_fetch)
   request = default_request(request)
   M.validate_request(request)
-  return ai_agents.build_generation_proposal(context, request)
+  M.validate_generated_cases(generated)
+  return ai_agents.build_generation_proposal(context, generated, request, content_fetch)
 end
 
-function M.build_review_proposal(context, generated, gate, request)
+function M.build_review_proposal(context, generated, gate, request, content_fetch)
   request = default_request(request)
   M.validate_request(request)
-  return ai_agents.build_review_proposal(context, generated, gate, request)
-end
-
-local function generated_case(context, module, suffix, title, action_items, blocked_expected)
-  return {
-    id = module.id .. ":ai-" .. suffix,
-    module_id = module.id,
-    priority = "P1",
-    title = title,
-    objective = title,
-    case_kind = blocked_expected and "read-only-interaction" or "primary-interaction",
-    actions = action_items,
-    expected_observable = blocked_expected or "The local page remains same-origin, visible, and stable after the interaction.",
-    evidence_pointers = module.evidence_pointer and { module.evidence_pointer } or {},
-    provenance = {
-      origin = "ai-generated",
-      context_manifest_path = context.context_manifest_path,
-      prompt_template_ref = context.prompt_template_ref,
-      model_invocation_digest = "local-reviewed-" .. strings.decimal_checksum(context.input_digest .. module.id .. suffix),
-    },
-  }
-end
-
-function M.generate_cases(context, request)
-  request = default_request(request)
-  M.validate_request(request)
-  local cases = {}
-  local mode = request.mode or "disabled"
-  if mode ~= "disabled" then
-    local budget = request.case_budget or (((context or {}).budgets or {}).case_budget) or 4
-    for _, module in ipairs((context or {}).modules or {}) do
-      if #cases >= budget then break end
-      table.insert(cases, generated_case(context, module, "visible-surface", "Exercise visible read-only surface for " .. module_label(module), {
-        { action = "open-visible-surface", target = module.visible_label or module.route or module.id, expected = "visible surface can be opened without leaving local scope", evidence_pointer = module.evidence_pointer },
-        { action = "close-visible-surface", target = module.visible_label or module.route or module.id, expected = "visible surface can be closed or safely returned", evidence_pointer = module.evidence_pointer },
-      }))
-      if #cases >= budget then break end
-      table.insert(cases, generated_case(context, module, "search-filter", "Probe read-only search or filter behavior for " .. module_label(module), {
-        { action = "search-or-filter-readonly", target = module.visible_label or module.route or module.id, expected = "filter input changes visible results without mutation", evidence_pointer = module.evidence_pointer },
-        { action = "clear-filter-readonly", target = module.visible_label or module.route or module.id, expected = "clearing the filter restores visible results", evidence_pointer = module.evidence_pointer },
-      }, "Requires visible search/filter control evidence before execution."))
-    end
-  end
-  return {
-    schema = M.generated_cases_schema,
-    artifact_kind = "generated-test-cases",
-    artifact_root = context.artifact_root,
-    context_manifest_path = context.context_manifest_path,
-    prompt_template_ref = context.prompt_template_ref,
-    generation_mode = mode,
-    generation_digest = "gen-" .. strings.decimal_checksum((context.input_digest or "context") .. ":" .. tostring(#cases)),
-    generated_cases_path = context.generated_cases_path,
-    cases = cases,
-    case_count = #cases,
-  }
+  return ai_agents.build_review_proposal(context, generated, gate, request, content_fetch)
 end
 
 local function module_index(context)
   local modules = {}
   for _, module in ipairs((context or {}).modules or {}) do modules[module.id] = module end
   return modules
+end
+
+local function requested_sets(request)
+  return {
+    kinds = set_from_list(copy_string_list(request.allowed_case_kinds, {
+      "entry-health",
+      "primary-interaction",
+      "read-only-interaction",
+      "module-transition",
+      "mutation-or-edge",
+    }, allowed_case_kinds, "testing-runner: malformed-request: ai_generation.allowed_case_kinds", max_actions)),
+    actions = set_from_list(copy_string_list(request.allowed_action_kinds, {
+      "bounded-navigation",
+      "open-visible-surface",
+      "close-visible-surface",
+      "search-or-filter-readonly",
+      "clear-filter-readonly",
+      "module-transition",
+      "safe-mutation-fixture",
+    }, allowed_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)),
+  }
+end
+
+function M.canonicalize_candidates(context, request, candidates, invocation_digest)
+  request = default_request(request)
+  M.validate_request(request)
+  if type(candidates) ~= "table" then error("testing-runner: malformed-ai-candidates: document must be a table") end
+  validate_fields(candidates, candidate_document_fields, "testing-runner: malformed-ai-candidates")
+  if candidates.schema ~= M.candidate_schema then error("testing-runner: unknown-ai-candidate-schema: expected " .. M.candidate_schema) end
+  local ok_cases, candidate_count = dense_list(candidates.cases)
+  local budget = request.case_budget or (((context or {}).budgets or {}).case_budget) or 4
+  if not ok_cases or candidate_count > budget or candidate_count > max_cases then
+    error("testing-runner: malformed-ai-candidates: cases exceed the generation budget")
+  end
+
+  local modules = module_index(context)
+  local sets = requested_sets(request)
+  local cases, seen_ids = {}, {}
+  local digest = bounded_id(invocation_digest) and invocation_digest
+    or ("agent-" .. strings.decimal_checksum((context.input_digest or "context") .. ":candidates"))
+
+  for index, candidate in ipairs(candidates.cases) do
+    if type(candidate) ~= "table" then error("testing-runner: malformed-ai-candidate: case must be a table") end
+    validate_fields(candidate, candidate_case_fields, "testing-runner: malformed-ai-candidate")
+    if contains_forbidden(candidate) ~= nil then error("testing-runner: malformed-ai-candidate: contains forbidden payload term") end
+    local module = modules[candidate.module_id]
+    if module == nil then error("testing-runner: malformed-ai-candidate: module_id is unknown") end
+    if allowed_priorities[candidate.priority] ~= true then error("testing-runner: malformed-ai-candidate: priority is invalid") end
+    if allowed_case_kinds[candidate.case_kind] ~= true or sets.kinds[candidate.case_kind] ~= true then
+      error("testing-runner: malformed-ai-candidate: case_kind is unsupported")
+    end
+    if not bounded_string(candidate.title, max_string) or not bounded_string(candidate.objective, max_string) then
+      error("testing-runner: malformed-ai-candidate: title and objective are required")
+    end
+    local ok_actions, action_count = dense_list(candidate.actions)
+    if not ok_actions or action_count == 0 or action_count > max_actions then
+      error("testing-runner: malformed-ai-candidate: actions must be a non-empty bounded list")
+    end
+    local actions = {}
+    for _, action in ipairs(candidate.actions) do
+      if type(action) ~= "table" then error("testing-runner: malformed-ai-candidate: action must be a table") end
+      validate_fields(action, candidate_action_fields, "testing-runner: malformed-ai-candidate: action")
+      if allowed_action_kinds[action.action] ~= true or sets.actions[action.action] ~= true then
+        error("testing-runner: malformed-ai-candidate: action kind is unsupported")
+      end
+      if not bounded_string(action.target, max_string) or not target_within_scope(action.target, context) then
+        error("testing-runner: malformed-ai-candidate: action target leaves local allowed scope")
+      end
+      if action.expected ~= nil and not bounded_string(action.expected, max_string) then
+        error("testing-runner: malformed-ai-candidate: action expected value is invalid")
+      end
+      if action.target_module_id ~= nil and modules[action.target_module_id] == nil then
+        error("testing-runner: malformed-ai-candidate: target_module_id is unknown")
+      end
+      table.insert(actions, {
+        action = action.action,
+        target = strip_url_detail(action.target),
+        expected = action.expected or "bounded observable outcome",
+        target_module_id = action.target_module_id,
+        evidence_pointer = module.evidence_pointer,
+      })
+    end
+    local case_id = candidate.module_id .. ":ai-" .. strings.decimal_checksum(table.concat({
+      context.input_digest or "context",
+      tostring(index),
+      candidate.title,
+      candidate.case_kind,
+    }, ":"))
+    if seen_ids[case_id] then error("testing-runner: malformed-ai-candidate: duplicate derived case id") end
+    seen_ids[case_id] = true
+    table.insert(cases, {
+      id = case_id,
+      module_id = candidate.module_id,
+      priority = candidate.priority,
+      title = candidate.title,
+      objective = candidate.objective,
+      case_kind = candidate.case_kind,
+      actions = actions,
+      expected_observable = bounded_string(candidate.expected_observable, max_string)
+        and candidate.expected_observable or "bounded observable outcome",
+      evidence_pointers = module.evidence_pointer and { module.evidence_pointer } or {},
+      provenance = {
+        origin = "ai-generated",
+        context_manifest_path = context.context_manifest_path,
+        prompt_template_ref = context.prompt_template_ref,
+        model_invocation_digest = digest,
+      },
+    })
+  end
+
+  return {
+    schema = M.generated_cases_schema,
+    artifact_kind = "generated-test-cases",
+    artifact_root = context.artifact_root,
+    context_manifest_path = context.context_manifest_path,
+    prompt_template_ref = context.prompt_template_ref,
+    generation_mode = request.mode or "disabled",
+    generation_digest = "gen-" .. strings.decimal_checksum((context.input_digest or "context") .. ":" .. digest .. ":" .. tostring(#cases)),
+    generated_cases_path = context.generated_cases_path,
+    cases = cases,
+    case_count = #cases,
+  }
 end
 
 local function validate_provenance(value, context)
@@ -650,6 +749,13 @@ function M.gate_generated_cases(generated, context, request)
   end
   local status = counts.rejected > 0 and "degraded" or "reviewed"
   if counts.accepted == 0 and generated.case_count > 0 then status = "blocked" end
+  local gate_digest = "gate-" .. strings.decimal_checksum(table.concat({
+    generated.generation_digest or "generation",
+    status,
+    tostring(counts.accepted),
+    tostring(counts.executable),
+    tostring(counts.rejected),
+  }, ":"))
   return {
     schema = M.gate_schema,
     artifact_kind = "generated-case-gate",
@@ -657,6 +763,8 @@ function M.gate_generated_cases(generated, context, request)
     context_manifest_path = context.context_manifest_path,
     generated_cases_path = context.generated_cases_path,
     generated_case_gate_path = context.generated_case_gate_path,
+    generation_digest = generated.generation_digest,
+    gate_digest = gate_digest,
     status = status,
     mode = request.mode or "disabled",
     accepted_count = counts.accepted,
@@ -770,6 +878,8 @@ function M.build_review_closure(context, generated, gate, agent_generation, agen
     context_manifest_path = context.context_manifest_path,
     generated_cases_path = context.generated_cases_path,
     generated_case_gate_path = context.generated_case_gate_path,
+    generation_digest = generated.generation_digest,
+    gate_digest = gate.gate_digest,
     ai_agent_generation_path = agent_generation and context.ai_agent_generation_path or nil,
     generated_case_agent_review_path = agent_review and context.generated_case_agent_review_path or nil,
     ai_test_design_loop_path = context.ai_test_design_loop_path,
@@ -827,16 +937,33 @@ end
 
 function M.prompt_for_context(context)
   return table.concat({
-    "Generate bounded read-only UI test cases from the FKST AI context manifest.",
-    "Use only FKST action enums and local same-origin scope.",
-    "Do not request raw DOM, screenshots, browser state, session secrets, credentials, or raw reports.",
+    "Generate bounded read-only UI test case candidates from the FKST AI context manifest.",
+    "Read the context manifest from the current repository worktree before answering.",
+    "Use only module IDs present in that manifest, FKST action enums, and local same-origin targets.",
+    "Do not include IDs, artifact paths, evidence pointers, provenance, review status, raw DOM, screenshots, browser state, credentials, or raw reports.",
+    "Return exactly one JSON object with schema " .. M.candidate_schema .. " and a cases array.",
+    "Each case may contain only module_id, priority, title, objective, case_kind, actions, and expected_observable.",
+    "Each action may contain only action, target, expected, and optional target_module_id.",
     "Context manifest pointer: " .. tostring((context or {}).context_manifest_path or "not-recorded"),
-    "Return normalized generated-test-cases JSON only.",
   }, "\n")
 end
 
 function M.read_only_generation_opts(context, worktree)
   return workflow_codex.judgment_codex_opts(M.prompt_for_context(context), worktree)
+end
+
+function M.generate_candidates(context, request, worktree)
+  request = default_request(request)
+  M.validate_request(request)
+  local proposal_id = "testing-ai/author/" .. strings.sanitize_key(context.input_digest or "context", max_id)
+  local dedup_key = strings.sanitize_key(proposal_id .. "/" .. tostring(request.dedup_key or context.generated_cases_path), max_id)
+  local opts = M.read_only_generation_opts(context, worktree or ".")
+  opts.sync = true
+  return workflow_codex.dispatch({
+    role = "testing-ai-author",
+    proposal_id = proposal_id,
+    dedup_key = dedup_key,
+  }, opts)
 end
 
 return M

@@ -184,8 +184,13 @@ function M.build(inventory, ui_loop, artifact_root, opts)
       step_budget = opts.step_budget,
       case_priorities = opts.case_priorities,
     })
-    generated_cases = opts.generated_cases or ai_generation.generate_cases(ai_context, opts.ai_generation)
+    generated_cases = opts.generated_cases
+    if generated_cases == nil then error("testing-runner: ai-artifact-missing: generated cases") end
+    ai_generation.validate_generated_cases(generated_cases)
     generated_case_gate = ai_generation.gate_generated_cases(generated_cases, ai_context, opts.ai_generation)
+    if type(opts.generated_case_gate) ~= "table" or opts.generated_case_gate.gate_digest ~= generated_case_gate.gate_digest then
+      error("testing-runner: ai-artifact-mismatch: deterministic gate")
+    end
     agent_generation = opts.ai_agent_generation
     agent_review = opts.generated_case_agent_review
     if (opts.ai_generation or {}).mode == "autonomous-reviewed" then
