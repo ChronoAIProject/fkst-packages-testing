@@ -18,7 +18,7 @@ version = "workspace"
 
 [exports]
 exact = true
-public = ["contract.error_facts", "contract.payload", "contract.source_ref", "contract.strings", "contract.testing"]
+public = ["contract.error_facts", "contract.payload", "contract.source_ref", "contract.strings", "contract.testing", "contract.testing_execution"]
 
 [visibility]
 public = true

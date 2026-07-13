@@ -1,0 +1,22 @@
+kind = "library"
+name = "testing_runtime"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract"]
+
+[dependency_constraints]
+allowed_lib_deps = ["contract"]
+
+[library]
+name = "testing_runtime"
+stable_id = "fkst.library.testing_runtime"
+version = "workspace"
+
+[exports]
+public = ["testing_runtime.*"]
+
+[visibility]
+public = false
