@@ -336,6 +336,10 @@ return {
       evidence_bundle_path = ".testing/runs/module-a-cdp/evidence-bundle.json",
       cdp_readiness_ref = "cdp-ready",
       action_count = 5,
+      planned_action_count = 0,
+      blocked_action_count = 0,
+      executed_action_count = 0,
+      failed_action_count = 0,
     })
   end,
 

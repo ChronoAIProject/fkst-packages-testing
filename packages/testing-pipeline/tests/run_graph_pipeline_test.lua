@@ -36,6 +36,47 @@ local function result_event(status)
   }
 end
 
+local function cdp_result_event(status)
+  local classification = status == "passed" and "typed-browser-assertions-passed"
+    or status == "failed" and "typed-browser-assertion-failed"
+    or "runtime-receipt-invalid"
+  local outcome = status == "failed" and "product-defect"
+    or status == "blocked" and "harness-tooling-issue"
+    or nil
+  local summary = {
+    schema = "testing-runner.module-cdp-execution-summary.v1",
+    module = "module-a",
+    status = status,
+    execution_status = status,
+    classification = classification,
+    mode = "bounded-cdp-controller",
+    artifact_root = ".testing/runs/module-a-cdp-terminal",
+    execution_path = ".testing/runs/module-a-cdp-terminal/cdp-execution.json",
+    metadata_path = ".testing/runs/module-a-cdp-terminal/metadata.json",
+    action_count = 1,
+    planned_action_count = status == "blocked" and 1 or 0,
+    blocked_action_count = 0,
+    executed_action_count = status == "passed" and 1 or 0,
+    failed_action_count = status == "failed" and 1 or 0,
+    outcome_classification = outcome,
+  }
+  return {
+    queue = "testing-runner.testing_result",
+    payload = {
+      schema = "testing-runner.result.v1",
+      job = "module-test-loop",
+      status = status,
+      artifact_root = summary.artifact_root,
+      source_ref = { kind = "external", ref = "module-a-terminal" },
+      trace_id = "trace-module-a-terminal",
+      dedup_key = "module-a-terminal-run-" .. status,
+      adapter = { name = "fkst-native", mode = status == "blocked" and "module-cdp-execution-blocked" or "module-cdp-execution" },
+      native_summary = summary,
+    },
+    source_ref = { kind = "external", reference = "module-a-terminal" },
+  }
+end
+
 local function module_start_event()
   return {
     queue = "module_start",
@@ -133,13 +174,15 @@ local function module_mutation_execution_start_event()
       {
         case_id = "dashboard:write-flow",
         mutation_kind = "create-test-data",
-        fixture_ref = ".testing/runs/fixtures/dashboard-create",
-        cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
-        evidence_pointer = ".testing/runs/evidence/dashboard-create",
+        fixture_lifecycle_path = ".testing/runs/fixtures/dashboard-lifecycle",
       },
     },
   }
-  table.insert(event.payload.preflight_result.sessions, { role = "admin", status = "ready" })
+  table.insert(event.payload.preflight_result.sessions, {
+    role = "admin",
+    status = "ready",
+    cdp_url = "http://127.0.0.1:9222",
+  })
   return event
 end
 
@@ -147,7 +190,7 @@ local function module_fixture_gap_execution_start_event()
   local event = module_mutation_execution_start_event()
   event.payload.artifact_root = ".testing/runs/module-a-fixture-gap"
   event.payload.dedup_key = "module-a-fixture-gap-run"
-  event.payload.cdp_execution.mutation_fixtures[1].cleanup_ref = nil
+  event.payload.cdp_execution.mutation_fixtures = nil
   return event
 end
 
@@ -278,6 +321,20 @@ return {
     t.eq(publication.payload.dedup_key, "module-a-run")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
     t.eq(publication.payload.metadata_path, ".testing/runs/module-a/metadata.json")
+  end,
+
+  test_terminal_cdp_results_flow_to_artifact_summary_and_publication = function()
+    local severities = { passed = "success", failed = "failure", blocked = "warning" }
+    for _, status in ipairs({ "passed", "failed", "blocked" }) do
+      local trace = graph.require_quiescent(graph.run(cdp_result_event(status), { max_steps = 8 }))
+      local summary = graph.require_raise(trace, "test-artifacts.artifact_summary").payload
+      local publication = graph.require_raise(trace, "test-publication.publication_request").payload
+      t.eq(summary.status, status)
+      t.eq(summary.native_summary.execution_status, status)
+      t.eq(summary.native_summary.failed_action_count, status == "failed" and 1 or 0)
+      t.eq(publication.status, status)
+      t.eq(publication.severity, severities[status])
+    end
   end,
 
   test_run_graph_no_browser_module_reaches_publication_request = function()
@@ -417,16 +474,19 @@ return {
     })
 
     local result = graph.require_raise(trace, "testing-runner.testing_result")
-    t.eq(result.payload.status, "passed")
+    t.eq(result.payload.status, "blocked")
     t.eq(result.payload.adapter.name, "fkst-native")
-    t.eq(result.payload.adapter.mode, "module-cdp-execution")
+    t.eq(result.payload.adapter.mode, "module-cdp-execution-blocked")
     t.eq(result.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
+    t.eq(result.payload.native_summary.classification, "missing-cdp-session")
+    t.eq(result.payload.native_summary.outcome_classification, "environment-session-issue")
+    t.eq(result.payload.native_summary.executed_action_count, 0)
     t.eq(result.payload.native_summary.execution_path, ".testing/runs/module-a-cdp/cdp-execution.json")
     t.eq(result.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-cdp/evidence-bundle.json")
     t.eq(result.payload.native_summary.action_count, 5)
 
     local summary = graph.require_raise(trace, "test-artifacts.artifact_summary")
-    t.eq(summary.payload.status, "passed")
+    t.eq(summary.payload.status, "blocked")
     t.eq(summary.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
     t.eq(summary.payload.native_summary.execution_path, ".testing/runs/module-a-cdp/cdp-execution.json")
     t.eq(summary.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-cdp/evidence-bundle.json")
@@ -454,8 +514,8 @@ return {
     t.is_true(drafts:find('"external_write":false', 1, true) ~= nil)
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
-    t.eq(publication.payload.status, "passed")
-    t.eq(publication.payload.severity, "success")
+    t.eq(publication.payload.status, "blocked")
+    t.eq(publication.payload.severity, "warning")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a-cdp")
     t.eq(publication.payload.metadata_path, ".testing/runs/module-a-cdp/metadata.json")
     t.eq(publication.payload.stage_report_path, ".testing/runs/module-a-cdp/stage-report.md")
@@ -579,7 +639,7 @@ return {
     t.eq(publication.payload.severity, "warning")
   end,
 
-  test_run_graph_safe_mutation_execution_reaches_publication_request = function()
+  test_run_graph_safe_mutation_plan_reaches_publication_request = function()
     local trace = graph.require_quiescent(graph.run(module_mutation_execution_start_event(), { max_steps = 12 }))
 
     graph.require_delivery(trace, {
@@ -596,24 +656,28 @@ return {
     })
 
     local result = graph.require_raise(trace, "testing-runner.testing_result")
-    t.eq(result.payload.status, "passed")
+    t.eq(result.payload.status, "degraded")
     t.eq(result.payload.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
+    t.eq(result.payload.native_summary.classification, "mutation-execution-deferred")
     t.eq(result.payload.native_summary.action_count, 1)
+    t.eq(result.payload.native_summary.planned_action_count, 1)
+    t.eq(result.payload.native_summary.blocked_action_count, 0)
     t.eq(result.payload.native_summary.evidence_bundle_path, ".testing/runs/module-a-mutation/evidence-bundle.json")
-    t.eq(result.payload.native_summary.cleanup_ref, nil)
+    t.eq(result.payload.native_summary.fixture_lifecycle_path, nil)
 
     local execution = read_file(".testing/runs/module-a-mutation/cdp-execution.json")
     t.is_true(execution:find('"action":"safe-mutation-fixture"', 1, true) ~= nil)
-    t.is_true(execution:find('"cleanup_ref":".testing/runs/fixtures/dashboard-cleanup"', 1, true) ~= nil)
+    t.is_true(execution:find('"fixture_lifecycle_path":".testing/runs/fixtures/dashboard-lifecycle"', 1, true) ~= nil)
 
     local metadata = read_file(".testing/runs/module-a-mutation/metadata.json")
-    t.eq(metadata:find("cleanup_ref", 1, true), nil)
+    t.eq(metadata:find("fixture_lifecycle_path", 1, true), nil)
 
     local action_trace = read_file(".testing/runs/module-a-mutation/evidence/action-trace.json")
-    t.is_true(action_trace:find('"cleanup_ref":".testing/runs/fixtures/dashboard-cleanup"', 1, true) ~= nil)
+    t.is_true(action_trace:find('"fixture_lifecycle_path":".testing/runs/fixtures/dashboard-lifecycle"', 1, true) ~= nil)
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
-    t.eq(publication.payload.status, "passed")
+    t.eq(publication.payload.status, "degraded")
+    t.eq(publication.payload.severity, "warning")
     t.eq(publication.payload.artifact_root, ".testing/runs/module-a-mutation")
   end,
 
@@ -648,7 +712,7 @@ return {
     t.is_true(backlog:find('"outcome_classification":"data-fixture-gap"', 1, true) ~= nil)
     t.is_true(backlog:find("cleanup or rollback", 1, true) ~= nil)
     local metadata = read_file(".testing/runs/module-a-fixture-gap/metadata.json")
-    t.eq(metadata:find("cleanup_ref", 1, true), nil)
+    t.eq(metadata:find("fixture_lifecycle_path", 1, true), nil)
 
     local publication = graph.require_raise(trace, "test-publication.publication_request")
     t.eq(publication.payload.status, "degraded")

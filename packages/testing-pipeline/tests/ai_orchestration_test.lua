@@ -68,7 +68,8 @@ local function module_start(overrides)
       status = "ready",
       sessions = {
         { role = "base_url", status = "ready" },
-        { role = "admin", status = "ready" },
+        { role = "admin", status = "ready", cdp_url = "http://127.0.0.1:9222" },
+        { role = "external", status = "ready", cdp_url = "http://browser.example:9222" },
       },
       request = { raw_dom = "must not persist" },
     },
@@ -148,6 +149,8 @@ return {
     t.eq(state.phase, "generation-proposed")
     t.eq(state.module_start.ui_loop.base_url, fixture_base_url)
     t.eq(state.module_start.module_discovery.observations[1].entry_url, fixture_base_url .. "/dashboard")
+    t.eq(state.module_start.preflight_result.sessions[2].cdp_url, "http://127.0.0.1:9222")
+    t.eq(state.module_start.preflight_result.sessions[3].cdp_url, nil)
     t.eq(state.module_start.cdp_execution.generated_cases, nil)
     t.eq(state.module_start.cdp_execution.ai_agent_generation, nil)
     t.eq(state.module_start.cdp_execution.generated_case_agent_review, nil)

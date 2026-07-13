@@ -53,6 +53,23 @@ local function strip_url_detail(value)
   return text
 end
 
+local function local_cdp_url(value)
+  if not bounded(value, max_string) or value:find("@", 1, true) ~= nil or value:find("#", 1, true) ~= nil then return nil end
+  local authority, suffix = value:match("^http://([^/%?]+)(.*)$")
+  if authority == nil or (suffix ~= "" and suffix ~= "/") then return nil end
+  local host, port
+  if authority:sub(1, 1) == "[" then
+    host, port = authority:match("^%[([^%]]+)%](.*)$")
+  else
+    host, port = authority:match("^([^:]+)(.*)$")
+  end
+  if host == nil or (port ~= "" and port:match("^:%d+$") == nil) then return nil end
+  host = host:lower()
+  if host ~= "localhost" and host ~= "127.0.0.1" and host ~= "::1" then return nil end
+  local normalized_host = host == "::1" and "[::1]" or host
+  return "http://" .. normalized_host .. (port or "")
+end
+
 local function safe_artifact_pointer(value)
   return bounded(value, max_string) and strings.is_path_safe_key(value, max_string) and value:sub(1, 14) == ".testing/runs/"
 end
@@ -345,7 +362,10 @@ local function copy_session(value)
   local role = copy_string(value.role, nil, 80)
   local status = copy_string(value.status, nil, 80)
   if role == nil or status == nil then return nil end
-  return { role = role, status = status }
+  local copy = { role = role, status = status }
+  local cdp_url = local_cdp_url(value.cdp_url)
+  if cdp_url ~= nil then copy.cdp_url = cdp_url end
+  return copy
 end
 
 local function copy_preflight(value)

@@ -1,6 +1,7 @@
 local M = {}
 
 local module_cdp_execution = require("module_cdp_execution")
+local module_cdp_runtime = require("module_cdp_runtime")
 local module_inventory = require("module_inventory")
 local module_planning = require("module_planning")
 local outcome = require("outcome")
@@ -72,22 +73,33 @@ local function safe_target(url)
   return text
 end
 
-local function origin_of(url)
-  if type(url) ~= "string" then return nil end
-  return url:match("^(https?://[^/?#]+)")
+local function local_http_origin(url)
+  if type(url) ~= "string" or url == "" or #url > 512 then return nil end
+  if url:find("[%z\1-\31]") ~= nil or url:find("@", 1, true) ~= nil then return nil end
+  local authority = url:match("^http://([^/?#]+)")
+  if authority == nil then return nil end
+  local host, port
+  if authority:sub(1, 1) == "[" then
+    host, port = authority:match("^%[([^%]]+)%](.*)$")
+  else
+    host, port = authority:match("^([^:]+)(.*)$")
+  end
+  if host == nil or (port ~= "" and port:match("^:%d+$") == nil) then return nil end
+  host = host:lower()
+  if host ~= "localhost" and host ~= "127.0.0.1" and host ~= "::1" then return nil end
+  local normalized = host == "::1" and "[::1]" or host
+  return "http://" .. normalized .. (port or "")
 end
 
 local function local_http_url(url)
-  if type(url) ~= "string" then return false end
-  local host = url:match("^https?://([^/:?#]+)")
-  return host == "localhost" or host == "127.0.0.1" or host == "::1"
+  return local_http_origin(url) ~= nil
 end
 
 local function origin_allowed(base_url, allowed_origins)
-  local origin = origin_of(base_url)
+  local origin = local_http_origin(base_url)
   if origin == nil or type(allowed_origins) ~= "table" then return false end
   for _, allowed in ipairs(allowed_origins) do
-    if allowed == origin then return true end
+    if allowed == origin and local_http_origin(allowed) == origin then return true end
   end
   return false
 end
@@ -124,10 +136,11 @@ local function readiness_summary(preflight)
   if type(preflight.sessions) == "table" then
     for _, session in ipairs(preflight.sessions) do
       if type(session) == "table" then
-        table.insert(sessions, {
+        local item = {
           role = safe_label(session.role, "unknown"),
           status = safe_label(session.status, "unknown"),
-        })
+        }
+        table.insert(sessions, item)
         if #sessions >= 16 then break end
       end
     end
@@ -317,17 +330,17 @@ local function action_trace_evidence(artifact, root)
           action = bounded_ref(action.action),
           target = bounded_ref(action.target),
           url = safe_target(action.url),
+          execution_status = bounded_ref(action.execution_status),
+          assertion_status = bounded_ref(action.assertion_status),
           observation = bounded_ref(action.observation),
           evidence_pointer = bounded_ref(action.evidence_pointer),
+          planned_evidence_pointer = bounded_ref(action.planned_evidence_pointer),
         }
         add_if_present(item, "case_origin", bounded_ref(action.case_origin))
         add_if_present(item, "provenance_digest", bounded_ref(action.provenance_digest))
         add_if_present(item, "expected_observable", bounded_ref(action.expected_observable))
         add_if_present(item, "mutation_kind", bounded_ref(action.mutation_kind))
-        add_if_present(item, "fixture_ref", bounded_ref(action.fixture_ref))
-        add_if_present(item, "cleanup_ref", bounded_ref(action.cleanup_ref))
-        add_if_present(item, "rollback_ref", bounded_ref(action.rollback_ref))
-        add_if_present(item, "fixture_evidence_pointer", bounded_ref(action.fixture_evidence_pointer))
+        add_if_present(item, "fixture_lifecycle_path", bounded_ref(action.fixture_lifecycle_path))
         table.insert(actions, item)
         if #actions >= 32 then break end
       end
@@ -340,6 +353,9 @@ local function action_trace_evidence(artifact, root)
     execution_path = root .. "/cdp-execution.json",
     actions = actions,
     action_count = #actions,
+    planned_action_count = type(artifact) == "table" and artifact.planned_action_count or 0,
+    blocked_action_count = type(artifact) == "table" and artifact.blocked_action_count or 0,
+    executed_action_count = type(artifact) == "table" and artifact.executed_action_count or 0,
   }
 end
 
@@ -403,7 +419,9 @@ local function console_network_evidence(artifact, root)
   local checks = {}
   if type(artifact) == "table" then
     for _, action in ipairs(artifact.actions or {}) do
-      if type(action) == "table" and action.action == "collect-console-network-health" then
+      if type(action) == "table"
+        and action.action == "collect-console-network-health"
+        and action.execution_status == "executed" then
         table.insert(checks, {
           case_id = bounded_ref(action.case_id),
           url = safe_target(action.url),
@@ -657,7 +675,8 @@ local function with_metadata(result, payload, context, opts)
   })
 end
 
-function M.run(job, payload, context, _exec)
+function M.run(job, payload, context, dependencies)
+  dependencies = dependencies or {}
   local readiness = preflight_status(payload)
   if readiness ~= nil and readiness ~= "ready" then
     return with_metadata(context.result_payload("blocked", {
@@ -685,10 +704,13 @@ function M.run(job, payload, context, _exec)
       return with_metadata(result, payload, context)
     end
     if payload.cdp_execution ~= nil then
-      local artifact_root = context.result_payload("planned", {}).artifact_root
-      local artifact = module_cdp_execution.build(payload, artifact_root, {
+      local identity = context.result_payload("planned", {})
+      local artifact = module_cdp_execution.build(payload, identity.artifact_root, {
         readiness = readiness_summary(payload.preflight_result),
       })
+      if artifact.execution_status ~= "blocked" then
+        artifact = module_cdp_runtime.run(artifact, identity, payload, dependencies.runtime_ports)
+      end
       local status = artifact.execution_status
       local result = context.result_payload(status, {
         adapter = adapter(status == "blocked" and "module-cdp-execution-blocked" or "module-cdp-execution"),
@@ -739,7 +761,7 @@ function M.run(job, payload, context, _exec)
         stderr = "fkst-native native_argv must not target the legacy agentic-testing host runner",
       }), payload, context)
     end
-    local out = native_exec(payload, context, _exec)
+    local out = native_exec(payload, context, dependencies.exec)
     local code = type(out) == "table" and tonumber(out.exit_code) or nil
     local status = code == 0 and "passed" or "failed"
     local result = context.result_payload(status, {
@@ -777,7 +799,7 @@ function M.run(job, payload, context, _exec)
         stderr = "fkst-native native_argv must not target the legacy agentic-testing host runner",
       }), payload, context)
     end
-    local out = native_exec(payload, context, _exec)
+    local out = native_exec(payload, context, dependencies.exec)
     local code = type(out) == "table" and tonumber(out.exit_code) or nil
     local status = code == 0 and "passed" or "failed"
     local result = context.result_payload(status, {

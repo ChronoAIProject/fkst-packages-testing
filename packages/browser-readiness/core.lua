@@ -148,15 +148,18 @@ local function session_readiness(session, probe)
     end
   end
 
+  local resolved_cdp_url = nil
   if non_empty(session.cdp_endpoint_env, 128) then
     local value = probe.env(session.cdp_endpoint_env)
     if local_url(value) then
+      resolved_cdp_url = value
       table.insert(checks, check("ready", "cdp_endpoint_env"))
     else
       table.insert(checks, check("blocked", "cdp_endpoint_env", "missing or non-local endpoint"))
     end
   elseif non_empty(session.cdp_url, 512) then
     if local_url(session.cdp_url) then
+      resolved_cdp_url = session.cdp_url
       table.insert(checks, check("ready", "cdp_url"))
     else
       table.insert(checks, check("blocked", "cdp_url", "non-local endpoint"))
@@ -168,7 +171,9 @@ local function session_readiness(session, probe)
     if item.status ~= "ready" then status = "blocked" end
   end
   if #checks == 0 then status = "blocked" end
-  return { role = session.role, status = status, checks = checks }
+  local result = { role = session.role, status = status, checks = checks }
+  if resolved_cdp_url ~= nil then result.cdp_url = resolved_cdp_url end
+  return result
 end
 
 local function overall_status(items)
@@ -181,7 +186,9 @@ end
 local function forced_result(payload, status)
   local sessions = {}
   for _, session in ipairs(payload.sessions) do
-    table.insert(sessions, { role = session.role, status = status or "planned" })
+    local item = { role = session.role, status = status or "planned" }
+    if local_url(session.cdp_url) then item.cdp_url = session.cdp_url end
+    table.insert(sessions, item)
   end
   return {
     schema = "browser-readiness.result.v1",

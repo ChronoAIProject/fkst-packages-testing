@@ -41,7 +41,7 @@ local function request(overrides)
       status = "ready",
       sessions = {
         { role = "base_url", status = "ready" },
-        { role = "admin", status = "ready" },
+        { role = "admin", status = "ready", cdp_url = "http://127.0.0.1:9222" },
       },
     },
     artifact_writer = function()
@@ -126,14 +126,6 @@ return {
       schema = "testing-runner.module-cdp-execution.v1",
       step_budget = 8,
       case_priorities = { "P2" },
-      mutation_fixtures = {
-        {
-          case_id = "dashboard:write-flow",
-          mutation_kind = "create-test-data",
-          fixture_ref = ".testing/runs/fixtures/dashboard-create",
-          evidence_pointer = ".testing/runs/evidence/dashboard-create",
-        },
-      },
     }
     local result = core.run("module", request({
       ui_loop = {
@@ -154,6 +146,6 @@ return {
     t.eq(result.native_summary.outcome_classification, "data-fixture-gap")
     t.is_true(written[".testing/runs/module-a-outcome/gap-backlog.json"]:find('"outcome_classification":"data-fixture-gap"', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-outcome/gap-backlog.json"]:find("cleanup or rollback", 1, true) ~= nil)
-    t.eq(written[".testing/runs/module-a-outcome/metadata.json"]:find("cleanup_ref", 1, true), nil)
+    t.eq(written[".testing/runs/module-a-outcome/metadata.json"]:find("fixture_lifecycle_path", 1, true), nil)
   end,
 }

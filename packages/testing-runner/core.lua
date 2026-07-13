@@ -344,12 +344,39 @@ local function adapter_context(job, payload)
   }
 end
 
-function M.run(job, payload, exec)
+local function normalize_dependencies(value)
+  if value == nil then return {} end
+  if type(value) == "function" then return { exec = value } end
+  if type(value) ~= "table" then
+    error("testing-runner: invalid-dependencies: expected function or table")
+  end
+  for key, _ in pairs(value) do
+    if key ~= "exec" and key ~= "runtime_ports" then
+      error("testing-runner: invalid-dependencies: unsupported field " .. tostring(key))
+    end
+  end
+  if value.exec ~= nil and type(value.exec) ~= "function" then
+    error("testing-runner: invalid-dependencies: exec must be a function")
+  end
+  if value.runtime_ports ~= nil then
+    if type(value.runtime_ports) ~= "table" then
+      error("testing-runner: invalid-dependencies: runtime_ports must be a table")
+    end
+    for _, name in ipairs({ "exec_argv", "read", "write", "decode" }) do
+      if type(value.runtime_ports[name]) ~= "function" then
+        error("testing-runner: invalid-dependencies: runtime_ports." .. name .. " must be a function")
+      end
+    end
+  end
+  return { exec = value.exec, runtime_ports = value.runtime_ports }
+end
+
+function M.run(job, payload, dependencies)
   M.validate_request(job, payload)
   local backend = M.resolve_backend(payload)
   local context = adapter_context(job, payload)
   if backend == "fkst-native" then
-    return fkst_native.run(job, payload, context, exec)
+    return fkst_native.run(job, payload, context, normalize_dependencies(dependencies))
   end
   return M.result_payload(job, payload, "blocked", {
     adapter = { name = "fkst-native", mode = "legacy-backend-blocked" },

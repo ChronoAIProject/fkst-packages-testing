@@ -47,9 +47,8 @@ end
 
 local function fixture_complete(fixture)
   return type(fixture) == "table"
-    and type(fixture.fixture_ref) == "string"
-    and type(fixture.evidence_pointer) == "string"
-    and (type(fixture.cleanup_ref) == "string" or type(fixture.rollback_ref) == "string")
+    and type(fixture.fixture_lifecycle_path) == "string"
+    and fixture.fixture_lifecycle_path:sub(1, 14) == ".testing/runs/"
 end
 
 local function mutation_gate(policy, fixture)
@@ -60,7 +59,7 @@ local function mutation_gate(policy, fixture)
     }
   end
   if type(fixture) ~= "table" then
-    return "blocked", "fixture/data gap: safe mutation requires host fixture and cleanup or rollback evidence", {
+    return "blocked", "fixture/data gap: safe mutation requires a host fixture lifecycle descriptor", {
       status = "blocked",
       classification = "fixture-data-gap",
     }
@@ -74,20 +73,17 @@ local function mutation_gate(policy, fixture)
     }
   end
   if not safe_mutation_kinds[kind] or not fixture_complete(fixture) then
-    return "blocked", "fixture/data gap: create/edit test-data mutations require fixture, evidence, and cleanup or rollback pointers", {
+    return "blocked", "fixture/data gap: create/edit test-data mutations require a fixture lifecycle descriptor", {
       status = "blocked",
       classification = "fixture-data-gap",
       mutation_kind = kind,
     }
   end
-  return "executable", "safe local test-data mutation has host fixture and cleanup or rollback evidence", {
+  return "executable", "safe local test-data mutation has a host fixture lifecycle descriptor", {
     status = "executable",
     classification = "safe-local-test-data",
     mutation_kind = kind,
-    fixture_ref = fixture.fixture_ref,
-    cleanup_ref = fixture.cleanup_ref,
-    rollback_ref = fixture.rollback_ref,
-    evidence_pointer = fixture.evidence_pointer,
+    fixture_lifecycle_path = fixture.fixture_lifecycle_path,
   }
 end
 

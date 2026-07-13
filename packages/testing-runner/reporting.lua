@@ -62,7 +62,10 @@ local function executed_map(artifact)
   local map = {}
   if type(artifact) == "table" and type(artifact.actions) == "table" then
     for _, action in ipairs(artifact.actions) do
-      if type(action) == "table" and type(action.case_id) == "string" then
+      if type(action) == "table"
+        and type(action.case_id) == "string"
+        and action.execution_status == "executed"
+        and action.assertion_status == "passed" then
         map[action.case_id] = true
       end
     end
@@ -131,8 +134,15 @@ local function append_executed(lines, artifact)
     add_line(lines, "- No bounded browser/CDP cases were executed in this stage.")
     return
   end
+  local executed = 0
   for _, action in ipairs(actions) do
-    add_line(lines, "- " .. line_value(action.case_id, "case") .. " (" .. line_value(action.priority, "priority") .. "): " .. line_value(action.intent or action.action, "scenario") .. " — evidence " .. line_value(action.evidence_pointer, "not recorded"))
+    if action.execution_status == "executed" then
+      executed = executed + 1
+      add_line(lines, "- " .. line_value(action.case_id, "case") .. " (" .. line_value(action.priority, "priority") .. "): " .. line_value(action.intent or action.action, "scenario") .. " — evidence " .. line_value(action.evidence_pointer, "not recorded"))
+    end
+  end
+  if executed == 0 then
+    add_line(lines, "- No bounded browser/CDP cases were executed in this stage.")
   end
 end
 

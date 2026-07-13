@@ -188,10 +188,7 @@ local function validate_mutation_fixtures(value)
     local fields = {
       case_id = true,
       mutation_kind = true,
-      fixture_ref = true,
-      cleanup_ref = true,
-      rollback_ref = true,
-      evidence_pointer = true,
+      fixture_lifecycle_path = true,
     }
     for key, _ in pairs(fixture) do
       if fields[key] ~= true then
@@ -207,10 +204,11 @@ local function validate_mutation_fixtures(value)
     if not safe_mutation_kinds[fixture.mutation_kind] and not blocked_mutation_kinds[fixture.mutation_kind] then
       error("testing-runner: malformed-request: cdp_execution.mutation_fixtures.mutation_kind is unsupported")
     end
-    validate_pointer(fixture.fixture_ref, "fixture_ref")
-    validate_pointer(fixture.cleanup_ref, "cleanup_ref")
-    validate_pointer(fixture.rollback_ref, "rollback_ref")
-    validate_pointer(fixture.evidence_pointer, "evidence_pointer")
+    validate_pointer(fixture.fixture_lifecycle_path, "fixture_lifecycle_path")
+    if not bounded_string(fixture.fixture_lifecycle_path, max_string)
+      or fixture.fixture_lifecycle_path:sub(1, 14) ~= ".testing/runs/" then
+      error("testing-runner: malformed-request: cdp_execution.mutation_fixtures.fixture_lifecycle_path must be a safe artifact pointer")
+    end
   end
 end
 
@@ -297,7 +295,7 @@ local function action_target(module, case)
     return "console-network-health"
   end
   if kind == "safe-mutation-fixture" then
-    return ((case.mutation_gate or {}).fixture_ref) or module.entry_url or module.id or "module"
+    return module.name or module.visible_label or module.id or "module"
   end
   return module.entry_url or module.id or "module"
 end
@@ -305,36 +303,38 @@ end
 local function append_action(actions, artifact_root, module, case, step)
   local url = strip_url_detail(module.entry_url)
   local target = action_target(module, case)
+  local kind = action_kind(case)
   local action = {
     step = step,
     module_id = module.id,
     case_id = case.id,
     priority = case.priority,
     intent = case.title,
-    action = action_kind(case),
+    action = kind,
     target = target,
     url = url,
-    observation = "bounded CDP step recorded without credential, MFA, CAPTCHA, or unsafe mutation handling",
-    evidence_pointer = artifact_root .. "/evidence/cdp/" .. safe_key(case.id) .. ".json",
+    execution_status = kind == "safe-mutation-fixture" and "blocked" or "planned",
+    assertion_status = "not-run",
+    observation = "bounded CDP action planned; no browser command or assertion has executed",
+    planned_evidence_pointer = artifact_root .. "/evidence/cdp/" .. safe_key(case.id) .. ".json",
   }
   if case.case_origin == "ai-generated" then
     action.case_origin = "ai-generated"
     action.provenance_digest = ((case.provenance or {}).model_invocation_digest)
-    action.observation = "AI-generated read-only case executed through FKST bounded action schema"
+    action.observation = "AI-generated read-only action planned through the FKST bounded action schema"
     action.expected_observable = case.expected_observable
     local blocked_segment = blocked_route_target(target)
     if blocked_segment ~= nil then
+      action.execution_status = "blocked"
       action.observation = "blocked route segment " .. blocked_segment .. " stopped before execution"
     end
   end
   local gate = case.mutation_gate
   if type(gate) == "table" and gate.classification == "safe-local-test-data" then
-    action.observation = "safe local test-data mutation recorded with host fixture and cleanup or rollback evidence"
+    action.execution_status = "planned"
+    action.observation = "host-approved fixture mutation is planned through the typed fixture lifecycle"
     action.mutation_kind = gate.mutation_kind
-    action.fixture_ref = gate.fixture_ref
-    action.cleanup_ref = gate.cleanup_ref
-    action.rollback_ref = gate.rollback_ref
-    action.fixture_evidence_pointer = gate.evidence_pointer
+    action.fixture_lifecycle_path = gate.fixture_lifecycle_path
   end
   table.insert(actions, action)
 end
@@ -373,6 +373,9 @@ local function blocked_artifact(payload, artifact_root, request, classification,
     case_priorities = copy_list(request.case_priorities, default_priorities, priority_ok),
     stop_conditions = stop_conditions(request),
     action_count = 0,
+    planned_action_count = 0,
+    blocked_action_count = 0,
+    executed_action_count = 0,
     actions = {},
     readiness = readiness,
     limitations = { reason },
@@ -421,16 +424,34 @@ function M.build(payload, artifact_root, opts)
     return artifact
   end
 
-  local status, classification = "passed", "bounded-exploration-complete"
-  local limitations = {}
+  local planned_action_count = 0
+  local blocked_action_count = 0
+  for _, action in ipairs(actions) do
+    if action.execution_status == "blocked" then
+      blocked_action_count = blocked_action_count + 1
+    else
+      planned_action_count = planned_action_count + 1
+    end
+  end
+
+  local status, classification = "planned", "bounded-exploration-planned"
+  local limitations = { "actions are planning records until a validated browser execution receipt is attached" }
   if selected_count == 0 then
     status = "degraded"
     classification = "no-executable-safe-cases"
-    limitations = { "no executable selected cases were available for bounded CDP execution" }
+    limitations = { "no executable selected cases were available for bounded CDP planning" }
   elseif selected_count > budget then
     status = "degraded"
     classification = "step-budget-exhausted"
-    limitations = { "step budget stopped exploration before all executable selected cases ran" }
+    limitations = { "step budget stopped planning before all executable selected cases were recorded" }
+  elseif blocked_action_count == #actions and blocked_action_count > 0 then
+    status = "degraded"
+    classification = "mutation-execution-not-supported"
+    limitations = { "selected mutation cases remain blocked because no mutation executor is implemented" }
+  elseif blocked_action_count > 0 then
+    status = "degraded"
+    classification = "planned-with-blocked-actions"
+    limitations = { "read-only actions are planned and mutation or unsafe-route actions remain blocked" }
   end
 
   return {
@@ -460,6 +481,9 @@ function M.build(payload, artifact_root, opts)
     stop_conditions = stop_conditions(request),
     planned_case_count = selected_count,
     action_count = #actions,
+    planned_action_count = planned_action_count,
+    blocked_action_count = blocked_action_count,
+    executed_action_count = 0,
     actions = actions,
     coverage = inventory.coverage,
     readiness = readiness,
@@ -479,6 +503,10 @@ function M.summary(artifact, module, status)
     execution_path = artifact.execution_path,
     metadata_path = artifact.metadata_path,
     action_count = artifact.action_count,
+    planned_action_count = artifact.planned_action_count or 0,
+    blocked_action_count = artifact.blocked_action_count or 0,
+    executed_action_count = artifact.executed_action_count or 0,
+    failed_action_count = artifact.failed_action_count or 0,
   }
   if artifact.test_plan_path ~= nil then summary.test_plan_path = artifact.test_plan_path end
   if artifact.ai_context_manifest_path ~= nil then summary.ai_context_manifest_path = artifact.ai_context_manifest_path end

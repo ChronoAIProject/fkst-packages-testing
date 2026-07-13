@@ -64,7 +64,12 @@ local function executed_case_map(artifact)
   local map = {}
   if type(artifact) == "table" and type(artifact.actions) == "table" then
     for _, action in ipairs(artifact.actions) do
-      if type(action) == "table" and type(action.case_id) == "string" then map[action.case_id] = true end
+      if type(action) == "table"
+        and type(action.case_id) == "string"
+        and action.execution_status == "executed"
+        and action.assertion_status == "passed" then
+        map[action.case_id] = true
+      end
     end
   end
   return map
@@ -133,16 +138,44 @@ local function product_defect_evidence(artifact)
   return defect
 end
 
+local function typed_browser_failure(artifact)
+  if type(artifact) ~= "table" or artifact.classification ~= "typed-browser-assertion-failed" then return false end
+  for _, action in ipairs(artifact.actions or {}) do
+    if type(action) == "table"
+      and action.execution_status == "failed"
+      and action.assertion_status == "failed"
+      and bounded(action.evidence_pointer) ~= nil then
+      for _, assertion in ipairs(action.assertion_results or {}) do
+        if type(assertion) == "table"
+          and assertion.status == "failed"
+          and bounded(assertion.evidence_pointer) ~= nil then
+          return true
+        end
+      end
+    end
+  end
+  return false
+end
+
+local function runtime_failure(artifact)
+  local classification = type(artifact) == "table" and artifact.classification or nil
+  return classification == "runtime-request-invalid"
+    or classification == "runtime-receipt-invalid"
+    or classification == "cdp-runtime-failure"
+    or classification == "browser-execution-incomplete"
+end
+
 local function classify(result, artifact, skipped, has_fixture_gap, has_risk, has_ai_gap)
   local native_classification = type(result.native_summary) == "table" and result.native_summary.classification or nil
   local adapter_mode = type(result.adapter) == "table" and result.adapter.mode or nil
-  if product_defect_evidence(artifact) ~= nil then return category.product_defect end
+  if product_defect_evidence(artifact) ~= nil or typed_browser_failure(artifact) then return category.product_defect end
   if native_classification == "unsafe-runtime-input"
     or native_classification == "readiness-blocked"
     or native_classification == "missing-cdp-session"
     or adapter_mode == "readiness-blocked" then
     return category.environment_session
   end
+  if runtime_failure(artifact) then return category.harness_tooling end
   if has_fixture_gap then return category.data_fixture end
   if has_ai_gap then return category.ai_generation end
   if has_risk then return category.not_executed_risk end

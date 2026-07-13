@@ -96,7 +96,7 @@ return {
       end,
     }))
 
-    t.eq(result.status, "passed")
+    t.eq(result.status, "blocked")
     t.eq(result.native_summary.stage_report_path, ".testing/runs/module-a-report/stage-report.md")
     t.eq(result.native_summary.issue_drafts_path, ".testing/runs/module-a-report/issue-drafts.json")
     t.eq(result.native_summary.publication_dry_run, true)
@@ -113,6 +113,7 @@ return {
     t.is_true(report:find("generated-case-agent-review.json", 1, true) ~= nil)
     t.is_true(report:find("ai-test-design-loop.json", 1, true) ~= nil)
     t.is_true(report:find("Executed user-facing scenarios", 1, true) ~= nil)
+    t.is_true(report:find("No bounded browser/CDP cases were executed", 1, true) ~= nil)
     t.is_true(report:find("Publication handoff: dry-run pointer handoff only", 1, true) ~= nil)
     t.eq(report:find("secret", 1, true), nil)
 

@@ -51,8 +51,8 @@ return {
     local artifact = cdp.build(payload(), ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
     t.eq(artifact.schema, "testing-runner.module-cdp-execution-result.v1")
     t.eq(artifact.artifact_kind, "module-cdp-execution")
-    t.eq(artifact.execution_status, "passed")
-    t.eq(artifact.classification, "bounded-exploration-complete")
+    t.eq(artifact.execution_status, "planned")
+    t.eq(artifact.classification, "bounded-exploration-planned")
     t.eq(artifact.mode, "bounded-cdp-controller")
     t.eq(artifact.execution_path, ".testing/runs/module-a-cdp/cdp-execution.json")
     t.eq(artifact.test_plan_path, ".testing/runs/module-a-cdp/test-plan.json")
@@ -61,7 +61,10 @@ return {
     t.eq(artifact.actions[1].intent, "Reach Dashboard entry URL")
     t.eq(artifact.actions[1].action, "navigate")
     t.eq(artifact.actions[1].url, fixture_base_url .. "/dashboard")
-    t.eq(artifact.actions[1].evidence_pointer, ".testing/runs/module-a-cdp/evidence/cdp/dashboard-reachability.json")
+    t.eq(artifact.actions[1].evidence_pointer, nil)
+    t.eq(artifact.actions[1].planned_evidence_pointer, ".testing/runs/module-a-cdp/evidence/cdp/dashboard-reachability.json")
+    t.eq(artifact.actions[1].execution_status, "planned")
+    t.eq(artifact.actions[1].assertion_status, "not-run")
     t.eq(artifact.actions[1].url:find("secret", 1, true), nil)
   end,
 
@@ -98,21 +101,23 @@ return {
       {
         case_id = "dashboard:write-flow",
         mutation_kind = "create-test-data",
-        fixture_ref = ".testing/runs/fixtures/dashboard-create",
-        cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
-        evidence_pointer = ".testing/runs/evidence/dashboard-create",
+        fixture_lifecycle_path = ".testing/runs/fixtures/dashboard-lifecycle",
       },
     }
     local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
-    t.eq(artifact.execution_status, "passed")
+    t.eq(artifact.execution_status, "planned")
+    t.eq(artifact.classification, "bounded-exploration-planned")
     t.eq(artifact.planned_case_count, 1)
     t.eq(artifact.action_count, 1)
     t.eq(artifact.actions[1].case_id, "dashboard:write-flow")
     t.eq(artifact.actions[1].priority, "P2")
     t.eq(artifact.actions[1].action, "safe-mutation-fixture")
     t.eq(artifact.actions[1].mutation_kind, "create-test-data")
-    t.eq(artifact.actions[1].cleanup_ref, ".testing/runs/fixtures/dashboard-cleanup")
-    t.eq(artifact.actions[1].fixture_evidence_pointer, ".testing/runs/evidence/dashboard-create")
+    t.eq(artifact.actions[1].fixture_lifecycle_path, ".testing/runs/fixtures/dashboard-lifecycle")
+    t.eq(artifact.actions[1].execution_status, "planned")
+    t.eq(artifact.planned_action_count, 1)
+    t.eq(artifact.blocked_action_count, 0)
+    t.eq(artifact.executed_action_count, 0)
   end,
 
   test_destructive_p2_fixture_degrades_without_execution = function()
@@ -123,9 +128,7 @@ return {
       {
         case_id = "dashboard:write-flow",
         mutation_kind = "delete",
-        fixture_ref = ".testing/runs/fixtures/dashboard-delete",
-        cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
-        evidence_pointer = ".testing/runs/evidence/dashboard-delete",
+        fixture_lifecycle_path = ".testing/runs/fixtures/dashboard-delete-lifecycle",
       },
     }
     local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
@@ -145,18 +148,10 @@ return {
     end)
   end,
 
-  test_records_fixture_gap_when_cleanup_or_rollback_is_missing = function()
+  test_records_fixture_gap_when_lifecycle_descriptor_is_missing = function()
     local value = payload()
     value.ui_loop.mutation_policy = "host-approved"
     value.cdp_execution.case_priorities = { "P2" }
-    value.cdp_execution.mutation_fixtures = {
-      {
-        case_id = "dashboard:write-flow",
-        mutation_kind = "create-test-data",
-        fixture_ref = ".testing/runs/fixtures/dashboard-create",
-        evidence_pointer = ".testing/runs/evidence/dashboard-create",
-      },
-    }
     local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
     t.eq(artifact.execution_status, "degraded")
     t.eq(artifact.classification, "no-executable-safe-cases")
@@ -172,8 +167,8 @@ return {
       case_budget = 1,
     }
     local artifact = cdp.build(value, ".testing/runs/module-a-cdp", { readiness = { status = "ready" } })
-    t.eq(artifact.execution_status, "passed")
-    t.eq(artifact.classification, "bounded-exploration-complete")
+    t.eq(artifact.execution_status, "planned")
+    t.eq(artifact.classification, "bounded-exploration-planned")
     t.eq(artifact.ai_generation.executable_generated_case_count, 1)
     t.eq(artifact.ai_context_manifest_path, ".testing/runs/module-a-cdp/ai-context-manifest.json")
     t.eq(artifact.generated_cases_path, ".testing/runs/module-a-cdp/generated-test-cases.json")

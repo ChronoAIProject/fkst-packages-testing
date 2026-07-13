@@ -137,11 +137,14 @@ return {
     t.eq(start.module, "dashboard")
     t.eq(start.module_discovery.observations[1].discovery_source, "browser-visible")
     local result = graph.require_raise(trace, "testing-runner.testing_result").payload
-    t.eq(result.status, "passed")
-    t.eq(result.adapter.mode, "module-cdp-execution")
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.mode, "module-cdp-execution-blocked")
+    t.eq(result.native_summary.classification, "missing-cdp-session")
+    t.eq(result.native_summary.outcome_classification, "environment-session-issue")
     local publication = graph.require_raise(trace, "test-publication.publication_request").payload
     t.eq(publication.schema, "test-publication.publication-request.v1")
-    t.eq(publication.status, "passed")
+    t.eq(publication.status, "blocked")
+    t.eq(publication.severity, "warning")
     t.eq(publication.artifact_root, ".testing/runs/discovery/modules/dashboard")
     t.eq(publication.publication_dry_run, true)
     inspect_raised_payloads(trace)
@@ -170,8 +173,13 @@ return {
     t.eq(start.module, "app-discovery")
     t.eq(#start.module_discovery.observations, 0)
     local result = graph.require_raise(trace, "testing-runner.testing_result").payload
-    t.eq(result.status, "degraded")
-    t.eq(result.native_summary.outcome_classification, "harness-tooling-issue")
+    t.eq(result.status, "blocked")
+    t.eq(result.adapter.mode, "module-cdp-execution-blocked")
+    t.eq(result.native_summary.classification, "missing-cdp-session")
+    t.eq(result.native_summary.outcome_classification, "environment-session-issue")
+    local publication = graph.require_raise(trace, "test-publication.publication_request").payload
+    t.eq(publication.status, "blocked")
+    t.eq(publication.severity, "warning")
     inspect_raised_payloads(trace)
   end,
 }

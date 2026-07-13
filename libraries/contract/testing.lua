@@ -264,9 +264,13 @@ local function copy_flow_summary(value)
 end
 
 local function copy_module_cdp_execution(value)
-  if not has_only(value, { schema = true, module = true, status = true, execution_status = true, classification = true, mode = true, artifact_root = true, execution_path = true, metadata_path = true, test_plan_path = true, cdp_readiness_ref = true, action_count = true, evidence_bundle_path = true, gap_backlog_path = true, outcome_classification = true, stage_report_path = true, issue_drafts_path = true, publication_dry_run = true, ai_context_manifest_path = true, generated_cases_path = true, generated_case_gate_path = true, ai_agent_generation_path = true, generated_case_agent_review_path = true, ai_generation = true, platform_flow_summary = true }) then return nil end
+  if not has_only(value, { schema = true, module = true, status = true, execution_status = true, classification = true, mode = true, artifact_root = true, execution_path = true, metadata_path = true, test_plan_path = true, cdp_readiness_ref = true, action_count = true, planned_action_count = true, blocked_action_count = true, executed_action_count = true, failed_action_count = true, evidence_bundle_path = true, gap_backlog_path = true, outcome_classification = true, stage_report_path = true, issue_drafts_path = true, publication_dry_run = true, ai_context_manifest_path = true, generated_cases_path = true, generated_case_gate_path = true, ai_agent_generation_path = true, generated_case_agent_review_path = true, ai_generation = true, platform_flow_summary = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
-  if value.execution_status ~= "passed" and value.execution_status ~= "blocked" and value.execution_status ~= "degraded" then return nil end
+  if value.execution_status ~= "planned"
+    and value.execution_status ~= "passed"
+    and value.execution_status ~= "failed"
+    and value.execution_status ~= "blocked"
+    and value.execution_status ~= "degraded" then return nil end
   if not bounded_field(value.classification, 80) or not bounded_field(value.mode, 80) then return nil end
   if not strings.is_artifact_root(value.artifact_root) then return nil end
   if value.execution_path ~= value.artifact_root .. "/cdp-execution.json" then return nil end
@@ -279,6 +283,10 @@ local function copy_module_cdp_execution(value)
   if value.generated_case_agent_review_path ~= nil and value.generated_case_agent_review_path ~= value.artifact_root .. "/generated-case-agent-review.json" then return nil end
   if value.evidence_bundle_path ~= nil and value.evidence_bundle_path ~= value.artifact_root .. "/evidence-bundle.json" then return nil end
   if type(value.action_count) ~= "number" or value.action_count < 0 or value.action_count > 32 or math.floor(value.action_count) ~= value.action_count then return nil end
+  for _, field in ipairs({ "planned_action_count", "blocked_action_count", "executed_action_count", "failed_action_count" }) do
+    local count = value[field]
+    if count ~= nil and (type(count) ~= "number" or count < 0 or count > 32 or math.floor(count) ~= count) then return nil end
+  end
   local flow_summary = copy_flow_summary(value.platform_flow_summary)
   if value.platform_flow_summary ~= nil and flow_summary == nil then return nil end
   local copy = {
@@ -292,6 +300,10 @@ local function copy_module_cdp_execution(value)
     execution_path = value.execution_path,
     metadata_path = value.metadata_path,
     action_count = value.action_count,
+    planned_action_count = value.planned_action_count or 0,
+    blocked_action_count = value.blocked_action_count or 0,
+    executed_action_count = value.executed_action_count or 0,
+    failed_action_count = value.failed_action_count or 0,
   }
   if value.test_plan_path ~= nil then copy.test_plan_path = value.test_plan_path end
   if value.ai_context_manifest_path ~= nil then copy.ai_context_manifest_path = value.ai_context_manifest_path end

@@ -87,9 +87,7 @@ return {
         {
           case_id = "dashboard:write-flow",
           mutation_kind = "create-test-data",
-          fixture_ref = ".testing/runs/fixtures/dashboard-create",
-          cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
-          evidence_pointer = ".testing/runs/evidence/dashboard-create",
+          fixture_lifecycle_path = ".testing/runs/fixtures/dashboard-lifecycle",
         },
       },
     })
@@ -97,7 +95,7 @@ return {
     local case = find_case(module, "write-flow")
     t.eq(case.review_status, "executable")
     t.eq(case.mutation_gate.classification, "safe-local-test-data")
-    t.eq(case.mutation_gate.cleanup_ref, ".testing/runs/fixtures/dashboard-cleanup")
+    t.eq(case.mutation_gate.fixture_lifecycle_path, ".testing/runs/fixtures/dashboard-lifecycle")
     t.eq(find_case(module, "state-change").review_status, "blocked")
   end,
 
@@ -107,9 +105,7 @@ return {
         {
           case_id = "dashboard:write-flow",
           mutation_kind = "delete",
-          fixture_ref = ".testing/runs/fixtures/dashboard-delete",
-          cleanup_ref = ".testing/runs/fixtures/dashboard-cleanup",
-          evidence_pointer = ".testing/runs/evidence/dashboard-delete",
+          fixture_lifecycle_path = ".testing/runs/fixtures/dashboard-delete-lifecycle",
         },
       },
     })
