@@ -1,7 +1,25 @@
 local S = {}
+local contract_time = require("contract.time")
+local liveness_shared = require("workflow.liveness.shared")
+local Ports = require("workflow.ports")
+local installed = setmetatable({}, { __mode = "k" })
+
+local function installed_function(M, name)
+  local binding = installed[M]
+  return binding and binding[name] or nil
+end
+
+function S.restart_liveness_inventory_errors(M, rows, inventory)
+  local fn = installed_function(M, "restart_liveness_inventory_errors")
+  if type(fn) ~= "function" then
+    error("workflow.restart_liveness_contract: restart_liveness_inventory_errors not installed")
+  end
+  return fn(rows, inventory)
+end
 
 function S.install(M, resolved)
 resolved = resolved or {}
+local deps = Ports.restart_liveness_contract(resolved)
 
 local epoch_sources = {
   ["state_entry:v1"] = {
@@ -94,13 +112,15 @@ local function copy_table(map)
   return out
 end
 
-function M.restart_liveness_epoch_sources()
+local function restart_liveness_epoch_sources()
   return copy_table(epoch_sources)
 end
+rawset(M, "restart_liveness_epoch_sources", restart_liveness_epoch_sources)
 
-function M.known_liveness_contract_violations()
+local function known_liveness_contract_violations_fn()
   return copy_table(known_liveness_contract_violations)
 end
+rawset(M, "known_liveness_contract_violations", known_liveness_contract_violations_fn)
 
 local function state_name(row)
   return tostring(row and (row.from_state or row.state) or "?")
@@ -225,9 +245,7 @@ local function registered_heartbeat_producer(row, defer)
   if signal.family ~= defer.producer then
     return false
   end
-  local binding = type(M.liveness_signal_producer_contract) == "function"
-    and M.liveness_signal_producer_contract(defer.producer)
-    or nil
+  local binding = liveness_shared.liveness_signal_producer_contract(M, defer.producer)
   return type(binding) == "table"
 end
 
@@ -306,6 +324,7 @@ local function validate_codex_run_defer(row, errors)
     "primitive",
     "status",
     "on_error",
+    "indeterminate_timeout",
   }, errors, state)
   if policy == nil then
     return
@@ -313,6 +332,7 @@ local function validate_codex_run_defer(row, errors)
   local expected_primitive = policy.primitive
   local expected_status = policy.status
   local expected_on_error = policy.on_error
+  local expected_indeterminate_timeout = policy.indeterminate_timeout
   if type(real_execution) ~= "table" then
     table.insert(errors, state .. ": codex_run defer must declare liveness_contract.real_execution")
     return
@@ -331,14 +351,29 @@ local function validate_codex_run_defer(row, errors)
   if match.proposal_id ~= "state.proposal_id" then
     table.insert(errors, state .. ": codex_run defer real_execution.match.proposal_id must be state.proposal_id")
   end
-  if match.dedup_key ~= "state.version" then
-    table.insert(errors, state .. ": codex_run defer real_execution.match.dedup_key must be state.version")
+  if match.dedup_key ~= "state.version" and match.dedup_key ~= "state.work_unit_key" then
+    table.insert(errors, state .. ": codex_run defer real_execution.match.dedup_key must be state.version or state.work_unit_key")
+  end
+  local signature = row.responsibility_signature
+  local lineage = {}
+  for _, key in ipairs(type(signature) == "table" and type(signature.lineage_keys) == "table" and signature.lineage_keys or {}) do
+    lineage[key] = true
+  end
+  if type(signature) == "table"
+    and signature.receiver_kind == "code-producer"
+    and (lineage["ci-failure.ci_failure_key"] == true
+      or (type(row.payload_fields) == "table" and row.payload_fields.ci_failure_key ~= nil))
+    and match.dedup_key ~= "state.work_unit_key" then
+    table.insert(errors, state .. ": code-producing CI repair codex_run defer real_execution.match.dedup_key must be state.work_unit_key")
   end
   if real_execution.status ~= expected_status then
     table.insert(errors, state .. ": codex_run defer real_execution.status must be " .. tostring(expected_status))
   end
   if real_execution.on_error ~= expected_on_error then
     table.insert(errors, state .. ": codex_run defer real_execution.on_error must be " .. tostring(expected_on_error))
+  end
+  if real_execution.indeterminate_timeout ~= expected_indeterminate_timeout then
+    table.insert(errors, state .. ": codex_run defer real_execution.indeterminate_timeout must be " .. tostring(expected_indeterminate_timeout))
   end
 end
 
@@ -424,9 +459,7 @@ local function validate_child_workflow_wait_defer(row, errors)
   if signal.surface ~= expected_surface then
     table.insert(errors, state .. ": child_workflow_wait defer signal must use " .. tostring(expected_surface))
   end
-  local binding = type(M.liveness_signal_producer_contract) == "function"
-    and M.liveness_signal_producer_contract(signal.producer)
-    or nil
+  local binding = liveness_shared.liveness_signal_producer_contract(M, signal.producer)
   if type(binding) ~= "table" or binding.resolver ~= expected_signal_resolver then
     table.insert(errors, state .. ": child_workflow_wait defer producer must bind the " .. tostring(expected_signal_resolver) .. " resolver")
   end
@@ -504,23 +537,23 @@ local function validate_runtime_provenance(row, errors)
   local comments = {}
   local now_seconds = 0
   if row.actionable_epoch.source == "live_defer_epoch:v1" then
-    now_seconds = M.iso_timestamp_epoch_seconds("2026-06-03T00:00:01Z")
+    now_seconds = contract_time.iso_timestamp_epoch_seconds("2026-06-03T00:00:01Z")
     local proposal_id = provenance.proposal_id or default_provenance_proposal_id
     local version = provenance.version or default_provenance_version
     local marker_created_at = provenance.marker_created_at or default_provenance_marker_created_at
     comments = {
       {
-        author_login = M.trusted_bot_login(),
+        author_login = deps.ports.trusted_bot_login(),
         created_at = marker_created_at,
-        body = M.dependency_release_marker(proposal_id, version),
+        body = deps.ports.dependency_release_marker(proposal_id, version),
       },
     }
   elseif row.actionable_epoch.source == "live_defer_heartbeat:v1" then
-    now_seconds = M.iso_timestamp_epoch_seconds("2026-06-03T00:00:01Z")
+    now_seconds = contract_time.iso_timestamp_epoch_seconds("2026-06-03T00:00:01Z")
   elseif row.actionable_epoch.source == "codex_run:v1" then
-    now_seconds = M.iso_timestamp_epoch_seconds("2026-06-03T00:00:01Z")
+    now_seconds = contract_time.iso_timestamp_epoch_seconds("2026-06-03T00:00:01Z")
   elseif row.actionable_epoch.source == "child_workflow_wait:v1" then
-    now_seconds = M.iso_timestamp_epoch_seconds("2026-06-03T00:00:01Z")
+    now_seconds = contract_time.iso_timestamp_epoch_seconds("2026-06-03T00:00:01Z")
   end
   local ok, eval = pcall(M.actionable_epoch_resolve, row, {
     state = row.from_state,
@@ -540,30 +573,32 @@ local function validate_runtime_provenance(row, errors)
   end
 end
 
-function M.normalized_restart_liveness_rows(rows)
+local function normalized_restart_liveness_rows(rows)
   local normalized = {}
-  for _, row in ipairs(rows or M.restart_transition_table()) do
+  for _, row in ipairs(rows or deps.ports.restart_transition_table()) do
     table.insert(normalized, row)
   end
   return normalized
 end
+rawset(M, "normalized_restart_liveness_rows", normalized_restart_liveness_rows)
 
-function M.strict_restart_liveness_contract_errors(rows)
+local function strict_restart_liveness_contract_errors(rows)
   local errors = {}
-  for _, row in ipairs(M.normalized_restart_liveness_rows(rows)) do
+  for _, row in ipairs(normalized_restart_liveness_rows(rows)) do
     validate_row(row, errors)
     validate_runtime_provenance(row, errors)
   end
   return errors
 end
+rawset(M, "strict_restart_liveness_contract_errors", strict_restart_liveness_contract_errors)
 
 local function error_state(error_text)
   local state = tostring(error_text or ""):match("^([^:]+):")
   return state
 end
 
-function M.restart_liveness_inventory_errors(rows, inventory)
-  local strict_errors = M.strict_restart_liveness_contract_errors(rows)
+local function restart_liveness_inventory_errors(rows, inventory)
+  local strict_errors = strict_restart_liveness_contract_errors(rows)
   local listed = inventory or known_liveness_contract_violations
   local observed_listed_errors = {}
   local errors = {}
@@ -586,8 +621,9 @@ function M.restart_liveness_inventory_errors(rows, inventory)
   end
   return errors
 end
+rawset(M, "restart_liveness_inventory_errors", restart_liveness_inventory_errors)
 
-function M.liveness_contract_inventory_is_listed_violation(state, errors)
+local function liveness_contract_inventory_is_listed_violation(state, errors)
   for _, err in ipairs(errors or {}) do
     if error_state(err) == state then
       return true
@@ -595,6 +631,11 @@ function M.liveness_contract_inventory_is_listed_violation(state, errors)
   end
   return false
 end
+rawset(M, "liveness_contract_inventory_is_listed_violation", liveness_contract_inventory_is_listed_violation)
+
+installed[M] = {
+  restart_liveness_inventory_errors = restart_liveness_inventory_errors,
+}
 
 end
 

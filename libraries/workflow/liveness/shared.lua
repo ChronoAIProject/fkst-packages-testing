@@ -1,10 +1,39 @@
 local S = {}
+local contract_time = require("contract.time")
+local transition_version = require("contract.transition_version")
+local installed = setmetatable({}, { __mode = "k" })
+
+local function strip_liveness_timeout_suffixes(version)
+  return transition_version.strip_timeout_suffixes(version)
+end
+
+local function liveness_heartbeat_version(version, contract)
+  local heartbeat_version = strip_liveness_timeout_suffixes(version)
+  if contract and contract.version_form == "safe_version_segment" then
+    return transition_version.safe_version_segment(heartbeat_version)
+  end
+  return transition_version.strip_suffixes(heartbeat_version)
+end
+
+function S.liveness_signal_producer_contract(M, family)
+  local binding = installed[M]
+  if binding == nil then
+    return nil
+  end
+  return binding.liveness_signal_producer_contract(family)
+end
+
+function S.liveness_heartbeat_version(_M, version, contract)
+  return liveness_heartbeat_version(version, contract)
+end
 
 function S.install(M, resolved)
 resolved = resolved or {}
 local shared = {}
 local max_timeout_attempts = 3
 shared.max_timeout_attempts = max_timeout_attempts
+local restart_package_name_value = resolved.restart_package_name
+local restart_source_root_value = resolved.restart_source_root
 
 local function has_required_table(row, field)
   return type(row[field]) == "table" and next(row[field]) ~= nil
@@ -61,7 +90,7 @@ local function valid_timeout(row)
 end
 shared.valid_timeout = valid_timeout
 
-local package_name = M.restart_package_name or "workflow"
+local package_name = restart_package_name_value or "workflow"
 local liveness_resolver_families = resolved.liveness_resolver_families or {}
 shared.liveness_resolver_families = liveness_resolver_families
 
@@ -70,32 +99,19 @@ shared.liveness_signal_producers = liveness_signal_producers
 shared.allowed_signal_surfaces = resolved.allowed_signal_surfaces or {}
 shared.signal_max_age_optional_resolvers = resolved.signal_max_age_optional_resolvers or {}
 
-function M.liveness_signal_producer_contract(family)
+local function liveness_signal_producer_contract(family)
   return liveness_signal_producers[tostring(family or "")]
 end
+shared.liveness_signal_producer_contract = liveness_signal_producer_contract
+rawset(M, "liveness_signal_producer_contract", liveness_signal_producer_contract)
 
-local function strip_liveness_timeout_suffixes(version)
-  local text = tostring(version or "")
-  local previous = nil
-  while previous ~= text do
-    previous = text
-    text = text
-      :gsub("/timeout%-reconcile/[%w%-]+/%d+$", "")
-      :gsub("%-timeout%-reconcile%-[%w%-]+%-%d+$", "")
-      :gsub("/timeout/[%w%-]+/%d+$", "")
-      :gsub("%-timeout%-[%w%-]+%-%d+$", "")
-  end
-  return text
-end
 shared.strip_liveness_timeout_suffixes = strip_liveness_timeout_suffixes
 
-function M.liveness_heartbeat_version(version, contract)
-  local heartbeat_version = strip_liveness_timeout_suffixes(version)
-  if contract and contract.version_form == "safe_version_segment" then
-    return M.safe_version_segment(heartbeat_version)
-  end
-  return M.strip_transition_version_suffixes(heartbeat_version)
-end
+shared.liveness_heartbeat_version = liveness_heartbeat_version
+rawset(M, "liveness_heartbeat_version", liveness_heartbeat_version)
+installed[M] = {
+  liveness_signal_producer_contract = liveness_signal_producer_contract,
+}
 
 local function numeric_minutes(value)
   local minutes = tonumber(value)
@@ -134,7 +150,7 @@ local function source_contains(path, needle)
   end
   local source_path = path
   if path:sub(1, 10) ~= "libraries/" then
-    source_path = tostring(M.restart_source_root or "") .. path
+    source_path = tostring(restart_source_root_value or "") .. path
   end
   local ok, text = pcall(file.read, source_path)
   return ok and tostring(text or ""):find(needle, 1, true) ~= nil
@@ -142,7 +158,7 @@ end
 shared.source_contains = source_contains
 
 local function signal_age_from_created_at(M, created_at, now_seconds)
-  local created_seconds = M.iso_timestamp_epoch_seconds(created_at)
+  local created_seconds = contract_time.iso_timestamp_epoch_seconds(created_at)
   local current_seconds = tonumber(now_seconds)
   if created_seconds ~= nil and current_seconds ~= nil and current_seconds >= created_seconds then
     return math.floor((current_seconds - created_seconds) / 60)

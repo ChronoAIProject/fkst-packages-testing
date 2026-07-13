@@ -1,4 +1,5 @@
 local S = {}
+local restart_liveness_contract = require("workflow.restart_liveness_contract")
 
 function S.install(M, shared, resolved)
 resolved = resolved or {}
@@ -112,7 +113,25 @@ local function validate_liveness_signal_shape(M, state, signal, label, errors)
   validate_liveness_signal_producer(M, state, signal, family, resolver, errors)
 end
 
-local function validate_real_execution_signal(state, real_execution, errors)
+local function lineage_has(row, key)
+  local signature = row and row.responsibility_signature
+  for _, value in ipairs(type(signature) == "table" and type(signature.lineage_keys) == "table" and signature.lineage_keys or {}) do
+    if value == key then
+      return true
+    end
+  end
+  return false
+end
+
+local function consumes_ci_repair_identity(row)
+  local signature = row and row.responsibility_signature
+  return type(signature) == "table"
+    and signature.receiver_kind == "code-producer"
+    and (lineage_has(row, "ci-failure.ci_failure_key")
+      or (type(row.payload_fields) == "table" and row.payload_fields.ci_failure_key ~= nil))
+end
+
+local function validate_real_execution_signal(state, row, real_execution, errors)
   if type(real_execution) ~= "table" then
     table.insert(errors, state .. ": live-defer codex_run must declare real_execution")
     return
@@ -131,14 +150,17 @@ local function validate_real_execution_signal(state, real_execution, errors)
   if match.proposal_id ~= "state.proposal_id" then
     table.insert(errors, state .. ": live-defer codex_run real_execution.match.proposal_id must be state.proposal_id")
   end
-  if match.dedup_key ~= "state.version" then
-    table.insert(errors, state .. ": live-defer codex_run real_execution.match.dedup_key must be state.version")
+  if match.dedup_key ~= "state.version" and match.dedup_key ~= "state.work_unit_key" then
+    table.insert(errors, state .. ": live-defer codex_run real_execution.match.dedup_key must be state.version or state.work_unit_key")
+  end
+  if consumes_ci_repair_identity(row) and match.dedup_key ~= "state.work_unit_key" then
+    table.insert(errors, state .. ": live-defer code-producing CI repair real_execution.match.dedup_key must be state.work_unit_key")
   end
   if real_execution.status ~= "running" then
     table.insert(errors, state .. ": live-defer codex_run real_execution.status must be running")
   end
-  if real_execution.on_error ~= "marker-budget-fallback" then
-    table.insert(errors, state .. ": live-defer codex_run real_execution.on_error must be marker-budget-fallback")
+  if real_execution.on_error ~= "defer" then
+    table.insert(errors, state .. ": live-defer codex_run real_execution.on_error must be defer")
   end
 end
 
@@ -178,7 +200,7 @@ local function validate_liveness_contract(M, row, errors)
     if contract.signal ~= nil then
       table.insert(errors, state .. ": live-defer codex_run must not declare marker signal")
     end
-    validate_real_execution_signal(state, contract.real_execution, errors)
+    validate_real_execution_signal(state, row, contract.real_execution, errors)
     return
   end
 
@@ -190,9 +212,9 @@ local function validate_liveness_contract(M, row, errors)
   validate_liveness_signal_shape(M, state, signal, "live-defer signal", errors)
 end
 
-function M.liveness_contract_errors(rows)
-  local errors = {}
-  local table_rows = rows or M.restart_transition_table()
+	local function liveness_contract_errors(rows)
+	  local errors = {}
+	  local table_rows = rows or M.restart_transition_table()
   validate_restart_totality(M, table_rows, errors)
   for _, row in ipairs(table_rows) do
     if type(row.from_state) ~= "string" or row.from_state == "" then
@@ -269,48 +291,55 @@ function M.liveness_contract_errors(rows)
         table.insert(errors, tostring(row.from_state or "?") .. ": unknown next state " .. tostring(next_state))
       end
     end
-  end
-  if #errors == 0 then
-    for _, inventory_errors in ipairs({ M.restart_liveness_inventory_errors(table_rows), M.restart_responsibility_inventory_errors(table_rows) }) do
-      for _, err in ipairs(inventory_errors) do table.insert(errors, err) end
-    end
-  end
-  return errors
-end
+	  end
+	  if #errors == 0 then
+	    for _, inventory_errors in ipairs({
+	      restart_liveness_contract.restart_liveness_inventory_errors(M, table_rows),
+	      M.restart_responsibility_inventory_errors(table_rows),
+	    }) do
+	      for _, err in ipairs(inventory_errors) do table.insert(errors, err) end
+	    end
+	  end
+	  return errors
+	end
+	rawset(M, "liveness_contract_errors", liveness_contract_errors)
 
-function M.liveness_terminal_states(rows)
-  local terminals = {}
-  for _, row in ipairs(rows or M.restart_transition_table()) do
+	local function liveness_terminal_states(rows)
+	  local terminals = {}
+	  for _, row in ipairs(rows or M.restart_transition_table()) do
     if row.terminal == true then
       table.insert(terminals, row.from_state)
     end
-  end
-  return terminals
-end
+	  end
+	  return terminals
+	end
+	rawset(M, "liveness_terminal_states", liveness_terminal_states)
 
-function M.issue_marker_liveness_sweep_states(rows)
-  local states = {}
-  for _, row in ipairs(rows or M.restart_transition_table()) do
+	local function issue_marker_liveness_sweep_states(rows)
+	  local states = {}
+	  for _, row in ipairs(rows or M.restart_transition_table()) do
     if row.terminal == false then
       states[row.from_state] = true
     end
-  end
-  return states
-end
+	  end
+	  return states
+	end
+	rawset(M, "issue_marker_liveness_sweep_states", issue_marker_liveness_sweep_states)
 
-function M.issue_marker_liveness_sweep_contract_errors(rows, sweep_states)
-  local errors = {}
-  local declared_states = sweep_states or M.issue_marker_liveness_sweep_states(rows)
-  for _, row in ipairs(rows or M.restart_transition_table()) do
+	local function issue_marker_liveness_sweep_contract_errors(rows, sweep_states)
+	  local errors = {}
+	  local declared_states = sweep_states or issue_marker_liveness_sweep_states(rows)
+	  for _, row in ipairs(rows or M.restart_transition_table()) do
     if row.terminal == false and declared_states[row.from_state] ~= true then
       table.insert(errors, tostring(row.from_state or "?") .. ": non-terminal issue-marker state is not reachable by liveness sweep")
     end
     if row.terminal == true and declared_states[row.from_state] == true then
       table.insert(errors, tostring(row.from_state or "?") .. ": terminal issue-marker state must not be re-driven by liveness sweep")
     end
-  end
-  return errors
-end
+	  end
+	  return errors
+	end
+	rawset(M, "issue_marker_liveness_sweep_contract_errors", issue_marker_liveness_sweep_contract_errors)
 
 end
 
