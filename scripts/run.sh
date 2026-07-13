@@ -58,12 +58,13 @@ ensure_fkst_packages_checkout() {
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|example|supervise> [args]
+usage: scripts/run.sh <check|test|live-cdp-smoke|example|supervise> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  live-cdp-smoke      run the environment-gated testing_runtime smoke against local Chrome/CDP
   example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
@@ -301,6 +302,52 @@ cmd_test() {
   echo "OK: $ran package(s)"
 }
 
+cmd_live_cdp_smoke() {
+  local work rc run_id artifact_rel artifact_source artifact_target package_root
+  [ -n "${FKST_LIVE_BASE_URL:-}" ] || { echo "error: FKST_LIVE_BASE_URL is required" >&2; return 1; }
+  [ -n "${FKST_LIVE_CDP_URL:-}" ] || { echo "error: FKST_LIVE_CDP_URL is required" >&2; return 1; }
+  resolve_testing_bin
+  work="$(composed_test_workspace "testing-runner" "" "$ROOT/packages/testing-runner")" || return 1
+  package_root="$work/packages/testing-runner"
+  rm -f "$package_root/tests/"*_test.lua
+  mkdir -p "$package_root/departments/live_cdp_smoke"
+  cp "$ROOT/scripts/live_cdp_smoke.lua" "$package_root/departments/live_cdp_smoke/main.lua"
+  run_id="$(date -u +%Y%m%dT%H%M%SZ)-$$"
+  artifact_rel=".testing/runs/live-cdp-smoke-$run_id"
+  export FKST_LIVE_ARTIFACT_ROOT="$artifact_rel"
+  mkdir -p "$work/$artifact_rel"
+
+  set +e
+  (
+    cd "$work"
+    run_engine "$BIN" run "$package_root/departments/live_cdp_smoke/main.lua" \
+      --project-root "$work" \
+      --package-root "$package_root" \
+      --owner-namespace testing-runner \
+      --event '{"queue":"live_cdp_smoke","payload":{}}'
+  )
+  rc=$?
+  set -e
+
+  if [ "$rc" -eq 0 ]; then
+    artifact_source="$work/$artifact_rel"
+    artifact_target="$ROOT/$artifact_rel"
+    if [ ! -d "$artifact_source" ]; then
+      echo "error: live CDP smoke passed without producing $artifact_source" >&2
+      rc=1
+    elif [ -e "$artifact_target" ]; then
+      echo "error: refusing to overwrite existing live CDP smoke artifact: $artifact_target" >&2
+      rc=1
+    else
+      mkdir -p "$(dirname "$artifact_target")"
+      cp -R "$artifact_source" "$artifact_target"
+      echo "live CDP smoke artifacts: $artifact_target"
+    fi
+  fi
+  rm -rf "$work"
+  return "$rc"
+}
+
 cmd_example() {
   local name="${1:-generic-host}" example roots work args t
   example="$ROOT/examples/$name"
@@ -345,7 +392,7 @@ cmd_supervise() {
 }
 
 case "${1:-}" in
-  check|test|example|supervise) ;;
+  check|test|live-cdp-smoke|example|supervise) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -361,6 +408,7 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  live-cdp-smoke) cmd_live_cdp_smoke ;;
   example) cmd_example "$@" ;;
   supervise) cmd_supervise "$@" ;;
 esac
