@@ -1,6 +1,8 @@
 local graph = require("testkit.graph")
 
 local t = fkst.test
+local verdict_label = "\226\159\166FKST:VERDICT\226\159\167"
+local reply_label = "\226\159\166FKST:REPLY\226\159\167"
 
 local function source_ref(ref)
   return { kind = "external", ref = ref }
@@ -39,9 +41,14 @@ local function consensus_proposal_event()
     queue = "consensus.proposal",
     source_ref = event_source_ref("edge-coverage-consensus"),
     payload = {
-      schema = "route-coverage.unsupported.v1",
+      schema = "consensus.proposal.v1",
       proposal_id = "testing-pipeline/ai/edge-coverage",
-      source_ref = { kind = "testing-ai-generation", ref = ".testing/runs/edge-coverage-ai/ai-context-manifest.json" },
+      dedup_key = "testing-pipeline-ai-edge-coverage",
+      title = "Edge coverage consensus proposal",
+      body = "Review edge coverage proposal routing.",
+      source_ref = { kind = "testing-ai-generation", ref = ".testing/runs/edge-coverage-ai" },
+      verdict_mode = "gate",
+      angles = { "teleology" },
     },
   }
 end
@@ -128,7 +135,23 @@ return {
   end,
 
   test_run_graph_consensus_proposal_routes_to_decide = function()
-    local trace = graph.run(consensus_proposal_event(), { max_steps = 16 })
+    t.mock_command('printf %s "$FKST_RUNTIME_ROOT"', {
+      stdout = "/tmp/fkst-packages-test/testing-pipeline/consensus-runtime",
+      stderr = "",
+      exit_code = 0,
+    })
+    t.mock_command("mkdir -p", {
+      stdout = "",
+      stderr = "",
+      exit_code = 0,
+    })
+    t.mock_command("consensus-angle-teleology", {
+      stdout = verdict_label .. " approve\n" .. reply_label .. " Edge coverage route approved.\n",
+      stderr = "",
+      exit_code = 0,
+    })
+
+    local trace = graph.run(consensus_proposal_event(), { max_steps = 2 })
     graph.assert_covers(trace, {
       "consensus.proposal -> consensus.decide",
     })

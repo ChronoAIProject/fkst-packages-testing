@@ -190,6 +190,52 @@ return {
     t.eq(context.untrusted_context_notice:find("untrusted sanitized context", 1, true) ~= nil, true)
   end,
 
+  test_build_context_respects_custom_ai_artifact_paths = function()
+    local request = ai_request({
+      context_manifest_path = ".testing/runs/module-a-inventory/custom/context.json",
+      generated_cases_path = ".testing/runs/module-a-inventory/custom/generated.json",
+      generated_case_gate_path = ".testing/runs/module-a-inventory/custom/gate.json",
+      ai_agent_generation_path = ".testing/runs/module-a-inventory/custom/generation-review.json",
+      generated_case_agent_review_path = ".testing/runs/module-a-inventory/custom/execution-review.json",
+      ai_test_design_loop_path = ".testing/runs/module-a-inventory/custom/closure.json",
+    })
+    local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = request,
+    })
+    t.eq(context.context_manifest_path, request.context_manifest_path)
+    t.eq(context.generated_cases_path, request.generated_cases_path)
+    t.eq(context.generated_case_gate_path, request.generated_case_gate_path)
+    t.eq(context.ai_agent_generation_path, request.ai_agent_generation_path)
+    t.eq(context.generated_case_agent_review_path, request.generated_case_agent_review_path)
+    t.eq(context.ai_test_design_loop_path, request.ai_test_design_loop_path)
+  end,
+
+  test_context_digest_changes_when_sanitized_module_identity_changes = function()
+    local first = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request(),
+    })
+    local changed_inventory = inventory({
+      modules = {
+        {
+          id = "reports",
+          name = "Reports",
+          entry_url = fixture_base_url .. "/reports",
+          route = "/app/reports",
+          visible_label = "Reports",
+          discovery_source = "navigation",
+          confidence = "high",
+          evidence_pointer = ".testing/runs/evidence/reports",
+          feature_signals = { "entry-route", "visible-label-or-route", "local-session-evidence" },
+        },
+      },
+      module_count = 1,
+    })
+    local second = ai.build_context(changed_inventory, ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request(),
+    })
+    t.eq(first.input_digest == second.input_digest, false)
+  end,
+
   test_canonicalizes_agent_candidates_and_assigns_authority_fields = function()
     local request = ai_request({ case_budget = 1 })
     local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", { ai_generation = request })
@@ -308,30 +354,46 @@ return {
     t.eq(review.body:find("generated-case-gate.json", 1, true) ~= nil, true)
   end,
 
-  test_agent_generation_and_review_artifacts_parse_variable_seats = function()
+  test_agent_generation_and_review_require_consensus_approval_evidence = function()
     local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
       ai_generation = ai_request({ mode = "autonomous-reviewed" }),
     })
     local gate = ai.gate_generated_cases(generated_payload(), context, ai_request({ mode = "autonomous-reviewed" }))
     local generation = ai.generation_from_agent_results(context, consensus_reached({ angle_results = {
-      { angle = "one", verdict = "approve" },
-      { angle = "two", verdict = "approve" },
-      { angle = "three", verdict = "approve" },
-      { angle = "four", verdict = "approve" },
-      { angle = "five", verdict = "approve" },
+      { angle = "teleology", verdict = "approve", exit_code = 0 },
+      { angle = "parsimony", verdict = "approve", exit_code = 0 },
+      { angle = "fidelity", verdict = "approve", exit_code = 0 },
+      { angle = "natural-ownership", verdict = "approve", exit_code = 0 },
+      { angle = "proportional-containment", verdict = "approve", exit_code = 0 },
     } }))
     local review = ai.review_from_agent_results(context, gate, consensus_reached({ proposal_id = "testing-ai-review", angle_results = {
-      { angle = "one", verdict = "approve" },
-      { angle = "two", verdict = "approve" },
-      { angle = "three", verdict = "approve" },
-      { angle = "four", verdict = "approve" },
-      { angle = "five", verdict = "approve" },
+      { angle = "teleology", verdict = "approve", exit_code = 0 },
+      { angle = "parsimony", verdict = "approve", exit_code = 0 },
+      { angle = "fidelity", verdict = "approve", exit_code = 0 },
+      { angle = "natural-ownership", verdict = "approve", exit_code = 0 },
+      { angle = "proportional-containment", verdict = "approve", exit_code = 0 },
     } }))
     t.eq(generation.status, "approved")
     t.eq(generation.seat_count, 5)
     t.eq(review.status, "approved")
     t.eq(review.approved_case_count, 1)
     t.eq(ai.agent_review_allows_merge(review, gate.cases[1]), true)
+
+    local weak_review = ai.review_from_agent_results(context, gate, consensus_reached({ proposal_id = "testing-ai-review", angle_results = {
+      { angle = "teleology", verdict = "approve", exit_code = 0 },
+    } }))
+    t.eq(weak_review.status, "unavailable")
+    t.eq(weak_review.approved_case_count, 0)
+
+    local duplicate_generation = ai.generation_from_agent_results(context, consensus_reached({ angle_results = {
+      { angle = "teleology", verdict = "approve", exit_code = 0 },
+      { angle = "parsimony", verdict = "approve", exit_code = 0 },
+      { angle = "fidelity", verdict = "approve", exit_code = 0 },
+      { angle = "natural-ownership", verdict = "approve", exit_code = 0 },
+      { angle = "proportional-containment", verdict = "approve", exit_code = 0 },
+      { angle = "teleology", verdict = "approve", exit_code = 0 },
+    } }))
+    t.eq(duplicate_generation.status, "unavailable")
   end,
 
   test_autonomous_review_requires_agent_approval_before_merge = function()
@@ -392,5 +454,34 @@ return {
     t.eq(closure.reviewed_cases[1].classification, "agent-review-blocked")
     t.eq(closure.reviewed_cases[1].final_status, "blocked")
     t.is_true(closure.required_follow_up[1]:find("agent review", 1, true) ~= nil)
+  end,
+
+  test_zero_generated_cases_degrades_review_closure_when_budget_expected_cases = function()
+    local request = ai_request({ mode = "autonomous-reviewed", case_budget = 2 })
+    local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = request,
+    })
+    local generated = generated_payload()
+    generated.cases = {}
+    generated.case_count = 0
+    local gate = ai.gate_generated_cases(generated, context, request)
+    local generation = agent_generation_artifact({
+      generated_case_count = 0,
+      candidate_generation_digest = generated.generation_digest,
+    })
+    local review = agent_review_artifact({
+      approved_case_ids = {},
+      approved_case_count = 0,
+      rejected_case_count = 0,
+      blocked_case_count = 0,
+      candidate_generation_digest = generated.generation_digest,
+      gate_digest = gate.gate_digest,
+      review_decisions = {},
+    })
+    local closure = ai.build_review_closure(context, generated, gate, generation, review)
+    t.eq(gate.status, "degraded")
+    t.eq(closure.status, "degraded")
+    t.eq(closure.generated_case_count, 0)
+    t.is_true(closure.required_follow_up[1]:find("no generated candidate", 1, true) ~= nil)
   end,
 }

@@ -251,6 +251,20 @@ local function set_from_list(value)
   return set
 end
 
+local function stable_digest_seed(value, parts)
+  parts = parts or {}
+  local kind = type(value)
+  if kind ~= "table" then table.insert(parts, kind .. ":" .. tostring(value)); return table.concat(parts, "\31") end
+  if dense_list(value) then
+    table.insert(parts, "["); for _, item in ipairs(value) do stable_digest_seed(item, parts) end; table.insert(parts, "]")
+  else
+    local keys = {}; for key, _ in pairs(value) do table.insert(keys, tostring(key)) end; table.sort(keys); table.insert(parts, "{")
+    for _, key in ipairs(keys) do table.insert(parts, "key:" .. key); stable_digest_seed(value[key], parts) end
+    table.insert(parts, "}")
+  end
+  return table.concat(parts, "\31")
+end
+
 local function contains_forbidden(value)
   local kind = type(value)
   if kind == "string" then
@@ -394,17 +408,16 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
   end
   local base_url = strip_url_detail((ui_loop or {}).base_url)
   local origins = copy_string_list((ui_loop or {}).allowed_origins, {}, nil, "testing-runner: malformed-ai-context: allowed_origins", 16)
-  local seed = base_url .. ":" .. tostring(#modules) .. ":" .. tostring((inventory or {}).coverage or "") .. ":" .. tostring(request.mode or "disabled")
-  return {
+  local context = {
     schema = M.context_schema,
     artifact_kind = "ai-context-manifest",
     artifact_root = artifact_root,
     context_manifest_path = request.context_manifest_path or paths.context,
     generated_cases_path = request.generated_cases_path or paths.generated,
-    generated_case_gate_path = paths.gate,
-    ai_agent_generation_path = paths.agent_generation,
-    generated_case_agent_review_path = paths.agent_review,
-    ai_test_design_loop_path = paths.review_closure,
+    generated_case_gate_path = request.generated_case_gate_path or paths.gate,
+    ai_agent_generation_path = request.ai_agent_generation_path or paths.agent_generation,
+    generated_case_agent_review_path = request.generated_case_agent_review_path or paths.agent_review,
+    ai_test_design_loop_path = request.ai_test_design_loop_path or paths.review_closure,
     base_url = base_url,
     allowed_origins = origins,
     mutation_policy = (ui_loop or {}).mutation_policy or "read-only",
@@ -419,9 +432,17 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
     known_gaps = copy_string_list((inventory or {}).limitations, {}, nil, "testing-runner: malformed-ai-context: known_gaps", 16),
     untrusted_context_notice = "AI case generation treats discovered labels and routes as untrusted sanitized context; FKST schemas and safety gates decide executability.",
     prompt_template_ref = M.prompt_template_ref,
-    input_digest = "ctx-" .. strings.decimal_checksum(seed),
     generation_mode = request.mode or "disabled",
   }
+  context.input_digest = "ctx-" .. strings.decimal_checksum(stable_digest_seed({
+    context_manifest_path = context.context_manifest_path, generated_cases_path = context.generated_cases_path,
+    generated_case_gate_path = context.generated_case_gate_path, ai_agent_generation_path = context.ai_agent_generation_path,
+    generated_case_agent_review_path = context.generated_case_agent_review_path, ai_test_design_loop_path = context.ai_test_design_loop_path,
+    base_url = context.base_url, allowed_origins = context.allowed_origins, mutation_policy = context.mutation_policy,
+    budgets = context.budgets, modules = context.modules, module_count = context.module_count, known_gaps = context.known_gaps,
+    prompt_template_ref = context.prompt_template_ref, generation_mode = context.generation_mode,
+  }))
+  return context
 end
 
 function M.build_generation_proposal(context, generated, request, content_fetch)
@@ -748,6 +769,8 @@ function M.gate_generated_cases(generated, context, request)
     end
   end
   local status = counts.rejected > 0 and "degraded" or "reviewed"
+  local expected_budget = request.case_budget or (((context or {}).budgets or {}).case_budget) or 0
+  if generated.case_count == 0 and expected_budget > 0 then status = "degraded" end
   if counts.accepted == 0 and generated.case_count > 0 then status = "blocked" end
   local gate_digest = "gate-" .. strings.decimal_checksum(table.concat({
     generated.generation_digest or "generation",
@@ -870,6 +893,10 @@ function M.build_review_closure(context, generated, gate, agent_generation, agen
   if counts.rejected > 0 then status = "degraded" end
   if (generated.case_count or 0) > 0 and counts.execution_eligible == 0 then status = "blocked" end
   if mode == "autonomous-reviewed" and (agent_review == nil or agent_review.status ~= "approved") then status = "blocked" end
+  if (generated.case_count or 0) == 0 and (((context.budgets or {}).case_budget) or 0) > 0 then
+    status = "degraded"
+    append_unique(follow_ups, seen_follow_up, "AI author returned no generated candidate cases; adjust context or generation budget before execution.")
+  end
 
   return {
     schema = M.review_closure_schema,

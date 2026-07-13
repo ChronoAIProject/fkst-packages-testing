@@ -49,7 +49,7 @@ local function payload(overrides)
   return value
 end
 
-local function reviewed_artifacts(value, review_status)
+local function reviewed_artifacts(value, review_status, generated_overrides)
   local root = ".testing/runs/module-a-cdp"
   local request = {
     schema = ai.request_schema,
@@ -68,6 +68,29 @@ local function reviewed_artifacts(value, review_status)
     readiness = { status = "ready" },
   })
   local context = ai.build_context(inventory, value.ui_loop, root, { ai_generation = request })
+  local generated_case = {
+    id = "dashboard:ai-visible-surface",
+    module_id = "dashboard",
+    priority = "P1",
+    title = "Exercise visible dashboard surface",
+    objective = "Exercise visible dashboard surface",
+    case_kind = "read-only-interaction",
+    actions = {
+      {
+        action = "open-visible-surface",
+        target = "Dashboard",
+        expected = "visible surface opens without mutation",
+      },
+    },
+    expected_observable = "Dashboard remains visible and same-origin.",
+    provenance = {
+      origin = "ai-generated",
+      context_manifest_path = context.context_manifest_path,
+      prompt_template_ref = context.prompt_template_ref,
+      model_invocation_digest = "model-dashboard-reviewed",
+    },
+  }
+  for key, item in pairs(generated_overrides or {}) do generated_case[key] = item end
   local generated = {
     schema = ai.generated_cases_schema,
     artifact_kind = "generated-test-cases",
@@ -77,30 +100,7 @@ local function reviewed_artifacts(value, review_status)
     generation_mode = "autonomous-reviewed",
     generation_digest = "gen-dashboard-reviewed",
     generated_cases_path = context.generated_cases_path,
-    cases = {
-      {
-        id = "dashboard:ai-visible-surface",
-        module_id = "dashboard",
-        priority = "P1",
-        title = "Exercise visible dashboard surface",
-        objective = "Exercise visible dashboard surface",
-        case_kind = "read-only-interaction",
-        actions = {
-          {
-            action = "open-visible-surface",
-            target = "Dashboard",
-            expected = "visible surface opens without mutation",
-          },
-        },
-        expected_observable = "Dashboard remains visible and same-origin.",
-        provenance = {
-          origin = "ai-generated",
-          context_manifest_path = context.context_manifest_path,
-          prompt_template_ref = context.prompt_template_ref,
-          model_invocation_digest = "model-dashboard-reviewed",
-        },
-      },
-    },
+    cases = { generated_case },
     case_count = 1,
   }
   local gate = ai.gate_generated_cases(generated, context, request)
@@ -293,6 +293,43 @@ return {
     t.eq(artifact.actions[6].case_origin, "ai-generated")
     t.eq(artifact.actions[6].action, "open-visible-surface")
     t.eq(artifact.actions[6].provenance_digest, "model-dashboard-reviewed")
+  end,
+
+  test_expands_multi_step_ai_generated_case_into_ordered_cdp_actions = function()
+    local value = payload()
+    local reader = reviewed_artifacts(value, "approved", {
+      actions = {
+        {
+          action = "bounded-navigation",
+          target = fixture_base_url .. "/dashboard/details?view=summary#state",
+          expected = "Details route becomes visible.",
+        },
+        {
+          action = "open-visible-surface",
+          target = "Dashboard details",
+          expected = "The detail surface opens without leaving local scope.",
+        },
+      },
+      expected_observable = "The details surface remains visible and same-origin.",
+    })
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", {
+      readiness = { status = "ready" },
+      artifact_reader = reader,
+    })
+    t.eq(artifact.execution_status, "planned")
+    t.eq(artifact.planned_case_count, 6)
+    t.eq(artifact.action_count, 7)
+    t.eq(artifact.actions[6].case_id, "dashboard:ai-visible-surface")
+    t.eq(artifact.actions[6].case_origin, "ai-generated")
+    t.eq(artifact.actions[6].action, "bounded-navigation")
+    t.eq(artifact.actions[6].target, fixture_base_url .. "/dashboard/details")
+    t.eq(artifact.actions[6].url, fixture_base_url .. "/dashboard/details")
+    t.eq(artifact.actions[6].expected_observable, "Details route becomes visible.")
+    t.eq(artifact.actions[7].case_id, "dashboard:ai-visible-surface")
+    t.eq(artifact.actions[7].case_origin, "ai-generated")
+    t.eq(artifact.actions[7].action, "open-visible-surface")
+    t.eq(artifact.actions[7].target, "Dashboard details")
+    t.eq(artifact.actions[7].expected_observable, "The detail surface opens without leaving local scope.")
   end,
 
   test_rejects_legacy_inline_ai_artifacts_before_execution = function()

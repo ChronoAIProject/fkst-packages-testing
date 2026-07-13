@@ -256,14 +256,7 @@ local function stop_conditions(request)
   return copy_list((request or {}).stop_conditions, default_stop_conditions, stop_condition_ok)
 end
 
-local function generated_action_kind(case)
-  if case.case_origin ~= "ai-generated" or type(case.actions) ~= "table" or type(case.actions[1]) ~= "table" then return nil end
-  return case.actions[1].action
-end
-
 local function action_kind(case)
-  local generated = generated_action_kind(case)
-  if generated ~= nil then return generated end
   local id = tostring(case.id or "")
   if id:find("reachability", 1, true) then return "navigate" end
   if id:find("page-load", 1, true) then return "wait-for-load" end
@@ -292,10 +285,48 @@ local function action_target(module, case)
   return module.entry_url or module.id or "module"
 end
 
-local function append_action(actions, artifact_root, module, case, step)
+local function generated_action_descriptors(module, case)
+  if case.case_origin ~= "ai-generated" or not dense_list(case.actions) then return nil end
+  local out = {}
+  for index, item in ipairs(case.actions) do
+    if type(item) == "table" and bounded_string(item.action, 80) then
+      table.insert(out, {
+        index = index,
+        action = item.action,
+        target = strip_url_detail(item.target or module.entry_url or module.id or "module"),
+        expected = bounded_string(item.expected, max_string) and item.expected or case.expected_observable,
+        evidence_pointer = item.evidence_pointer,
+      })
+    end
+  end
+  return #out > 0 and out or nil
+end
+
+local function action_descriptors(module, case)
+  local generated = generated_action_descriptors(module, case)
+  if generated ~= nil then return generated end
+  return {
+    {
+      action = action_kind(case),
+      target = action_target(module, case),
+      expected = case.expected_observable,
+      evidence_pointer = case.evidence_pointer,
+    },
+  }
+end
+
+local function append_action(actions, artifact_root, module, case, step, descriptor, ui_loop)
+  descriptor = descriptor or {}
   local url = strip_url_detail(module.entry_url)
-  local target = action_target(module, case)
-  local kind = action_kind(case)
+  local target = descriptor.target or action_target(module, case)
+  local kind = descriptor.action or action_kind(case)
+  if case.case_origin == "ai-generated" and type(target) == "string" and target:match("^https?://") then
+    url = strip_url_detail(target)
+  end
+  local evidence_key = case.id
+  if case.case_origin == "ai-generated" and descriptor.index ~= nil then
+    evidence_key = tostring(case.id) .. "-" .. tostring(descriptor.index)
+  end
   local action = {
     step = step,
     module_id = module.id,
@@ -308,17 +339,20 @@ local function append_action(actions, artifact_root, module, case, step)
     execution_status = kind == "safe-mutation-fixture" and "blocked" or "planned",
     assertion_status = "not-run",
     observation = "bounded CDP action planned; no browser command or assertion has executed",
-    planned_evidence_pointer = artifact_root .. "/evidence/cdp/" .. safe_key(case.id) .. ".json",
+    planned_evidence_pointer = artifact_root .. "/evidence/cdp/" .. safe_key(evidence_key) .. ".json",
   }
   if case.case_origin == "ai-generated" then
     action.case_origin = "ai-generated"
     action.provenance_digest = ((case.provenance or {}).model_invocation_digest)
     action.observation = "AI-generated read-only action planned through the FKST bounded action schema"
-    action.expected_observable = case.expected_observable
+    action.expected_observable = descriptor.expected or case.expected_observable
     local blocked_segment = blocked_route_target(target)
     if blocked_segment ~= nil then
       action.execution_status = "blocked"
       action.observation = "blocked route segment " .. blocked_segment .. " stopped before execution"
+    elseif type(target) == "string" and target:match("^https?://") and not within_scope(target, ui_loop or {}) then
+      action.execution_status = "blocked"
+      action.observation = "generated action target left allowed origin or module scope"
     end
   end
   local gate = case.mutation_gate
@@ -487,7 +521,8 @@ function M.build(payload, artifact_root, opts)
   local priorities, priority_set = selected_priorities(request)
   local budget = request.step_budget or 8
   local actions = {}
-  local selected_count = 0
+  local selected_case_count = 0
+  local selected_action_count = 0
   local boundary_violation = false
 
   for _, module in ipairs(planning.test_plan.modules or {}) do
@@ -497,9 +532,12 @@ function M.build(payload, artifact_root, opts)
     end
     for _, case in ipairs(module.cases or {}) do
       if priority_set[case.priority] and case.review_status == "executable" then
-        selected_count = selected_count + 1
-        if #actions < budget then
-          append_action(actions, artifact_root, module, case, #actions + 1)
+        selected_case_count = selected_case_count + 1
+        for _, descriptor in ipairs(action_descriptors(module, case)) do
+          selected_action_count = selected_action_count + 1
+          if #actions < budget then
+            append_action(actions, artifact_root, module, case, #actions + 1, descriptor, payload.ui_loop or {})
+          end
         end
       end
     end
@@ -525,11 +563,11 @@ function M.build(payload, artifact_root, opts)
 
   local status, classification = "planned", "bounded-exploration-planned"
   local limitations = { "actions are planning records until a validated browser execution receipt is attached" }
-  if selected_count == 0 then
+  if selected_action_count == 0 then
     status = "degraded"
     classification = "no-executable-safe-cases"
     limitations = { "no executable selected cases were available for bounded CDP planning" }
-  elseif selected_count > budget then
+  elseif selected_action_count > budget then
     status = "degraded"
     classification = "step-budget-exhausted"
     limitations = { "step budget stopped planning before all executable selected cases were recorded" }
@@ -568,7 +606,7 @@ function M.build(payload, artifact_root, opts)
     step_budget = budget,
     case_priorities = priorities,
     stop_conditions = stop_conditions(request),
-    planned_case_count = selected_count,
+    planned_case_count = selected_case_count,
     action_count = #actions,
     planned_action_count = planned_action_count,
     blocked_action_count = blocked_action_count,

@@ -336,6 +336,7 @@ end
 
 local function context_ref_to_root(ref)
   if not safe_artifact_pointer(ref) then return nil end
+  if strings.is_artifact_root(ref) then return ref end
   return ref:match("^(%.testing/runs/.+)/ai%-context%-manifest%.json$")
 end
 
@@ -590,9 +591,17 @@ local function blocked_result(state, payload)
   }
 end
 
-local function fail_closed(state, payload, phase, ports)
+local function blocked_error(reason)
+  local text = tostring(reason or "")
+  text = text:gsub("[%z\1-\31]", " ")
+  if #text > max_string then text = text:sub(1, max_string) end
+  return text ~= "" and text or nil
+end
+
+local function fail_closed(state, payload, phase, ports, reason)
   if state ~= nil then
     state.phase = "blocked"
+    state.blocked_error = blocked_error(reason)
     if phase == "generation" then
       state.generation = state.generation or {}
       state.generation.status = "blocked"
@@ -680,7 +689,7 @@ function M.generate(payload, ports)
   end
   local ok, result = pcall(generate_inner, payload, ports)
   if ok then return result end
-  return fail_closed(state, payload or {}, "generation", ports)
+  return fail_closed(state, payload or {}, "generation", ports, result)
 end
 
 local function load_state_for(payload, ports)
@@ -784,7 +793,7 @@ function M.handle_consensus_reached(payload, ports)
   if ok then return result end
   local state
   pcall(function() state = load_state_for(payload or {}, ports) end)
-  return fail_closed(state, payload or {}, nil, ports)
+  return fail_closed(state, payload or {}, nil, ports, result)
 end
 
 local function handle_converge_inner(payload, ports)
@@ -799,7 +808,7 @@ function M.handle_consensus_converge(payload, ports)
   if ok then return result end
   local state
   pcall(function() state = load_state_for(payload or {}, ports) end)
-  return fail_closed(state, payload or {}, nil, ports)
+  return fail_closed(state, payload or {}, nil, ports, result)
 end
 
 return M

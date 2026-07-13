@@ -71,8 +71,8 @@ local function all_writes(model)
   return table.concat(parts, "\n")
 end
 
-local function module_start()
-  return {
+local function module_start(overrides)
+  local value = {
     schema = "testing-pipeline.module-start.v1",
     module = "module-a",
     backend = "fkst-native",
@@ -128,6 +128,8 @@ local function module_start()
     trace_id = "trace-module-a-ai",
     dedup_key = "module-a-ai-run",
   }
+  for key, item in pairs(overrides or {}) do value[key] = item end
+  return value
 end
 
 local function consensus_reached(proposal, decision)
@@ -282,5 +284,51 @@ return {
     t.eq(body:find("raw_prompt", 1, true), nil)
     t.eq(body:find("raw_response", 1, true), nil)
     t.eq(body:find("password", 1, true), nil)
+  end,
+
+  test_custom_ai_artifact_paths_flow_into_resume_request = function()
+    local custom_root = artifact_root .. "/custom"
+    local model = memory_io()
+    local start_payload = module_start({
+      cdp_execution = {
+        schema = "testing-runner.module-cdp-execution.v1",
+        step_budget = 8,
+        case_priorities = { "P0", "P1" },
+        ai_generation = {
+          schema = "testing-runner.ai-case-generation.request.v1",
+          mode = "autonomous-reviewed",
+          case_budget = 1,
+          context_manifest_path = custom_root .. "/context.json",
+          generated_cases_path = custom_root .. "/generated.json",
+          generated_case_gate_path = custom_root .. "/gate.json",
+          ai_agent_generation_path = custom_root .. "/generation-review.json",
+          generated_case_agent_review_path = custom_root .. "/execution-review.json",
+          ai_test_design_loop_path = custom_root .. "/closure.json",
+        },
+      },
+    })
+    local start = ai.start(start_payload, model.ports)
+    t.eq(start.kind, "generation-request")
+    t.eq(start.request.context_manifest_path, custom_root .. "/context.json")
+    local generated_action = ai.generate(start.request, model.ports)
+    if generated_action.kind ~= "generation-proposal" then
+      error(decode(model, artifact_root .. "/ai-orchestration-state.json").blocked_error or "generation did not produce proposal")
+    end
+    local generated_proposal = generated_action.proposal
+    local review_proposal = ai.handle_consensus_reached(consensus_reached(generated_proposal), model.ports).proposal
+    local action = ai.handle_consensus_reached(consensus_reached(review_proposal), model.ports)
+    t.eq(action.kind, "module-loop-request")
+    t.eq(action.request.cdp_execution.ai_generation.context_manifest_path, custom_root .. "/context.json")
+    t.eq(action.request.cdp_execution.ai_generation.generated_cases_path, custom_root .. "/generated.json")
+    t.eq(action.request.cdp_execution.ai_generation.generated_case_gate_path, custom_root .. "/gate.json")
+    t.eq(action.request.cdp_execution.ai_generation.ai_agent_generation_path, custom_root .. "/generation-review.json")
+    t.eq(action.request.cdp_execution.ai_generation.generated_case_agent_review_path, custom_root .. "/execution-review.json")
+    t.eq(action.request.cdp_execution.ai_generation.ai_test_design_loop_path, custom_root .. "/closure.json")
+    t.eq(model.writes[custom_root .. "/context.json"] ~= nil, true)
+    t.eq(model.writes[custom_root .. "/generated.json"] ~= nil, true)
+    t.eq(model.writes[custom_root .. "/gate.json"] ~= nil, true)
+    t.eq(model.writes[custom_root .. "/generation-review.json"] ~= nil, true)
+    t.eq(model.writes[custom_root .. "/execution-review.json"] ~= nil, true)
+    t.eq(model.writes[custom_root .. "/closure.json"] ~= nil, true)
   end,
 }

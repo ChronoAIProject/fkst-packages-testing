@@ -11,6 +11,16 @@ local max_cases = 32
 local max_agent_seats = 16
 local max_review_decisions = 32
 
+local required_approval_angles = {
+  teleology = true,
+  parsimony = true,
+  fidelity = true,
+  ["natural-ownership"] = true,
+  ["proportional-containment"] = true,
+}
+
+local required_approval_angle_count = 5
+
 local agent_generation_fields = {
   artifact_kind = true,
   artifact_root = true,
@@ -161,7 +171,7 @@ end
 local function proposal_source_ref(context, purpose)
   return {
     kind = "testing-ai-" .. tostring(purpose),
-    ref = safe_key((context or {}).context_manifest_path or (context or {}).artifact_root or "context", "context"),
+    ref = safe_key((context or {}).artifact_root or (context or {}).context_manifest_path or "context", "context"),
   }
 end
 
@@ -256,8 +266,22 @@ local function agent_status(agent_result, approved_status)
   if type(agent_result) ~= "table" then return "unavailable" end
   if agent_result.schema == "consensus.consensus_converge.v1" then return "converged" end
   if agent_result.schema ~= "consensus.consensus_reached.v1" then return "unavailable" end
-  if agent_result.decision == "approve" then return approved_status end
   if agent_result.decision == "reject" then return "rejected" end
+  if agent_result.decision == "approve" then
+    local seen, count = {}, 0
+    if dense_count(agent_result.angle_results) == nil then return "unavailable" end
+    for _, item in ipairs(agent_result.angle_results or {}) do
+      local angle = type(item) == "table" and item.angle or nil
+      if required_approval_angles[angle] ~= true then return "unavailable" end
+      if item.verdict ~= "approve" then return "unavailable" end
+      if item.exit_code ~= nil and item.exit_code ~= 0 then return "unavailable" end
+      if seen[angle] == true then return "unavailable" end
+      seen[angle] = true
+      count = count + 1
+    end
+    if count == required_approval_angle_count then return approved_status end
+    return "unavailable"
+  end
   return "unavailable"
 end
 
