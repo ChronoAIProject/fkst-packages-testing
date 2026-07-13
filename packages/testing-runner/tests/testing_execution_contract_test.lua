@@ -1,5 +1,7 @@
 local execution = require("contract.testing_execution")
 local receipt_validator = require("testing_runtime.receipt")
+local time = require("contract.time")
+local transition_version = require("contract.transition_version")
 local t = fkst.test
 
 local digest = string.rep("a", 64)
@@ -162,5 +164,16 @@ return {
         verify_clean_argv = { "fixture", "verify-clean" },
       })
     end)
+  end,
+
+  test_rejects_invalid_calendar_dates = function()
+    t.eq(time.iso_timestamp_epoch_seconds("2026-02-29T00:00:00Z"), nil)
+    t.eq(time.iso_timestamp_epoch_seconds("2024-02-29T00:00:00Z") ~= nil, true)
+    t.eq(time.iso_timestamp_epoch_seconds("2026-04-31T00:00:00Z"), nil)
+  end,
+
+  test_distinct_transition_bases_do_not_collapse_after_sanitization = function()
+    t.eq(transition_version.compare("consensus:foo/bar", "consensus:foo-bar") ~= 0, true)
+    t.eq(transition_version.compare("consensus:foo:bar", "consensus:foo-bar") ~= 0, true)
   end,
 }

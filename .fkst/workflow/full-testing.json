@@ -1,0 +1,37 @@
+{
+  "schema": "fkst.workflow.v1",
+  "id": "fkst-testing-full-verification-flow",
+  "version": "1",
+  "summary": "Harden full-suite verification for fkst-packages-testing through package-level coverage, composed-flow coverage, and final suite stabilization.",
+  "applies_when": "The origin asks to perform full testing, full verification, or full-suite coverage hardening for fkst-packages-testing. It is not for a one-off CI rerun, product-specific app testing, or a narrow single-package bugfix.",
+  "selector": {
+    "labels_any": ["full-test"],
+    "title_contains_any": ["full test", "full testing", "full verification", "full-suite"]
+  },
+  "steps": [
+    {
+      "id": "package-contract-coverage",
+      "title": "Harden package-level testing contracts",
+      "content": {
+        "kind": "generated",
+        "generator": "Read the origin issue from its source_ref and inspect fkst-packages-testing at ground truth. Emit exactly one child issue title and body scoped to package-level verification: add or repair hermetic Lua tests, conformance coverage, and runner-script contract tests for the reusable testing packages. Keep the repository generic: do not add product-specific modules, fixed application URLs, ORNN-specific facts, credentials, cookies, or host-specific environment names. The child PR must run the relevant package tests and leave them green. If there is no executable package-level coverage gap, produce no changes with a clear WHY."
+      }
+    },
+    {
+      "id": "composed-testing-flow-coverage",
+      "title": "Harden composed testing-flow coverage",
+      "content": {
+        "kind": "generated",
+        "generator": "Read the origin issue and the MERGED package-contract-coverage result through source_ref. Emit exactly one child issue title and body scoped to closed-world composed-flow coverage for fkst-packages-testing: browser-readiness, testing-discovery, testing-pipeline, module-test-loop, platform-test-loop, testing-runner, test-artifacts, and test-publication integration seams. Use neutral fixtures and existing example hosts only. Do not encode product-specific module catalogs, browser roles, base URLs, credentials, or environment names. The child PR must keep scripts/run.sh check and scripts/run.sh test green. If no composed-flow coverage gap remains, produce no changes with a clear WHY."
+      }
+    },
+    {
+      "id": "full-suite-stabilization",
+      "title": "Stabilize the full verification suite",
+      "content": {
+        "kind": "generated",
+        "generator": "Read the origin issue and the MERGED composed-testing-flow-coverage result through source_ref. Emit exactly one child issue title and body scoped to final full-suite stabilization: run the repository's full verification entrypoints, diagnose deterministic failures, and fix only failures or missing harness coverage exposed by the prior steps. Do not broaden scope, do not add product-specific fixtures, and do not create report-only artifacts. The child PR must provide evidence for scripts/run.sh check and scripts/run.sh test. If the full suite is already green and no code or test change is needed, produce no changes with a clear WHY."
+      }
+    }
+  ]
+}
