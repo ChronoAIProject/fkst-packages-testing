@@ -548,7 +548,7 @@ function M.build(payload, artifact_root, opts)
     artifact.inventory_path = artifact_root .. "/module-inventory.json"
     artifact.feature_inventory_path = artifact_root .. "/feature-inventory.json"
     artifact.test_plan_path = artifact_root .. "/test-plan.json"
-    return artifact
+    return artifact, planning
   end
 
   local planned_action_count = 0
@@ -615,7 +615,7 @@ function M.build(payload, artifact_root, opts)
     coverage = inventory.coverage,
     readiness = readiness,
     limitations = limitations,
-  }
+  }, planning
 end
 
 function M.summary(artifact, module, status)

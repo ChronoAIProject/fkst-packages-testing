@@ -196,6 +196,13 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     if (opts.ai_generation or {}).mode == "autonomous-reviewed" then
       ai_generation.validate_agent_generation(agent_generation)
       ai_generation.validate_agent_review(agent_review)
+      if agent_generation.candidate_generation_digest ~= generated_cases.generation_digest then
+        error("testing-runner: ai-artifact-mismatch: agent generation digest")
+      end
+      if agent_review.candidate_generation_digest ~= generated_cases.generation_digest
+        or agent_review.gate_digest ~= generated_case_gate.gate_digest then
+        error("testing-runner: ai-artifact-mismatch: agent review digest")
+      end
       ai_generation.merge_generated_cases(plan_modules, generated_case_gate, agent_review)
     else
       ai_generation.merge_generated_cases(plan_modules, generated_case_gate)

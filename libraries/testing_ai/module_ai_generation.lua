@@ -3,6 +3,7 @@ local M = {}
 local strings = require("contract.strings")
 local workflow_codex = require("workflow.codex")
 local ai_agents = require("testing_ai.module_ai_agents")
+local ai_util = require("testing_ai.module_ai_util")
 
 M.request_schema = "testing-runner.ai-case-generation.request.v1"
 M.context_schema = "testing-runner.ai-context-manifest.v1"
@@ -141,147 +142,23 @@ local provenance_fields = {
   prompt_template_ref = true,
 }
 
-local forbidden_terms = {
-  "raw_dom",
-  "screenshot_body",
-  "model_transcript",
-  "browser_" .. "storage",
-  "local" .. "storage",
-  "session" .. "storage",
-  "coo" .. "kie",
-  "to" .. "ken",
-  "pass" .. "word",
-  "credential",
-  "raw_prompt",
-  "raw_response",
-  "raw_report",
-}
-
-local blocked_route_terms = {
-  "admin",
-  "auth",
-  "billing",
-  "delete",
-  "login",
-  "logout",
-  "oauth",
-  "permissions",
-  "remove",
-}
-
-local function bounded_string(value, limit)
-  if type(value) ~= "string" or value == "" then return false end
-  if #value > (limit or max_string) then return false end
-  return value:find("[%z\1-\31]") == nil
-end
-
-local function dense_list(value)
-  if type(value) ~= "table" then return false, 0 end
-  local count = 0
-  for key, _ in pairs(value) do
-    if type(key) ~= "number" then return false, 0 end
-    if key < 1 or math.floor(key) ~= key then return false, 0 end
-    count = count + 1
-  end
-  return count == #value, count
-end
-
-local function validate_fields(value, allowed, context)
-  local prefix = context or "testing-runner: malformed-ai-payload"
-  for key, _ in pairs(value or {}) do
-    if allowed[key] ~= true then error(prefix .. ": unsupported field") end
-  end
-end
+local bounded_string = ai_util.bounded_string
+local dense_list = ai_util.dense_list
+local validate_fields = ai_util.validate_fields
+local strip_url_detail = ai_util.strip_url_detail
+local origin_from_url = ai_util.origin_from_url
+local local_http_url = ai_util.local_http_url
+local safe_artifact_pointer = ai_util.safe_artifact_pointer
+local copy_string_list = ai_util.copy_string_list
+local set_from_list = ai_util.set_from_list
+local stable_digest_seed = ai_util.stable_digest_seed
+local contains_forbidden = ai_util.contains_forbidden
+local blocked_route_target = ai_util.blocked_route_target
 
 local function bounded_id(value)
   return bounded_string(value, max_id)
 end
 
-local function strip_url_detail(value)
-  local text = tostring(value or ""):gsub("[#?].*$", "")
-  if #text > max_string then text = text:sub(1, max_string) end
-  return text
-end
-
-local function origin_from_url(value)
-  if not bounded_string(value, max_string) then return nil end
-  local scheme, authority = value:match("^(https?)://([^/%?#]+)")
-  if scheme == nil then return nil end
-  if authority == nil or authority == "" then return nil end
-  if authority:find("%s") ~= nil then return nil end
-  if authority:find("\\", 1, true) ~= nil then return nil end
-  if authority:find("@", 1, true) ~= nil then return nil end
-  return scheme:lower() .. "://" .. authority:lower()
-end
-
-local function local_http_url(value)
-  local authority = tostring(value or ""):match("^http://([^/%?#]+)")
-  if authority == nil then return false end
-  local bracketed = authority:match("^%[([^%]]+)%]")
-  local host = bracketed ~= nil and bracketed or (authority:match("^([^:]+)") or authority)
-  local normalized = host:lower()
-  if normalized == "localhost" then return true end
-  if normalized == "127.0.0.1" then return true end
-  return normalized == "::1"
-end
-
-local function safe_artifact_pointer(value)
-  return bounded_string(value, max_string)
-    and strings.is_path_safe_key(value, max_string)
-    and value:sub(1, 14) == ".testing/runs/"
-end
-
-local function copy_string_list(value, fallback, allowed, context, max_items)
-  local source = value or fallback or {}
-  local ok, count = dense_list(source)
-  if not ok or count > (max_items or max_actions) then error(context .. " must be a bounded dense list") end
-  local out = {}
-  for _, item in ipairs(source) do
-    if not bounded_string(item, max_string) or (allowed ~= nil and allowed[item] ~= true) then
-      error(context .. " contains unsupported item")
-    end
-    table.insert(out, item)
-  end
-  return out
-end
-
-local function set_from_list(value)
-  local set = {}
-  for _, item in ipairs(value or {}) do set[item] = true end
-  return set
-end
-
-local function stable_digest_seed(value, parts)
-  parts = parts or {}
-  local kind = type(value)
-  if kind ~= "table" then table.insert(parts, kind .. ":" .. tostring(value)); return table.concat(parts, "\31") end
-  if dense_list(value) then
-    table.insert(parts, "["); for _, item in ipairs(value) do stable_digest_seed(item, parts) end; table.insert(parts, "]")
-  else
-    local keys = {}; for key, _ in pairs(value) do table.insert(keys, tostring(key)) end; table.sort(keys); table.insert(parts, "{")
-    for _, key in ipairs(keys) do table.insert(parts, "key:" .. key); stable_digest_seed(value[key], parts) end
-    table.insert(parts, "}")
-  end
-  return table.concat(parts, "\31")
-end
-
-local function contains_forbidden(value)
-  local kind = type(value)
-  if kind == "string" then
-    local text = value:lower()
-    for _, term in ipairs(forbidden_terms) do
-      if text:find(term, 1, true) ~= nil then return term end
-    end
-  elseif kind == "table" then
-    for key, item in pairs(value) do
-      local bad = contains_forbidden(key)
-      if bad ~= nil then return bad end
-      bad = contains_forbidden(item)
-      if bad ~= nil then return bad end
-    end
-  end
-  return nil
-end
 M.contains_forbidden = contains_forbidden
 
 local function module_label(module)
@@ -320,16 +197,6 @@ local function allowed_origin_map(origins)
     map[origin] = true
   end
   return map
-end
-
-local function blocked_route_target(value)
-  local text = tostring(value or ""):lower():gsub("[^%w]+", "/")
-  for segment in text:gmatch("[^/]+") do
-    for _, term in ipairs(blocked_route_terms) do
-      if segment == term then return term end
-    end
-  end
-  return nil
 end
 
 local function target_within_scope(target, context)
@@ -738,6 +605,12 @@ function M.gate_generated_cases(generated, context, request)
   request = default_request(request)
   M.validate_request(request)
   M.validate_generated_cases(generated)
+  if context == nil
+    or generated.artifact_root ~= context.artifact_root
+    or generated.context_manifest_path ~= context.context_manifest_path
+    or generated.generated_cases_path ~= context.generated_cases_path then
+    error("testing-runner: ai-artifact-mismatch: generated cases context binding")
+  end
   local request_sets = {
     kinds = set_from_list(copy_string_list(request.allowed_case_kinds, { "entry-health", "primary-interaction", "read-only-interaction", "module-transition", "mutation-or-edge" }, allowed_case_kinds, "testing-runner: malformed-request: ai_generation.allowed_case_kinds", max_actions)),
     actions = set_from_list(copy_string_list(request.allowed_action_kinds, { "bounded-navigation", "open-visible-surface", "close-visible-surface", "search-or-filter-readonly", "clear-filter-readonly", "module-transition", "safe-mutation-fixture" }, allowed_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)),
@@ -772,13 +645,13 @@ function M.gate_generated_cases(generated, context, request)
   local expected_budget = request.case_budget or (((context or {}).budgets or {}).case_budget) or 0
   if generated.case_count == 0 and expected_budget > 0 then status = "degraded" end
   if counts.accepted == 0 and generated.case_count > 0 then status = "blocked" end
-  local gate_digest = "gate-" .. strings.decimal_checksum(table.concat({
-    generated.generation_digest or "generation",
-    status,
-    tostring(counts.accepted),
-    tostring(counts.executable),
-    tostring(counts.rejected),
-  }, ":"))
+  local gate_digest = "gate-" .. strings.decimal_checksum(stable_digest_seed({
+    generation_digest = generated.generation_digest or "generation",
+    status = status,
+    counts = counts,
+    decisions = decisions,
+    cases = cases,
+  }))
   return {
     schema = M.gate_schema,
     artifact_kind = "generated-case-gate",

@@ -78,6 +78,7 @@ local function generated_payload(case_overrides)
     artifact_kind = "generated-test-cases",
     artifact_root = ".testing/runs/module-a-inventory",
     context_manifest_path = ".testing/runs/module-a-inventory/ai-context-manifest.json",
+    generated_cases_path = ".testing/runs/module-a-inventory/generated-test-cases.json",
     prompt_template_ref = "testing-runner.ai-case-generation.prompt.v1",
     generation_mode = "autonomous-reviewed",
     generation_digest = "gen-dashboard",
@@ -135,6 +136,7 @@ local function agent_generation_artifact(overrides)
     proposal_id = "testing-ai-generation",
     consensus_proposal_ref = "testing-ai/generation/ctx",
     generation_digest = "agent-gen-dashboard",
+    candidate_generation_digest = "gen-dashboard",
     generated_case_count = 1,
     seat_count = 5,
     seat_names = { "teleology", "parsimony", "fidelity", "natural-ownership", "proportional-containment" },
@@ -157,6 +159,8 @@ local function agent_review_artifact(overrides)
     proposal_id = "testing-ai-review",
     consensus_proposal_ref = "testing-ai/review/ctx",
     decision_digest = "agent-review-dashboard",
+    candidate_generation_digest = "gen-dashboard",
+    gate_digest = generated_gate(ai_request(), generated_payload()).gate_digest,
     approved_case_ids = { "dashboard:ai-visible-surface" },
     approved_case_count = 1,
     rejected_case_count = 0,
@@ -273,6 +277,26 @@ return {
     t.eq(gate.cases[1].case_origin, "ai-generated")
     t.eq(gate.cases[1].review_status, "executable")
     t.eq(gate.cases[1].actions[1].action, "open-visible-surface")
+  end,
+
+  test_generated_case_gate_digest_changes_when_case_content_changes = function()
+    local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", { ai_generation = ai_request() })
+    local first = ai.gate_generated_cases(generated_payload({
+      actions = { { action = "open-visible-surface", target = "Dashboard" } },
+    }), context, ai_request())
+    local second = ai.gate_generated_cases(generated_payload({
+      actions = { { action = "open-visible-surface", target = "Dashboard details" } },
+    }), context, ai_request())
+    t.eq(first.gate_digest == second.gate_digest, false)
+  end,
+
+  test_generated_cases_gate_rejects_stale_context_binding = function()
+    local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", { ai_generation = ai_request() })
+    local generated = generated_payload()
+    generated.context_manifest_path = ".testing/runs/other/ai-context-manifest.json"
+    t.raises(function()
+      ai.gate_generated_cases(generated, context, ai_request())
+    end)
   end,
 
   test_generated_cases_reject_unknown_action_and_external_origin = function()
@@ -413,6 +437,18 @@ return {
     t.eq(artifacts.test_plan.ai_generation.agent_review_status, "rejected")
   end,
 
+  test_autonomous_review_rejects_stale_agent_review_binding = function()
+    t.raises(function()
+      planning.build(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+        ai_generation = ai_request({ mode = "autonomous-reviewed" }),
+        generated_cases = generated_payload(),
+        generated_case_gate = generated_gate(ai_request({ mode = "autonomous-reviewed" }), generated_payload()),
+        ai_agent_generation = agent_generation_artifact(),
+        generated_case_agent_review = agent_review_artifact({ gate_digest = "gate-stale" }),
+      })
+    end)
+  end,
+
   test_autonomous_review_merges_agent_approved_cases = function()
     local artifacts = planning.build(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
       ai_generation = ai_request({ mode = "autonomous-reviewed" }),
@@ -431,18 +467,17 @@ return {
   end,
 
   test_review_closure_records_final_ai_loop_state = function()
+    local generated = generated_payload({
+      id = "dashboard:ai-search-filter",
+      actions = { { action = "search-or-filter-readonly", target = "Dashboard" } },
+    })
+    local gate = generated_gate(ai_request({ mode = "autonomous-reviewed", case_budget = 2 }), generated)
     local artifacts = planning.build(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
       ai_generation = ai_request({ mode = "autonomous-reviewed", case_budget = 2 }),
-      generated_cases = generated_payload({
-        id = "dashboard:ai-search-filter",
-        actions = { { action = "search-or-filter-readonly", target = "Dashboard" } },
-      }),
-      generated_case_gate = generated_gate(ai_request({ mode = "autonomous-reviewed", case_budget = 2 }), generated_payload({
-        id = "dashboard:ai-search-filter",
-        actions = { { action = "search-or-filter-readonly", target = "Dashboard" } },
-      })),
+      generated_cases = generated,
+      generated_case_gate = gate,
       ai_agent_generation = agent_generation_artifact(),
-      generated_case_agent_review = agent_review_artifact({ approved_case_ids = {}, approved_case_count = 0, blocked_case_count = 1 }),
+      generated_case_agent_review = agent_review_artifact({ approved_case_ids = {}, approved_case_count = 0, blocked_case_count = 1, gate_digest = gate.gate_digest }),
     })
     local closure = artifacts.ai_review_closure
     t.eq(closure.schema, ai.review_closure_schema)

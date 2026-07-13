@@ -584,7 +584,8 @@ local function write_metadata(result, payload, context)
   return writer_for(payload, context)(result.artifact_root .. "/metadata.json", body)
 end
 
-local function write_module_inventory(result, payload, context)
+local function write_module_inventory(result, payload, context, opts)
+  opts = opts or {}
   if payload.module_discovery == nil then return true end
   if not safe_artifact_root(result.artifact_root) then
     return nil, "unsafe artifact_root for fkst-native module inventory"
@@ -593,7 +594,7 @@ local function write_module_inventory(result, payload, context)
   local inventory = module_inventory.inventory(payload.module_discovery, payload.ui_loop, result.artifact_root, {
     readiness = readiness_summary(payload.preflight_result),
   })
-  local planning = module_planning.build(inventory, payload.ui_loop, result.artifact_root, {
+  local planning_opts = {
     mutation_fixtures = ((payload.cdp_execution or {}).mutation_fixtures),
     ai_generation = ((payload.cdp_execution or {}).ai_generation),
     ai_agent_generation = ((payload.cdp_execution or {}).ai_agent_generation),
@@ -601,7 +602,11 @@ local function write_module_inventory(result, payload, context)
     generated_case_agent_review = ((payload.cdp_execution or {}).generated_case_agent_review),
     step_budget = ((payload.cdp_execution or {}).step_budget),
     case_priorities = ((payload.cdp_execution or {}).case_priorities),
-  })
+  }
+  if opts.planning == nil and result.native_summary ~= nil and result.native_summary.schema == module_cdp_execution.summary_schema then
+    planning_opts.ai_generation = nil
+  end
+  local planning = opts.planning or module_planning.build(inventory, payload.ui_loop, result.artifact_root, planning_opts)
   if result.native_summary == nil or result.native_summary.schema ~= module_cdp_execution.summary_schema then
     result.native_summary = module_inventory.summary(inventory, result.artifact_root, payload.module, result.status)
     result.native_summary.feature_inventory_path = planning.feature_inventory_path
@@ -651,7 +656,7 @@ end
 
 local function with_metadata(result, payload, context, opts)
   opts = opts or {}
-  local inventory_ok, inventory_err, planning = write_module_inventory(result, payload, context)
+  local inventory_ok, inventory_err, planning = write_module_inventory(result, payload, context, opts)
   if not inventory_ok then
     return context.result_payload("blocked", {
       adapter = result.adapter,
@@ -705,8 +710,9 @@ function M.run(job, payload, context, dependencies)
     end
     if payload.cdp_execution ~= nil then
       local identity = context.result_payload("planned", {})
-      local artifact = module_cdp_execution.build(payload, identity.artifact_root, {
+      local artifact, planning = module_cdp_execution.build(payload, identity.artifact_root, {
         readiness = readiness_summary(payload.preflight_result),
+        artifact_reader = payload.artifact_reader,
       })
       if artifact.execution_status ~= "blocked" then
         artifact = module_cdp_runtime.run(artifact, identity, payload, dependencies.runtime_ports)
@@ -730,7 +736,7 @@ function M.run(job, payload, context, dependencies)
           stderr = "fkst-native artifact write failed: " .. tostring(err),
         })
       end
-      return with_metadata(result, payload, context, { artifact = artifact })
+      return with_metadata(result, payload, context, { artifact = artifact, planning = planning })
     end
     local result = context.result_payload("degraded", {
       adapter = adapter("module-ui-loop-contract"),

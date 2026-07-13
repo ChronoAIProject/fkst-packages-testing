@@ -1,4 +1,7 @@
 local core = require("core")
+local ai = require("module_ai_generation")
+local module_inventory = require("module_inventory")
+local native = require("fkst_native")
 local t = fkst.test
 
 local fixture_origin = "http://localhost:8080"
@@ -49,6 +52,27 @@ local function passed_receipt()
     blocked_action_count = 0,
     actions = actions,
   }
+end
+
+local function append_ai_action(receipt)
+  local pointer = ".testing/runs/module-a-cdp/evidence/execution/dashboard-ai-visible-surface.json"
+  table.insert(receipt.actions, {
+    step = #receipt.actions + 1,
+    case_id = "dashboard:ai-visible-surface",
+    action = "open-visible-surface",
+    execution_status = "executed",
+    assertion_status = "passed",
+    observation = "typed browser action and assertions completed",
+    evidence_pointer = pointer,
+    assertion_results = {
+      { type = "visible-target-present", status = "passed", observation = "visible target passed", evidence_pointer = pointer },
+      { type = "url-within-scope", status = "passed", observation = "url scope passed", evidence_pointer = pointer },
+      { type = "document-ready", status = "passed", observation = "document ready passed", evidence_pointer = pointer },
+    },
+  })
+  receipt.action_count = #receipt.actions
+  receipt.executed_action_count = #receipt.actions
+  return receipt
 end
 
 local function failed_receipt()
@@ -140,6 +164,89 @@ local function request(overrides)
   return value
 end
 
+local function approval_result(proposal_id, source_ref, extra)
+  local value = {
+    schema = "consensus.consensus_reached.v1",
+    proposal_id = proposal_id,
+    decision = "approve",
+    source_ref = source_ref,
+    angle_results = {
+      { angle = "teleology", verdict = "approve", exit_code = 0 },
+      { angle = "parsimony", verdict = "approve", exit_code = 0 },
+      { angle = "fidelity", verdict = "approve", exit_code = 0 },
+      { angle = "natural-ownership", verdict = "approve", exit_code = 0 },
+      { angle = "proportional-containment", verdict = "approve", exit_code = 0 },
+    },
+  }
+  for key, item in pairs(extra or {}) do value[key] = item end
+  return value
+end
+
+local function reviewed_ai_documents()
+  local root = ".testing/runs/module-a-cdp"
+  local ai_request = {
+    schema = ai.request_schema,
+    mode = "autonomous-reviewed",
+    case_budget = 1,
+    context_manifest_path = root .. "/ai-context-manifest.json",
+    generated_cases_path = root .. "/generated-test-cases.json",
+    generated_case_gate_path = root .. "/generated-case-gate.json",
+    ai_agent_generation_path = root .. "/ai-agent-generation.json",
+    generated_case_agent_review_path = root .. "/generated-case-agent-review.json",
+    ai_test_design_loop_path = root .. "/ai-test-design-loop.json",
+  }
+  local payload = request()
+  local inventory = module_inventory.inventory(payload.module_discovery, payload.ui_loop, root, {
+    readiness = { status = "ready" },
+  })
+  local context = ai.build_context(inventory, payload.ui_loop, root, {
+    ai_generation = ai_request,
+    step_budget = 8,
+    case_priorities = { "P0", "P1" },
+  })
+  local generated = ai.canonicalize_candidates(context, ai_request, {
+    schema = ai.candidate_schema,
+    cases = {
+      {
+        module_id = "dashboard",
+        priority = "P1",
+        title = "Open dashboard details",
+        objective = "Verify dashboard details open from the visible surface.",
+        case_kind = "read-only-interaction",
+        actions = {
+          { action = "open-visible-surface", target = "Dashboard", expected = "Dashboard details are visible." },
+        },
+        expected_observable = "Dashboard details remain visible and same-origin.",
+      },
+    },
+  }, "model-dashboard")
+  generated.cases[1].id = "dashboard:ai-visible-surface"
+  local gate = ai.gate_generated_cases(generated, context, ai_request)
+  local agent_generation = ai.generation_from_agent_results(context, approval_result("testing-ai-generation", {
+    kind = "testing-ai-generation",
+    ref = root,
+  }, {
+    candidate_generation_digest = generated.generation_digest,
+    generated_case_count = generated.case_count,
+  }))
+  local agent_review = ai.review_from_agent_results(context, gate, approval_result("testing-ai-review", {
+    kind = "testing-ai-review",
+    ref = root,
+  }))
+  local closure = ai.build_review_closure(context, generated, gate, agent_generation, agent_review)
+  local docs = {
+    [context.context_manifest_path] = context,
+    [context.generated_cases_path] = generated,
+    [context.generated_case_gate_path] = gate,
+    [context.ai_agent_generation_path] = agent_generation,
+    [context.generated_case_agent_review_path] = agent_review,
+    [context.ai_test_design_loop_path] = closure,
+  }
+  local encoded = {}
+  for path, doc in pairs(docs) do encoded[path] = native.json_encode(doc) .. "\n" end
+  return ai_request, encoded
+end
+
 return {
   test_fkst_native_module_cdp_execution_runs_typed_runtime_and_writes_terminal_artifact = function()
     local written = {}
@@ -179,6 +286,35 @@ return {
     for _, body in pairs(written) do t.eq(body:find(fixture_cdp_url, 1, true), nil) end
     t.is_true(written[".testing/runs/module-a-cdp/metadata.json"]:find('"schema":"testing-runner.module-cdp-execution-summary.v1"', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-cdp/metadata.json"]:find('"evidence_bundle_path":".testing/runs/module-a-cdp/evidence-bundle.json"', 1, true) ~= nil)
+  end,
+
+  test_fkst_native_module_cdp_execution_resumes_reviewed_ai_artifacts_from_pointers = function()
+    local ai_request, documents = reviewed_ai_documents()
+    local written = {}
+    local runtime, runtime_written = runtime_dependencies(append_ai_action(passed_receipt()))
+    local cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      step_budget = 8,
+      case_priorities = { "P0", "P1" },
+      ai_generation = ai_request,
+    }
+    local result = core.run("module", request({
+      cdp_execution = cdp_execution,
+      artifact_reader = function(path)
+        return documents[path]
+      end,
+      artifact_writer = function(path, body)
+        written[path] = body
+        return true
+      end,
+    }), runtime)
+    t.eq(result.status, "passed")
+    t.eq(result.native_summary.generated_case_gate_path, ".testing/runs/module-a-cdp/generated-case-gate.json")
+    t.eq(result.native_summary.ai_agent_generation_path, ".testing/runs/module-a-cdp/ai-agent-generation.json")
+    t.eq(result.native_summary.generated_case_agent_review_path, ".testing/runs/module-a-cdp/generated-case-agent-review.json")
+    t.is_true(written[".testing/runs/module-a-cdp/test-plan.json"]:find('"case_origin":"ai-generated"', 1, true) ~= nil)
+    t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find('"case_id":"dashboard:ai-visible-surface"', 1, true) ~= nil)
+    t.is_true(runtime_written[".testing/runs/module-a-cdp/browser-execution-request.json"]:find('"case_id":"dashboard:ai-visible-surface"', 1, true) ~= nil)
   end,
 
   test_fkst_native_module_cdp_execution_classifies_valid_failed_assertion_as_product_defect = function()
