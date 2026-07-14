@@ -3070,8 +3070,6 @@
 {"file":"libraries/testing_runtime/execution.lua","line":106,"normalized_line_hash":"f34d6f82685d7337","reason":"baseline"}
 {"file":"libraries/testing_runtime/json.lua","line":13,"normalized_line_hash":"b776e1502600506f","reason":"baseline"}
 {"file":"libraries/testing_runtime/ports.lua","line":5,"normalized_line_hash":"7851c7c7d0a41914","reason":"baseline"}
-{"file":"libraries/testing_runtime/ports.lua","line":15,"normalized_line_hash":"b29178b27d9659bc","reason":"baseline"}
-{"file":"libraries/testing_runtime/ports.lua","line":22,"normalized_line_hash":"6369b432a987706a","reason":"baseline"}
 {"file":"libraries/testing_runtime/ports.lua","line":31,"normalized_line_hash":"88447fc1f031c099","reason":"baseline"}
 {"file":"libraries/testing_runtime/receipt.lua","line":14,"normalized_line_hash":"a9e4e91a0cbebf89","reason":"baseline"}
 {"file":"libraries/testing_runtime/receipt.lua","line":17,"normalized_line_hash":"e3dec7522c5c4e4d","reason":"baseline"}
@@ -6213,16 +6211,10 @@
 {"file":"libraries/testkit/testing.lua","line":69,"normalized_line_hash":"632d087d6db619c4","reason":"baseline"}
 {"file":"libraries/testkit/testing.lua","line":70,"normalized_line_hash":"da17eda08bb641d1","reason":"baseline"}
 {"file":"libraries/workflow/codex.lua","line":23,"normalized_line_hash":"5d7d679a027ea499","reason":"baseline"}
-{"file":"libraries/workflow/codex.lua","line":31,"normalized_line_hash":"72612a17be17a77a","reason":"baseline"}
-{"file":"libraries/workflow/codex.lua","line":32,"normalized_line_hash":"1004572a674fbf6c","reason":"baseline"}
 {"file":"libraries/workflow/codex.lua","line":33,"normalized_line_hash":"19921ccfad14c1de","reason":"baseline"}
-{"file":"libraries/workflow/codex.lua","line":35,"normalized_line_hash":"ae8bb75bfb9f1eaf","reason":"baseline"}
-{"file":"libraries/workflow/codex.lua","line":42,"normalized_line_hash":"ca620777240207ad","reason":"baseline"}
-{"file":"libraries/workflow/codex.lua","line":43,"normalized_line_hash":"4e083fc738013914","reason":"baseline"}
 {"file":"libraries/workflow/codex.lua","line":51,"normalized_line_hash":"19921ccfad14c1de","reason":"baseline"}
 {"file":"libraries/workflow/codex.lua","line":58,"normalized_line_hash":"19921ccfad14c1de","reason":"baseline"}
 {"file":"libraries/workflow/codex.lua","line":62,"normalized_line_hash":"19921ccfad14c1de","reason":"baseline"}
-{"file":"libraries/workflow/codex.lua","line":66,"normalized_line_hash":"7e4fe8351c22e218","reason":"baseline"}
 {"file":"libraries/workflow/codex.lua","line":74,"normalized_line_hash":"6d37e28fd449c557","reason":"baseline"}
 {"file":"libraries/workflow/codex.lua","line":78,"normalized_line_hash":"710e363575fee1e1","reason":"baseline"}
 {"file":"libraries/workflow/codex.lua","line":81,"normalized_line_hash":"dde44124f1ee421c","reason":"baseline"}

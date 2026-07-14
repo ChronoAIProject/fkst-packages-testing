@@ -291,11 +291,14 @@ PY
 # repo as an external project root. Reused verbatim from the pinned checkout.
 run_source_ratchets() {
   echo "=== source ratchets ==="
-  local args=(--project-root "$ROOT") env_args=() coverage_base
+  local args=(--project-root "$ROOT") coverage_base
   [ -d "$ROOT/.fkst/conformance/allowlists" ] && args+=(--allowlist-dir "$ROOT/.fkst/conformance/allowlists")
   coverage_base="$(local_coverage_base_ref)"
-  [ -z "$coverage_base" ] || env_args+=(FKST_LUA_COVERAGE_BASE_REF="$coverage_base")
-  env "${env_args[@]}" PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -B "$shared/scripts/check_repo.py" "${args[@]}"
+  if [ -n "$coverage_base" ]; then
+    env FKST_LUA_COVERAGE_BASE_REF="$coverage_base" PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -B "$shared/scripts/check_repo.py" "${args[@]}"
+  else
+    env PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -B "$shared/scripts/check_repo.py" "${args[@]}"
+  fi
 }
 
 list_packages() {
@@ -526,7 +529,7 @@ append_coverage_artifact() {
 }
 
 enforce_lua_coverage_ratchet() {
-  local output="${FKST_LUA_COVERAGE_OUTPUT:-$ROOT/.fkst/run/lua-coverage/coverage.json}" env_args=() coverage_base
+  local output="${FKST_LUA_COVERAGE_OUTPUT:-$ROOT/.fkst/run/lua-coverage/coverage.json}" coverage_base
   if [ "${#COVERAGE_ARTIFACTS[@]}" -eq 0 ]; then
     echo "error: Lua coverage ratchet has no package coverage artifacts" >&2
     return 1
@@ -556,11 +559,16 @@ PY
   (
     cd "$ROOT"
     coverage_base="$(local_coverage_base_ref)"
-    [ -z "$coverage_base" ] || env_args+=(FKST_LUA_COVERAGE_BASE_REF="$coverage_base")
-    env "${env_args[@]}" \
-      PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" \
-      FKST_LUA_COVERAGE_JSON="$output" \
-      "$PYTHON_BIN" -B "$shared/scripts/check_repo_coverage.py"
+    if [ -n "$coverage_base" ]; then
+      env FKST_LUA_COVERAGE_BASE_REF="$coverage_base" \
+        PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+        FKST_LUA_COVERAGE_JSON="$output" \
+        "$PYTHON_BIN" -B "$shared/scripts/check_repo_coverage.py"
+    else
+      env PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+        FKST_LUA_COVERAGE_JSON="$output" \
+        "$PYTHON_BIN" -B "$shared/scripts/check_repo_coverage.py"
+    fi
   )
 }
 
