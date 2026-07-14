@@ -564,4 +564,45 @@ return {
       })
     end)
   end,
+
+  test_persists_final_report_immutably_from_rendered_pointer = function()
+    local files = {
+      [".testing/runs/platform/.rendered/final-aggregate-report.md"] = "# Final report\n",
+    }
+    local ports = {
+      read = function(path) return files[path] end,
+      write = function(path, content) files[path] = content return true end,
+    }
+    local rendered = {
+      schema = "testing-runner.final-aggregate-report.v1",
+      job = "platform-test-loop",
+      status = "passed",
+      artifact_root = ".testing/runs/platform",
+      metadata_path = ".testing/runs/platform/metadata.json",
+      rendered_report_path = ".testing/runs/platform/.rendered/final-aggregate-report.md",
+      final_report_path = ".testing/runs/platform/final-report.md",
+      source_ref = { kind = "platform", ref = "platform" },
+      trace_id = "trace-platform",
+      dedup_key = "platform-run",
+      publication_mode = "artifact-only",
+      publication_dry_run = true,
+    }
+    local summary = core.persist_final_report(rendered, ports)
+    t.eq(summary.final_report_path, ".testing/runs/platform/final-report.md")
+    t.eq(summary.publication_mode, "artifact-only")
+    t.eq(summary.publication_dry_run, true)
+    t.eq(files[summary.final_report_path], "# Final report\n")
+    core.persist_final_report(rendered, ports)
+    files[summary.final_report_path] = "different"
+    t.raises(function() core.persist_final_report(rendered, ports) end)
+  end,
+
+  test_final_report_persistence_requires_rendered_artifact = function()
+    t.raises(function()
+      core.persist_final_report({ schema = "unknown" }, {
+        read = function() return nil end,
+        write = function() return true end,
+      })
+    end)
+  end,
 }

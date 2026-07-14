@@ -14,7 +14,13 @@ local function done(_event)
 end
 
 local function act(event)
-  local summary = core.from_testing_result(event.payload or {})
+  local payload = event.payload or {}
+  local summary
+  if payload.schema == "testing-runner.final-aggregate-report.v1" then
+    summary = core.persist_final_report(payload)
+  else
+    summary = core.from_testing_result(payload)
+  end
   log.info("test-artifacts dept=summarize tag=SUMMARY status=" .. tostring(summary.status))
   raise("artifact_summary", summary)
 end

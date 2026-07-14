@@ -287,6 +287,53 @@ function M.issue_drafts_path(artifact_root)
   return artifact_root .. "/issue-drafts.json"
 end
 
+function M.final_aggregate_report_path(artifact_root)
+  return artifact_root .. "/final-report.md"
+end
+
+function M.rendered_aggregate_report_path(artifact_root)
+  return artifact_root .. "/.rendered/final-aggregate-report.md"
+end
+
+local function require_aggregate_report(condition, message)
+  if not condition then
+    error("testing-runner: malformed-final-aggregate: " .. message)
+  end
+end
+
+function M.final_aggregate(aggregate, coverage_matrix)
+  require_aggregate_report(type(aggregate) == "table" and aggregate.schema == "platform-test-loop.aggregate.v1", "aggregate schema is unknown")
+  require_aggregate_report(type(aggregate.modules) == "table", "aggregate modules are required")
+  require_aggregate_report(type(coverage_matrix) == "table" and coverage_matrix.schema == "platform-test-loop.coverage-matrix.v1", "coverage matrix schema is unknown")
+  require_aggregate_report(type(coverage_matrix.rows) == "table", "coverage matrix rows are required")
+
+  local lines = {}
+  local run_ref = type(aggregate.source_ref) == "table" and aggregate.source_ref.ref or nil
+  add_line(lines, "# Final platform testing report")
+  add_line(lines, "")
+  add_line(lines, "- Run: " .. line_value(run_ref, aggregate.dedup_key))
+  add_line(lines, "- Trace ID: " .. line_value(aggregate.trace_id, "not-recorded"))
+  add_line(lines, "- Status: " .. line_value(aggregate.status, "unknown"))
+  add_line(lines, "- Artifact root: " .. line_value(aggregate.artifact_root, "not-recorded"))
+  add_line(lines, "")
+  add_line(lines, "## Modules")
+  for _, module in ipairs(aggregate.modules) do
+    local report = module.module_report_path and "[module report](" .. module.module_report_path .. ")" or "module report not recorded"
+    add_line(lines, "- " .. line_value(module.module, "module") .. ": " .. line_value(module.status, "unknown") .. " - " .. report)
+  end
+  add_line(lines, "")
+  add_line(lines, "## Matrix-backed coverage")
+  local backed = 0
+  for _, row in ipairs(coverage_matrix.rows) do
+    if row.evidence_pointer ~= nil then
+      backed = backed + 1
+      add_line(lines, "- " .. line_value(row.claim, row.id) .. " (`" .. line_value(row.module, "module") .. "`) - [evidence](" .. row.evidence_pointer .. ")")
+    end
+  end
+  if backed == 0 then add_line(lines, "- No matrix-backed coverage claims were supplied.") end
+  return table.concat(lines, "\n") .. "\n"
+end
+
 function M.build(result, payload, artifact, planning, backlog, paths)
   paths = paths or {}
   paths.metadata = paths.metadata or (result.artifact_root .. "/metadata.json")

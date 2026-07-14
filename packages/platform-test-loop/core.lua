@@ -4,6 +4,7 @@ local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
 
 local max_string = 512
+local max_coverage_rows = 64
 
 local statuses = {
   planned = true,
@@ -58,6 +59,16 @@ local function module_name(result, index)
   return "module-" .. tostring(index)
 end
 
+local function preserved_module_report(result)
+  local native = type(result.native_summary) == "table" and result.native_summary or nil
+  local path = native and native.stage_report_path or nil
+  if path == nil then return nil end
+  if result.artifact_root == nil or path ~= result.artifact_root .. "/stage-report.md" then
+    error("platform-test-loop: malformed-aggregate: module report must point under module artifact_root")
+  end
+  return path
+end
+
 local function copy_module_result(result, index)
   if type(result) ~= "table" then
     error("platform-test-loop: malformed-aggregate: module result must be a table")
@@ -80,7 +91,9 @@ local function copy_module_result(result, index)
     status = result.status,
     source_ref = src,
   }
+  local module_report_path = preserved_module_report(result)
   if result.artifact_root ~= nil then copy.artifact_root = result.artifact_root end
+  if module_report_path ~= nil then copy.module_report_path = module_report_path end
   if result.dedup_key ~= nil then copy.dedup_key = result.dedup_key end
   if type(result.exit_code) == "number" then copy.exit_code = result.exit_code end
   return copy
@@ -272,6 +285,80 @@ function M.aggregate_result(payload)
       src.ref,
       artifact_root,
     }),
+  }
+end
+
+local function require_completion(condition, message)
+  if not condition then
+    error("platform-test-loop: malformed-completion: " .. message)
+  end
+end
+
+local function completion_barrier(value)
+  require_completion(type(value) == "table", "completion_barrier must be a table")
+  require_completion(value.schema == testing_contract.schemas.platform_completion_barrier, "completion_barrier schema is unknown")
+  require_completion(type(value.satisfied) == "boolean", "completion_barrier.satisfied must be boolean")
+  return {
+    schema = testing_contract.schemas.platform_completion_barrier,
+    satisfied = value.satisfied,
+  }
+end
+
+local function aggregate_modules(aggregate)
+  local modules = {}
+  for _, result in ipairs(aggregate.modules) do modules[result.module] = true end
+  return modules
+end
+
+local function coverage_matrix(value, aggregate)
+  require_completion(type(value) == "table", "coverage_matrix must be a table")
+  require_completion(value.schema == testing_contract.schemas.platform_coverage_matrix, "coverage_matrix schema is unknown")
+  require_completion(dense_list(value.rows) and #value.rows <= max_coverage_rows, "coverage_matrix.rows must be a bounded dense list")
+  local known_modules = aggregate_modules(aggregate)
+  local rows = {}
+  for _, row in ipairs(value.rows) do
+    require_completion(type(row) == "table", "coverage matrix rows must be tables")
+    require_completion(testing_contract.is_bounded_id(row.id), "coverage row id must be bounded")
+    require_completion(bounded_string(row.module), "coverage row module must be bounded")
+    require_completion(bounded_string(row.claim), "coverage row claim must be bounded")
+    require_completion(known_modules[row.module] == true, "coverage row module must exist in the aggregate")
+    if row.evidence_pointer ~= nil then
+      require_completion(strings.is_artifact_root(row.evidence_pointer), "coverage evidence must be an artifact pointer")
+    end
+    table.insert(rows, {
+      id = row.id,
+      module = row.module,
+      claim = row.claim,
+      evidence_pointer = row.evidence_pointer,
+    })
+  end
+  return {
+    schema = testing_contract.schemas.platform_coverage_matrix,
+    rows = rows,
+  }
+end
+
+local function publication_config(value)
+  require_completion(type(value) == "table", "publication must be a table")
+  require_completion(value.mode == "artifact-only", "publication.mode must be artifact-only")
+  require_completion(value.dry_run == true, "publication.dry_run must be true")
+  return { mode = "artifact-only", dry_run = true }
+end
+
+function M.completion_request(payload)
+  local aggregate = M.aggregate_result(payload)
+  local barrier = completion_barrier(payload.completion_barrier)
+  local matrix = coverage_matrix(payload.coverage_matrix, aggregate)
+  local publication = publication_config(payload.publication)
+  aggregate.completion_barrier = barrier
+  aggregate.coverage_matrix = matrix
+  if not barrier.satisfied then return nil end
+  require_completion(aggregate.counts.total > 0 and aggregate.counts.planned == 0, "a satisfied barrier requires terminal modules")
+  return {
+    schema = testing_contract.schemas.final_aggregate_report_request,
+    aggregate = aggregate,
+    coverage_matrix = matrix,
+    publication = publication,
   }
 end
 

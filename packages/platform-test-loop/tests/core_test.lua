@@ -270,6 +270,46 @@ return {
     end)
   end,
 
+  test_aggregate_rejects_module_report_outside_module_artifact_root = function()
+    t.raises(function()
+      local result = module_result("module-a", "passed")
+      result.native_summary = { stage_report_path = ".testing/runs/other/stage-report.md" }
+      core.aggregate_result({
+        schema = "platform-test-loop.aggregate.v1",
+        module_results = { result },
+      })
+    end)
+  end,
+
+  test_completion_requires_a_valid_barrier = function()
+    t.raises(function()
+      core.completion_request({
+        schema = "platform-test-loop.aggregate.v1",
+        module_results = { module_result("module-a", "passed") },
+        completion_barrier = { schema = "unknown", satisfied = true },
+        coverage_matrix = { schema = "platform-test-loop.coverage-matrix.v1", rows = {} },
+        publication = { mode = "artifact-only", dry_run = true },
+      })
+    end)
+  end,
+
+  test_satisfied_completion_rejects_nonterminal_modules = function()
+    t.raises(function()
+      core.completion_request({
+        schema = "platform-test-loop.aggregate.v1",
+        modules = { "module-a" },
+        completion_barrier = { schema = "platform-test-loop.completion-barrier.v1", satisfied = true },
+        coverage_matrix = { schema = "platform-test-loop.coverage-matrix.v1", rows = {} },
+        publication = { mode = "artifact-only", dry_run = true },
+      })
+    end)
+  end,
+
+  test_completion_seam_loads_with_platform_aggregate_output = function()
+    local seam = require("departments.seam.main")
+    t.eq(type(seam.pipeline), "function")
+  end,
+
   test_saga_conformance_hook_passes = function()
     t.eq(#core.saga_conformance_errors(), 0)
   end,

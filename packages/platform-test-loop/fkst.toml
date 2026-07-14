@@ -9,7 +9,7 @@ root = "."
 libraries = ["contract", "workflow", "testkit"]
 
 [event_deps]
-packages = ["testing-runner"]
+packages = ["testing-runner", "test-artifacts", "test-publication"]
 
 [conformance]
 pack = "conformance/pack.toml"

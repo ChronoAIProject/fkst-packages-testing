@@ -39,4 +39,38 @@ return {
     t.eq(summary.exit_code, 3)
     t.eq(summary.stderr_excerpt, "check failed")
   end,
+
+  test_summarize_department_persists_final_report = function()
+    local root = ".testing/runs/test-artifacts-final-department"
+    local removed = os.execute("rm -rf '" .. root .. "'")
+    assert(removed == true or removed == 0)
+    local created = os.execute("mkdir -p '" .. root .. "/.rendered'")
+    assert(created == true or created == 0)
+    local handle = assert(io.open(root .. "/.rendered/final-aggregate-report.md", "w"))
+    assert(handle:write("# Final report\n"))
+    handle:close()
+
+    local trace = testing.run_fake(dept, {
+      queue = "testing_result",
+      payload = {
+        schema = "testing-runner.final-aggregate-report.v1",
+        job = "platform-test-loop",
+        status = "passed",
+        artifact_root = root,
+        metadata_path = root .. "/metadata.json",
+        rendered_report_path = root .. "/.rendered/final-aggregate-report.md",
+        final_report_path = root .. "/final-report.md",
+        source_ref = { kind = "platform", ref = "platform-final" },
+        trace_id = "trace-platform-final",
+        dedup_key = "platform-final-run",
+        publication_mode = "artifact-only",
+        publication_dry_run = true,
+      },
+    })
+    t.eq(#trace.raises, 1)
+    t.eq(trace.raises[1].payload.final_report_path, root .. "/final-report.md")
+    local final = assert(io.open(root .. "/final-report.md", "r"))
+    t.eq(final:read("*a"), "# Final report\n")
+    final:close()
+  end,
 }

@@ -384,4 +384,48 @@ function M.run(job, payload, dependencies)
   })
 end
 
+local function require_final_aggregate(condition, message)
+  if not condition then
+    error("testing-runner: malformed-final-aggregate: " .. message)
+  end
+end
+
+function M.validate_final_aggregate_request(payload)
+  require_final_aggregate(type(payload) == "table", "payload must be a table")
+  require_final_aggregate(payload.schema == testing_contract.schemas.final_aggregate_report_request, "request schema is unknown")
+  local aggregate = payload.aggregate
+  require_final_aggregate(type(aggregate) == "table" and aggregate.schema == "platform-test-loop.aggregate.v1", "aggregate schema is unknown")
+  require_final_aggregate(safe_artifact_root(aggregate.artifact_root), "aggregate artifact_root is unsafe")
+  require_final_aggregate(type(aggregate.completion_barrier) == "table" and aggregate.completion_barrier.satisfied == true, "completion barrier is not satisfied")
+  require_final_aggregate(type(aggregate.counts) == "table" and aggregate.counts.total > 0 and aggregate.counts.planned == 0, "aggregate modules are not terminal")
+  require_final_aggregate(type(payload.coverage_matrix) == "table" and payload.coverage_matrix.schema == testing_contract.schemas.platform_coverage_matrix, "coverage matrix schema is unknown")
+  require_final_aggregate(type(payload.publication) == "table" and payload.publication.mode == "artifact-only" and payload.publication.dry_run == true, "publication must be artifact-only dry-run")
+  return payload
+end
+
+function M.render_final_aggregate(payload, artifact_ports)
+  local reporting = require("reporting")
+  local artifact_io = require("testing_runtime.artifact_io")
+  payload = M.validate_final_aggregate_request(payload)
+  local aggregate = payload.aggregate
+  local rendered_path = reporting.rendered_aggregate_report_path(aggregate.artifact_root)
+  local final_path = reporting.final_aggregate_report_path(aggregate.artifact_root)
+  local markdown = reporting.final_aggregate(aggregate, payload.coverage_matrix)
+  artifact_io.write_immutable(rendered_path, markdown, artifact_ports)
+  return {
+    schema = testing_contract.schemas.final_aggregate_report,
+    job = "platform-test-loop",
+    status = aggregate.status,
+    artifact_root = aggregate.artifact_root,
+    metadata_path = aggregate.metadata_path,
+    rendered_report_path = rendered_path,
+    final_report_path = final_path,
+    source_ref = aggregate.source_ref,
+    trace_id = aggregate.trace_id,
+    dedup_key = aggregate.dedup_key,
+    publication_mode = payload.publication.mode,
+    publication_dry_run = payload.publication.dry_run,
+  }
+end
+
 return M

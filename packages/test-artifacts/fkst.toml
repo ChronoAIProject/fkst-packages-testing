@@ -6,7 +6,7 @@ persistence_class = "stateless_adapter"
 root = "."
 
 [lib_deps]
-libraries = ["contract", "workflow", "testkit"]
+libraries = ["contract", "workflow", "testkit", "testing_runtime"]
 
 [conformance]
 pack = "conformance/pack.toml"

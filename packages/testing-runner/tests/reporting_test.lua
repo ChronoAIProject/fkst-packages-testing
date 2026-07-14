@@ -1,4 +1,5 @@
 local core = require("core")
+local reporting = require("reporting")
 local t = fkst.test
 
 local fixture_origin = "http://localhost:8080"
@@ -105,5 +106,53 @@ return {
     t.is_true(metadata:find('"stage_report_path":".testing/runs/module-a-report/stage-report.md"', 1, true) ~= nil)
     t.is_true(metadata:find("Executed user-facing scenarios", 1, true) == nil)
     t.is_true(metadata:find("recommendations", 1, true) == nil)
+  end,
+
+  test_final_aggregate_report_uses_only_evidence_backed_matrix_rows = function()
+    local aggregate = {
+      schema = "platform-test-loop.aggregate.v1",
+      status = "passed",
+      artifact_root = ".testing/runs/platform-report",
+      source_ref = { kind = "platform", ref = "platform-report" },
+      trace_id = "trace-platform-report",
+      dedup_key = "platform-report-run",
+      modules = {
+        {
+          module = "module-a",
+          status = "passed",
+          module_report_path = ".testing/runs/module-a/stage-report.md",
+        },
+      },
+    }
+    local report = reporting.final_aggregate(aggregate, {
+      schema = "platform-test-loop.coverage-matrix.v1",
+      rows = {
+        {
+          id = "backed",
+          module = "module-a",
+          claim = "Backed coverage",
+          evidence_pointer = ".testing/runs/module-a/evidence/backed.json",
+        },
+        { id = "unbacked", module = "module-a", claim = "Unbacked coverage" },
+      },
+    })
+    t.is_true(report:find("Backed coverage", 1, true) ~= nil)
+    t.eq(report:find("Unbacked coverage", 1, true), nil)
+    t.is_true(report:find(".testing/runs/module-a/stage-report.md", 1, true) ~= nil)
+
+    local empty = reporting.final_aggregate(aggregate, {
+      schema = "platform-test-loop.coverage-matrix.v1",
+      rows = {},
+    })
+    t.is_true(empty:find("No matrix-backed coverage claims", 1, true) ~= nil)
+  end,
+
+  test_final_aggregate_report_rejects_unknown_schema = function()
+    t.raises(function()
+      reporting.final_aggregate({ schema = "unknown" }, {})
+    end)
+    t.raises(function()
+      core.render_final_aggregate({ schema = "unknown" }, {})
+    end)
   end,
 }

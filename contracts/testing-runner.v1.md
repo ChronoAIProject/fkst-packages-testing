@@ -53,6 +53,18 @@ A native module profile is downstream-owned configuration, not a new fkst event 
 
 The preferred native UI posture is `backend = "fkst-native"`, `dry_run = false`, `ui_loop`, `module_discovery`, and `cdp_execution`. If readiness gating is used, `browser-readiness.result.v1.request_context` may carry only `native_argv`, `dry_run`, and `no_browser`; later lifecycle packages restore those fields from the preflight result. Product module names, product URLs, host environment variable names, credentials, browser state, large reports, and publication destinations belong in the downstream host repository, not in this package set.
 
+## Final platform aggregate report
+
+`platform-test-loop.platform_aggregate` accepts the existing `platform-test-loop.aggregate.v1` payload plus three bounded completion inputs:
+
+- `completion_barrier` uses `platform-test-loop.completion-barrier.v1` with boolean `satisfied`;
+- `coverage_matrix` uses `platform-test-loop.coverage-matrix.v1` with at most 64 `{ id, module, claim, evidence_pointer? }` rows whose modules exist in the aggregate;
+- `publication` must be `{ mode = "artifact-only", dry_run = true }` for this walking-skeleton path.
+
+The completion package emits `testing-runner.final-aggregate-report-request.v1` only when the barrier is satisfied and every module is terminal. The aggregate preserves a module's existing `<module artifact_root>/stage-report.md` pointer as `module_report_path`; it never rewrites the module report. Coverage rows without an artifact evidence pointer remain auditable matrix input but are not rendered as coverage claims.
+
+`testing-runner.final-aggregate-report.v1` is pointer-only. It identifies the aggregate, the rendered staging pointer, the final `<platform artifact_root>/final-report.md` pointer, trace/dedup identity, and artifact-only dry-run publication mode. The Markdown content remains in artifact storage and is not carried in FKST events.
+
 ## Result queue
 
 All request types emit `testing-runner.testing_result` with:

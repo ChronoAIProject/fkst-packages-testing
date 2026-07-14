@@ -88,6 +88,8 @@ A host repository can keep its app-specific choices outside this package set and
 
 For multi-module flows, a host may pass module result pointers to `platform-test-loop.aggregate.v1`; the aggregate keeps per-module status/pointers and derives a platform status of `planned`, `passed`, `failed`, `blocked`, or `mixed`.
 
+For the artifact-only finalization path, a host delivers that aggregate to `platform-test-loop.platform_aggregate` with a scheduler-owned `platform-test-loop.completion-barrier.v1`, a bounded coverage matrix, and dry-run publication configuration. Nothing is finalized before the barrier. After it is satisfied, the composed path writes one immutable `final-report.md`, a deterministic normalized publication request, and a versioned dry-run receipt without calling an external publisher.
+
 ### No-browser native constraints
 
 The executable native paths are intentionally narrow: module UI-loop requests use bounded `ui_loop`, `module_discovery`, and `cdp_execution` facts; module no-browser requests run with `dry_run = false`, `no_browser = true`, and bounded `native_argv`; module browser requests run with `dry_run = false`, `e2e_driver`, and bounded `native_argv`. Missing module `native_argv` returns `planned`; `native_argv` targeting the legacy `agentic-testing` CLI or host wrapper returns `blocked`; `agentic_testing_repo_root` is not an active field. Online regression supports native no-browser HTTP heartbeat only when `heartbeat_url` is present. Other unsupported native live paths return `blocked` and must not fall back to legacy code.

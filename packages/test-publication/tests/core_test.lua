@@ -230,4 +230,41 @@ return {
       })
     end)
   end,
+
+  test_artifact_only_dry_run_persists_request_and_versioned_receipt = function()
+    local request = core.publication_request({
+      schema = "test-artifacts.summary.v1",
+      job = "platform-test-loop",
+      status = "passed",
+      artifact_root = ".testing/runs/platform-final",
+      final_report_path = ".testing/runs/platform-final/final-report.md",
+      publication_mode = "artifact-only",
+      publication_dry_run = true,
+      source_ref = { kind = "platform", ref = "platform-final" },
+      trace_id = "trace-platform-final",
+      dedup_key = "platform-final-run",
+    })
+    local files = {}
+    local ports = {
+      read = function(path) return files[path] end,
+      write = function(path, content) files[path] = content return true end,
+    }
+    local receipt = core.persist_dry_run(request, ports)
+    t.eq(request.final_report_path, ".testing/runs/platform-final/final-report.md")
+    t.eq(request.publication_mode, "artifact-only")
+    t.eq(core.is_artifact_only_dry_run(request), true)
+    t.eq(receipt.schema, "test-publication.dry-run-receipt.v1")
+    t.eq(receipt.publication_key, "platform-final-run")
+    t.eq(receipt.external_operation, false)
+    t.is_true(files[receipt.publication_request_path]:find('"final_report_path":".testing/runs/platform-final/final-report.md"', 1, true) ~= nil)
+    t.is_true(files[receipt.receipt_path]:find('"external_operation":false', 1, true) ~= nil)
+    core.persist_dry_run(request, ports)
+  end,
+
+  test_dry_run_adapter_rejects_non_dry_run_request = function()
+    t.eq(core.is_artifact_only_dry_run({}), false)
+    t.raises(function()
+      core.persist_dry_run({ schema = "test-publication.publication-request.v1" }, {})
+    end)
+  end,
 }
