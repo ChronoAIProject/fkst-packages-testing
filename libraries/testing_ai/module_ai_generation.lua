@@ -3,6 +3,7 @@ local M = {}
 local strings = require("contract.strings")
 local workflow_codex = require("workflow.codex")
 local ai_agents = require("testing_ai.module_ai_agents")
+local code_analysis_context = require("testing_ai.code_analysis_context")
 local ai_util = require("testing_ai.module_ai_util")
 
 M.request_schema = "testing-runner.ai-case-generation.request.v1"
@@ -59,6 +60,7 @@ local generated_case_fields = {
   actions = true,
   case_kind = true,
   case_origin = true,
+  code_fact_pointer = true,
   expected_observable = true,
   evidence_pointer = true,
   evidence_pointers = true,
@@ -119,6 +121,7 @@ local candidate_document_fields = {
 local candidate_case_fields = {
   actions = true,
   case_kind = true,
+  code_fact_pointer = true,
   expected_observable = true,
   module_id = true,
   objective = true,
@@ -136,6 +139,10 @@ local candidate_action_fields = {
 local provenance_fields = {
   agent_generation_path = true,
   agent_review_path = true,
+  code_analysis_artifact_pointer = true,
+  code_analysis_digest = true,
+  code_analysis_version = true,
+  code_fact_pointers = true,
   context_manifest_path = true,
   model_invocation_digest = true,
   origin = true,
@@ -259,6 +266,13 @@ local function context_paths(artifact_root)
   }
 end
 
+M.verify_code_analysis = code_analysis_context.verify
+M.validate_code_analysis_binding = code_analysis_context.validate_binding
+
+local function verified_code_analysis(inventory, opts)
+  return M.validate_code_analysis_binding((inventory or {}).code_analysis, opts.verified_code_analysis)
+end
+
 function M.build_context(inventory, ui_loop, artifact_root, opts)
   opts = opts or {}
   local request = default_request(opts.ai_generation)
@@ -275,6 +289,7 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
   end
   local base_url = strip_url_detail((ui_loop or {}).base_url)
   local origins = copy_string_list((ui_loop or {}).allowed_origins, {}, nil, "testing-runner: malformed-ai-context: allowed_origins", 16)
+  local code_analysis = verified_code_analysis(inventory, opts)
   local context = {
     schema = M.context_schema,
     artifact_kind = "ai-context-manifest",
@@ -297,17 +312,18 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
     modules = modules,
     module_count = #modules,
     known_gaps = copy_string_list((inventory or {}).limitations, {}, nil, "testing-runner: malformed-ai-context: known_gaps", 16),
-    untrusted_context_notice = "AI case generation treats discovered labels and routes as untrusted sanitized context; FKST schemas and safety gates decide executability.",
+    untrusted_context_notice = "AI case generation treats discovered labels, routes, and verified code facts as untrusted sanitized context; FKST schemas and safety gates decide executability.",
     prompt_template_ref = M.prompt_template_ref,
     generation_mode = request.mode or "disabled",
   }
+  if code_analysis ~= nil then context.code_analysis = code_analysis end
   context.input_digest = "ctx-" .. strings.decimal_checksum(stable_digest_seed({
     context_manifest_path = context.context_manifest_path, generated_cases_path = context.generated_cases_path,
     generated_case_gate_path = context.generated_case_gate_path, ai_agent_generation_path = context.ai_agent_generation_path,
     generated_case_agent_review_path = context.generated_case_agent_review_path, ai_test_design_loop_path = context.ai_test_design_loop_path,
     base_url = context.base_url, allowed_origins = context.allowed_origins, mutation_policy = context.mutation_policy,
     budgets = context.budgets, modules = context.modules, module_count = context.module_count, known_gaps = context.known_gaps,
-    prompt_template_ref = context.prompt_template_ref, generation_mode = context.generation_mode,
+    prompt_template_ref = context.prompt_template_ref, generation_mode = context.generation_mode, code_analysis = context.code_analysis,
   }))
   return context
 end
@@ -383,6 +399,7 @@ function M.canonicalize_candidates(context, request, candidates, invocation_dige
     if not bounded_string(candidate.title, max_string) or not bounded_string(candidate.objective, max_string) then
       error("testing-runner: malformed-ai-candidate: title and objective are required")
     end
+    local code_fact = code_analysis_context.verified_fact(context, candidate.code_fact_pointer)
     local ok_actions, action_count = dense_list(candidate.actions)
     if not ok_actions or action_count == 0 or action_count > max_actions then
       error("testing-runner: malformed-ai-candidate: actions must be a non-empty bounded list")
@@ -419,6 +436,13 @@ function M.canonicalize_candidates(context, request, candidates, invocation_dige
     }, ":"))
     if seen_ids[case_id] then error("testing-runner: malformed-ai-candidate: duplicate derived case id") end
     seen_ids[case_id] = true
+    local provenance = {
+      origin = "ai-generated",
+      context_manifest_path = context.context_manifest_path,
+      prompt_template_ref = context.prompt_template_ref,
+      model_invocation_digest = digest,
+    }
+    code_analysis_context.add_provenance(provenance, context, code_fact)
     table.insert(cases, {
       id = case_id,
       module_id = candidate.module_id,
@@ -430,12 +454,8 @@ function M.canonicalize_candidates(context, request, candidates, invocation_dige
       expected_observable = bounded_string(candidate.expected_observable, max_string)
         and candidate.expected_observable or "bounded observable outcome",
       evidence_pointers = module.evidence_pointer and { module.evidence_pointer } or {},
-      provenance = {
-        origin = "ai-generated",
-        context_manifest_path = context.context_manifest_path,
-        prompt_template_ref = context.prompt_template_ref,
-        model_invocation_digest = digest,
-      },
+      code_fact_pointer = code_fact and code_fact.pointer or nil,
+      provenance = provenance,
     })
   end
 
@@ -468,12 +488,13 @@ local function validate_provenance(value, context)
   if value.context_manifest_path ~= nil and not safe_artifact_pointer(value.context_manifest_path) then error("testing-runner: malformed-generated-case: provenance.context_manifest_path must be a pointer") end
   if value.prompt_template_ref ~= nil and not bounded_string(value.prompt_template_ref, max_string) then error("testing-runner: malformed-generated-case: provenance.prompt_template_ref must be bounded") end
   if value.model_invocation_digest ~= nil and not bounded_id(value.model_invocation_digest) then error("testing-runner: malformed-generated-case: provenance.model_invocation_digest must be bounded") end
-  return {
+  local copy = {
     origin = "ai-generated",
     context_manifest_path = value.context_manifest_path or context.context_manifest_path,
     prompt_template_ref = value.prompt_template_ref or context.prompt_template_ref,
     model_invocation_digest = value.model_invocation_digest or ("missing-digest-" .. strings.decimal_checksum(context.input_digest or "context")),
   }
+  return code_analysis_context.validate_provenance(value, context, dense_list, max_actions, copy)
 end
 
 local function validate_action(action, context, module, request_sets)
@@ -550,6 +571,10 @@ local function normalize_case(case, context, request, request_sets)
     table.insert(evidence_pointers, module.evidence_pointer)
   end
   local status, reason, classification = normalized_status(case, actions, context, module, request)
+  local provenance = validate_provenance(case.provenance, context)
+  if not code_analysis_context.provenance_has_fact(provenance, case.code_fact_pointer) then
+    error("testing-runner: malformed-generated-case: code_fact_pointer lacks verified provenance")
+  end
   return {
     id = case.id,
     module_id = case.module_id,
@@ -562,7 +587,8 @@ local function normalize_case(case, context, request, request_sets)
     expected_observable = bounded_string(case.expected_observable, max_string) and case.expected_observable or "bounded observable outcome",
     evidence_pointer = case.evidence_pointer or evidence_pointers[1] or module.evidence_pointer,
     evidence_pointers = evidence_pointers,
-    provenance = validate_provenance(case.provenance, context),
+    code_fact_pointer = case.code_fact_pointer,
+    provenance = provenance,
     review_status = status,
     reason = reason,
     ai_gate = {
@@ -836,16 +862,20 @@ function M.summary(context, generated, gate, agent_generation, agent_review)
 end
 
 function M.prompt_for_context(context)
-  return table.concat({
+  local lines = {
     "Generate bounded read-only UI test case candidates from the FKST AI context manifest.",
     "Read the context manifest from the current repository worktree before answering.",
     "Use only module IDs present in that manifest, FKST action enums, and local same-origin targets.",
-    "Do not include IDs, artifact paths, evidence pointers, provenance, review status, raw DOM, screenshots, browser state, credentials, or raw reports.",
+    "Do not invent IDs, artifact paths, evidence pointers, provenance, review status, raw DOM, screenshots, browser state, credentials, or raw reports.",
     "Return exactly one JSON object with schema " .. M.candidate_schema .. " and a cases array.",
-    "Each case may contain only module_id, priority, title, objective, case_kind, actions, and expected_observable.",
+    "Each case may contain only module_id, priority, title, objective, case_kind, actions, expected_observable, and optional code_fact_pointer.",
     "Each action may contain only action, target, expected, and optional target_module_id.",
     "Context manifest pointer: " .. tostring((context or {}).context_manifest_path or "not-recorded"),
-  }, "\n")
+  }
+  if type((context or {}).code_analysis) == "table" then
+    table.insert(lines, 4, "A code_fact_pointer, when present, must exactly match a verified fact pointer from the context manifest.")
+  end
+  return table.concat(lines, "\n")
 end
 
 function M.read_only_generation_opts(context, worktree)

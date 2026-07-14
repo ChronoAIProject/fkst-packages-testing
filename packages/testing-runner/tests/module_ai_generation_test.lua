@@ -214,6 +214,19 @@ return {
     t.eq(context.ai_test_design_loop_path, request.ai_test_design_loop_path)
   end,
 
+  test_planning_rejects_mismatched_prebuilt_ai_context = function()
+    local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request(),
+    })
+    context.schema = "testing-runner.ai-context-manifest.invalid"
+    t.raises(function()
+      planning.build(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+        ai_generation = ai_request(),
+        ai_context = context,
+      })
+    end)
+  end,
+
   test_context_digest_changes_when_sanitized_module_identity_changes = function()
     local first = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
       ai_generation = ai_request(),

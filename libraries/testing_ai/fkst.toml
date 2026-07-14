@@ -5,10 +5,10 @@ name = "testing_ai"
 root = "."
 
 [lib_deps]
-libraries = ["contract", "workflow"]
+libraries = ["code_analysis", "contract", "workflow"]
 
 [dependency_constraints]
-allowed_lib_deps = ["contract", "workflow"]
+allowed_lib_deps = ["code_analysis", "contract", "workflow"]
 
 [library]
 name = "testing_ai"

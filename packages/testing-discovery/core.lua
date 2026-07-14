@@ -1,5 +1,6 @@
 local M = {}
 
+local code_analysis = require("code_analysis.artifact")
 local source_ref = require("contract.source_ref")
 local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
@@ -19,6 +20,7 @@ local scope_fields = {
   artifact_root = true,
   base_url = true,
   budgets = true,
+  code_analysis = true,
   dedup_key = true,
   mutation_policy = true,
   observations = true,
@@ -48,6 +50,10 @@ local observation_fields = {
   route = true,
   source = true,
   visible_label = true,
+}
+
+local code_analysis_fields = {
+  repository_root = true,
 }
 
 local session_fields = {
@@ -291,6 +297,13 @@ function M.validate_scope(payload)
   local observations_ok, observation_count = dense_list(payload.observations or {})
   if not observations_ok or observation_count > max_observations then error("testing-discovery: malformed-request: observations must be a bounded dense list") end
   for _, observation in ipairs(payload.observations or {}) do validate_observation(observation) end
+  if payload.code_analysis ~= nil then
+    if type(payload.code_analysis) ~= "table" then error("testing-discovery: malformed-request: code_analysis must be a table") end
+    validate_has_only(payload.code_analysis, code_analysis_fields, "testing-discovery: malformed-request: code_analysis")
+    if not strings.is_path_safe_key(payload.code_analysis.repository_root, max_string) then
+      error("testing-discovery: malformed-request: code_analysis.repository_root must be a safe relative path")
+    end
+  end
   if not safe_artifact_root(payload.artifact_root) then error("testing-discovery: malformed-request: artifact_root must be a safe .testing/runs/... path") end
   if payload.source_ref ~= nil and not source_ref.has_bounded_source_ref(payload.source_ref, max_string) then error("testing-discovery: malformed-request: source_ref must be bounded") end
   if payload.trace_id ~= nil and not testing_contract.is_bounded_id(payload.trace_id) then error("testing-discovery: malformed-request: trace_id must be bounded") end
@@ -527,6 +540,15 @@ function M.plan(payload, _opts)
   return plan
 end
 
+function M.prepare_plan(payload, opts)
+  local plan = M.plan(payload)
+  if payload.code_analysis ~= nil then
+    local pointer = plan.artifact_root .. "/" .. code_analysis.filename
+    plan.code_analysis = code_analysis.persist(payload.code_analysis.repository_root, pointer, opts)
+  end
+  return plan
+end
+
 function M.readiness_check(plan)
   return {
     schema = "browser-readiness.check.v1",
@@ -561,6 +583,7 @@ function M.module_starts(plan, readiness_result)
         schema = "testing-runner.module-discovery.v1",
         observations = module.observations or {},
         limitations = plan.limitations,
+        code_analysis = plan.code_analysis,
       },
       cdp_execution = {
         schema = "testing-runner.module-cdp-execution.v1",

@@ -284,6 +284,10 @@ async function main(argv) {
     process.stdout.write(`${sha256(stableStringify(value))}\n`);
     return;
   }
+  if (command === 'hash-file') {
+    process.stdout.write(`${sha256(fs.readFileSync(options.input))}\n`);
+    return;
+  }
   if (command === 'manifest') {
     buildManifest(options.root, options.paths, options.out);
     return;
@@ -295,6 +299,7 @@ async function main(argv) {
   if (command === 'self-test') {
     const digest = sha256(stableStringify({ b: 2, a: 1 }));
     if (digest !== sha256('{"a":1,"b":2}')) throw new Error('stable hashing failed');
+    if (sha256(Buffer.from('exact bytes\n')) !== sha256('exact bytes\n')) throw new Error('file hashing failed');
     const previousTimeOrigin = 1000;
     if (pageStateReady({ readyState: 'complete', timeOrigin: previousTimeOrigin }, previousTimeOrigin)) {
       throw new Error('stale document readiness was accepted');

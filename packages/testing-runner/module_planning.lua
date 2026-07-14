@@ -179,11 +179,20 @@ function M.build(inventory, ui_loop, artifact_root, opts)
 
   local ai_context, generated_cases, generated_case_gate, agent_generation, agent_review, ai_review_closure
   if ai_generation.enabled(opts.ai_generation) then
-    ai_context = ai_generation.build_context(inventory, ui_loop, artifact_root, {
-      ai_generation = opts.ai_generation,
-      step_budget = opts.step_budget,
-      case_priorities = opts.case_priorities,
-    })
+    ai_context = opts.ai_context
+    if ai_context ~= nil then
+      if type(ai_context) ~= "table" or ai_context.schema ~= ai_generation.context_schema or ai_context.artifact_root ~= artifact_root then
+        error("testing-runner: ai-artifact-mismatch: context manifest")
+      end
+      ai_generation.validate_code_analysis_binding(inventory.code_analysis, ai_context.code_analysis)
+    else
+      ai_context = ai_generation.build_context(inventory, ui_loop, artifact_root, {
+        ai_generation = opts.ai_generation,
+        step_budget = opts.step_budget,
+        case_priorities = opts.case_priorities,
+        verified_code_analysis = opts.verified_code_analysis,
+      })
+    end
     generated_cases = opts.generated_cases
     if generated_cases == nil then error("testing-runner: ai-artifact-missing: generated cases") end
     ai_generation.validate_generated_cases(generated_cases)

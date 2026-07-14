@@ -1,0 +1,22 @@
+kind = "library"
+name = "code_analysis"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "testing_runtime"]
+
+[dependency_constraints]
+allowed_lib_deps = ["contract", "testing_runtime"]
+
+[library]
+name = "code_analysis"
+stable_id = "fkst.library.code_analysis"
+version = "workspace"
+
+[exports]
+public = ["code_analysis.*"]
+
+[visibility]
+public = false

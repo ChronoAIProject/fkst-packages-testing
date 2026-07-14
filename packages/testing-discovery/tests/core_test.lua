@@ -1,5 +1,60 @@
 local core = require("core")
+local analyzer = require("code_analysis.analyzer")
+local code_analysis = require("code_analysis.artifact")
+local runtime_digest = require("testing_runtime.digest")
 local t = fkst.test
+
+local fixture_source = [=[-- function hidden_line_comment()
+--[[ function hidden_block_comment() ]]
+local quoted = "function hidden_string() end\\\""
+local long_text = [==[function hidden_long_string() end]==]
+local function calculate_total(left, right)
+  return left + right
+end
+function Calculator.compute(value)
+  return value
+end
+return calculate_total
+]=]
+
+local function shell_quote(value)
+  return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
+end
+
+local function read_file(path)
+  local handle = assert(io.open(path, "rb"))
+  local body = handle:read("*a")
+  handle:close()
+  return body
+end
+
+local function write_file(path, body)
+  local directory = assert(path:match("^(.*)/[^/]+$"))
+  assert(os.execute("mkdir -p " .. shell_quote(directory)))
+  local handle = assert(io.open(path, "wb"))
+  assert(handle:write(body))
+  handle:close()
+  return true
+end
+
+local function assert_error_contains(fn, expected)
+  local ok, err = pcall(fn)
+  t.eq(ok, false)
+  t.is_true(tostring(err):find(expected, 1, true) ~= nil)
+end
+
+local function prepare_fixture(root)
+  write_file(root .. "/src/calculator.lua", fixture_source)
+  return root
+end
+
+local function sha256_file(path)
+  local command = "node libraries/testing_runtime/bin/fkst-testing-runtime.js hash-file --input " .. shell_quote(path)
+  local handle = assert(io.popen(command))
+  local value = assert(handle:read("*a")):match("^([0-9a-f]+)%s*$")
+  assert(handle:close())
+  return value
+end
 
 local function scope(overrides)
   local payload = {
@@ -82,6 +137,145 @@ local function inspect_no_fragment(value)
 end
 
 return {
+  test_code_analysis_is_persisted_deterministically_and_emitted_by_reference = function()
+    local artifact_root = ".testing/runs/discovery-code-analysis"
+    local fixture_root = prepare_fixture(".testing/fixtures/discovery-code-analysis")
+    local payload = scope({
+      artifact_root = artifact_root,
+      code_analysis = { repository_root = fixture_root },
+    })
+    local ports = { sha256_file = sha256_file }
+    local first = core.prepare_plan(payload, ports)
+    local first_body = read_file(first.code_analysis.artifact_pointer)
+    local artifact = code_analysis.load_verified(first.code_analysis, ports)
+
+    t.eq(artifact.schema, code_analysis.schema)
+    t.eq(artifact.version, code_analysis.version)
+    t.eq(artifact.file_count, 1)
+    t.eq(artifact.facts[1].kind, "file")
+    t.eq(artifact.facts[1].source.path, "src/calculator.lua")
+    t.eq(artifact.facts[2].kind, "function")
+    t.eq(artifact.facts[2].name, "calculate_total")
+    t.eq(artifact.facts[2].source.path, "src/calculator.lua")
+    t.eq(artifact.facts[2].source.line, 5)
+    t.eq(artifact.facts[3].name, "Calculator.compute")
+
+    local second = core.prepare_plan(payload, ports)
+    t.eq(read_file(second.code_analysis.artifact_pointer), first_body)
+    t.eq(second.code_analysis.artifact_digest, first.code_analysis.artifact_digest)
+
+    local starts = core.module_starts(first, ready_result())
+    local event_body = core.json_encode(starts[1])
+    t.is_true(event_body:find(first.code_analysis.artifact_pointer, 1, true) ~= nil)
+    t.is_true(event_body:find(first.code_analysis.artifact_digest, 1, true) ~= nil)
+    t.eq(event_body:find('"facts"', 1, true), nil)
+    t.eq(event_body:find("return left + right", 1, true), nil)
+
+    local invalid_scope = core.json_decode(first_body)
+    invalid_scope.scope.repository_root = "../outside"
+    assert_error_contains(function() code_analysis.validate_artifact(invalid_scope) end, "scope must identify a safe repository tree")
+    local invalid_fact = core.json_decode(first_body)
+    invalid_fact.facts[1].kind = "unknown"
+    assert_error_contains(function() code_analysis.validate_artifact(invalid_fact) end, "fact identity is invalid")
+
+    local supplied_digest = runtime_digest.sha256_file(first.code_analysis.artifact_pointer, {
+      exec_argv = function()
+        return { exit_code = 0, stdout = first.code_analysis.artifact_digest .. "\n", stderr = "" }
+      end,
+    })
+    t.eq(supplied_digest, first.code_analysis.artifact_digest)
+    local saved_exec_argv = _G.exec_argv
+    _G.exec_argv = function(request)
+      t.eq(request.argv[3], "hash-file")
+      return { exit_code = 0, stdout = sha256_file(request.argv[5]) .. "\n", stderr = "" }
+    end
+    t.eq(runtime_digest.sha256_file(first.code_analysis.artifact_pointer), first.code_analysis.artifact_digest)
+    local default_reference = code_analysis.persist(fixture_root, artifact_root .. "/default-code-analysis.json", {
+      write = write_file,
+    })
+    t.eq(default_reference.artifact_digest, sha256_file(default_reference.artifact_pointer))
+    _G.exec_argv = saved_exec_argv
+    assert_error_contains(function()
+      runtime_digest.sha256_file(first.code_analysis.artifact_pointer, {
+        exec_argv = function() return { exit_code = 1, stdout = "", stderr = "fixture failure" } end,
+      })
+    end, "testing-runtime: digest-failed")
+  end,
+
+  test_code_analysis_loader_rejects_missing_unsupported_and_malformed_artifacts = function()
+    local root = ".testing/runs/code-analysis-validation"
+    local pointer = root .. "/" .. code_analysis.filename
+    local reference = {
+      schema = code_analysis.reference_schema,
+      artifact_pointer = pointer,
+      artifact_digest = string.rep("0", 64),
+      artifact_version = code_analysis.version,
+    }
+    os.remove(pointer)
+    assert_error_contains(function() code_analysis.load_verified(reference, { sha256_file = sha256_file }) end, "code-analysis: artifact-missing")
+
+    local unsupported = {
+      schema = reference.schema,
+      artifact_pointer = reference.artifact_pointer,
+      artifact_digest = reference.artifact_digest,
+      artifact_version = 2,
+    }
+    assert_error_contains(function() code_analysis.load_verified(unsupported, { sha256_file = sha256_file }) end, "code-analysis: unsupported-version")
+
+    write_file(pointer, "{")
+    reference.artifact_digest = sha256_file(pointer)
+    assert_error_contains(function() code_analysis.load_verified(reference, { sha256_file = sha256_file }) end, "code-analysis: malformed-artifact")
+
+    assert_error_contains(function() analyzer.analyze("../outside", pointer) end, "code-analysis: repository-root-invalid")
+    assert_error_contains(function()
+      core.plan(scope({ code_analysis = { repository_root = "../outside" } }))
+    end, "testing-discovery: malformed-request: code_analysis.repository_root")
+    assert_error_contains(function()
+      core.plan(scope({ mutation_policy = "unbounded" }))
+    end, "testing-discovery: malformed-request: mutation_policy is unknown")
+    local missing_entry = core.plan(scope({
+      observations = {
+        {
+          id = "missing-entry",
+          name = "Missing entry",
+          visible_label = "Missing entry",
+          discovery_source = "navigation",
+          evidence_pointer = ".testing/runs/evidence/missing-entry",
+        },
+      },
+    }))
+    t.eq(missing_entry.modules[1].id, "app-discovery")
+
+    local fixture_root = prepare_fixture(".testing/fixtures/code-analysis-decoder")
+    local valid_reference, valid_artifact, valid_body = code_analysis.persist(fixture_root, root .. "/decoder.json", { sha256_file = sha256_file })
+    local decoder_reference = {
+      schema = valid_reference.schema,
+      artifact_pointer = valid_reference.artifact_pointer,
+      artifact_digest = valid_reference.artifact_digest,
+      artifact_version = valid_reference.artifact_version,
+    }
+    valid_artifact.artifact_pointer = root .. "/other.json"
+    for index, fact in ipairs(valid_artifact.facts) do
+      fact.pointer = valid_artifact.artifact_pointer .. "#/facts/" .. tostring(index)
+    end
+    local mismatched_body = code_analysis.canonical_bytes(valid_artifact)
+    write_file(valid_reference.artifact_pointer, mismatched_body)
+    valid_reference.artifact_digest = sha256_file(valid_reference.artifact_pointer)
+    assert_error_contains(function()
+      code_analysis.load_verified(valid_reference, { sha256_file = sha256_file })
+    end, "code-analysis: artifact-mismatch")
+
+    local saved_json = _G.json
+    _G.json = nil
+    assert_error_contains(function()
+      code_analysis.load_verified(decoder_reference, {
+        read = function() return valid_body end,
+        sha256_file = function() return decoder_reference.artifact_digest end,
+      })
+    end, "code-analysis: malformed-artifact")
+    _G.json = saved_json
+  end,
+
   test_valid_scope_produces_sanitized_discovery_plan = function()
     local plan = core.plan(scope())
     t.eq(plan.schema, "testing-discovery.plan.v1")

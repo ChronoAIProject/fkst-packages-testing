@@ -460,6 +460,7 @@ local function planning_for(payload, artifact_root, readiness, request, ai_artif
   return inventory, module_planning.build(inventory, payload.ui_loop, artifact_root, {
     mutation_fixtures = (request or {}).mutation_fixtures,
     ai_generation = (request or {}).ai_generation,
+    ai_context = ai_artifacts and ai_artifacts.context or nil,
     ai_agent_generation = ai_artifacts and ai_artifacts.agent_generation or nil,
     generated_cases = ai_artifacts and ai_artifacts.generated_cases or nil,
     generated_case_gate = ai_artifacts and ai_artifacts.gate or nil,

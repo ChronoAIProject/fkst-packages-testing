@@ -1,5 +1,6 @@
 local M = {}
 
+local code_analysis = require("code_analysis.artifact")
 local strings = require("contract.strings")
 
 M.request_schema = "testing-runner.module-discovery.v1"
@@ -28,6 +29,7 @@ local allowed_confidence = {
 }
 
 local request_fields = {
+  code_analysis = true,
   schema = true,
   observations = true,
   limitations = true,
@@ -243,6 +245,7 @@ function M.validate_request(value)
     end
   end
   validate_string_list(value.limitations, "limitations", max_string, 16)
+  if value.code_analysis ~= nil then code_analysis.validate_reference(value.code_analysis) end
   return value
 end
 
@@ -284,7 +287,7 @@ function M.inventory(request, ui_loop, artifact_root, opts)
       end
     end
   end
-  return {
+  local result = {
     schema = M.inventory_schema,
     artifact_kind = "module-inventory",
     discovery_status = (not degraded and #modules > 0) and "complete" or "degraded",
@@ -301,6 +304,8 @@ function M.inventory(request, ui_loop, artifact_root, opts)
       rejected_observation_count = rejected_count,
     },
   }
+  if request.code_analysis ~= nil then result.code_analysis = code_analysis.copy_reference(request.code_analysis) end
+  return result
 end
 
 function M.summary(inventory, artifact_root, module, status)

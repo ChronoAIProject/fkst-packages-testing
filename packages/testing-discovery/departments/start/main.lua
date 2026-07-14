@@ -14,7 +14,7 @@ local function done(_event)
 end
 
 local function act(event)
-  local plan = core.plan(event.payload or {})
+  local plan = core.prepare_plan(event.payload or {})
   local ok, err = core.write_plan(plan)
   if not ok then error("testing-discovery: artifact-write-failed: " .. tostring(err)) end
   local request = core.readiness_check(plan)

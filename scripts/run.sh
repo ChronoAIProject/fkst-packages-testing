@@ -18,6 +18,9 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
+# shellcheck source=scripts/test_affected.sh
+. "$ROOT/scripts/test_affected.sh"
+
 # Load local, machine-specific config (BIN=, FKST_* posture) if present. Exported so the engine and
 # the reused fkst-packages helpers see it. Template: env.example (cp env.example .env).
 if [ -f "$ROOT/.env" ]; then set -a; . "$ROOT/.env"; set +a; fi
@@ -75,12 +78,13 @@ PY
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host> [args]
+usage: scripts/run.sh <check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  test-affected       derive uncommitted changed paths and run package-scoped or full tests
   ai-pipeline-smoke   run the hermetic AI authoring/review/CDP handoff smoke across pipeline seams
   live-cdp-smoke      run the environment-gated testing_runtime smoke against local Chrome/CDP
   example <name>      run a downstream integration fixture from examples/<name>
@@ -792,7 +796,7 @@ cmd_host() {
 }
 
 case "${1:-}" in
-  check|test|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host) ;;
+  check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -815,6 +819,7 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  test-affected) cmd_test_affected "$@" ;;
   ai-pipeline-smoke) cmd_ai_pipeline_smoke ;;
   live-cdp-smoke) cmd_live_cdp_smoke ;;
   example) cmd_example "$@" ;;
