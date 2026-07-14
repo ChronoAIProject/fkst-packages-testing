@@ -43,7 +43,7 @@ function M.saga_conformance_errors()
   local ok, request = pcall(M.runner_request, {
     schema = "online-regression.start.v1",
     driver = "conformance-driver",
-    heartbeat_url = "https://example.invalid/health",
+    heartbeat_url = "conformance-heartbeat",
     backend = "fkst-native",
     no_browser = true,
     dry_run = false,
@@ -60,7 +60,7 @@ function M.saga_conformance_errors()
   end
   expect_equal(errors, "online-regression.saga.schema", request.schema, "testing-runner.online-regression.request.v1")
   expect_equal(errors, "online-regression.saga.driver", request.driver, "conformance-driver")
-  expect_equal(errors, "online-regression.saga.heartbeat-url", request.heartbeat_url, "https://example.invalid/health")
+  expect_equal(errors, "online-regression.saga.heartbeat-url", request.heartbeat_url, "conformance-heartbeat")
   expect_equal(errors, "online-regression.saga.backend", request.backend, "fkst-native")
   expect_equal(errors, "online-regression.saga.no-browser", request.no_browser, true)
   expect_equal(errors, "online-regression.saga.dry-run", request.dry_run, false)

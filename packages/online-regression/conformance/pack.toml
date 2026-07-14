@@ -8,5 +8,5 @@ severity = "error"
 kind = "text_forbid_regex"
 include = ["**/*.lua"]
 exclude = ["tests/**", "packages/online-regression/tests/**"]
-pattern = "(localhost:[0-9]+|(APP|HOST)_[A-Z0-9_]+)"
+pattern = "(https?://[A-Za-z0-9.-]+|(APP|HOST)_[A-Z0-9_]+)"
 message = "online regression must not encode fixed application endpoints or host environment conventions"

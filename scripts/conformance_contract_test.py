@@ -43,7 +43,8 @@ RULE_FIXTURES = {
         "departments/contract_fixture/main.lua", joined("http", "://localhost:", "4312")
     ),
     "online-regression-no-fixed-host-config": RuleFixture(
-        "departments/contract_fixture/main.lua", joined("HOST", "_FIXED_ENDPOINT")
+        "departments/contract_fixture/main.lua",
+        joined("https", "://", "service", ".invalid", "/health"),
     ),
     "platform-test-loop-no-fixed-host-config": RuleFixture(
         "departments/contract_fixture/main.lua", joined("APP", "_FIXED_ENDPOINT")
