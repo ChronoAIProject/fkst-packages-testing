@@ -4,6 +4,7 @@
 const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
+const zlib = require('zlib');
 const {
   CdpSocket,
   acquireTarget,
@@ -13,7 +14,13 @@ const {
 } = require('../lib/cdp_client');
 
 const REDACTION_MASK_RGB = [217, 48, 37];
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const redactionSelectorPattern = /^(?:#[A-Za-z][A-Za-z0-9_-]*|\.[A-Za-z][A-Za-z0-9_-]*|\[data-[A-Za-z][A-Za-z0-9_-]*\])$/;
+const pngCrcTable = Array.from({ length: 256 }, (_unused, value) => {
+  let crc = value;
+  for (let bit = 0; bit < 8; bit += 1) crc = (crc & 1) !== 0 ? 0xedb88320 ^ (crc >>> 1) : crc >>> 1;
+  return crc >>> 0;
+});
 
 function stableStringify(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -106,60 +113,190 @@ function textProbeExpression(target, click) {
   })()`;
 }
 
-function redactionExpression(selectors) {
-  const encoded = JSON.stringify(selectors);
-  const color = `rgb(${REDACTION_MASK_RGB.join(', ')})`;
-  return `(() => {
-    const selectors = ${encoded};
-    const marker = 'data-fkst-redaction-overlay';
-    document.querySelectorAll('[' + marker + ']').forEach((node) => node.remove());
-    let maskCount = 0;
-    for (const selector of selectors) {
-      let nodes;
-      try {
-        nodes = Array.from(document.querySelectorAll(selector));
-      } catch (_error) {
-        return { ok: false, selector_count: selectors.length, mask_count: maskCount };
-      }
-      let selectorMaskCount = 0;
-      for (const node of nodes) {
-        const style = getComputedStyle(node);
-        const rect = node.getBoundingClientRect();
-        const left = Math.max(0, Math.floor(rect.left));
-        const top = Math.max(0, Math.floor(rect.top));
-        const right = Math.min(window.innerWidth, Math.ceil(rect.right));
-        const bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom));
-        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || right <= left || bottom <= top) continue;
-        const overlay = document.createElement('div');
-        overlay.setAttribute(marker, '');
-        Object.assign(overlay.style, {
-          position: 'fixed',
-          left: left + 'px',
-          top: top + 'px',
-          width: (right - left) + 'px',
-          height: (bottom - top) + 'px',
-          margin: '0',
-          padding: '0',
-          border: '0',
-          borderRadius: '0',
-          background: '${color}',
-          boxShadow: 'none',
-          opacity: '1',
-          mixBlendMode: 'normal',
-          pointerEvents: 'none',
-          zIndex: '2147483647',
-        });
-        document.documentElement.appendChild(overlay);
-        selectorMaskCount += 1;
-        maskCount += 1;
-      }
-      if (selectorMaskCount === 0) {
-        document.querySelectorAll('[' + marker + ']').forEach((node) => node.remove());
-        return { ok: false, selector_count: selectors.length, mask_count: maskCount };
+function pngCrc32(value) {
+  let crc = 0xffffffff;
+  for (const byte of value) crc = pngCrcTable[(crc ^ byte) & 0xff] ^ (crc >>> 8);
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function pngChunk(type, data) {
+  const name = Buffer.from(type, 'ascii');
+  const chunk = Buffer.alloc(12 + data.length);
+  chunk.writeUInt32BE(data.length, 0);
+  name.copy(chunk, 4);
+  data.copy(chunk, 8);
+  chunk.writeUInt32BE(pngCrc32(Buffer.concat([name, data])), 8 + data.length);
+  return chunk;
+}
+
+function paeth(left, up, upperLeft) {
+  const prediction = left + up - upperLeft;
+  const leftDistance = Math.abs(prediction - left);
+  const upDistance = Math.abs(prediction - up);
+  const upperLeftDistance = Math.abs(prediction - upperLeft);
+  if (leftDistance <= upDistance && leftDistance <= upperLeftDistance) return left;
+  return upDistance <= upperLeftDistance ? up : upperLeft;
+}
+
+function decodePng(buffer) {
+  if (buffer.length <= PNG_SIGNATURE.length || !buffer.subarray(0, PNG_SIGNATURE.length).equals(PNG_SIGNATURE)) {
+    throw new Error('captured screenshot is not a valid PNG');
+  }
+  let offset = PNG_SIGNATURE.length;
+  let width;
+  let height;
+  let bitDepth;
+  let colorType;
+  const compressed = [];
+  while (offset < buffer.length) {
+    if (offset + 12 > buffer.length) throw new Error('captured screenshot PNG is truncated');
+    const length = buffer.readUInt32BE(offset);
+    const end = offset + 12 + length;
+    if (end > buffer.length) throw new Error('captured screenshot PNG is truncated');
+    const type = buffer.toString('ascii', offset + 4, offset + 8);
+    const data = buffer.subarray(offset + 8, offset + 8 + length);
+    const expectedCrc = buffer.readUInt32BE(offset + 8 + length);
+    if (pngCrc32(buffer.subarray(offset + 4, offset + 8 + length)) !== expectedCrc) {
+      throw new Error('captured screenshot PNG checksum is invalid');
+    }
+    offset = end;
+    if (type === 'IHDR') {
+      if (length !== 13) throw new Error('captured screenshot PNG header is invalid');
+      width = data.readUInt32BE(0);
+      height = data.readUInt32BE(4);
+      bitDepth = data[8];
+      colorType = data[9];
+      if (data[10] !== 0 || data[11] !== 0 || data[12] !== 0) throw new Error('captured screenshot PNG encoding is unsupported');
+    } else if (type === 'IDAT') {
+      compressed.push(data);
+    } else if (type === 'IEND') {
+      break;
+    }
+  }
+  const channels = colorType === 6 ? 4 : colorType === 2 ? 3 : 0;
+  if (!Number.isInteger(width) || width < 1 || !Number.isInteger(height) || height < 1 || bitDepth !== 8 || channels === 0 || compressed.length === 0) {
+    throw new Error('captured screenshot PNG encoding is unsupported');
+  }
+  const stride = width * channels;
+  const raw = zlib.inflateSync(Buffer.concat(compressed));
+  if (raw.length !== (stride + 1) * height) throw new Error('captured screenshot PNG pixels are invalid');
+  const pixels = Buffer.alloc(stride * height);
+  let inputOffset = 0;
+  for (let y = 0; y < height; y += 1) {
+    const filter = raw[inputOffset++];
+    const rowOffset = y * stride;
+    for (let x = 0; x < stride; x += 1) {
+      const value = raw[inputOffset++];
+      const left = x >= channels ? pixels[rowOffset + x - channels] : 0;
+      const up = y > 0 ? pixels[rowOffset - stride + x] : 0;
+      const upperLeft = y > 0 && x >= channels ? pixels[rowOffset - stride + x - channels] : 0;
+      let predictor = 0;
+      if (filter === 1) predictor = left;
+      else if (filter === 2) predictor = up;
+      else if (filter === 3) predictor = Math.floor((left + up) / 2);
+      else if (filter === 4) predictor = paeth(left, up, upperLeft);
+      else if (filter !== 0) throw new Error('captured screenshot PNG filter is unsupported');
+      pixels[rowOffset + x] = (value + predictor) & 0xff;
+    }
+  }
+  return { width, height, channels, pixels };
+}
+
+function encodePng(image) {
+  const stride = image.width * image.channels;
+  const raw = Buffer.alloc((stride + 1) * image.height);
+  for (let y = 0; y < image.height; y += 1) {
+    const rawOffset = y * (stride + 1);
+    raw[rawOffset] = 0;
+    image.pixels.copy(raw, rawOffset + 1, y * stride, (y + 1) * stride);
+  }
+  const header = Buffer.alloc(13);
+  header.writeUInt32BE(image.width, 0);
+  header.writeUInt32BE(image.height, 4);
+  header[8] = 8;
+  header[9] = image.channels === 4 ? 6 : 2;
+  return Buffer.concat([
+    PNG_SIGNATURE,
+    pngChunk('IHDR', header),
+    pngChunk('IDAT', zlib.deflateSync(raw)),
+    pngChunk('IEND', Buffer.alloc(0)),
+  ]);
+}
+
+function redactPng(buffer, rects, viewport) {
+  const image = decodePng(buffer);
+  const scaleX = image.width / viewport.clientWidth;
+  const scaleY = image.height / viewport.clientHeight;
+  if (!Number.isFinite(scaleX) || scaleX <= 0 || !Number.isFinite(scaleY) || scaleY <= 0) {
+    throw new Error('screenshot redaction viewport is invalid');
+  }
+  const stride = image.width * image.channels;
+  for (const rect of rects) {
+    const left = Math.max(0, Math.floor(rect.left * scaleX));
+    const top = Math.max(0, Math.floor(rect.top * scaleY));
+    const right = Math.min(image.width, Math.ceil(rect.right * scaleX));
+    const bottom = Math.min(image.height, Math.ceil(rect.bottom * scaleY));
+    if (right <= left || bottom <= top) throw new Error('screenshot redaction rectangle is invalid');
+    for (let y = top; y < bottom; y += 1) {
+      for (let x = left; x < right; x += 1) {
+        const index = y * stride + x * image.channels;
+        image.pixels[index] = REDACTION_MASK_RGB[0];
+        image.pixels[index + 1] = REDACTION_MASK_RGB[1];
+        image.pixels[index + 2] = REDACTION_MASK_RGB[2];
+        if (image.channels === 4) image.pixels[index + 3] = 255;
       }
     }
-    return { ok: true, selector_count: selectors.length, mask_count: maskCount };
-  })()`;
+  }
+  return encodePng(image);
+}
+
+function quadToViewportRect(quad, viewport) {
+  if (!Array.isArray(quad) || quad.length !== 8 || quad.some((value) => !Number.isFinite(value))) return null;
+  const xs = [quad[0], quad[2], quad[4], quad[6]];
+  const ys = [quad[1], quad[3], quad[5], quad[7]];
+  const left = Math.max(0, Math.min(...xs) - viewport.pageX);
+  const top = Math.max(0, Math.min(...ys) - viewport.pageY);
+  const right = Math.min(viewport.clientWidth, Math.max(...xs) - viewport.pageX);
+  const bottom = Math.min(viewport.clientHeight, Math.max(...ys) - viewport.pageY);
+  return right > left && bottom > top ? { left, top, right, bottom } : null;
+}
+
+async function collectRedactionRects(cdp, selectors) {
+  const documentResult = await cdp.send('DOM.getDocument', { pierce: true });
+  const metrics = await cdp.send('Page.getLayoutMetrics');
+  const sourceViewport = metrics.cssVisualViewport || metrics.visualViewport;
+  const viewport = sourceViewport && {
+    pageX: Number(sourceViewport.pageX || 0),
+    pageY: Number(sourceViewport.pageY || 0),
+    clientWidth: Number(sourceViewport.clientWidth),
+    clientHeight: Number(sourceViewport.clientHeight),
+  };
+  if (!documentResult.root || !documentResult.root.nodeId || !viewport
+    || !Number.isFinite(viewport.pageX) || !Number.isFinite(viewport.pageY)
+    || !Number.isFinite(viewport.clientWidth) || viewport.clientWidth <= 0
+    || !Number.isFinite(viewport.clientHeight) || viewport.clientHeight <= 0) {
+    throw new Error('screenshot redaction geometry is unavailable');
+  }
+  const rects = [];
+  for (const selector of selectors) {
+    const result = await cdp.send('DOM.querySelectorAll', { nodeId: documentResult.root.nodeId, selector });
+    let selectorRectCount = 0;
+    for (const nodeId of result.nodeIds || []) {
+      let box;
+      try {
+        box = await cdp.send('DOM.getBoxModel', { nodeId });
+      } catch (_error) {
+        continue;
+      }
+      const rect = box.model && quadToViewportRect(box.model.border, viewport);
+      if (rect !== null) {
+        rects.push(rect);
+        selectorRectCount += 1;
+      }
+    }
+    if (selectorRectCount === 0) throw new Error('screenshot redaction could not locate every configured element');
+  }
+  return { rects, viewport };
 }
 
 function validateRedactionSelectors(value) {
@@ -175,30 +312,43 @@ function validateRedactionSelectors(value) {
 async function captureFailureScreenshot(cdp, request) {
   const selectors = validateRedactionSelectors(request.redaction_selectors);
   const screenshotPath = `${request.artifact_root}/evidence/screenshots/failure.png`;
-  let cleanupRequired = false;
-  let screenshot;
+  let animationsPaused = false;
+  let scriptsDisabled = false;
+  let body;
   try {
-    cleanupRequired = true;
-    const redaction = await evaluate(cdp, redactionExpression(selectors));
-    if (!redaction || redaction.ok !== true || redaction.mask_count < selectors.length) {
-      throw new Error('screenshot redaction could not mask every configured element');
-    }
-    await evaluate(cdp, 'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
-    screenshot = await cdp.send('Page.captureScreenshot', {
+    await cdp.send('DOM.enable');
+    await cdp.send('Animation.enable');
+    await cdp.send('Animation.setPlaybackRate', { playbackRate: 0 });
+    animationsPaused = true;
+    await cdp.send('Emulation.setScriptExecutionDisabled', { value: true });
+    scriptsDisabled = true;
+    const redaction = await collectRedactionRects(cdp, selectors);
+    const screenshot = await cdp.send('Page.captureScreenshot', {
       format: 'png',
       fromSurface: true,
       captureBeyondViewport: false,
     });
+    const raw = Buffer.from(String(screenshot && screenshot.data || ''), 'base64');
+    body = redactPng(raw, redaction.rects, redaction.viewport);
   } finally {
-    if (cleanupRequired) {
-      await evaluate(cdp, `(() => { document.querySelectorAll('[data-fkst-redaction-overlay]').forEach((node) => node.remove()); return true; })()`);
+    let cleanupError;
+    if (scriptsDisabled) {
+      try {
+        await cdp.send('Emulation.setScriptExecutionDisabled', { value: false });
+      } catch (error) {
+        cleanupError = error;
+      }
     }
+    if (animationsPaused) {
+      try {
+        await cdp.send('Animation.setPlaybackRate', { playbackRate: 1 });
+      } catch (error) {
+        cleanupError = cleanupError || error;
+      }
+    }
+    if (cleanupError) throw cleanupError;
   }
-  const body = Buffer.from(String(screenshot && screenshot.data || ''), 'base64');
-  const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
-  if (body.length <= pngSignature.length || !body.subarray(0, pngSignature.length).equals(pngSignature)) {
-    throw new Error('captured screenshot is not a valid PNG');
-  }
+  if (!body) throw new Error('screenshot redaction did not produce a PNG');
   writeBinary(screenshotPath, body);
   return {
     path: screenshotPath,

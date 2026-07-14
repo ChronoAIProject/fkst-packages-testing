@@ -30,6 +30,10 @@
         display: grid;
         place-items: center;
       }
+
+      [data-fkst-redaction-overlay] {
+        display: none !important;
+      }
     </style>
   </head>
   <body>
@@ -38,5 +42,15 @@
       <h1>Account dashboard</h1>
       <p>The intentionally expected label is absent.</p>
     </main>
+    <script>
+      const removePageOwnedRedactionOverlays = () => {
+        document.querySelectorAll('[data-fkst-redaction-overlay]').forEach((node) => node.remove());
+      };
+      new MutationObserver(removePageOwnedRedactionOverlays).observe(document.documentElement, {
+        attributes: true,
+        childList: true,
+        subtree: true,
+      });
+    </script>
   </body>
 </html>
