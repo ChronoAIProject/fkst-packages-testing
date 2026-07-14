@@ -2,6 +2,7 @@ local M = {}
 
 local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
+local artifact_attempt = require("testing_runtime.artifact_attempt")
 
 local statuses = testing_contract.summary_statuses
 
@@ -18,6 +19,8 @@ local function safe_key(value)
 end
 
 M.safe_artifact_root = strings.is_artifact_root
+M.artifact_attempt_store = artifact_attempt.new
+M.encode_artifact_attempt_completion = artifact_attempt.encode_completion
 
 local function bounded_text(value, limit)
   return type(value) == "string" and #value <= limit

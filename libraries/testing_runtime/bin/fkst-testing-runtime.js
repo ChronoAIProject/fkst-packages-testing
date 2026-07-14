@@ -11,6 +11,11 @@ const {
   pageStateReady,
   waitForPage,
 } = require('../lib/cdp_client');
+const {
+  commitArtifactAttempt,
+  deriveArtifactPointer,
+  lookupArtifactAttempt,
+} = require('../lib/artifact_attempt_store');
 
 function stableStringify(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -250,12 +255,15 @@ function mediaType(filePath) {
   return 'application/octet-stream';
 }
 
-function buildManifest(root, paths, out) {
-  if (!safeArtifactPath(root) || !safeArtifactPath(out)) throw new Error('manifest path is unsafe');
+function buildManifest(root, paths, out, sourceRoot = root) {
+  if (!safeArtifactPath(root) || !safeArtifactPath(out) || !safeArtifactPath(sourceRoot)) throw new Error('manifest path is unsafe');
   const unique = Array.from(new Set(paths)).sort();
   const entries = unique.map((filePath) => {
-    if (!safeArtifactPath(filePath) || !filePath.startsWith(`${root}/`) || filePath === out) throw new Error(`manifest path is invalid: ${filePath}`);
-    const body = fs.readFileSync(filePath);
+    if (!safeArtifactPath(filePath) || !filePath.startsWith(`${root}/`) || filePath === `${root}/artifact-manifest.json`) {
+      throw new Error(`manifest path is invalid: ${filePath}`);
+    }
+    const relative = filePath.slice(root.length + 1);
+    const body = fs.readFileSync(path.join(sourceRoot, ...relative.split('/')));
     return {
       path: filePath,
       media_type: mediaType(filePath),
@@ -276,6 +284,22 @@ function buildManifest(root, paths, out) {
   return manifest;
 }
 
+function artifactAttemptIntent(options) {
+  return {
+    schema: 'test-artifacts.attempt-commit-intent.v1',
+    run_id: options.runId,
+    trace_id: options.traceId,
+    dedup_key: options.dedupKey,
+    artifact_kind: options.artifactKind,
+    attempt_id: options.attemptId,
+    fence_version: Number(options.fenceVersion),
+  };
+}
+
+function durableRoot() {
+  return process.env.FKST_DURABLE_ROOT || '.fkst/run/durable';
+}
+
 async function main(argv) {
   const command = argv[0];
   const options = parseArgs(argv.slice(1));
@@ -284,8 +308,27 @@ async function main(argv) {
     process.stdout.write(`${sha256(stableStringify(value))}\n`);
     return;
   }
+  if (command === 'hash-file') {
+    process.stdout.write(`${sha256(fs.readFileSync(options.input))}\n`);
+    return;
+  }
   if (command === 'manifest') {
-    buildManifest(options.root, options.paths, options.out);
+    buildManifest(options.root, options.paths, options.out, options.sourceRoot || options.root);
+    return;
+  }
+  if (command === 'artifact-attempt-pointer') {
+    process.stdout.write(`${deriveArtifactPointer(artifactAttemptIntent(options))}\n`);
+    return;
+  }
+  if (command === 'artifact-attempt-commit') {
+    const completion = commitArtifactAttempt(artifactAttemptIntent(options), options.stagedRoot, durableRoot());
+    process.stdout.write(`${stableStringify(completion)}\n`);
+    return;
+  }
+  if (command === 'artifact-attempt-lookup') {
+    const completion = lookupArtifactAttempt(artifactAttemptIntent(options), durableRoot());
+    const envelope = completion === null ? { found: false } : { found: true, completion };
+    process.stdout.write(`${stableStringify(envelope)}\n`);
     return;
   }
   if (command === 'execute') {

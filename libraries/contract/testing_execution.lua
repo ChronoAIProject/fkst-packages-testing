@@ -9,6 +9,8 @@ E.schemas = {
   fixture_lifecycle = "testing-runtime.fixture-lifecycle.v1",
   fixture_receipt = "testing-runtime.fixture-receipt.v1",
   artifact_manifest = "test-artifacts.manifest.v1",
+  artifact_attempt_commit_intent = "test-artifacts.attempt-commit-intent.v1",
+  artifact_attempt_completed = "test-artifacts.attempt-completed.v1",
 }
 
 E.action_kinds = {
@@ -91,6 +93,13 @@ end
 local function require_artifact_pointer(value, field)
   if not strings.is_artifact_root(value, 4096) then
     fail("malformed-pointer", field .. " must be a safe .testing/runs/... pointer")
+  end
+  return value
+end
+
+local function require_identity_segment(value, field, limit)
+  if not bounded(value, limit or 180) or value:match("^[%w._-]+$") == nil then
+    fail("malformed-identity", field .. " must be a bounded path-safe identity segment")
   end
   return value
 end
@@ -367,6 +376,52 @@ function E.validate_fixture_receipt(value)
   if value.status == "clean" and (value.cleanup_status ~= "passed" or value.verify_clean_status ~= "passed") then
     fail("false-clean", "clean fixture receipt requires cleanup and verify-clean")
   end
+  return value
+end
+
+local artifact_attempt_identity_fields = {
+  run_id = true,
+  trace_id = true,
+  dedup_key = true,
+  artifact_kind = true,
+  attempt_id = true,
+  fence_version = true,
+}
+
+local function validate_artifact_attempt_identity(value)
+  require_identity_segment(value.run_id, "run_id")
+  require_bounded(value.trace_id, "trace_id", 180)
+  require_bounded(value.dedup_key, "dedup_key", 180)
+  require_identity_segment(value.artifact_kind, "artifact_kind", 120)
+  require_identity_segment(value.attempt_id, "attempt_id")
+  require_integer(value.fence_version, "fence_version", 1, 9007199254740991)
+  return value
+end
+
+function E.validate_artifact_attempt_intent(value)
+  local allowed = { schema = true }
+  for field, present in pairs(artifact_attempt_identity_fields) do allowed[field] = present end
+  only_fields(value, allowed, "artifact-attempt-intent")
+  if value.schema ~= E.schemas.artifact_attempt_commit_intent then
+    fail("unknown-schema", "artifact attempt commit intent schema")
+  end
+  return validate_artifact_attempt_identity(value)
+end
+
+function E.validate_artifact_attempt_completion(value)
+  local allowed = {
+    schema = true,
+    manifest_sha256 = true,
+    artifact_pointer = true,
+  }
+  for field, present in pairs(artifact_attempt_identity_fields) do allowed[field] = present end
+  only_fields(value, allowed, "artifact-attempt-completion")
+  if value.schema ~= E.schemas.artifact_attempt_completed then
+    fail("unknown-schema", "artifact attempt completion schema")
+  end
+  validate_artifact_attempt_identity(value)
+  require_sha256(value.manifest_sha256, "manifest_sha256")
+  require_artifact_pointer(value.artifact_pointer, "artifact_pointer")
   return value
 end
 
