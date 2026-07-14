@@ -781,7 +781,9 @@ cmd_host() {
       --platform-root "$shared" \
       --local-packages "$ROOT/packages" \
       -- check
-    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" test github-devloop-workflow
+    PATH="$python_shim_dir:$PATH" \
+      env -u FKST_COMPETENCE_BASE_REF -u FKST_LUA_COVERAGE_BASE_REF -u GITHUB_BASE_REF \
+      "$shared/scripts/run.sh" test github-devloop-workflow
     return
   fi
 
