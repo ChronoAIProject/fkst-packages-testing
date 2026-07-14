@@ -175,6 +175,94 @@ local function agent_review_artifact(overrides)
   return value
 end
 
+local function trace_references(include_ui_state)
+  local references = {
+    { kind = "requirement", ref = "REQ-DASHBOARD-VISIBLE" },
+    { kind = "code-symbol", ref = "Dashboard.openVisibleSurface" },
+    { kind = "route-or-api", ref = "GET /app/dashboard" },
+    { kind = "ui-element", ref = "dashboard-details-button" },
+    { kind = "evidence", ref = ".testing/runs/evidence/dashboard" },
+    { kind = "priority", ref = "P1" },
+    { kind = "risk-category", ref = "positive" },
+    { kind = "assertion-trace", ref = "dashboard-visible-assertion" },
+  }
+  if include_ui_state then table.insert(references, { kind = "ui-state", ref = "dashboard-details-open" }) end
+  return references
+end
+
+local function coverage_case(case_id, source_id, position, include_ui_state, distinct)
+  local target = "Dashboard details"
+  local expected = "Dashboard details are visible."
+  local actions = {
+    { action = "bounded-navigation", target = "Dashboard", expected = "Dashboard is visible." },
+    { action = "open-visible-surface", target = target, expected = expected },
+  }
+  if distinct then actions = { actions[2], actions[1] } end
+  return {
+    case_id = case_id,
+    intent = "Exercise visible surface for Dashboard",
+    target = target,
+    preconditions = { "Dashboard is loaded", "A local session is ready" },
+    actions = actions,
+    assertions = {
+      { expected = expected, trace_references = trace_references(true) },
+    },
+    trace_references = trace_references(include_ui_state),
+    source = {
+      source_id = source_id,
+      candidate_position = position,
+      round = position + 1,
+      presentation_order = position + 2,
+    },
+  }
+end
+
+local function coverage_input(include_ui_state, reverse_order, distinct, quota)
+  local deterministic = coverage_case("dashboard:navigation", "baseline-source-transient", 1, include_ui_state, false)
+  local generated = coverage_case("dashboard:ai-visible-surface", "generated-source-transient", 9, include_ui_state, distinct)
+  return {
+    policy = {
+      policy_id = "minimal-traced-positive-case",
+      required_case_trace_kinds = {
+        "requirement", "code-symbol", "route-or-api", "ui-element", "ui-state",
+        "evidence", "priority", "risk-category", "assertion-trace",
+      },
+      required_assertion_trace_kinds = {
+        "requirement", "code-symbol", "route-or-api", "ui-element", "ui-state",
+        "evidence", "assertion-trace",
+      },
+      positive_risk_case_quota = quota or 1,
+      positive_risk_reference = { kind = "risk-category", ref = "positive" },
+    },
+    cases = reverse_order and { generated, deterministic } or { deterministic, generated },
+  }
+end
+
+local function planned_with_coverage(coverage)
+  return planning.build(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+    ai_generation = ai_request(),
+    generated_cases = generated_payload(),
+    generated_case_gate = generated_gate(ai_request(), generated_payload()),
+    ai_agent_generation = agent_generation_artifact(),
+    generated_case_agent_review = agent_review_artifact(),
+    coverage = coverage,
+  })
+end
+
+local function has_trace_reference(references, expected)
+  for _, reference in ipairs(references) do
+    if reference.kind == expected.kind and reference.ref == expected.ref then return true end
+  end
+  return false
+end
+
+local function has_source(sources, origin, source_id)
+  for _, source in ipairs(sources) do
+    if source.origin == origin and source.source_id == source_id then return true end
+  end
+  return false
+end
+
 return {
   test_build_context_manifest_uses_sanitized_pointer_only_fields = function()
     local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
@@ -356,6 +444,74 @@ return {
     t.eq(artifacts.test_plan.review_gate.ai_generation.executable_generated_case_count, 1)
     t.eq(artifacts.ai_context.schema, "testing-runner.ai-context-manifest.v1")
     t.eq(artifacts.generated_case_gate.accepted_count, 1)
+  end,
+
+  test_planning_builds_traced_deduplicated_coverage_matrix_and_policy_decision = function()
+    local artifacts = planned_with_coverage(coverage_input(true, false, false))
+    local matrix = artifacts.coverage_matrix
+    t.eq(matrix.version, "coverage-matrix/v1")
+    t.eq(matrix.coverage_matrix_path, ".testing/runs/module-a-inventory/coverage-matrix.json")
+    t.eq(matrix.input_case_count, 2)
+    t.eq(matrix.unique_case_count, 1)
+    t.eq(matrix.decision.complete, true)
+    t.eq(matrix.decision.scope, "configured-policy")
+    t.eq(matrix.decision.mandatory_gap_count, 0)
+    t.eq(artifacts.test_plan.coverage_matrix_path, matrix.coverage_matrix_path)
+    t.eq(artifacts.test_plan.coverage_decision.complete, true)
+
+    local case = matrix.cases[1]
+    t.eq(case.provenance.source_count, 2)
+    t.is_true(has_source(case.provenance.sources, "deterministic", "baseline-source-transient"))
+    t.is_true(has_source(case.provenance.sources, "ai-generated", "generated-source-transient"))
+    t.eq(case.assertions[1].expected, "dashboard details are visible.")
+    t.eq(#case.trace_references, 9)
+    t.eq(#case.assertions[1].trace_references, 9)
+    for _, reference in ipairs(trace_references(true)) do
+      t.is_true(has_trace_reference(case.trace_references, reference))
+      t.is_true(has_trace_reference(case.assertions[1].trace_references, reference))
+    end
+    t.eq(case.semantic_fingerprint:find("baseline-source-transient", 1, true), nil)
+    t.eq(case.semantic_fingerprint:find("generated-source-transient", 1, true), nil)
+
+    local reordered = coverage_input(true, true, false)
+    reordered.cases[1].source.source_id = "other-generated-source"
+    reordered.cases[1].source.candidate_position = 3
+    reordered.cases[2].source.source_id = "other-baseline-source"
+    reordered.cases[2].source.candidate_position = 7
+    for _, coverage_case_value in ipairs(reordered.cases) do
+      coverage_case_value.preconditions = { coverage_case_value.preconditions[2], coverage_case_value.preconditions[1] }
+      local reversed = {}
+      for index = #coverage_case_value.trace_references, 1, -1 do
+        table.insert(reversed, coverage_case_value.trace_references[index])
+      end
+      coverage_case_value.trace_references = reversed
+    end
+    local reordered_matrix = planned_with_coverage(reordered).coverage_matrix
+    t.eq(reordered_matrix.cases[1].semantic_fingerprint, case.semantic_fingerprint)
+
+    local distinct_matrix = planned_with_coverage(coverage_input(true, false, true)).coverage_matrix
+    t.eq(distinct_matrix.unique_case_count, 2)
+    t.eq(distinct_matrix.cases[1].semantic_fingerprint == distinct_matrix.cases[2].semantic_fingerprint, false)
+
+    local incomplete = planned_with_coverage(coverage_input(false, false, false)).coverage_matrix
+    t.eq(incomplete.decision.complete, false)
+    t.eq(incomplete.decision.mandatory_gap_count, 1)
+    t.eq(incomplete.decision.gaps[1].code, "missing-case-trace-reference")
+    t.eq(incomplete.decision.gaps[1].reference_kind, "ui-state")
+
+    local assertion_missing_input = coverage_input(true, false, false)
+    for _, coverage_case_value in ipairs(assertion_missing_input.cases) do
+      coverage_case_value.assertions[1].trace_references = trace_references(false)
+    end
+    local assertion_incomplete = planned_with_coverage(assertion_missing_input).coverage_matrix
+    t.eq(assertion_incomplete.decision.complete, false)
+    t.eq(assertion_incomplete.decision.mandatory_gap_count, 1)
+    t.eq(assertion_incomplete.decision.gaps[1].code, "missing-assertion-trace-reference")
+    t.eq(assertion_incomplete.decision.gaps[1].reference_kind, "ui-state")
+
+    local quota_gap = planned_with_coverage(coverage_input(true, false, false, 2)).coverage_matrix
+    t.eq(quota_gap.decision.complete, false)
+    t.eq(quota_gap.decision.gaps[1].code, "positive-risk-case-quota-not-met")
   end,
 
   test_agent_proposals_are_pointer_only_and_count_agnostic = function()

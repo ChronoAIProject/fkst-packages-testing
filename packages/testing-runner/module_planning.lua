@@ -1,6 +1,7 @@
 local M = {}
 
 local ai_generation = require("module_ai_generation")
+local module_coverage = require("module_coverage")
 
 M.feature_inventory_schema = "testing-runner.feature-inventory.v1"
 M.test_plan_schema = "testing-runner.module-test-plan.v1"
@@ -212,6 +213,7 @@ function M.build(inventory, ui_loop, artifact_root, opts)
 
   local counts = count_cases(plan_modules)
   local ai_summary = ai_generation.summary(ai_context, generated_cases, generated_case_gate, agent_generation, agent_review)
+  local coverage_matrix = module_coverage.build(plan_modules, artifact_root, opts.coverage)
   local plan_status = inventory.discovery_status == "complete" and "complete" or "degraded"
   local review_status = plan_status == "complete" and "reviewed" or "degraded"
   local readiness_status = type(inventory.readiness) == "table" and inventory.readiness.status or "unknown"
@@ -248,6 +250,8 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     },
     ai_generation = ai_summary,
     ai_test_design_loop = ai_review_closure,
+    coverage_matrix_path = coverage_matrix and coverage_matrix.coverage_matrix_path or nil,
+    coverage_decision = coverage_matrix and coverage_matrix.decision or nil,
     limitations = inventory.limitations,
   }
 
@@ -263,6 +267,8 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     ai_agent_generation = agent_generation,
     generated_case_agent_review = agent_review,
     ai_review_closure = ai_review_closure,
+    coverage_matrix_path = coverage_matrix and coverage_matrix.coverage_matrix_path or nil,
+    coverage_matrix = coverage_matrix,
   }
 end
 
