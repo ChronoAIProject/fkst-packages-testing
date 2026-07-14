@@ -3,7 +3,7 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "browser-readiness.browser_readiness_result" },
-  produces = { "testing-pipeline.module_start" },
+  produces = { "platform-test-loop.platform_loop_request" },
   fanout = { "browser-readiness.browser_readiness_result" },
   stall_window = "5m",
   retry = false,
@@ -21,11 +21,10 @@ end
 local function act(event)
   local payload = event.payload or {}
   local plan = core.read_plan(payload.source_ref.ref)
-  local starts = core.module_starts(plan, payload)
-  log.info("testing-discovery dept=emit_modules tag=EMIT modules=" .. tostring(#starts))
-  for _, start in ipairs(starts) do
-    raise("testing-pipeline.module_start", start)
-  end
+  local graph, err = core.write_relation_graph(plan, payload)
+  if graph == nil then error("testing-discovery: relation-graph-write-failed: " .. tostring(err)) end
+  log.info("testing-discovery dept=emit_modules tag=SCHEDULE modules=" .. tostring(graph.node_count))
+  raise("platform-test-loop.platform_loop_request", core.schedule_request(graph))
 end
 
 local M = saga.department(spec, { accept = is_discovery_result, done = done, act = act, name = "emit_modules" })

@@ -92,6 +92,8 @@ return {
     t.eq(#plan.modules[1].observations, 2)
     t.eq(plan.modules[1].observations[2].discovery_source, "browser-visible")
     t.eq(plan.modules[2].id, "settings")
+    t.eq(plan.modules[1].priority, "P0")
+    t.eq(#plan.modules[1].depends_on, 0)
     t.eq(plan.rejected_observation_count, 1)
     t.eq(plan.relation_graph_path, ".testing/runs/discovery/relation-graph.json")
     t.eq(plan.relation_graph.schema, "testing-discovery.relation-graph.v1")
@@ -144,6 +146,36 @@ return {
     end)
   end,
 
+  test_invalid_module_schedule_facts_are_rejected = function()
+    t.raises(function()
+      local payload = scope()
+      payload.observations[1].priority = "urgent"
+      core.plan(payload)
+    end)
+    t.raises(function()
+      local payload = scope()
+      payload.observations[1].depends_on = { [2] = "settings" }
+      core.plan(payload)
+    end)
+    t.raises(function()
+      local payload = scope()
+      payload.observations[1].depends_on = { "" }
+      core.plan(payload)
+    end)
+    t.raises(function()
+      local payload = scope()
+      payload.observations[1].priority = "P0"
+      payload.observations[2].priority = "P1"
+      core.plan(payload)
+    end)
+    t.raises(function()
+      local payload = scope()
+      payload.observations[1].depends_on = { "missing-module" }
+      core.plan(payload)
+    end)
+    t.raises(function() core.schedule_request({ schema = "other" }) end)
+  end,
+
   test_readiness_check_uses_only_readiness_control_fields = function()
     local plan = core.plan(scope())
     local request = core.readiness_check(plan)
@@ -164,6 +196,7 @@ return {
     t.eq(starts[1].ui_loop.base_url, "http://localhost:8080/app")
     t.eq(starts[1].ui_loop.allowed_origins[1], "http://localhost:8080")
     t.eq(starts[1].ui_loop.platform_flow_ref, ".testing/runs/discovery/relation-graph.json")
+    t.eq(starts[1].ui_loop.priority[1], "P0")
     t.eq(starts[1].module_discovery.schema, "testing-runner.module-discovery.v1")
     t.eq(starts[1].module_discovery.observations[1].entry_url, "http://localhost:8080/app/dashboard")
     t.eq(starts[1].cdp_execution.schema, "testing-runner.module-cdp-execution.v1")
@@ -187,6 +220,48 @@ return {
     t.eq(decoded.module_count, plan.module_count)
     t.eq(decoded.modules[1].id, "dashboard")
     t.eq(decoded.relation_graph.schema, "testing-discovery.relation-graph.v1")
+  end,
+
+  test_writes_standalone_dependency_graph_with_runner_requests = function()
+    local plan = core.plan(scope({ observations = {
+      {
+        id = "p1",
+        name = "Dependent module",
+        route = "/app/p1",
+        visible_label = "P1",
+        discovery_source = "navigation",
+        evidence_pointer = ".testing/runs/discovery/evidence/p1",
+        priority = "P1",
+        depends_on = { "p0" },
+      },
+      {
+        id = "p0",
+        name = "Prerequisite module",
+        route = "/app/p0",
+        visible_label = "P0",
+        discovery_source = "navigation",
+        evidence_pointer = ".testing/runs/discovery/evidence/p0",
+        priority = "P0",
+      },
+    } }))
+    local written = {}
+    local graph = core.write_relation_graph(plan, ready_result(), function(path, body)
+      written[path] = body
+      return true
+    end)
+    t.eq(graph.schema, "testing-discovery.relation-graph.v2")
+    t.eq(graph.run_id, "dedup-discovery")
+    t.eq(graph.node_count, 2)
+    t.eq(graph.nodes[1].id, "p1")
+    t.eq(graph.nodes[1].priority, "P1")
+    t.eq(graph.nodes[1].request.schema, "testing-runner.module-test-loop.request.v1")
+    t.eq(graph.nodes[1].request.source_ref.ref, ".testing/runs/discovery/relation-graph.json")
+    t.eq(graph.edges[1].from, "p0")
+    t.eq(graph.edges[1].to, "p1")
+    t.is_true(written[graph.relation_graph_path]:find('"priority":"P0"', 1, true) ~= nil)
+    local request = core.schedule_request(graph)
+    t.eq(request.schema, "platform-test-loop.schedule.v1")
+    t.eq(request.relation_graph_path, graph.relation_graph_path)
   end,
 
   test_saga_conformance_hook_passes = function()

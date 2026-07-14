@@ -15,7 +15,7 @@ It must not encode product modules, product URLs, credentials, browser storage, 
 
 `sessions` use the existing browser-readiness session shape: bounded `role` plus one readiness source such as `browser_harness_command`, `browser_harness_command_env`, `cdp_endpoint_env`, or local `cdp_url`.
 
-`observations` are bounded facts, not test cases or report bodies. Each accepted observation may contain only `id`, `name`, `entry_url`, `route`, `visible_label`, `discovery_source` or `source`, `confidence`, and `evidence_pointer`. Supported sources are `route`, `route-manifest`, `navigation`, `nav-link`, `accessibility`, `a11y-visible`, `browser`, and `browser-visible`. Observations outside the base scope or allowed origins, or without evidence pointers, are omitted from the plan.
+`observations` are bounded facts, not test cases or report bodies. Each accepted observation may contain only `id`, `name`, `entry_url`, `route`, `visible_label`, `discovery_source` or `source`, `confidence`, `evidence_pointer`, optional `priority`, and optional `depends_on`. `priority` is `P0`, `P1`, or `P2`; `depends_on` is a bounded dense list of discovered module identifiers. Scheduling facts are retained on graph nodes and are not forwarded as runner discovery observations. Supported sources are `route`, `route-manifest`, `navigation`, `nav-link`, `accessibility`, `a11y-visible`, `browser`, and `browser-visible`. Observations outside the base scope or allowed origins, or without evidence pointers, are omitted from the plan.
 
 `mutation_policy` defaults to `read-only` and may be `read-only`, `dry-run`, or `host-approved`. The policy is passed through to the runner; it does not authorize unsafe mutation by itself.
 
@@ -46,16 +46,21 @@ The plan contains sanitized scope, accepted modules, accepted observations, reje
 
 The readiness `request_context` remains limited to fields accepted by `browser-readiness`; discovery plans or observation bodies are not stored there.
 
-`testing-discovery.emit_modules` consumes `browser-readiness.browser_readiness_result` only when its source reference points to a discovery plan, reads the plan artifact, and emits one event per discovered module:
+`testing-discovery.emit_modules` consumes `browser-readiness.browser_readiness_result` only when its source reference points to a discovery plan, reads the plan artifact, writes the standalone scheduling graph to:
 
-- queue: `testing-pipeline.module_start`
-- payload schema: `testing-pipeline.module-start.v1`
-- `backend = "fkst-native"`
-- `preflight_result` copied from readiness
-- `ui_loop` with base scope, allowed origins, readiness pointers, and mutation policy
-- `module_discovery` with bounded observations using `testing-runner.module-discovery.v1`
-- `cdp_execution` with bounded step budget and case priorities
-- module-specific `artifact_root`, `source_ref`, `trace_id`, and `dedup_key`
+```text
+<artifact_root>/relation-graph.json
+```
+
+The graph uses schema `testing-discovery.relation-graph.v2`. It identifies the run, contains generic module nodes with explicit priority and existing `testing-runner.module-test-loop.request.v1` envelopes, and records dependency edges independently of node order. It also declares the platform aggregate artifact path. The graph is the scheduling authority; discovery memory and navigation-list adjacency are not.
+
+After the graph is persisted, discovery emits one scheduling event:
+
+- queue: `platform-test-loop.platform_loop_request`
+- payload schema: `platform-test-loop.schedule.v1`
+- `relation_graph_path` pointing to the persisted graph
+
+`platform-test-loop` loads and validates that artifact, dispatches only nodes whose dependency predecessors have successful consumed terminal results, and sends node requests through `testing-runner.module_test_request`. Runner terminal metadata remains the durable fact source for previously completed nodes. The platform aggregate is written once to the graph-declared result path only after every expected graph node is terminal.
 
 ## Guardrails
 

@@ -71,6 +71,8 @@ return {
 
     graph.assert_covers(trace, {
       "browser-readiness.browser_readiness_result -> testing-discovery.emit_modules",
+      "platform-test-loop.platform_loop_request -> platform-test-loop.start",
+      "testing-runner.testing_result -> platform-test-loop.collect_module_result",
     })
   end,
 }

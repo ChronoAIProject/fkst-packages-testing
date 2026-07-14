@@ -103,7 +103,7 @@ return {
     inspect_raised_payloads(trace)
   end,
 
-  test_ready_result_emits_module_start_and_pipeline_publication = function()
+  test_ready_result_schedules_module_and_pipeline_publication = function()
     core.write_plan(core.plan(app_scope_event().payload))
 
     local trace = graph.require_quiescent(graph.run(ready_result_event(), { max_steps = 14 }))
@@ -113,12 +113,8 @@ return {
       consumer = "testing-discovery.emit_modules",
     })
     graph.require_delivery(trace, {
-      queue = "testing-pipeline.module_start",
-      consumer = "testing-pipeline.start_module",
-    })
-    graph.require_delivery(trace, {
-      queue = "module-test-loop.module_loop_request",
-      consumer = "module-test-loop.start",
+      queue = "platform-test-loop.platform_loop_request",
+      consumer = "platform-test-loop.start",
     })
     graph.require_delivery(trace, {
       queue = "testing-runner.module_test_request",
@@ -133,9 +129,10 @@ return {
       consumer = "test-publication.prepare_publication",
     })
 
-    local start = graph.require_raise(trace, "testing-pipeline.module_start").payload
+    local start = graph.require_raise(trace, "testing-runner.module_test_request").payload
     t.eq(start.module, "dashboard")
     t.eq(start.module_discovery.observations[1].discovery_source, "browser-visible")
+    t.eq(start.source_ref.kind, "testing-discovery-relation-graph")
     local result = graph.require_raise(trace, "testing-runner.testing_result").payload
     t.eq(result.status, "blocked")
     t.eq(result.adapter.mode, "module-cdp-execution-blocked")
@@ -147,6 +144,9 @@ return {
     t.eq(publication.severity, "warning")
     t.eq(publication.artifact_root, ".testing/runs/discovery/modules/dashboard")
     t.eq(publication.publication_dry_run, true)
+    local aggregate = graph.require_raise(trace, "platform-test-loop.platform_result").payload
+    t.eq(aggregate.counts.total, 1)
+    t.eq(aggregate.status, "blocked")
     inspect_raised_payloads(trace)
   end,
 
@@ -169,7 +169,7 @@ return {
     core.write_plan(core.plan(app_scope_event({}).payload))
 
     local trace = graph.require_quiescent(graph.run(ready_result_event(), { max_steps = 14 }))
-    local start = graph.require_raise(trace, "testing-pipeline.module_start").payload
+    local start = graph.require_raise(trace, "testing-runner.module_test_request").payload
     t.eq(start.module, "app-discovery")
     t.eq(#start.module_discovery.observations, 0)
     local result = graph.require_raise(trace, "testing-runner.testing_result").payload

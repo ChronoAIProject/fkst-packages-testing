@@ -3,11 +3,13 @@ local M = {}
 local source_ref = require("contract.source_ref")
 local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
+local testing_json = require("testing_runtime.json")
 
 M.scope_schema = "testing-discovery.app-scope.v1"
 M.plan_schema = "testing-discovery.plan.v1"
 M.plan_filename = "testing-discovery-plan.json"
 M.relation_graph_filename = "relation-graph.json"
+M.relation_graph_schema = "testing-discovery.relation-graph.v2"
 
 local max_string = 512
 local max_id = 180
@@ -40,11 +42,13 @@ local budget_fields = {
 
 local observation_fields = {
   confidence = true,
+  depends_on = true,
   discovery_source = true,
   entry_url = true,
   evidence_pointer = true,
   id = true,
   name = true,
+  priority = true,
   route = true,
   source = true,
   visible_label = true,
@@ -231,7 +235,7 @@ local function validate_observation(value)
   if type(value) ~= "table" then error("testing-discovery: malformed-request: observations items must be tables") end
   validate_has_only(value, observation_fields, "testing-discovery: malformed-request: observations item")
   for key, item in pairs(value) do
-    if key ~= "confidence" and key ~= "discovery_source" and key ~= "source" then
+    if key ~= "confidence" and key ~= "depends_on" and key ~= "discovery_source" and key ~= "priority" and key ~= "source" then
       if not bounded_string(item, key == "id" and max_id or max_string) then
         error("testing-discovery: malformed-request: observations." .. key .. " must be a bounded string")
       end
@@ -239,6 +243,20 @@ local function validate_observation(value)
   end
   if value.confidence ~= nil and allowed_confidence[value.confidence] ~= true then
     error("testing-discovery: malformed-request: observations.confidence is invalid")
+  end
+  if value.priority ~= nil and allowed_priorities[value.priority] ~= true then
+    error("testing-discovery: malformed-request: observations.priority is invalid")
+  end
+  if value.depends_on ~= nil then
+    local dependencies_ok, dependency_count = dense_list(value.depends_on)
+    if not dependencies_ok or dependency_count > max_modules then
+      error("testing-discovery: malformed-request: observations.depends_on must be a bounded dense list")
+    end
+    for _, dependency in ipairs(value.depends_on) do
+      if not bounded_string(dependency, max_id) then
+        error("testing-discovery: malformed-request: observations.depends_on items must be bounded strings")
+      end
+    end
   end
   local source = value.discovery_source or value.source
   if source ~= nil and allowed_sources[source] ~= true then
@@ -352,6 +370,10 @@ local function normalize_observation(observation, payload, base_origin, allowed_
   local visible_label = bounded_string(observation.visible_label, max_string) and observation.visible_label or nil
   local name = bounded_string(observation.name, max_string) and observation.name or visible_label or route
   local id = discovery_id(observation.id, name or route)
+  local dependencies = {}
+  for _, dependency in ipairs(observation.depends_on or {}) do
+    table.insert(dependencies, discovery_id(dependency, dependency))
+  end
   return {
     id = id,
     name = name,
@@ -361,7 +383,39 @@ local function normalize_observation(observation, payload, base_origin, allowed_
     discovery_source = source,
     confidence = confidence_for(observation),
     evidence_pointer = observation.evidence_pointer,
+    priority = observation.priority,
+    depends_on = dependencies,
   }
+end
+
+local function runner_observation(observation)
+  return {
+    id = observation.id,
+    name = observation.name,
+    entry_url = observation.entry_url,
+    visible_label = observation.visible_label,
+    route = observation.route,
+    discovery_source = observation.discovery_source,
+    confidence = observation.confidence,
+    evidence_pointer = observation.evidence_pointer,
+  }
+end
+
+local function merge_schedule(module, observation)
+  if observation.priority ~= nil then
+    if module.priority ~= nil and module.priority ~= observation.priority then
+      error("testing-discovery: malformed-request: module observations have conflicting priorities")
+    end
+    module.priority = observation.priority
+  end
+  module.depends_on = module.depends_on or {}
+  module._dependency_seen = module._dependency_seen or {}
+  for _, dependency in ipairs(observation.depends_on or {}) do
+    if module._dependency_seen[dependency] ~= true then
+      module._dependency_seen[dependency] = true
+      table.insert(module.depends_on, dependency)
+    end
+  end
 end
 
 local function module_artifact_root(root, id)
@@ -478,10 +532,12 @@ function M.plan(payload, _opts)
           entry_url = normalized.entry_url,
           route = normalized.route,
           observations = {},
+          depends_on = {},
         }
         table.insert(order, key)
       end
-      table.insert(clusters[key].observations, normalized)
+      merge_schedule(clusters[key], normalized)
+      table.insert(clusters[key].observations, runner_observation(normalized))
     end
   end
   if #(payload.observations or {}) > limit then
@@ -498,6 +554,8 @@ function M.plan(payload, _opts)
       module.source_ref = { kind = "discovered-module", ref = testing_contract.safe_key(src.ref .. "-" .. module.id, module.id) }
       module.trace_id = identity.trace_id
       module.dedup_key = identity.dedup_key
+      module.priority = module.priority or (#module.depends_on > 0 and "P1" or "P0")
+      module._dependency_seen = nil
       table.insert(plan.modules, module)
     end
   end
@@ -515,11 +573,22 @@ function M.plan(payload, _opts)
       source_ref = { kind = "discovered-module", ref = testing_contract.safe_key(src.ref .. "-" .. id, id) },
       trace_id = identity.trace_id,
       dedup_key = identity.dedup_key,
+      priority = "P0",
+      depends_on = {},
     })
     table.insert(plan.limitations, "No observations were accepted by the discovery gate; a gap module was emitted.")
   end
   if plan.rejected_observation_count > 0 then
     table.insert(plan.limitations, "Some observed entries were omitted because they were outside scope or lacked required evidence.")
+  end
+  local module_ids = {}
+  for _, module in ipairs(plan.modules) do module_ids[module.id] = true end
+  for _, module in ipairs(plan.modules) do
+    for _, dependency in ipairs(module.depends_on or {}) do
+      if dependency == module.id or module_ids[dependency] ~= true then
+        error("testing-discovery: malformed-request: module dependency must reference another discovered module")
+      end
+    end
   end
   plan.module_count = #plan.modules
   plan.relation_graph_path = payload.artifact_root .. "/" .. M.relation_graph_filename
@@ -556,6 +625,7 @@ function M.module_starts(plan, readiness_result)
         mutation_policy = plan.mutation_policy,
         gap_ref = module.artifact_root .. "/gap-backlog.json",
         platform_flow_ref = plan.relation_graph_path,
+        priority = { module.priority or "P0" },
       },
       module_discovery = {
         schema = "testing-runner.module-discovery.v1",
@@ -576,133 +646,77 @@ function M.module_starts(plan, readiness_result)
   return starts
 end
 
-local function json_escape(value)
-  local text = tostring(value or "")
-  text = text:gsub("\\", "\\\\")
-  text = text:gsub('"', '\\"')
-  text = text:gsub("\b", "\\b")
-  text = text:gsub("\f", "\\f")
-  text = text:gsub("\n", "\\n")
-  text = text:gsub("\r", "\\r")
-  text = text:gsub("\t", "\\t")
-  text = text:gsub("[%z\1-\31]", function(char) return string.format("\\u%04x", char:byte()) end)
-  return text
+local function runner_request(start, graph_path)
+  return {
+    schema = "testing-runner.module-test-loop.request.v1",
+    module = start.module,
+    backend = start.backend,
+    dry_run = start.dry_run,
+    preflight_result = start.preflight_result,
+    ui_loop = start.ui_loop,
+    module_discovery = start.module_discovery,
+    cdp_execution = start.cdp_execution,
+    artifact_root = start.artifact_root,
+    source_ref = { kind = "testing-discovery-relation-graph", ref = graph_path },
+    trace_id = start.trace_id,
+    dedup_key = start.dedup_key,
+  }
 end
 
-local function is_array(value)
-  local ok = dense_list(value)
-  return ok
-end
-
-local function json_encode(value)
-  local kind = type(value)
-  if kind == "nil" then return "null" end
-  if kind == "boolean" then return value and "true" or "false" end
-  if kind == "number" then return tostring(value) end
-  if kind == "string" then return '"' .. json_escape(value) .. '"' end
-  if kind ~= "table" then return '"' .. json_escape(value) .. '"' end
-  local parts = {}
-  if is_array(value) then
-    for _, item in ipairs(value) do table.insert(parts, json_encode(item)) end
-    return "[" .. table.concat(parts, ",") .. "]"
-  end
-  local keys = {}
-  for key, _ in pairs(value) do table.insert(keys, tostring(key)) end
-  table.sort(keys)
-  for _, key in ipairs(keys) do table.insert(parts, '"' .. json_escape(key) .. '":' .. json_encode(value[key])) end
-  return "{" .. table.concat(parts, ",") .. "}"
-end
-M.json_encode = json_encode
-
-local function skip_ws(text, pos)
-  while true do
-    local char = text:sub(pos, pos)
-    if char ~= " " and char ~= "\n" and char ~= "\r" and char ~= "\t" then return pos end
-    pos = pos + 1
-  end
-end
-
-local parse_value
-
-local function parse_string(text, pos)
-  pos = pos + 1
-  local parts = {}
-  while pos <= #text do
-    local char = text:sub(pos, pos)
-    if char == '"' then return table.concat(parts), pos + 1 end
-    if char == "\\" then
-      local esc = text:sub(pos + 1, pos + 1)
-      if esc == '"' or esc == "\\" or esc == "/" then table.insert(parts, esc)
-      elseif esc == "b" then table.insert(parts, "\b")
-      elseif esc == "f" then table.insert(parts, "\f")
-      elseif esc == "n" then table.insert(parts, "\n")
-      elseif esc == "r" then table.insert(parts, "\r")
-      elseif esc == "t" then table.insert(parts, "\t")
-      elseif esc == "u" then table.insert(parts, "?"); pos = pos + 4
-      else error("testing-discovery: malformed-plan: invalid json escape") end
-      pos = pos + 2
-    else
-      table.insert(parts, char)
-      pos = pos + 1
+function M.relation_graph_artifact(plan, readiness_result)
+  if type(plan) ~= "table" or plan.schema ~= M.plan_schema then error("testing-discovery: malformed-plan: invalid plan") end
+  local starts = M.module_starts(plan, readiness_result)
+  local nodes, edges = {}, {}
+  for index, module in ipairs(plan.modules or {}) do
+    table.insert(nodes, {
+      id = module.id,
+      priority = module.priority or "P0",
+      source_ref = module.source_ref,
+      request = runner_request(starts[index], plan.relation_graph_path),
+    })
+    for _, dependency in ipairs(module.depends_on or {}) do
+      table.insert(edges, {
+        from = dependency,
+        to = module.id,
+      })
     end
   end
-  error("testing-discovery: malformed-plan: unterminated json string")
+  return {
+    schema = M.relation_graph_schema,
+    artifact_kind = "testing-schedule-relation-graph",
+    relation_graph_path = plan.relation_graph_path,
+    run_id = plan.dedup_key,
+    artifact_root = plan.artifact_root,
+    aggregate_artifact_root = plan.artifact_root .. "/platform",
+    aggregate_result_path = plan.artifact_root .. "/platform/aggregate.json",
+    source_ref = plan.source_ref,
+    trace_id = plan.trace_id,
+    dedup_key = plan.dedup_key,
+    nodes = nodes,
+    edges = edges,
+    node_count = #nodes,
+    edge_count = #edges,
+  }
 end
 
-local function parse_array(text, pos)
-  local out = {}
-  pos = skip_ws(text, pos + 1)
-  if text:sub(pos, pos) == "]" then return out, pos + 1 end
-  while true do
-    local value
-    value, pos = parse_value(text, pos)
-    table.insert(out, value)
-    pos = skip_ws(text, pos)
-    local char = text:sub(pos, pos)
-    if char == "]" then return out, pos + 1 end
-    if char ~= "," then error("testing-discovery: malformed-plan: expected array separator") end
-    pos = skip_ws(text, pos + 1)
+function M.schedule_request(graph)
+  if type(graph) ~= "table" or graph.schema ~= M.relation_graph_schema then
+    error("testing-discovery: malformed-relation-graph: invalid graph")
   end
+  return {
+    schema = "platform-test-loop.schedule.v1",
+    relation_graph_path = graph.relation_graph_path,
+    artifact_root = graph.aggregate_artifact_root,
+    source_ref = { kind = "testing-discovery-relation-graph", ref = graph.relation_graph_path },
+    trace_id = graph.trace_id,
+    dedup_key = testing_contract.safe_key(graph.dedup_key .. "-platform", "platform-run"),
+  }
 end
 
-local function parse_object(text, pos)
-  local out = {}
-  pos = skip_ws(text, pos + 1)
-  if text:sub(pos, pos) == "}" then return out, pos + 1 end
-  while true do
-    if text:sub(pos, pos) ~= '"' then error("testing-discovery: malformed-plan: expected object key") end
-    local key
-    key, pos = parse_string(text, pos)
-    pos = skip_ws(text, pos)
-    if text:sub(pos, pos) ~= ":" then error("testing-discovery: malformed-plan: expected key separator") end
-    out[key], pos = parse_value(text, skip_ws(text, pos + 1))
-    pos = skip_ws(text, pos)
-    local char = text:sub(pos, pos)
-    if char == "}" then return out, pos + 1 end
-    if char ~= "," then error("testing-discovery: malformed-plan: expected object separator") end
-    pos = skip_ws(text, pos + 1)
-  end
-end
-
-function parse_value(text, pos)
-  pos = skip_ws(text, pos)
-  local char = text:sub(pos, pos)
-  if char == '"' then return parse_string(text, pos) end
-  if char == "{" then return parse_object(text, pos) end
-  if char == "[" then return parse_array(text, pos) end
-  if text:sub(pos, pos + 3) == "true" then return true, pos + 4 end
-  if text:sub(pos, pos + 4) == "false" then return false, pos + 5 end
-  if text:sub(pos, pos + 3) == "null" then return nil, pos + 4 end
-  local number_text = text:sub(pos):match("^-?%d+%.?%d*")
-  if number_text ~= nil then return tonumber(number_text), pos + #number_text end
-  error("testing-discovery: malformed-plan: invalid json value")
-end
-
+local json_encode = testing_json.encode
+M.json_encode = json_encode
 local function json_decode(text)
-  local value, pos = parse_value(text, 1)
-  pos = skip_ws(text, pos)
-  if pos <= #text then error("testing-discovery: malformed-plan: trailing json data") end
-  return value
+  return json.decode(text)
 end
 M.json_decode = json_decode
 
@@ -722,6 +736,14 @@ local function write_file(path, body)
   file:close()
   if not wrote then return nil, write_err or "failed to write artifact file" end
   return true
+end
+
+function M.write_relation_graph(plan, readiness_result, writer)
+  local graph = M.relation_graph_artifact(plan, readiness_result)
+  local write = writer or write_file
+  local ok, err = write(graph.relation_graph_path, json_encode(graph) .. "\n")
+  if not ok then return nil, err end
+  return graph
 end
 
 function M.write_plan(plan, writer)

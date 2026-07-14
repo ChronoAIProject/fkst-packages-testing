@@ -50,7 +50,7 @@ A typical host flow is:
 
 Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixtures under `examples/generic-host/` show how host-owned native module, browser-driver, and UI-loop profiles can translate into these existing events without adding product facts to this repo.
 
-For autonomous coverage, a host can submit `testing-discovery.app-scope.v1` with local scope, sessions, policy, and bounded AI/browser/navigation/accessibility observations. `testing-discovery` derives module starts automatically, writes a sanitized discovery plan under `.testing/runs/...`, and reuses the existing `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication path. Hosts provide only bootstrap scope and safety policy; product-specific module catalogs are not required in this package set.
+For autonomous coverage, a host can submit `testing-discovery.app-scope.v1` with local scope, sessions, policy, and bounded AI/browser/navigation/accessibility observations. Optional observation `priority` and `depends_on` facts become a standalone persisted relation graph after readiness. `platform-test-loop` releases graph nodes only after successful predecessor terminal results and dispatches the existing FKST-native module runner requests; the final platform aggregate is persisted only after every graph node is terminal. Hosts provide only bootstrap scope, explicit scheduling facts, and safety policy; product-specific module catalogs are not required in this package set.
 
 ### Generic downstream integration example
 

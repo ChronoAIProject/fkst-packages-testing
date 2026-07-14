@@ -6,10 +6,10 @@ persistence_class = "saga"
 root = "."
 
 [lib_deps]
-libraries = ["contract", "workflow", "testkit"]
+libraries = ["contract", "workflow", "testkit", "testing_runtime"]
 
 [event_deps]
-packages = ["browser-readiness", "testing-pipeline", "module-test-loop", "testing-runner", "test-artifacts", "test-publication"]
+packages = ["browser-readiness", "platform-test-loop", "testing-pipeline", "module-test-loop", "testing-runner", "test-artifacts", "test-publication"]
 
 [conformance]
 pack = "conformance/pack.toml"
