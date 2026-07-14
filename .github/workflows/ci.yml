@@ -77,7 +77,8 @@ jobs:
       - name: Run repository checks and package tests
         env:
           BIN: ${{ github.workspace }}/fkst-substrate/target/debug/fkst-framework
-          FKST_LUA_COVERAGE_BASE_REF: ${{ github.base_ref || github.ref_name }}
+          FKST_COMPETENCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
+          FKST_LUA_COVERAGE_BASE_REF: ${{ github.event.pull_request.base.sha || github.ref_name }}
         run: |
           test -x "$BIN"
           scripts/run.sh host -- check
