@@ -146,6 +146,85 @@ local function append_executed(lines, artifact)
   end
 end
 
+local function copy_screenshot_artifact(value)
+  if type(value) ~= "table" then return nil end
+  if type(value.path) ~= "string" or value.path == "" or value.media_type ~= "image/png" then return nil end
+  if type(value.size_bytes) ~= "number" or value.size_bytes < 1 then return nil end
+  if type(value.sha256) ~= "string" or #value.sha256 ~= 64 or value.sha256:match("^[0-9a-f]+$") == nil then return nil end
+  return {
+    path = value.path,
+    media_type = value.media_type,
+    size_bytes = value.size_bytes,
+    sha256 = value.sha256,
+  }
+end
+
+local function failed_assertions(artifact)
+  local failures = {}
+  for _, action in ipairs(type(artifact) == "table" and artifact.actions or {}) do
+    for _, assertion in ipairs(type(action) == "table" and action.assertion_results or {}) do
+      if type(assertion) == "table" and assertion.status == "failed" then
+        local item = {
+          case_id = bounded(action.case_id, "case"),
+          action = bounded(action.action, "action"),
+          assertion_type = bounded(assertion.type, "assertion"),
+          observation = bounded(assertion.observation, "typed assertion failed"),
+          evidence_pointer = bounded(assertion.evidence_pointer),
+        }
+        local screenshot = copy_screenshot_artifact(assertion.screenshot_artifact)
+        if screenshot ~= nil then item.screenshot_artifact = screenshot end
+        table.insert(failures, item)
+        if #failures >= max_items then return failures end
+      end
+    end
+  end
+  return failures
+end
+
+local function screenshot_index(root, failures)
+  local refs, seen = {}, {}
+  for _, failure in ipairs(failures or {}) do
+    local screenshot = failure.screenshot_artifact
+    if screenshot ~= nil and seen[screenshot.path] ~= true then
+      seen[screenshot.path] = true
+      table.insert(refs, copy_screenshot_artifact(screenshot))
+      if #refs >= 1 then break end
+    end
+  end
+  return {
+    schema = "testing-runner.native-evidence-screenshot-index.v1",
+    artifact_kind = "native-evidence-screenshot-index",
+    artifact_root = root,
+    refs = refs,
+    ref_count = #refs,
+  }
+end
+
+local function append_failed_assertions(lines, failures)
+  if #failures == 0 then
+    add_line(lines, "- No failed typed assertion was recorded.")
+    return
+  end
+  for _, failure in ipairs(failures) do
+    local line = "- " .. line_value(failure.case_id, "case") .. " / " .. line_value(failure.assertion_type, "assertion")
+      .. ": " .. line_value(failure.observation, "typed assertion failed")
+    if failure.screenshot_artifact ~= nil then
+      line = line .. " — screenshot " .. failure.screenshot_artifact.path .. " (sha256 " .. failure.screenshot_artifact.sha256 .. ")"
+    end
+    add_line(lines, line)
+  end
+end
+
+local function append_screenshot_index(lines, index)
+  if type(index) ~= "table" or type(index.refs) ~= "table" or #index.refs == 0 then
+    add_line(lines, "- No failure screenshot was recorded.")
+    return
+  end
+  for _, screenshot in ipairs(index.refs) do
+    add_line(lines, "- " .. screenshot.path .. " — " .. screenshot.media_type .. ", " .. tostring(screenshot.size_bytes) .. " bytes, sha256 " .. screenshot.sha256)
+  end
+end
+
 local function append_skipped(lines, backlog)
   local skipped = type(backlog) == "table" and backlog.skipped_cases or nil
   if type(skipped) ~= "table" or #skipped == 0 then
@@ -225,7 +304,7 @@ local function issue_drafts(result, payload, backlog, paths)
   }
 end
 
-local function markdown(result, payload, artifact, planning, backlog, paths)
+local function markdown(result, payload, artifact, planning, backlog, paths, failures, screenshots)
   local lines = {}
   local modules = module_rows(payload, planning)
   local executed = executed_map(artifact)
@@ -263,6 +342,12 @@ local function markdown(result, payload, artifact, planning, backlog, paths)
   add_line(lines, "## Executed user-facing scenarios")
   append_executed(lines, artifact)
   add_line(lines, "")
+  add_line(lines, "## Failed assertions")
+  append_failed_assertions(lines, failures)
+  add_line(lines, "")
+  add_line(lines, "## Screenshot index")
+  append_screenshot_index(lines, screenshots)
+  add_line(lines, "")
   add_line(lines, "## Skipped or deferred scenarios")
   append_skipped(lines, backlog)
   add_line(lines, "")
@@ -294,9 +379,13 @@ function M.build(result, payload, artifact, planning, backlog, paths)
   paths.gap_backlog = paths.gap_backlog or (result.artifact_root .. "/gap-backlog.json")
   paths.stage_report = paths.stage_report or M.stage_report_path(result.artifact_root)
   paths.issue_drafts = paths.issue_drafts or M.issue_drafts_path(result.artifact_root)
+  local failures = failed_assertions(artifact)
+  local screenshots = screenshot_index(result.artifact_root, failures)
   return {
-    stage_report = markdown(result, payload, artifact, planning, backlog, paths),
+    stage_report = markdown(result, payload, artifact, planning, backlog, paths, failures, screenshots),
     issue_drafts = issue_drafts(result, payload, backlog, paths),
+    failed_assertions = failures,
+    screenshot_index = screenshots,
   }
 end
 

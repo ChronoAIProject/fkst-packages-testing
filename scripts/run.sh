@@ -572,6 +572,19 @@ PY
   )
 }
 
+run_screenshot_evidence_smoke() {
+  local source_root="$ROOT/packages/testing-runner" work parent rc=0
+  work="$(flat_test_workspace "testing-runner" "$source_root")" || return 1
+  parent="$(dirname "$work")"
+  rm -f "$work/tests/"*_test.lua
+  mkdir -p "$work/departments/screenshot_evidence_smoke"
+  cp "$ROOT/scripts/screenshot_evidence_smoke_test.lua" "$work/departments/screenshot_evidence_smoke/main.lua"
+  echo "=== screenshot evidence smoke: failed assertion -> redacted PNG -> report pointer ==="
+  node "$ROOT/scripts/run_screenshot_evidence_smoke.js" "$BIN" "$work" "$ROOT" || rc=1
+  rm -rf "$parent"
+  return "$rc"
+}
+
 cmd_test() {
   local target="${1:-}" fail=0 ran=0 pkg name coverage_dir
   cmd_check
@@ -634,6 +647,9 @@ cmd_test() {
   done < <(list_packages)
   if [ "$ran" -eq 0 ]; then echo "error: no packages matched${target:+ for '$target'}" >&2; return 1; fi
   if [ "$fail" -ne 0 ]; then echo "FAILED: $fail package(s)" >&2; return 1; fi
+  if [ -z "$target" ] || [ "$target" = "testing-runner" ]; then
+    run_screenshot_evidence_smoke || return 1
+  fi
   if [ -z "$target" ]; then
     echo "=== Lua coverage ratchet ==="
     enforce_lua_coverage_ratchet || return 1

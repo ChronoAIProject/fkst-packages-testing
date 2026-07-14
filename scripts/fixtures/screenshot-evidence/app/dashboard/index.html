@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="icon" href="data:,">
+    <title>Screenshot evidence fixture</title>
+    <style>
+      html,
+      body {
+        margin: 0;
+        min-height: 100%;
+        background: #f4f6f8;
+        color: #17212b;
+        font-family: sans-serif;
+      }
+
+      main {
+        padding: 180px 40px 40px;
+      }
+
+      [data-fkst-sensitive] {
+        position: fixed;
+        top: 40px;
+        left: 40px;
+        width: 160px;
+        height: 100px;
+        background: #ffffff;
+        color: #111111;
+        display: grid;
+        place-items: center;
+      }
+    </style>
+  </head>
+  <body>
+    <div data-fkst-sensitive>fixture-secret-71</div>
+    <main>
+      <h1>Account dashboard</h1>
+      <p>The intentionally expected label is absent.</p>
+    </main>
+  </body>
+</html>

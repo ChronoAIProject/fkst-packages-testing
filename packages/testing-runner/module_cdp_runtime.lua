@@ -119,18 +119,33 @@ local function build_request(artifact, result, payload, cdp_url)
     step_budget = #actions,
     actions = actions,
   }
+  if type(payload.cdp_execution) == "table" and payload.cdp_execution.redaction_selectors ~= nil then
+    request.redaction_selectors = payload.cdp_execution.redaction_selectors
+  end
   return request, planner_indexes
+end
+
+local function copy_artifact_entry(value)
+  if type(value) ~= "table" then return nil end
+  return {
+    path = value.path,
+    media_type = value.media_type,
+    size_bytes = value.size_bytes,
+    sha256 = value.sha256,
+  }
 end
 
 local function copy_assertion_results(value)
   local results = {}
   for _, item in ipairs(value or {}) do
-    table.insert(results, {
+    local result = {
       type = item.type,
       status = item.status,
       observation = item.observation,
       evidence_pointer = item.evidence_pointer,
-    })
+    }
+    if item.screenshot_artifact ~= nil then result.screenshot_artifact = copy_artifact_entry(item.screenshot_artifact) end
+    table.insert(results, result)
   end
   return results
 end
@@ -165,6 +180,11 @@ local function reconcile(artifact, receipt, planner_indexes, paths)
     action.observation = action_receipt.observation
     action.evidence_pointer = action_receipt.evidence_pointer
     action.assertion_results = copy_assertion_results(action_receipt.assertion_results)
+    for _, assertion in ipairs(action.assertion_results) do
+      if artifact.failure_screenshot == nil and assertion.screenshot_artifact ~= nil then
+        artifact.failure_screenshot = copy_artifact_entry(assertion.screenshot_artifact)
+      end
+    end
   end
   artifact.browser_execution_plan_path = paths.plan
   artifact.browser_execution_request_path = paths.request

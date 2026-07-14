@@ -19,6 +19,7 @@ function R.validate(request, receipt)
   if receipt.action_count ~= #request.actions then
     error("testing-runtime: receipt-count-mismatch: request and receipt action counts differ")
   end
+  local screenshot_count = 0
   for index, action_receipt in ipairs(receipt.actions) do
     local action = request.actions[index]
     if action_receipt.step ~= action.step
@@ -45,10 +46,25 @@ function R.validate(request, receipt)
             .. " assertion " .. tostring(assertion_index)
         )
       end
+      if assertion_result.screenshot_artifact ~= nil then
+        screenshot_count = screenshot_count + 1
+        if not under_artifact_root(request.artifact_root, assertion_result.screenshot_artifact.path) then
+          error(
+            "testing-runtime: receipt-screenshot-root-mismatch: step " .. tostring(index)
+              .. " assertion " .. tostring(assertion_index)
+          )
+        end
+      end
     end
     if action.action == "safe-mutation-fixture" and action_receipt.fixture_receipt_path == nil then
       error("testing-runtime: fixture-receipt-missing: " .. tostring(action.case_id))
     end
+  end
+  if request.redaction_selectors ~= nil and receipt.status == "failed" and screenshot_count ~= 1 then
+    error("testing-runtime: failure-screenshot-missing: configured failed execution requires one screenshot artifact")
+  end
+  if request.redaction_selectors == nil and screenshot_count ~= 0 then
+    error("testing-runtime: failure-screenshot-unexpected: receipt references an unconfigured screenshot artifact")
   end
   return receipt
 end

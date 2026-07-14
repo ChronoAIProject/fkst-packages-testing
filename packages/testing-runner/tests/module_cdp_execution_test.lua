@@ -267,6 +267,24 @@ return {
     end)
   end,
 
+  test_accepts_stable_redaction_selectors_without_persisting_sensitive_values = function()
+    local value = payload()
+    value.cdp_execution.redaction_selectors = { "#account-number", ".private-value", "[data-fkst-sensitive]" }
+    t.eq(cdp.validate_request(value.cdp_execution).redaction_selectors[3], "[data-fkst-sensitive]")
+  end,
+
+  test_rejects_redaction_selector_with_embedded_sensitive_value = function()
+    local value = payload()
+    value.cdp_execution.redaction_selectors = { '[data-secret="fixture-secret"]' }
+    t.raises(function() cdp.validate_request(value.cdp_execution) end)
+  end,
+
+  test_rejects_empty_redaction_selector_list = function()
+    local value = payload()
+    value.cdp_execution.redaction_selectors = {}
+    t.raises(function() cdp.validate_request(value.cdp_execution) end)
+  end,
+
   test_records_fixture_gap_when_lifecycle_descriptor_is_missing = function()
     local value = payload()
     value.ui_loop.mutation_policy = "host-approved"

@@ -403,7 +403,7 @@ local function skipped_cases_evidence(planning, root)
   }
 end
 
-local function failures_evidence(result, artifact, root)
+local function failures_evidence(result, artifact, root, failed_assertions)
   local limitations = type(artifact) == "table" and artifact.limitations or nil
   return {
     schema = "testing-runner.native-evidence-failures.v1",
@@ -412,6 +412,8 @@ local function failures_evidence(result, artifact, root)
     status = result.status,
     classification = result.native_summary and result.native_summary.classification or nil,
     limitations = limitations or {},
+    failed_assertions = failed_assertions or {},
+    failed_assertion_count = #(failed_assertions or {}),
   }
 end
 
@@ -538,10 +540,10 @@ local function write_native_evidence_bundle(result, payload, context, artifact, 
     { paths.planning, planning_evidence(planning, root) },
     { paths.action_trace, action_trace_evidence(artifact, root) },
     { paths.skipped_cases, skipped_cases_evidence(planning, root) },
-    { paths.failures, failures_evidence(result, artifact, root) },
+    { paths.failures, failures_evidence(result, artifact, root, reports.failed_assertions) },
     { paths.console_network, console_network_evidence(artifact, root) },
     { paths.ai_generation, ai_generation_evidence(planning, root) },
-    { paths.screenshots, pointer_index("testing-runner.native-evidence-screenshot-index.v1", "native-evidence-screenshot-index", root, {}) },
+    { paths.screenshots, reports.screenshot_index },
     { paths.dom_state, pointer_index("testing-runner.native-evidence-dom-state-summary.v1", "native-evidence-dom-state-summary", root, {}) },
     { paths.gap_backlog, backlog },
     { paths.issue_drafts, reports.issue_drafts },

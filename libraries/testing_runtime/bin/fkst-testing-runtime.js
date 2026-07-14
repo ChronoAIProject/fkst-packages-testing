@@ -12,6 +12,9 @@ const {
   waitForPage,
 } = require('../lib/cdp_client');
 
+const REDACTION_MASK_RGB = [217, 48, 37];
+const redactionSelectorPattern = /^(?:#[A-Za-z][A-Za-z0-9_-]*|\.[A-Za-z][A-Za-z0-9_-]*|\[data-[A-Za-z][A-Za-z0-9_-]*\])$/;
+
 function stableStringify(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(stableStringify).join(',')}]`;
@@ -39,6 +42,11 @@ function readJson(filePath) {
 function writeJson(filePath, value) {
   fs.mkdirSync(path.dirname(filePath), { recursive: true });
   fs.writeFileSync(filePath, `${stableStringify(value)}\n`);
+}
+
+function writeBinary(filePath, value) {
+  fs.mkdirSync(path.dirname(filePath), { recursive: true });
+  fs.writeFileSync(filePath, value);
 }
 
 function safeArtifactPath(value) {
@@ -98,6 +106,108 @@ function textProbeExpression(target, click) {
   })()`;
 }
 
+function redactionExpression(selectors) {
+  const encoded = JSON.stringify(selectors);
+  const color = `rgb(${REDACTION_MASK_RGB.join(', ')})`;
+  return `(() => {
+    const selectors = ${encoded};
+    const marker = 'data-fkst-redaction-overlay';
+    document.querySelectorAll('[' + marker + ']').forEach((node) => node.remove());
+    let maskCount = 0;
+    for (const selector of selectors) {
+      let nodes;
+      try {
+        nodes = Array.from(document.querySelectorAll(selector));
+      } catch (_error) {
+        return { ok: false, selector_count: selectors.length, mask_count: maskCount };
+      }
+      let selectorMaskCount = 0;
+      for (const node of nodes) {
+        const style = getComputedStyle(node);
+        const rect = node.getBoundingClientRect();
+        const left = Math.max(0, Math.floor(rect.left));
+        const top = Math.max(0, Math.floor(rect.top));
+        const right = Math.min(window.innerWidth, Math.ceil(rect.right));
+        const bottom = Math.min(window.innerHeight, Math.ceil(rect.bottom));
+        if (style.display === 'none' || style.visibility === 'hidden' || Number(style.opacity) === 0 || right <= left || bottom <= top) continue;
+        const overlay = document.createElement('div');
+        overlay.setAttribute(marker, '');
+        Object.assign(overlay.style, {
+          position: 'fixed',
+          left: left + 'px',
+          top: top + 'px',
+          width: (right - left) + 'px',
+          height: (bottom - top) + 'px',
+          margin: '0',
+          padding: '0',
+          border: '0',
+          borderRadius: '0',
+          background: '${color}',
+          boxShadow: 'none',
+          opacity: '1',
+          mixBlendMode: 'normal',
+          pointerEvents: 'none',
+          zIndex: '2147483647',
+        });
+        document.documentElement.appendChild(overlay);
+        selectorMaskCount += 1;
+        maskCount += 1;
+      }
+      if (selectorMaskCount === 0) {
+        document.querySelectorAll('[' + marker + ']').forEach((node) => node.remove());
+        return { ok: false, selector_count: selectors.length, mask_count: maskCount };
+      }
+    }
+    return { ok: true, selector_count: selectors.length, mask_count: maskCount };
+  })()`;
+}
+
+function validateRedactionSelectors(value) {
+  if (!Array.isArray(value) || value.length === 0 || value.length > 16) throw new Error('screenshot redaction configuration is invalid');
+  for (const selector of value) {
+    if (typeof selector !== 'string' || selector.length > 120 || !redactionSelectorPattern.test(selector)) {
+      throw new Error('screenshot redaction configuration is invalid');
+    }
+  }
+  return value;
+}
+
+async function captureFailureScreenshot(cdp, request) {
+  const selectors = validateRedactionSelectors(request.redaction_selectors);
+  const screenshotPath = `${request.artifact_root}/evidence/screenshots/failure.png`;
+  let cleanupRequired = false;
+  let screenshot;
+  try {
+    cleanupRequired = true;
+    const redaction = await evaluate(cdp, redactionExpression(selectors));
+    if (!redaction || redaction.ok !== true || redaction.mask_count < selectors.length) {
+      throw new Error('screenshot redaction could not mask every configured element');
+    }
+    await evaluate(cdp, 'new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))');
+    screenshot = await cdp.send('Page.captureScreenshot', {
+      format: 'png',
+      fromSurface: true,
+      captureBeyondViewport: false,
+    });
+  } finally {
+    if (cleanupRequired) {
+      await evaluate(cdp, `(() => { document.querySelectorAll('[data-fkst-redaction-overlay]').forEach((node) => node.remove()); return true; })()`);
+    }
+  }
+  const body = Buffer.from(String(screenshot && screenshot.data || ''), 'base64');
+  const pngSignature = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  if (body.length <= pngSignature.length || !body.subarray(0, pngSignature.length).equals(pngSignature)) {
+    throw new Error('captured screenshot is not a valid PNG');
+  }
+  writeBinary(screenshotPath, body);
+  return {
+    path: screenshotPath,
+    media_type: 'image/png',
+    size_bytes: body.length,
+    sha256: sha256(body),
+  };
+}
+
 function eventFacts(events) {
   const severeConsole = [];
   const failedRequests = [];
@@ -148,7 +258,7 @@ async function assertionResult(cdp, assertion, action, facts, evidencePointer) {
   };
 }
 
-async function executeAction(cdp, request, action) {
+async function executeAction(cdp, request, action, evidenceState) {
   const evidencePointer = `${request.artifact_root}/evidence/execution/${String(action.case_id).replace(/[^A-Za-z0-9._-]/g, '-')}.json`;
   const actionUrl = action.url || request.base_url;
   if (!allowedUrl(actionUrl, request)) throw new Error(`action left allowed scope: ${action.case_id}`);
@@ -176,7 +286,12 @@ async function executeAction(cdp, request, action) {
   const assertionResults = [];
   const actionContext = { ...action, request };
   for (const assertion of action.assertions) {
-    assertionResults.push(await assertionResult(cdp, assertion, actionContext, facts, evidencePointer));
+    const result = await assertionResult(cdp, assertion, actionContext, facts, evidencePointer);
+    if (result.status === 'failed' && evidenceState.failureScreenshot === null && request.redaction_selectors !== undefined) {
+      evidenceState.failureScreenshot = await captureFailureScreenshot(cdp, request);
+      result.screenshot_artifact = evidenceState.failureScreenshot;
+    }
+    assertionResults.push(result);
   }
   const failed = assertionResults.some((result) => result.status === 'failed');
   const evidence = {
@@ -215,12 +330,13 @@ async function executeRequest(request, receiptPath) {
   const cdp = new CdpSocket(wsUrl);
   await cdp.connect();
   const actions = [];
+  const evidenceState = { failureScreenshot: null };
   try {
     await cdp.send('Page.enable');
     await cdp.send('Runtime.enable');
     await cdp.send('Log.enable');
     await cdp.send('Network.enable');
-    for (const action of request.actions) actions.push(await executeAction(cdp, request, action));
+    for (const action of request.actions) actions.push(await executeAction(cdp, request, action, evidenceState));
   } finally {
     cdp.close();
   }
@@ -247,6 +363,7 @@ async function executeRequest(request, receiptPath) {
 function mediaType(filePath) {
   if (filePath.endsWith('.json')) return 'application/json';
   if (filePath.endsWith('.md')) return 'text/markdown';
+  if (filePath.endsWith('.png')) return 'image/png';
   return 'application/octet-stream';
 }
 
@@ -325,6 +442,7 @@ if (require.main === module) {
 module.exports = {
   allowedUrl,
   buildManifest,
+  captureFailureScreenshot,
   cleanText,
   cleanUrl,
   executeRequest,

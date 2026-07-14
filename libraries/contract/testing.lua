@@ -119,6 +119,22 @@ local function dense_list(value)
   return count == max_index
 end
 
+local function copy_artifact_entry(value, artifact_root, media_type)
+  if type(value) ~= "table" then return nil end
+  if not has_only(value, { path = true, media_type = true, size_bytes = true, sha256 = true }) then return nil end
+  if not strings.is_artifact_root(value.path, 4096) then return nil end
+  if artifact_root ~= nil and value.path:sub(1, #artifact_root + 1) ~= artifact_root .. "/" then return nil end
+  if not bounded_field(value.media_type, 120) or (media_type ~= nil and value.media_type ~= media_type) then return nil end
+  if type(value.size_bytes) ~= "number" or value.size_bytes < 1 or value.size_bytes > 1000000000 or math.floor(value.size_bytes) ~= value.size_bytes then return nil end
+  if type(value.sha256) ~= "string" or #value.sha256 ~= 64 or value.sha256:match("^[0-9a-f]+$") == nil then return nil end
+  return {
+    path = value.path,
+    media_type = value.media_type,
+    size_bytes = value.size_bytes,
+    sha256 = value.sha256,
+  }
+end
+
 local function copy_readiness(value)
   if type(value) ~= "table" then return nil end
   if not has_only(value, { status = true, sessions = true }) then return nil end
@@ -264,7 +280,7 @@ local function copy_flow_summary(value)
 end
 
 local function copy_module_cdp_execution(value)
-  if not has_only(value, { schema = true, module = true, status = true, execution_status = true, classification = true, mode = true, artifact_root = true, execution_path = true, metadata_path = true, test_plan_path = true, cdp_readiness_ref = true, action_count = true, planned_action_count = true, blocked_action_count = true, executed_action_count = true, failed_action_count = true, evidence_bundle_path = true, gap_backlog_path = true, outcome_classification = true, stage_report_path = true, issue_drafts_path = true, publication_dry_run = true, ai_context_manifest_path = true, generated_cases_path = true, generated_case_gate_path = true, ai_agent_generation_path = true, generated_case_agent_review_path = true, ai_generation = true, platform_flow_summary = true }) then return nil end
+  if not has_only(value, { schema = true, module = true, status = true, execution_status = true, classification = true, mode = true, artifact_root = true, execution_path = true, metadata_path = true, test_plan_path = true, cdp_readiness_ref = true, action_count = true, planned_action_count = true, blocked_action_count = true, executed_action_count = true, failed_action_count = true, evidence_bundle_path = true, gap_backlog_path = true, outcome_classification = true, stage_report_path = true, issue_drafts_path = true, publication_dry_run = true, ai_context_manifest_path = true, generated_cases_path = true, generated_case_gate_path = true, ai_agent_generation_path = true, generated_case_agent_review_path = true, ai_generation = true, platform_flow_summary = true, failure_screenshot = true }) then return nil end
   if not bounded_field(value.module, max_string) or not bounded_field(value.status, 80) then return nil end
   if value.execution_status ~= "planned"
     and value.execution_status ~= "passed"
@@ -289,6 +305,8 @@ local function copy_module_cdp_execution(value)
   end
   local flow_summary = copy_flow_summary(value.platform_flow_summary)
   if value.platform_flow_summary ~= nil and flow_summary == nil then return nil end
+  local failure_screenshot = copy_artifact_entry(value.failure_screenshot, value.artifact_root, "image/png")
+  if value.failure_screenshot ~= nil and failure_screenshot == nil then return nil end
   local copy = {
     schema = T.schemas.module_cdp_execution_summary,
     module = value.module,
@@ -313,6 +331,7 @@ local function copy_module_cdp_execution(value)
   if value.generated_case_agent_review_path ~= nil then copy.generated_case_agent_review_path = value.generated_case_agent_review_path end
   if flow_summary ~= nil then copy.platform_flow_summary = flow_summary end
   if value.evidence_bundle_path ~= nil then copy.evidence_bundle_path = value.evidence_bundle_path end
+  if failure_screenshot ~= nil then copy.failure_screenshot = failure_screenshot end
   if value.cdp_readiness_ref ~= nil then
     if not bounded_field(value.cdp_readiness_ref, max_string) then return nil end
     copy.cdp_readiness_ref = value.cdp_readiness_ref

@@ -8,6 +8,7 @@ local fixture_origin = "http://localhost:8080"
 local fixture_base_url = fixture_origin .. "/app"
 local fixture_cdp_url = "http://127.0.0.1:9222"
 local fixture_digest = string.rep("a", 64)
+local screenshot_digest = string.rep("b", 64)
 
 local function passed_receipt()
   local cases = {
@@ -85,6 +86,17 @@ local function failed_receipt()
   value.actions[3].assertion_status = "failed"
   value.actions[3].assertion_results[1].status = "failed"
   value.actions[3].assertion_results[1].observation = "visible target missing: Dashboard"
+  return value
+end
+
+local function failed_receipt_with_screenshot()
+  local value = failed_receipt()
+  value.actions[3].assertion_results[1].screenshot_artifact = {
+    path = ".testing/runs/module-a-cdp/evidence/screenshots/failure.png",
+    media_type = "image/png",
+    size_bytes = 128,
+    sha256 = screenshot_digest,
+  }
   return value
 end
 
@@ -333,6 +345,48 @@ return {
     t.eq(result.native_summary.executed_action_count, 4)
     t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find('"failed_action_count":1', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find("visible target missing", 1, true) ~= nil)
+  end,
+
+  test_fkst_native_wires_one_failure_screenshot_pointer_to_event_index_and_report = function()
+    local written = {}
+    local runtime, runtime_written = runtime_dependencies(failed_receipt_with_screenshot())
+    local result = core.run("module", request({
+      cdp_execution = {
+        schema = "testing-runner.module-cdp-execution.v1",
+        step_budget = 8,
+        case_priorities = { "P0", "P1" },
+        redaction_selectors = { "[data-fkst-sensitive]" },
+      },
+      artifact_writer = function(path, body)
+        written[path] = body
+        return true
+      end,
+    }), runtime)
+
+    local screenshot_path = ".testing/runs/module-a-cdp/evidence/screenshots/failure.png"
+    t.eq(result.status, "failed")
+    t.eq(result.native_summary.failure_screenshot.path, screenshot_path)
+    t.eq(result.native_summary.failure_screenshot.sha256, screenshot_digest)
+    t.is_true(runtime_written[".testing/runs/module-a-cdp/browser-execution-request.json"]:find('"redaction_selectors":["[data-fkst-sensitive]"]', 1, true) ~= nil)
+
+    local index = written[".testing/runs/module-a-cdp/evidence/screenshot-index.json"]
+    t.is_true(index:find('"ref_count":1', 1, true) ~= nil)
+    t.is_true(index:find('"path":"' .. screenshot_path .. '"', 1, true) ~= nil)
+    t.is_true(index:find('"sha256":"' .. screenshot_digest .. '"', 1, true) ~= nil)
+
+    local failures = written[".testing/runs/module-a-cdp/evidence/failures.json"]
+    t.is_true(failures:find('"failed_assertion_count":1', 1, true) ~= nil)
+    t.is_true(failures:find('"screenshot_artifact":{"media_type":"image/png","path":"' .. screenshot_path, 1, true) ~= nil)
+
+    local report = written[".testing/runs/module-a-cdp/stage-report.md"]
+    t.is_true(report:find("## Failed assertions", 1, true) ~= nil)
+    t.is_true(report:find("## Screenshot index", 1, true) ~= nil)
+    t.is_true(report:find(screenshot_path, 1, true) ~= nil)
+    t.eq(report:find("fixture-secret", 1, true), nil)
+
+    local metadata = written[".testing/runs/module-a-cdp/metadata.json"]
+    t.is_true(metadata:find('"failure_screenshot":{"media_type":"image/png","path":"' .. screenshot_path, 1, true) ~= nil)
+    t.eq(metadata:find("data:image", 1, true), nil)
   end,
 
   test_fkst_native_module_cdp_execution_blocks_malformed_receipt = function()

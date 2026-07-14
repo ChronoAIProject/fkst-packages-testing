@@ -73,6 +73,10 @@ return {
     t.is_true(report:find("Agent review: not-recorded", 1, true) ~= nil)
     t.is_true(report:find("AI test design loop: not-recorded", 1, true) ~= nil)
     t.is_true(report:find("Executed user-facing scenarios", 1, true) ~= nil)
+    t.is_true(report:find("Failed assertions", 1, true) ~= nil)
+    t.is_true(report:find("No failed typed assertion was recorded", 1, true) ~= nil)
+    t.is_true(report:find("Screenshot index", 1, true) ~= nil)
+    t.is_true(report:find("No failure screenshot was recorded", 1, true) ~= nil)
     t.is_true(report:find("No bounded browser/CDP cases were executed", 1, true) ~= nil)
     t.is_true(report:find("Publication handoff: dry-run pointer handoff only", 1, true) ~= nil)
     t.eq(report:find("secret", 1, true), nil)
@@ -100,6 +104,9 @@ return {
     t.eq(written[".testing/runs/module-a-report/ai-agent-generation.json"], nil)
     t.eq(written[".testing/runs/module-a-report/generated-case-agent-review.json"], nil)
     t.eq(written[".testing/runs/module-a-report/ai-test-design-loop.json"], nil)
+
+    local screenshot_index = written[".testing/runs/module-a-report/evidence/screenshot-index.json"]
+    t.is_true(screenshot_index:find('"ref_count":0', 1, true) ~= nil)
 
     local metadata = written[".testing/runs/module-a-report/metadata.json"]
     t.is_true(metadata:find('"stage_report_path":".testing/runs/module-a-report/stage-report.md"', 1, true) ~= nil)

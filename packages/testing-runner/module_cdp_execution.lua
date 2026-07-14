@@ -19,6 +19,7 @@ local request_fields = {
   stop_conditions = true,
   mutation_fixtures = true,
   ai_generation = true,
+  redaction_selectors = true,
 }
 
 local default_priorities = { "P0", "P1" }
@@ -209,6 +210,26 @@ local function validate_mutation_fixtures(value)
   end
 end
 
+local function redaction_selector(value)
+  if not bounded_string(value, 120) then return false end
+  local identifier = value:match("^#([%a][%w_%-]*)$") or value:match("^%.([%a][%w_%-]*)$")
+  if identifier ~= nil then return true end
+  local attribute = value:match("^%[([%a][%w_%-]*)%]$")
+  return attribute ~= nil and attribute:sub(1, 5) == "data-"
+end
+
+local function validate_redaction_selectors(value)
+  if value == nil then return end
+  if not dense_list(value) or #value == 0 or #value > max_list then
+    error("testing-runner: malformed-request: cdp_execution.redaction_selectors must be a non-empty bounded dense list")
+  end
+  for _, selector in ipairs(value) do
+    if not redaction_selector(selector) then
+      error("testing-runner: malformed-request: redaction selectors must use stable id, class, or data-attribute presence selectors")
+    end
+  end
+end
+
 function M.validate_request(value)
   if value == nil then return nil end
   if type(value) ~= "table" then
@@ -230,6 +251,7 @@ function M.validate_request(value)
   copy_list(value.case_priorities, default_priorities, priority_ok)
   copy_list(value.stop_conditions, default_stop_conditions, stop_condition_ok)
   validate_mutation_fixtures(value.mutation_fixtures)
+  validate_redaction_selectors(value.redaction_selectors)
   module_ai_generation.validate_request(value.ai_generation)
   return value
 end
@@ -258,14 +280,14 @@ end
 
 local function action_kind(case)
   local id = tostring(case.id or "")
-  if id:find("reachability", 1, true) then return "navigate" end
-  if id:find("page-load", 1, true) then return "wait-for-load" end
-  if id:find("visible-elements", 1, true) then return "inspect-visible-elements" end
-  if id:find("console-network-health", 1, true) then return "collect-console-network-health" end
-  if id:find("navigation", 1, true) then return "bounded-navigation" end
-  if id:find("write-flow", 1, true) or id:find("state-change", 1, true) then return "safe-mutation-fixture"
-  end
-  return "observe"
+  local kind = "observe"
+  if id:find("reachability", 1, true) then kind = "navigate"
+  elseif id:find("page-load", 1, true) then kind = "wait-for-load"
+  elseif id:find("visible-elements", 1, true) then kind = "inspect-visible-elements"
+  elseif id:find("console-network-health", 1, true) then kind = "collect-console-network-health"
+  elseif id:find("navigation", 1, true) then kind = "bounded-navigation"
+  elseif id:find("write-flow", 1, true) or id:find("state-change", 1, true) then kind = "safe-mutation-fixture" end
+  return kind
 end
 
 local function action_target(module, case)
@@ -643,6 +665,7 @@ function M.summary(artifact, module, status)
   if artifact.generated_case_agent_review_path ~= nil then summary.generated_case_agent_review_path = artifact.generated_case_agent_review_path end
   if artifact.ai_generation ~= nil then summary.ai_generation = artifact.ai_generation end
   if artifact.cdp_readiness_ref ~= nil then summary.cdp_readiness_ref = artifact.cdp_readiness_ref end
+  if artifact.failure_screenshot ~= nil then summary.failure_screenshot = artifact.failure_screenshot end
   return summary
 end
 

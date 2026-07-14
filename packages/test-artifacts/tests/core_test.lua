@@ -300,7 +300,7 @@ return {
     local summary = core.from_testing_result({
       schema = "testing-runner.result.v1",
       job = "module-test-loop",
-      status = "passed",
+      status = "failed",
       artifact_root = ".testing/runs/module-a-cdp",
       source_ref = { kind = "host", ref = "module-a" },
       trace_id = "trace-module-a-cdp",
@@ -309,9 +309,9 @@ return {
       native_summary = {
         schema = "testing-runner.module-cdp-execution-summary.v1",
         module = "module-a",
-        status = "passed",
-        execution_status = "passed",
-        classification = "bounded-exploration-complete",
+        status = "failed",
+        execution_status = "failed",
+        classification = "typed-browser-assertion-failed",
         mode = "bounded-cdp-controller",
         artifact_root = ".testing/runs/module-a-cdp",
         execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
@@ -320,14 +320,22 @@ return {
         evidence_bundle_path = ".testing/runs/module-a-cdp/evidence-bundle.json",
         cdp_readiness_ref = "cdp-ready",
         action_count = 5,
+        executed_action_count = 4,
+        failed_action_count = 1,
+        failure_screenshot = {
+          path = ".testing/runs/module-a-cdp/evidence/screenshots/failure.png",
+          media_type = "image/png",
+          size_bytes = 128,
+          sha256 = string.rep("b", 64),
+        },
       },
     })
     assert_payload(summary.native_summary, {
       schema = "testing-runner.module-cdp-execution-summary.v1",
       module = "module-a",
-      status = "passed",
-      execution_status = "passed",
-      classification = "bounded-exploration-complete",
+      status = "failed",
+      execution_status = "failed",
+      classification = "typed-browser-assertion-failed",
       mode = "bounded-cdp-controller",
       artifact_root = ".testing/runs/module-a-cdp",
       execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
@@ -338,9 +346,45 @@ return {
       action_count = 5,
       planned_action_count = 0,
       blocked_action_count = 0,
-      executed_action_count = 0,
-      failed_action_count = 0,
+      executed_action_count = 4,
+      failed_action_count = 1,
+      failure_screenshot = {
+        path = ".testing/runs/module-a-cdp/evidence/screenshots/failure.png",
+        media_type = "image/png",
+        size_bytes = 128,
+        sha256 = string.rep("b", 64),
+      },
     })
+  end,
+
+  test_module_cdp_execution_summary_rejects_inline_failure_screenshot_body = function()
+    t.raises(function()
+      core.from_testing_result({
+        schema = "testing-runner.result.v1",
+        job = "module-test-loop",
+        status = "failed",
+        artifact_root = ".testing/runs/module-a-cdp",
+        native_summary = {
+          schema = "testing-runner.module-cdp-execution-summary.v1",
+          module = "module-a",
+          status = "failed",
+          execution_status = "failed",
+          classification = "typed-browser-assertion-failed",
+          mode = "bounded-cdp-controller",
+          artifact_root = ".testing/runs/module-a-cdp",
+          execution_path = ".testing/runs/module-a-cdp/cdp-execution.json",
+          metadata_path = ".testing/runs/module-a-cdp/metadata.json",
+          action_count = 1,
+          failure_screenshot = {
+            path = ".testing/runs/module-a-cdp/evidence/screenshots/failure.png",
+            media_type = "image/png",
+            size_bytes = 128,
+            sha256 = string.rep("b", 64),
+            data = "base64-inline-image",
+          },
+        },
+      })
+    end)
   end,
 
   test_native_summary_rejects_wrong_evidence_bundle_pointer = function()

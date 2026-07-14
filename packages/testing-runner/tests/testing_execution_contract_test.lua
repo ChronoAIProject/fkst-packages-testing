@@ -5,6 +5,16 @@ local transition_version = require("contract.transition_version")
 local t = fkst.test
 
 local digest = string.rep("a", 64)
+local screenshot_digest = string.rep("b", 64)
+
+local function screenshot_artifact(path)
+  return {
+    path = path or ".testing/runs/catalog/evidence/screenshots/failure.png",
+    media_type = "image/png",
+    size_bytes = 128,
+    sha256 = screenshot_digest,
+  }
+end
 
 local function request()
   return {
@@ -130,6 +140,121 @@ return {
     value.actions[1].assertion_status = "failed"
     value.actions[1].assertion_results[2].status = "failed"
     t.eq(receipt_validator.validate(req, value).status, "failed")
+  end,
+
+  test_accepts_one_configured_failure_screenshot_artifact = function()
+    local req = request()
+    req.redaction_selectors = { "#account-number", ".private-value", "[data-fkst-sensitive]" }
+    local value = receipt()
+    value.status = "failed"
+    value.classification = "typed-browser-assertion-failed"
+    value.executed_action_count = 0
+    value.failed_action_count = 1
+    value.actions[1].execution_status = "failed"
+    value.actions[1].assertion_status = "failed"
+    value.actions[1].assertion_results[2].status = "failed"
+    value.actions[1].assertion_results[2].screenshot_artifact = screenshot_artifact()
+
+    local validated = receipt_validator.validate(req, value)
+    t.eq(validated.actions[1].assertion_results[2].screenshot_artifact.sha256, screenshot_digest)
+  end,
+
+  test_rejects_sensitive_value_selector_configuration = function()
+    local req = request()
+    req.redaction_selectors = { '[data-secret="fixture-secret"]' }
+    t.raises(function() execution.validate_execution_request(req) end)
+  end,
+
+  test_rejects_empty_redaction_selector_configuration = function()
+    local req = request()
+    req.redaction_selectors = {}
+    t.raises(function() execution.validate_execution_request(req) end)
+  end,
+
+  test_rejects_configured_failed_receipt_without_screenshot = function()
+    local req = request()
+    req.redaction_selectors = { "[data-fkst-sensitive]" }
+    local value = receipt()
+    value.status = "failed"
+    value.classification = "typed-browser-assertion-failed"
+    value.executed_action_count = 0
+    value.failed_action_count = 1
+    value.actions[1].execution_status = "failed"
+    value.actions[1].assertion_status = "failed"
+    value.actions[1].assertion_results[2].status = "failed"
+    t.raises(function() receipt_validator.validate(req, value) end)
+  end,
+
+  test_rejects_foreign_failure_screenshot_artifact = function()
+    local req = request()
+    req.redaction_selectors = { "[data-fkst-sensitive]" }
+    local value = receipt()
+    value.status = "failed"
+    value.classification = "typed-browser-assertion-failed"
+    value.executed_action_count = 0
+    value.failed_action_count = 1
+    value.actions[1].execution_status = "failed"
+    value.actions[1].assertion_status = "failed"
+    value.actions[1].assertion_results[2].status = "failed"
+    value.actions[1].assertion_results[2].screenshot_artifact = screenshot_artifact(".testing/runs/foreign/failure.png")
+    t.raises(function() receipt_validator.validate(req, value) end)
+  end,
+
+  test_rejects_more_than_one_failure_screenshot = function()
+    local value = receipt()
+    value.status = "failed"
+    value.classification = "typed-browser-assertion-failed"
+    value.executed_action_count = 0
+    value.failed_action_count = 1
+    value.actions[1].execution_status = "failed"
+    value.actions[1].assertion_status = "failed"
+    for index, result in ipairs(value.actions[1].assertion_results) do
+      result.status = "failed"
+      result.screenshot_artifact = screenshot_artifact(
+        ".testing/runs/catalog/evidence/screenshots/failure-" .. tostring(index) .. ".png"
+      )
+    end
+    t.raises(function() execution.validate_execution_receipt(value) end)
+  end,
+
+  test_rejects_malformed_failure_screenshot_artifact = function()
+    local value = receipt()
+    value.status = "failed"
+    value.classification = "typed-browser-assertion-failed"
+    value.executed_action_count = 0
+    value.failed_action_count = 1
+    value.actions[1].execution_status = "failed"
+    value.actions[1].assertion_status = "failed"
+    value.actions[1].assertion_results[2].status = "failed"
+    value.actions[1].assertion_results[2].screenshot_artifact = screenshot_artifact()
+    value.actions[1].assertion_results[2].screenshot_artifact.size_bytes = 0
+    t.raises(function() execution.validate_execution_receipt(value) end)
+  end,
+
+  test_rejects_unconfigured_failure_screenshot_artifact = function()
+    local req = request()
+    local value = receipt()
+    value.status = "failed"
+    value.classification = "typed-browser-assertion-failed"
+    value.executed_action_count = 0
+    value.failed_action_count = 1
+    value.actions[1].execution_status = "failed"
+    value.actions[1].assertion_status = "failed"
+    value.actions[1].assertion_results[2].status = "failed"
+    value.actions[1].assertion_results[2].screenshot_artifact = screenshot_artifact()
+    t.raises(function() receipt_validator.validate(req, value) end)
+  end,
+
+  test_accepts_manifest_entry_pointer_shape_used_by_screenshots = function()
+    local value = execution.validate_artifact_manifest({
+      schema = execution.schemas.artifact_manifest,
+      artifact_root = ".testing/runs/catalog",
+      algorithm = "sha256",
+      entries = { screenshot_artifact() },
+      entry_count = 1,
+      root_digest = string.rep("c", 64),
+    })
+    t.eq(value.entries[1].media_type, "image/png")
   end,
 
   test_rejects_failed_receipt_with_pass_classification = function()

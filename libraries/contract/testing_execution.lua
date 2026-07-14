@@ -39,6 +39,7 @@ local max_string = 512
 local max_actions = 32
 local max_assertions = 8
 local max_argv = 32
+local max_redaction_selectors = 16
 
 local function fail(classification, message)
   error("contract.testing-execution: " .. classification .. ": " .. message)
@@ -98,6 +99,26 @@ end
 local function validate_string_list(value, field, max_count)
   if not dense_list(value, max_count) or #value == 0 then fail("malformed-list", field .. " must be a non-empty dense list") end
   for _, item in ipairs(value) do require_bounded(item, field .. " item") end
+  return value
+end
+
+local function redaction_selector(value)
+  if not bounded(value, 120) then return false end
+  local identifier = value:match("^#([%a][%w_%-]*)$") or value:match("^%.([%a][%w_%-]*)$")
+  if identifier ~= nil then return true end
+  local attribute = value:match("^%[([%a][%w_%-]*)%]$")
+  return attribute ~= nil and attribute:sub(1, 5) == "data-"
+end
+
+local function validate_redaction_selectors(value)
+  if not dense_list(value, max_redaction_selectors) or #value == 0 then
+    fail("malformed-redaction-selectors", "redaction_selectors must be a non-empty bounded dense list")
+  end
+  for _, selector in ipairs(value) do
+    if not redaction_selector(selector) then
+      fail("malformed-redaction-selector", "redaction selectors must use stable id, class, or data-attribute presence selectors")
+    end
+  end
   return value
 end
 
@@ -163,6 +184,7 @@ function E.validate_execution_request(value)
     step_budget = true,
     plan_sha256 = true,
     actions = true,
+    redaction_selectors = true,
   }, "execution-request")
   if value.schema ~= E.schemas.execution_request then fail("unknown-schema", "execution request schema") end
   require_bounded(value.module, "module", 180)
@@ -174,6 +196,7 @@ function E.validate_execution_request(value)
   require_bounded(value.cdp_url, "cdp_url")
   require_integer(value.step_budget, "step_budget", 1, max_actions)
   require_sha256(value.plan_sha256, "plan_sha256")
+  if value.redaction_selectors ~= nil then validate_redaction_selectors(value.redaction_selectors) end
   if not dense_list(value.actions, max_actions) or #value.actions == 0 then
     fail("malformed-actions", "actions must be a non-empty bounded dense list")
   end
@@ -192,7 +215,24 @@ local assertion_result_fields = {
   status = true,
   observation = true,
   evidence_pointer = true,
+  screenshot_artifact = true,
 }
+
+local artifact_entry_fields = {
+  path = true,
+  media_type = true,
+  size_bytes = true,
+  sha256 = true,
+}
+
+local function validate_artifact_entry(value, field)
+  only_fields(value, artifact_entry_fields, "artifact-entry")
+  require_artifact_pointer(value.path, field .. ".path")
+  require_bounded(value.media_type, field .. ".media_type", 120)
+  require_integer(value.size_bytes, field .. ".size_bytes", 0, 1000000000)
+  require_sha256(value.sha256, field .. ".sha256")
+  return value
+end
 
 local function validate_assertion_result(value)
   only_fields(value, assertion_result_fields, "assertion-result")
@@ -202,6 +242,14 @@ local function validate_assertion_result(value)
   end
   require_bounded(value.observation, "assertion_result.observation")
   require_artifact_pointer(value.evidence_pointer, "assertion_result.evidence_pointer")
+  if value.screenshot_artifact ~= nil then
+    if value.status ~= "failed" then fail("unexpected-screenshot-artifact", "only failed assertions may reference screenshots") end
+    validate_artifact_entry(value.screenshot_artifact, "assertion_result.screenshot_artifact")
+    if value.screenshot_artifact.media_type ~= "image/png" or value.screenshot_artifact.size_bytes < 1
+      or value.screenshot_artifact.path:sub(-4) ~= ".png" then
+      fail("malformed-screenshot-artifact", "failed assertion screenshot must be a non-empty PNG artifact entry")
+    end
+  end
   return value
 end
 
@@ -289,12 +337,17 @@ function E.validate_execution_receipt(value)
   require_integer(value.blocked_action_count, "receipt.blocked_action_count", 0, max_actions)
   if value.action_count ~= #value.actions then fail("receipt-count-mismatch", "action_count") end
   local executed, failed, blocked = 0, 0, 0
+  local screenshot_count = 0
   for index, action in ipairs(value.actions) do
     validate_action_receipt(action, index)
     if action.execution_status == "executed" then executed = executed + 1
     elseif action.execution_status == "failed" then failed = failed + 1
     else blocked = blocked + 1 end
+    for _, assertion in ipairs(action.assertion_results) do
+      if assertion.screenshot_artifact ~= nil then screenshot_count = screenshot_count + 1 end
+    end
   end
+  if screenshot_count > 1 then fail("screenshot-budget-exceeded", "execution receipt may reference at most one failure screenshot") end
   if executed ~= value.executed_action_count or failed ~= value.failed_action_count or blocked ~= value.blocked_action_count then
     fail("receipt-count-mismatch", "terminal counters")
   end
@@ -388,15 +441,11 @@ function E.validate_artifact_manifest(value)
   require_sha256(value.root_digest, "manifest.root_digest")
   local previous, seen = nil, {}
   for _, entry in ipairs(value.entries) do
-    only_fields(entry, { path = true, media_type = true, size_bytes = true, sha256 = true }, "manifest-entry")
-    require_artifact_pointer(entry.path, "manifest.entries.path")
+    validate_artifact_entry(entry, "manifest.entries")
     if entry.path:sub(1, #value.artifact_root + 1) ~= value.artifact_root .. "/" then
       fail("manifest-path-escape", entry.path)
     end
     if entry.path == value.artifact_root .. "/artifact-manifest.json" then fail("manifest-self-inclusion", entry.path) end
-    require_bounded(entry.media_type, "manifest.entries.media_type", 120)
-    require_integer(entry.size_bytes, "manifest.entries.size_bytes", 0, 1000000000)
-    require_sha256(entry.sha256, "manifest.entries.sha256")
     if seen[entry.path] then fail("duplicate-manifest-path", entry.path) end
     if previous ~= nil and entry.path <= previous then fail("manifest-order", "entries must be sorted by path") end
     seen[entry.path] = true
@@ -407,5 +456,6 @@ end
 
 E.require_sha256 = require_sha256
 E.require_artifact_pointer = require_artifact_pointer
+E.validate_artifact_entry = validate_artifact_entry
 
 return E
