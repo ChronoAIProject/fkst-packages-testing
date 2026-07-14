@@ -3,20 +3,20 @@ runner_protocol = "fkst-declarative-rulepack@1"
 owner_package = "browser-observation"
 
 [[rules]]
-id = "browser-observation-no-product-hardcoding"
+id = "browser-observation-no-fixed-host-config"
 severity = "error"
 kind = "text_forbid_regex"
 include = ["**/*.lua", "**/*.js"]
-exclude = ["tests/**"]
-pattern = "ornn|ORNN|redemption"
-message = "browser observation must stay host-neutral and must not encode product-specific defaults"
+exclude = ["tests/**", "packages/browser-observation/tests/**"]
+pattern = "(APP|HOST)_[A-Z0-9_]+"
+message = "browser observation must not encode fixed host environment conventions"
 
 [[rules]]
 id = "browser-observation-no-legacy-runner"
 severity = "error"
 kind = "text_forbid_regex"
 include = ["**/*.lua", "**/*.js"]
-exclude = ["tests/**"]
+exclude = ["tests/**", "packages/browser-observation/tests/**"]
 pattern = "agentic_testing|agentic-testing-cli|fkst-host-module-ui-check"
 message = "browser observation must not call legacy host runners"
 
@@ -25,6 +25,6 @@ id = "browser-observation-no-browser-automation-deps"
 severity = "error"
 kind = "text_forbid_regex"
 include = ["**/*.js"]
-exclude = ["tests/**"]
+exclude = ["tests/**", "packages/browser-observation/tests/**"]
 pattern = "playwright|puppeteer"
 message = "browser observation must use the dependency-light CDP implementation"

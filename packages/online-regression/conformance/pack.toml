@@ -3,10 +3,10 @@ runner_protocol = "fkst-declarative-rulepack@1"
 owner_package = "online-regression"
 
 [[rules]]
-id = "online-regression-no-admin-default"
+id = "online-regression-no-fixed-host-config"
 severity = "error"
 kind = "text_forbid_regex"
 include = ["**/*.lua"]
-exclude = ["tests/**"]
-pattern = "admin"
-message = "online regression defaults must not encode admin-user canaries"
+exclude = ["tests/**", "packages/online-regression/tests/**"]
+pattern = "(localhost:[0-9]+|(APP|HOST)_[A-Z0-9_]+)"
+message = "online regression must not encode fixed application endpoints or host environment conventions"
