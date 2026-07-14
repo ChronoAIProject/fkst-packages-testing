@@ -22,4 +22,17 @@ function D.sha256_file(path, supplied_ports)
   return digest
 end
 
+function D.read_sha256_file(path, supplied_ports)
+  contract.require_artifact_pointer(path, "digest path")
+  local result = executor(supplied_ports)({ "node", runtime_cli, "read-hashed-file", "--input", path }, 30)
+  if type(result) ~= "table" or tonumber(result.exit_code) ~= 0 then
+    error("testing-runtime: digest-failed: " .. tostring(type(result) == "table" and result.stderr or "missing result"))
+  end
+  local output = tostring(result.stdout or "")
+  local digest = output:sub(1, 64)
+  if output:sub(65, 65) ~= "\n" then error("testing-runtime: digest-failed: malformed read-hashed-file output") end
+  contract.require_sha256(digest, "artifact digest")
+  return output:sub(66), digest
+end
+
 return D

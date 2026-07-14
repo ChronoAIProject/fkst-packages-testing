@@ -38,6 +38,15 @@ local function sha256_file(path)
   return value
 end
 
+local function read_sha256_file(path)
+  local command = "node libraries/testing_runtime/bin/fkst-testing-runtime.js read-hashed-file --input " .. shell_quote(path)
+  local handle = assert(io.popen(command))
+  local output = assert(handle:read("*a"))
+  assert(handle:close())
+  t.eq(output:sub(65, 65), "\n")
+  return output:sub(66), output:sub(1, 64)
+end
+
 local function file_exists(path)
   local handle = io.open(path, "rb")
   if handle == nil then return false end
@@ -96,6 +105,7 @@ local function generation_ports(adapter)
   model.ports = {
     absolute_path = function(path) return "/repo/" .. path end,
     read = read_file,
+    read_sha256_file = read_sha256_file,
     write = write_file,
     sha256_file = sha256_file,
     generate = function(context, request)

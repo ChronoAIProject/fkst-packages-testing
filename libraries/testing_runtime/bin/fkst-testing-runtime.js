@@ -288,6 +288,12 @@ async function main(argv) {
     process.stdout.write(`${sha256(fs.readFileSync(options.input))}\n`);
     return;
   }
+  if (command === 'read-hashed-file') {
+    const body = fs.readFileSync(options.input);
+    process.stdout.write(`${sha256(body)}\n`);
+    process.stdout.write(body);
+    return;
+  }
   if (command === 'manifest') {
     buildManifest(options.root, options.paths, options.out);
     return;

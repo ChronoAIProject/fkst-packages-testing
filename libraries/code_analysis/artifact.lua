@@ -138,14 +138,6 @@ local function default_write(path, body)
   return wrote and true or nil, write_err
 end
 
-local function default_read(path)
-  local handle, err = io.open(path, "rb")
-  if handle == nil then error(err or "artifact is missing") end
-  local body = handle:read("*a")
-  handle:close()
-  return body
-end
-
 local function decode(body, ports)
   if type(ports) == "table" and type(ports.decode) == "function" then return ports.decode(body) end
   if type(json) == "table" and type(json.decode) == "function" then return json.decode(body) end
@@ -161,6 +153,17 @@ local function sha256_file(path, ports)
   end
   execution_contract.require_sha256(value, "code analysis artifact_digest")
   return value
+end
+
+local function read_sha256_file(path, ports)
+  local body, value
+  if type(ports) == "table" and type(ports.read_sha256_file) == "function" then
+    body, value = ports.read_sha256_file(path)
+  else
+    body, value = digest.read_sha256_file(path, ports)
+  end
+  execution_contract.require_sha256(value, "code analysis artifact_digest")
+  return body, value
 end
 
 function C.persist(repository_root, artifact_pointer, ports)
@@ -183,10 +186,8 @@ end
 
 function C.load_verified(reference, ports)
   reference = C.copy_reference(reference)
-  local read = type(ports) == "table" and ports.read or default_read
-  local ok, body = pcall(read, reference.artifact_pointer)
+  local ok, body, actual = pcall(read_sha256_file, reference.artifact_pointer, ports)
   if not ok or type(body) ~= "string" or body == "" then fail("artifact-missing", "persisted artifact could not be read") end
-  local actual = sha256_file(reference.artifact_pointer, ports)
   if actual ~= reference.artifact_digest then fail("digest-mismatch", "persisted artifact does not match the expected digest") end
   local decoded_ok, artifact = pcall(decode, body, ports)
   if not decoded_ok then fail("malformed-artifact", "persisted artifact is not valid JSON") end

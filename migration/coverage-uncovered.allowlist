@@ -7462,8 +7462,12 @@
 {"file":"packages/testing-discovery/core.lua","line":205,"normalized_line_hash":"f93b17abbb19d8ac","reason":"baseline"}
 {"file":"packages/testing-discovery/core.lua","line":208,"normalized_line_hash":"fb711ab14033af9d","reason":"baseline"}
 {"file":"packages/testing-discovery/core.lua","line":211,"normalized_line_hash":"7700ee5e52d5b442","reason":"baseline"}
+{"file":"packages/testing-discovery/core.lua","line":242,"normalized_line_hash":"353642911edfcb6d","reason":"baseline"}
+{"file":"packages/testing-discovery/core.lua","line":247,"normalized_line_hash":"0039f2dd14ab80d7","reason":"baseline"}
+{"file":"packages/testing-discovery/core.lua","line":251,"normalized_line_hash":"33b6bfc591281017","reason":"baseline"}
 {"file":"packages/testing-discovery/core.lua","line":282,"normalized_line_hash":"964b7af41c5e11bd","reason":"baseline"}
 {"file":"packages/testing-discovery/core.lua","line":313,"normalized_line_hash":"55aa9af95150d702","reason":"baseline"}
+{"file":"packages/testing-discovery/core.lua","line":325,"normalized_line_hash":"c3131bf3104f2c79","reason":"baseline"}
 {"file":"packages/testing-discovery/core.lua","line":333,"normalized_line_hash":"5e69aee5051369a2","reason":"baseline"}
 {"file":"packages/testing-discovery/core.lua","line":337,"normalized_line_hash":"5d0eb2eb5a50a364","reason":"baseline"}
 {"file":"packages/testing-discovery/core.lua","line":618,"normalized_line_hash":"73a66d8f7144423b","reason":"baseline"}
