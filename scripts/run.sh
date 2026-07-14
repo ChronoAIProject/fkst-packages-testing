@@ -113,6 +113,180 @@ resolve_testing_bin() {
   export BIN
 }
 
+ensure_host_lock() {
+  local pin="$1" output_file rc
+  output_file="$(mktemp "${TMPDIR:-/tmp}/fkst-host-lock.XXXXXX")"
+  set +e
+  "$BIN" host lock --project-root "$ROOT" >"$output_file" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$output_file"
+    return 0
+  fi
+  if ! grep -q "unknown subcommand: host" "$output_file"; then
+    cat "$output_file" >&2
+    rm -f "$output_file"
+    return "$rc"
+  fi
+  rm -f "$output_file"
+  "$PYTHON_BIN" - "$ROOT" "$shared" "$pin" <<'PY'
+import hashlib
+import os
+import subprocess
+import sys
+import tempfile
+import tomllib
+from pathlib import Path
+
+root = Path(sys.argv[1])
+platform = Path(sys.argv[2])
+pin = sys.argv[3]
+workspace = tomllib.loads((root / "fkst.workspace.toml").read_text(encoding="utf-8"))
+sources = workspace.get("external_sources")
+if not isinstance(sources, list) or len(sources) != 1 or not isinstance(sources[0], dict):
+    raise SystemExit("error: expected exactly one [[external_sources]] table")
+source = sources[0]
+source_id = source.get("id")
+git_url = source.get("git")
+libraries = source.get("libraries")
+if not isinstance(source_id, str) or not isinstance(git_url, str):
+    raise SystemExit("error: external source id and git are required")
+if not isinstance(libraries, list) or not all(isinstance(item, str) for item in libraries):
+    raise SystemExit("error: external source libraries must be a string list")
+
+def digest_tree(path: Path) -> str:
+    digest = hashlib.sha256()
+    if not path.is_dir():
+        raise SystemExit(f"error: missing path for lock digest: {path}")
+
+    def update_item(item: Path) -> None:
+        relative = item.relative_to(path).as_posix()
+        digest.update(relative.encode("utf-8"))
+        digest.update(b"\0")
+        if item.is_symlink():
+            digest.update(b"l")
+            digest.update(os.fsencode(os.readlink(item)))
+        else:
+            digest.update(b"f")
+            digest.update(item.read_bytes())
+        digest.update(b"\0")
+
+    def collect(directory: Path) -> None:
+        for item in sorted(directory.iterdir(), key=lambda child: str(child)):
+            if item.name == ".git":
+                continue
+            if item.is_dir() and not item.is_symlink():
+                collect(item)
+                continue
+            if item.is_symlink() or item.is_file():
+                update_item(item)
+
+    collect(path)
+    return "sha256-" + digest.hexdigest()
+
+def digest_exports(unit_root: Path) -> str:
+    public_root = unit_root / "public"
+    return digest_tree(public_root if public_root.is_dir() else unit_root)
+
+def discover_library_units(checkout_root: Path) -> dict[str, Path]:
+    manifest = tomllib.loads((checkout_root / "fkst.workspace.toml").read_text(encoding="utf-8"))
+    workspace_table = manifest.get("workspace")
+    if not isinstance(workspace_table, dict):
+        raise SystemExit("error: external source workspace table is missing")
+    unit_patterns = workspace_table.get("units")
+    if not isinstance(unit_patterns, list) or not all(isinstance(item, str) for item in unit_patterns):
+        raise SystemExit("error: external source workspace units must be a string list")
+
+    units: dict[str, Path] = {}
+    for pattern in unit_patterns:
+        candidates = checkout_root.glob(pattern) if any(char in pattern for char in "*?[") else [checkout_root / pattern]
+        for unit_root in candidates:
+            unit_manifest = unit_root / "fkst.toml"
+            if not unit_manifest.is_file():
+                continue
+            unit = tomllib.loads(unit_manifest.read_text(encoding="utf-8"))
+            if unit.get("kind") != "library":
+                continue
+            library_table = unit.get("library")
+            if isinstance(library_table, dict) and isinstance(library_table.get("name"), str):
+                name = library_table["name"]
+            elif isinstance(unit.get("name"), str):
+                name = unit["name"]
+            else:
+                raise SystemExit(f"error: library at {unit_root} does not declare a name")
+            previous = units.get(name)
+            if previous is not None:
+                raise SystemExit(
+                    f"error: external source declares duplicate library {name!r} at {previous} and {unit_root}"
+                )
+            units[name] = unit_root
+    return units
+
+def export_clean_tree(repo: Path, rev: str, destination: Path) -> None:
+    archive = subprocess.run(
+        ["git", "-C", str(repo), "archive", "--format=tar", rev],
+        check=False,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    if archive.returncode != 0:
+        raise SystemExit(
+            "error: external source archive failed: "
+            + archive.stderr.decode("utf-8", errors="replace").strip()
+        )
+    extract = subprocess.run(
+        ["tar", "-xf", "-", "-C", str(destination)],
+        input=archive.stdout,
+        check=False,
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.PIPE,
+    )
+    if extract.returncode != 0:
+        raise SystemExit(
+            "error: external source archive extraction failed: "
+            + extract.stderr.decode("utf-8", errors="replace").strip()
+        )
+
+lines = [
+]
+with tempfile.TemporaryDirectory(prefix="fkst-host-lock-") as temporary:
+    archive_root = Path(temporary) / "source"
+    archive_root.mkdir()
+    export_clean_tree(platform, pin, archive_root)
+    library_units = discover_library_units(archive_root)
+
+    lines.extend([
+        "[[external_source]]",
+        f'id = "{source_id}"',
+        f'git = "{git_url}"',
+        "",
+        "[external_source.intent]",
+        f'rev = "{pin}"',
+        "",
+        "[external_source.resolved]",
+        f'rev = "{pin}"',
+        f'tree_sha256 = "{digest_tree(archive_root)}"',
+        "",
+    ])
+    for name in libraries:
+        unit_root = library_units.get(name)
+        if unit_root is None:
+            raise SystemExit(f"error: external source library {name!r} is absent")
+        unit = unit_root.relative_to(archive_root).as_posix()
+        lines.extend([
+            "[[external_source.libraries]]",
+            f'name = "{name}"',
+            f'unit = "{unit}"',
+            f'exports_sha256 = "{digest_exports(unit_root)}"',
+            "",
+        ])
+tmp = root / f".fkst.lock.{os.getpid()}.tmp"
+tmp.write_text("\n".join(lines), encoding="utf-8")
+tmp.replace(root / "fkst.lock")
+PY
+}
+
 # Shared, engine-independent source ratchets (max-lines, producer-liveness, ...), run against this
 # repo as an external project root. Reused verbatim from the pinned checkout.
 run_source_ratchets() {
@@ -624,7 +798,7 @@ PYTHON_BIN="$(resolve_python)"
 # Resolve the declared external source before validating it. fkst.lock is generated evidence and is
 # intentionally absent from clean checkouts, so every command recreates it from the pinned workspace.
 resolve_testing_bin
-"$BIN" host lock --project-root "$ROOT"
+ensure_host_lock "$pin"
 
 # Repo-local guard: exactly one fkst-packages coordinate, resolved == hydrated == pinned.
 "$PYTHON_BIN" -B "$ROOT/scripts/check_single_platform_pin.py"
