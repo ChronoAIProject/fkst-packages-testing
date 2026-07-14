@@ -85,3 +85,14 @@ jobs:
           scripts/run.sh check
           scripts/run.sh test
           scripts/run.sh ai-pipeline-smoke
+
+      - name: Upload test artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ci-test-artifacts-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            .fkst/run/lua-coverage/coverage.json
+            .testing/runs/**
+          if-no-files-found: ignore
+          retention-days: 14

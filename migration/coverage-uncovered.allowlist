@@ -1,6 +1,3 @@
-{"file":"libraries/contract/convergence_identity.lua","line":5,"normalized_line_hash":"02dbbdc8120d85b4","reason":"baseline"}
-{"file":"libraries/contract/convergence_identity.lua","line":16,"normalized_line_hash":"a77d2d8d781a4121","reason":"baseline"}
-{"file":"libraries/contract/convergence_identity.lua","line":44,"normalized_line_hash":"aa82ffad4b8cdd1d","reason":"baseline"}
 {"file":"libraries/contract/convergence_identity.lua","line":60,"normalized_line_hash":"021fb596db81e6d0","reason":"baseline"}
 {"file":"libraries/contract/error_facts.lua","line":5,"normalized_line_hash":"cb248887e1b202b3","reason":"baseline"}
 {"file":"libraries/contract/error_facts.lua","line":9,"normalized_line_hash":"9afb122041d62f9e","reason":"baseline"}

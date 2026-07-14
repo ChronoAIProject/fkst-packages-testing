@@ -120,6 +120,8 @@ scripts/run.sh test testing-runner
 and enforces the shrink-only `migration/coverage-uncovered.allowlist` ratchet during full-repository
 runs. `scripts/run.sh ai-pipeline-smoke` is a hermetic smoke for the AI-authored test case path:
 AI authoring, consensus review, pointer-only resume, CDP execution handoff, and publication handoff.
+CI uploads the canonical coverage artifact and any `.testing/runs/**` smoke artifacts when a run
+finishes, including failed runs.
 
 To verify the live local-browser runtime path, start a local app and a Chrome/Chromium instance with
 remote debugging, then run:
@@ -141,7 +143,9 @@ scripts/run.sh host -- supervise --durable-root "$FKST_DURABLE_ROOT" --restart
 CI builds `fkst-framework` from the full SHA in `.fkst/substrate-ref` and runs host-topology
 verification, package verification, Lua coverage ratchet enforcement, and the hermetic AI pipeline
 smoke. The live CDP smoke is intentionally local/environment-gated because it requires a running
-loopback app and browser debugging endpoint.
+loopback app and browser debugging endpoint. A separate manual `live-cdp-smoke` GitHub Actions
+workflow starts a loopback fixture app and Chrome CDP on the runner, then uploads the resulting
+`.testing/runs/**` artifacts.
 
 ## Runtime posture
 
