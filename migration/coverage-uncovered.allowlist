@@ -7797,7 +7797,6 @@
 {"file":"packages/testing-runner/outcome.lua","line":136,"normalized_line_hash":"ccf99a341e8ea7ed","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":137,"normalized_line_hash":"73b64e86dee9bbd5","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":138,"normalized_line_hash":"d4b3cf21275a925f","reason":"baseline"}
-{"file":"packages/testing-runner/outcome.lua","line":157,"normalized_line_hash":"19921ccfad14c1de","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":183,"normalized_line_hash":"d32048de53ad3484","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":188,"normalized_line_hash":"c17d04693eef891b","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":204,"normalized_line_hash":"49cd927169b2d97b","reason":"baseline"}

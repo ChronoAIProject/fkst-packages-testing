@@ -138,6 +138,11 @@ local function product_defect_evidence(artifact)
   return defect
 end
 
+local browser_health_assertions = {
+  ["no-severe-console"] = true,
+  ["no-failed-document-request"] = true,
+}
+
 local function typed_browser_failure(artifact)
   if type(artifact) ~= "table" or artifact.classification ~= "typed-browser-assertion-failed" then return false end
   for _, action in ipairs(artifact.actions or {}) do
@@ -148,10 +153,37 @@ local function typed_browser_failure(artifact)
       for _, assertion in ipairs(action.assertion_results or {}) do
         if type(assertion) == "table"
           and assertion.status == "failed"
+          and browser_health_assertions[assertion.type] ~= true
           and bounded(assertion.evidence_pointer) ~= nil then
           return true
         end
       end
+    end
+  end
+  return false
+end
+
+local function browser_health_only_failure(artifact)
+  if type(artifact) ~= "table" or artifact.classification ~= "typed-browser-assertion-failed" then return false end
+  local found = false
+  for _, action in ipairs(artifact.actions or {}) do
+    for _, assertion in ipairs(type(action) == "table" and action.assertion_results or {}) do
+      if type(assertion) == "table" and assertion.status == "failed" then
+        if browser_health_assertions[assertion.type] ~= true then return false end
+        found = true
+      end
+    end
+  end
+  return found
+end
+
+local function browser_health_evidence(artifact)
+  if type(artifact) ~= "table" then return false end
+  for _, action in ipairs(artifact.actions or {}) do
+    local evidence = type(action) == "table" and action.browser_evidence or nil
+    if type(evidence) == "table"
+      and (#(evidence.console or {}) > 0 or #(evidence.network or {}) > 0) then
+      return true
     end
   end
   return false
@@ -176,6 +208,9 @@ local function classify(result, artifact, skipped, has_fixture_gap, has_risk, ha
     return category.environment_session
   end
   if runtime_failure(artifact) then return category.harness_tooling end
+  if browser_health_only_failure(artifact) or browser_health_evidence(artifact) then
+    return category.harness_tooling
+  end
   if has_fixture_gap then return category.data_fixture end
   if has_ai_gap then return category.ai_generation end
   if has_risk then return category.not_executed_risk end

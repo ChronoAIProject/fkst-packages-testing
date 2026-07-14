@@ -66,6 +66,33 @@ function cleanUrl(value) {
   }
 }
 
+function urlClass(value, baseUrl) {
+  if (!value) return 'unknown';
+  try {
+    const parsed = new URL(value);
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') return 'non-http';
+    const base = new URL(baseUrl);
+    return parsed.origin === base.origin ? 'same-origin' : 'cross-origin';
+  } catch (_error) {
+    return 'invalid';
+  }
+}
+
+function consoleMessage(params, fallback) {
+  const parts = (params && params.args || []).map((argument) => {
+    if (argument && argument.value !== undefined) return String(argument.value);
+    return argument && (argument.description || argument.type) || '';
+  });
+  return cleanText(parts.join(' '), fallback);
+}
+
+function initiatorUrl(initiator) {
+  if (!initiator || typeof initiator !== 'object') return '';
+  if (initiator.url) return initiator.url;
+  const frames = initiator.stack && initiator.stack.callFrames;
+  return Array.isArray(frames) && frames[0] && frames[0].url || '';
+}
+
 function allowedUrl(value, request) {
   const parsed = assertLocalHttpUrl(value, 'action URL');
   const base = assertLocalHttpUrl(request.base_url, 'base URL');
@@ -98,23 +125,93 @@ function textProbeExpression(target, click) {
   })()`;
 }
 
-function eventFacts(events) {
-  const severeConsole = [];
-  const failedRequests = [];
+function eventFacts(events, context = {}) {
+  const consoleEvidence = [];
+  const networkEvidence = [];
+  const rawDiagnostics = [];
+  const requests = context.requests instanceof Map ? context.requests : new Map();
+  const addRawDiagnostic = (kind, event) => {
+    rawDiagnostics.push({ kind, payload: event });
+    return rawDiagnostics.length;
+  };
   for (const event of events) {
     if (event.method === 'Log.entryAdded') {
       const entry = event.params && event.params.entry;
-      if (entry && (entry.level === 'error' || entry.level === 'warning')) severeConsole.push(cleanText(entry.text, entry.level));
+      if (entry && (entry.level === 'error' || entry.level === 'warning') && consoleEvidence.length < 16) {
+        consoleEvidence.push({
+          category: entry.level,
+          source: 'log',
+          message: cleanText(entry.text, entry.level),
+          raw_diagnostic_index: addRawDiagnostic('console', event),
+        });
+      }
     }
     if (event.method === 'Runtime.consoleAPICalled') {
       const type = event.params && event.params.type;
-      if (type === 'error' || type === 'warning') severeConsole.push(type);
+      if ((type === 'error' || type === 'warning') && consoleEvidence.length < 16) {
+        consoleEvidence.push({
+          category: type,
+          source: 'console-api',
+          message: consoleMessage(event.params, type),
+          raw_diagnostic_index: addRawDiagnostic('console', event),
+        });
+      }
     }
-    if (event.method === 'Network.loadingFailed') {
-      failedRequests.push(cleanText(event.params && event.params.errorText, 'network failure'));
+    if (event.method === 'Network.requestWillBeSent') {
+      const params = event.params || {};
+      if (params.requestId) {
+        requests.set(params.requestId, {
+          frameId: params.frameId,
+          initiator: params.initiator,
+          resourceType: params.type,
+          url: params.request && params.request.url,
+        });
+        if (requests.size > 256) requests.delete(requests.keys().next().value);
+      }
     }
+    if (event.method === 'Network.loadingFailed' && networkEvidence.length < 16) {
+      const params = event.params || {};
+      const request = requests.get(params.requestId) || {};
+      const resourceType = cleanText(params.type || request.resourceType, 'Other').slice(0, 80);
+      const initiator = request.initiator || {};
+      const initiatorClass = urlClass(initiatorUrl(initiator), context.baseUrl);
+      const fact = {
+        resource_type: resourceType,
+        url_class: urlClass(request.url, context.baseUrl),
+        failure_reason: cleanText(params.errorText || params.blockedReason, 'network failure'),
+        canceled: params.canceled === true,
+        initiator_type: cleanText(initiator.type, 'unknown').slice(0, 80),
+        main_document: resourceType === 'Document'
+          && Boolean(context.mainFrameId)
+          && request.frameId === context.mainFrameId,
+        raw_diagnostic_index: addRawDiagnostic('network-failure', event),
+      };
+      if (initiatorClass !== 'unknown') fact.initiator_url_class = initiatorClass;
+      networkEvidence.push(fact);
+      requests.delete(params.requestId);
+    }
+    if (event.method === 'Network.loadingFinished') requests.delete(event.params && event.params.requestId);
   }
-  return { severeConsole: severeConsole.slice(0, 16), failedRequests: failedRequests.slice(0, 16) };
+  return {
+    console: consoleEvidence.slice(0, 16),
+    network: networkEvidence.slice(0, 16),
+    raw_diagnostics: rawDiagnostics.slice(0, 32),
+  };
+}
+
+function receiptBrowserEvidence(facts) {
+  return {
+    console: facts.console.map((fact) => ({ ...fact })),
+    network: facts.network.map((fact) => ({ ...fact })),
+  };
+}
+
+function normalizeBrowserEvents(events, context) {
+  const evidence = eventFacts(events, context);
+  return {
+    evidence,
+    receipt: receiptBrowserEvidence(evidence),
+  };
 }
 
 async function assertionResult(cdp, assertion, action, facts, evidencePointer) {
@@ -134,11 +231,12 @@ async function assertionResult(cdp, assertion, action, facts, evidencePointer) {
     passed = Boolean(result && result.found);
     observation = passed ? `visible target: ${cleanText(result.label)}` : `visible target missing: ${cleanText(target)}`;
   } else if (assertion.type === 'no-severe-console') {
-    passed = facts.severeConsole.length === 0;
-    observation = passed ? 'no severe console events' : `${facts.severeConsole.length} severe console events`;
+    passed = facts.console.length === 0;
+    observation = passed ? 'no severe console events' : `${facts.console.length} severe console events`;
   } else if (assertion.type === 'no-failed-document-request') {
-    passed = facts.failedRequests.length === 0;
-    observation = passed ? 'no failed document requests' : `${facts.failedRequests.length} failed requests`;
+    const documentFailures = facts.network.filter((fact) => fact.main_document);
+    passed = documentFailures.length === 0;
+    observation = passed ? 'no failed document requests' : `${documentFailures.length} failed document requests`;
   }
   return {
     type: assertion.type,
@@ -148,7 +246,7 @@ async function assertionResult(cdp, assertion, action, facts, evidencePointer) {
   };
 }
 
-async function executeAction(cdp, request, action) {
+async function executeAction(cdp, request, action, mainFrameId, browserEventState) {
   const evidencePointer = `${request.artifact_root}/evidence/execution/${String(action.case_id).replace(/[^A-Za-z0-9._-]/g, '-')}.json`;
   const actionUrl = action.url || request.base_url;
   if (!allowedUrl(actionUrl, request)) throw new Error(`action left allowed scope: ${action.case_id}`);
@@ -172,7 +270,12 @@ async function executeAction(cdp, request, action) {
   }
 
   const events = cdp.takeEvents();
-  const facts = eventFacts(events);
+  const browserEvidence = normalizeBrowserEvents(events, {
+    baseUrl: request.base_url,
+    mainFrameId,
+    requests: browserEventState.requests,
+  });
+  const facts = browserEvidence.evidence;
   const assertionResults = [];
   const actionContext = { ...action, request };
   for (const assertion of action.assertions) {
@@ -184,12 +287,13 @@ async function executeAction(cdp, request, action) {
     case_id: action.case_id,
     action: action.action,
     sanitized_url: cleanUrl(await evaluate(cdp, 'location.href')),
-    severe_console_count: facts.severeConsole.length,
-    failed_request_count: facts.failedRequests.length,
+    severe_console_count: facts.console.length,
+    failed_request_count: facts.network.length,
     assertions: assertionResults,
+    browser_evidence: facts,
   };
   writeJson(evidencePointer, evidence);
-  return {
+  const result = {
     step: action.step,
     case_id: action.case_id,
     action: action.action,
@@ -200,6 +304,8 @@ async function executeAction(cdp, request, action) {
     assertion_results: assertionResults,
     ...(action.fixture_receipt_path ? { fixture_receipt_path: action.fixture_receipt_path } : {}),
   };
+  if (facts.console.length > 0 || facts.network.length > 0) result.browser_evidence = browserEvidence.receipt;
+  return result;
 }
 
 async function executeRequest(request, receiptPath) {
@@ -220,7 +326,12 @@ async function executeRequest(request, receiptPath) {
     await cdp.send('Runtime.enable');
     await cdp.send('Log.enable');
     await cdp.send('Network.enable');
-    for (const action of request.actions) actions.push(await executeAction(cdp, request, action));
+    const frameTree = await cdp.send('Page.getFrameTree');
+    const mainFrameId = frameTree.frameTree && frameTree.frameTree.frame && frameTree.frameTree.frame.id;
+    const browserEventState = { requests: new Map() };
+    for (const action of request.actions) {
+      actions.push(await executeAction(cdp, request, action, mainFrameId, browserEventState));
+    }
   } finally {
     cdp.close();
   }
@@ -309,6 +420,54 @@ async function main(argv) {
       credentialUrlRejected = true;
     }
     if (!credentialUrlRejected) throw new Error('credential-bearing loopback URL was accepted');
+    const normalized = normalizeBrowserEvents([
+      {
+        method: 'Runtime.consoleAPICalled',
+        params: { type: 'warning', args: [{ type: 'string', value: 'image warning' }] },
+      },
+      {
+        method: 'Network.requestWillBeSent',
+        params: {
+          requestId: 'image-1',
+          frameId: 'main-frame',
+          type: 'Image',
+          request: { url: 'http://localhost:8080/app/missing.png' },
+          initiator: { type: 'parser', url: 'http://localhost:8080/app' },
+        },
+      },
+      {
+        method: 'Network.loadingFailed',
+        params: { requestId: 'image-1', type: 'Image', errorText: 'net::ERR_FAILED', canceled: false },
+      },
+    ], {
+      baseUrl: 'http://localhost:8080/app',
+      mainFrameId: 'main-frame',
+    });
+    if (normalized.evidence.console[0].category !== 'warning'
+      || normalized.evidence.network[0].resource_type !== 'Image'
+      || normalized.evidence.network[0].main_document !== false
+      || normalized.receipt.network[0].raw_diagnostic_index !== 2) {
+      throw new Error('browser event normalization failed');
+    }
+    const requestState = { requests: new Map() };
+    normalizeBrowserEvents([{
+      method: 'Network.requestWillBeSent',
+      params: {
+        requestId: 'deferred-image',
+        frameId: 'main-frame',
+        type: 'Image',
+        request: { url: 'http://localhost:8080/app/deferred.png' },
+        initiator: { type: 'parser', url: 'http://localhost:8080/app' },
+      },
+    }], { baseUrl: 'http://localhost:8080/app', requests: requestState.requests });
+    const deferred = normalizeBrowserEvents([{
+      method: 'Network.loadingFailed',
+      params: { requestId: 'deferred-image', type: 'Image', errorText: 'net::ERR_FAILED' },
+    }], { baseUrl: 'http://localhost:8080/app', requests: requestState.requests });
+    if (deferred.evidence.network[0].url_class !== 'same-origin'
+      || deferred.evidence.network[0].initiator_type !== 'parser') {
+      throw new Error('browser request correlation failed');
+    }
     process.stdout.write('fkst-testing-runtime: self-test passed\n');
     return;
   }
@@ -328,6 +487,9 @@ module.exports = {
   cleanText,
   cleanUrl,
   executeRequest,
+  eventFacts,
+  normalizeBrowserEvents,
+  receiptBrowserEvidence,
   sha256,
   stableStringify,
 };

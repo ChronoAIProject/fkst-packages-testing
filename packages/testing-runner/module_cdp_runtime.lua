@@ -135,6 +135,33 @@ local function copy_assertion_results(value)
   return results
 end
 
+local function copy_browser_evidence(value)
+  if type(value) ~= "table" then return nil end
+  local evidence = { console = {}, network = {} }
+  for _, fact in ipairs(value.console or {}) do
+    table.insert(evidence.console, {
+      category = fact.category,
+      source = fact.source,
+      message = fact.message,
+      raw_diagnostic_index = fact.raw_diagnostic_index,
+    })
+  end
+  for _, fact in ipairs(value.network or {}) do
+    local item = {
+      resource_type = fact.resource_type,
+      url_class = fact.url_class,
+      failure_reason = fact.failure_reason,
+      canceled = fact.canceled,
+      initiator_type = fact.initiator_type,
+      main_document = fact.main_document,
+      raw_diagnostic_index = fact.raw_diagnostic_index,
+    }
+    if fact.initiator_url_class ~= nil then item.initiator_url_class = fact.initiator_url_class end
+    table.insert(evidence.network, item)
+  end
+  return evidence
+end
+
 local function count_actions(artifact)
   local counts = { planned = 0, blocked = 0, executed = 0, failed = 0 }
   for _, action in ipairs(artifact.actions or {}) do
@@ -165,6 +192,7 @@ local function reconcile(artifact, receipt, planner_indexes, paths)
     action.observation = action_receipt.observation
     action.evidence_pointer = action_receipt.evidence_pointer
     action.assertion_results = copy_assertion_results(action_receipt.assertion_results)
+    action.browser_evidence = copy_browser_evidence(action_receipt.browser_evidence)
   end
   artifact.browser_execution_plan_path = paths.plan
   artifact.browser_execution_request_path = paths.request

@@ -1,5 +1,6 @@
 local core = require("core")
 local ai = require("module_ai_generation")
+local execution_contract = require("contract.testing_execution")
 local module_inventory = require("module_inventory")
 local native = require("fkst_native")
 local t = fkst.test
@@ -86,6 +87,102 @@ local function failed_receipt()
   value.actions[3].assertion_results[1].status = "failed"
   value.actions[3].assertion_results[1].observation = "visible target missing: Dashboard"
   return value
+end
+
+local function normalize_browser_health_events()
+  local script = [[
+const runtime = require('./libraries/testing_runtime/bin/fkst-testing-runtime.js');
+const input = JSON.parse(process.argv[1]);
+process.stdout.write(JSON.stringify(runtime.normalizeBrowserEvents(input.events, input.context)));
+]]
+  local input = {
+    context = {
+      baseUrl = fixture_base_url,
+      mainFrameId = "main-frame",
+    },
+    events = {
+      {
+        method = "Runtime.consoleAPICalled",
+        params = {
+          type = "warning",
+          args = { { type = "string", value = "image preload warning" } },
+        },
+      },
+      {
+        method = "Network.requestWillBeSent",
+        params = {
+          requestId = "image-1",
+          frameId = "main-frame",
+          type = "Image",
+          request = { url = fixture_base_url .. "/missing.png?token=redacted#fragment" },
+          initiator = { type = "parser", url = fixture_base_url .. "/dashboard" },
+        },
+      },
+      {
+        method = "Network.loadingFailed",
+        params = {
+          requestId = "image-1",
+          type = "Image",
+          errorText = "net::ERR_FAILED",
+          canceled = false,
+        },
+      },
+    },
+  }
+  local normalized
+  t.with_command_cassette({
+    path = "tests/browser-health-runtime-command-cassette.json",
+    mode = "record",
+  }, function()
+    local result = exec_argv({
+      argv = { "node", "-e", script, native.json_encode(input) },
+      timeout = 30,
+    })
+    t.eq(result.exit_code, 0)
+    normalized = json.decode(result.stdout)
+  end)
+  return normalized
+end
+
+local function browser_health_receipt(browser_evidence)
+  local value = passed_receipt()
+  value.status = "failed"
+  value.classification = "typed-browser-assertion-failed"
+  value.executed_action_count = value.executed_action_count - 1
+  value.failed_action_count = 1
+  local action = value.actions[4]
+  action.execution_status = "failed"
+  action.assertion_status = "failed"
+  action.observation = "browser-health assertion failed without failed product behavior"
+  action.assertion_results[1].status = "failed"
+  action.assertion_results[1].observation = "1 severe console event"
+  action.browser_evidence = browser_evidence
+  return value
+end
+
+local function valid_browser_evidence()
+  return {
+    console = {
+      {
+        category = "warning",
+        source = "console-api",
+        message = "image preload warning",
+        raw_diagnostic_index = 1,
+      },
+    },
+    network = {
+      {
+        resource_type = "Image",
+        url_class = "same-origin",
+        failure_reason = "net::ERR_FAILED",
+        canceled = false,
+        initiator_type = "parser",
+        initiator_url_class = "same-origin",
+        main_document = false,
+        raw_diagnostic_index = 2,
+      },
+    },
+  }
 end
 
 local function runtime_dependencies(receipt, opts)
@@ -333,6 +430,90 @@ return {
     t.eq(result.native_summary.executed_action_count, 4)
     t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find('"failed_action_count":1', 1, true) ~= nil)
     t.is_true(written[".testing/runs/module-a-cdp/cdp-execution.json"]:find("visible target missing", 1, true) ~= nil)
+  end,
+
+  test_browser_health_only_evidence_crosses_runtime_boundary_without_product_defect = function()
+    local normalized = normalize_browser_health_events()
+    local console = normalized.evidence.console[1]
+    local network = normalized.evidence.network[1]
+    t.eq(console.category, "warning")
+    t.eq(console.source, "console-api")
+    t.eq(network.resource_type, "Image")
+    t.eq(network.url_class, "same-origin")
+    t.eq(network.failure_reason, "net::ERR_FAILED")
+    t.eq(network.canceled, false)
+    t.eq(network.initiator_type, "parser")
+    t.eq(network.initiator_url_class, "same-origin")
+    t.eq(network.main_document, false)
+    t.eq(normalized.evidence.raw_diagnostics[console.raw_diagnostic_index].payload.method, "Runtime.consoleAPICalled")
+    t.eq(normalized.evidence.raw_diagnostics[network.raw_diagnostic_index].payload.params.errorText, "net::ERR_FAILED")
+
+    local written = {}
+    local evidence_pointer = ".testing/runs/module-a-cdp/evidence/execution/dashboard-console-network-health.json"
+    written[evidence_pointer] = native.json_encode({
+      schema = "testing-runtime.action-evidence.v1",
+      browser_evidence = normalized.evidence,
+    })
+    local runtime = runtime_dependencies(browser_health_receipt(normalized.receipt))
+    local result = core.run("module", request({
+      artifact_writer = function(path, body)
+        written[path] = body
+        return true
+      end,
+    }), runtime)
+
+    t.eq(result.status, "failed")
+    t.eq(result.native_summary.classification, "typed-browser-assertion-failed")
+    t.eq(result.native_summary.outcome_classification, "harness-tooling-issue")
+    t.is_true(result.native_summary.outcome_classification ~= "product-defect")
+
+    local artifact = json.decode(written[".testing/runs/module-a-cdp/cdp-execution.json"])
+    t.eq(artifact.actions[3].assertion_results[1].type, "visible-target-present")
+    t.eq(artifact.actions[3].assertion_results[1].status, "passed")
+    t.eq(artifact.actions[4].browser_evidence.console[1].category, "warning")
+    t.eq(artifact.actions[4].browser_evidence.network[1].resource_type, "Image")
+    t.eq(artifact.actions[4].browser_evidence.network[1].main_document, false)
+    t.eq(artifact.actions[4].evidence_pointer, evidence_pointer)
+    local raw = json.decode(written[artifact.actions[4].evidence_pointer])
+    local raw_index = artifact.actions[4].browser_evidence.network[1].raw_diagnostic_index
+    t.eq(raw.browser_evidence.raw_diagnostics[raw_index].payload.params.errorText, "net::ERR_FAILED")
+    t.eq(artifact.browser_evidence, nil)
+
+    local passed_written = {}
+    local passed = passed_receipt()
+    passed.actions[1].browser_evidence = normalized.receipt
+    passed_written[passed.actions[1].evidence_pointer] = native.json_encode({
+      schema = "testing-runtime.action-evidence.v1",
+      browser_evidence = normalized.evidence,
+    })
+    local passed_runtime = runtime_dependencies(passed)
+    local passed_result = core.run("module", request({
+      artifact_writer = function(path, body)
+        passed_written[path] = body
+        return true
+      end,
+    }), passed_runtime)
+    t.eq(passed_result.status, "passed")
+    t.eq(passed_result.native_summary.outcome_classification, "harness-tooling-issue")
+    t.is_true(passed_result.native_summary.outcome_classification ~= "product-defect")
+  end,
+
+  test_rejects_malformed_typed_browser_evidence = function()
+    local function rejects(mutate)
+      local value = passed_receipt()
+      value.actions[1].browser_evidence = valid_browser_evidence()
+      mutate(value.actions[1].browser_evidence)
+      t.raises(function() execution_contract.validate_execution_receipt(value) end)
+    end
+
+    rejects(function(evidence) evidence.console[1].category = "info" end)
+    rejects(function(evidence) evidence.console[1].source = "devtools" end)
+    rejects(function(evidence) evidence.network[1].main_document = "false" end)
+    rejects(function(evidence) evidence.console = "not-a-list" end)
+    rejects(function(evidence)
+      evidence.console = {}
+      evidence.network = {}
+    end)
   end,
 
   test_fkst_native_module_cdp_execution_blocks_malformed_receipt = function()

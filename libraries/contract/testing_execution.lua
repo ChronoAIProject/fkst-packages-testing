@@ -38,6 +38,7 @@ E.mutation_kinds = {
 local max_string = 512
 local max_actions = 32
 local max_assertions = 8
+local max_browser_facts = 16
 local max_argv = 32
 
 local function fail(classification, message)
@@ -205,6 +206,72 @@ local function validate_assertion_result(value)
   return value
 end
 
+local browser_url_classes = {
+  ["same-origin"] = true,
+  ["cross-origin"] = true,
+  ["non-http"] = true,
+  invalid = true,
+  unknown = true,
+}
+
+local function validate_url_class(value, field)
+  if browser_url_classes[value] ~= true then fail("malformed-browser-evidence", field .. " is unsupported") end
+end
+
+local function validate_console_fact(value)
+  only_fields(value, {
+    category = true,
+    source = true,
+    message = true,
+    raw_diagnostic_index = true,
+  }, "console-fact")
+  if value.category ~= "warning" and value.category ~= "error" then
+    fail("malformed-browser-evidence", "console category is unsupported")
+  end
+  if value.source ~= "log" and value.source ~= "console-api" then
+    fail("malformed-browser-evidence", "console source is unsupported")
+  end
+  require_bounded(value.message, "console.message")
+  require_integer(value.raw_diagnostic_index, "console.raw_diagnostic_index", 1, max_browser_facts * 2)
+end
+
+local function validate_network_fact(value)
+  only_fields(value, {
+    resource_type = true,
+    url_class = true,
+    failure_reason = true,
+    canceled = true,
+    initiator_type = true,
+    initiator_url_class = true,
+    main_document = true,
+    raw_diagnostic_index = true,
+  }, "network-fact")
+  require_bounded(value.resource_type, "network.resource_type", 80)
+  validate_url_class(value.url_class, "network.url_class")
+  require_bounded(value.failure_reason, "network.failure_reason")
+  if type(value.canceled) ~= "boolean" then fail("malformed-browser-evidence", "network.canceled must be boolean") end
+  require_bounded(value.initiator_type, "network.initiator_type", 80)
+  if value.initiator_url_class ~= nil then
+    validate_url_class(value.initiator_url_class, "network.initiator_url_class")
+  end
+  if type(value.main_document) ~= "boolean" then
+    fail("malformed-browser-evidence", "network.main_document must be boolean")
+  end
+  require_integer(value.raw_diagnostic_index, "network.raw_diagnostic_index", 1, max_browser_facts * 2)
+end
+
+local function validate_browser_evidence(value)
+  only_fields(value, { console = true, network = true }, "browser-evidence")
+  if not dense_list(value.console, max_browser_facts) or not dense_list(value.network, max_browser_facts) then
+    fail("malformed-browser-evidence", "console and network facts must be bounded dense lists")
+  end
+  for _, fact in ipairs(value.console) do validate_console_fact(fact) end
+  for _, fact in ipairs(value.network) do validate_network_fact(fact) end
+  if #value.console == 0 and #value.network == 0 then
+    fail("malformed-browser-evidence", "browser evidence must contain at least one fact")
+  end
+end
+
 local action_receipt_fields = {
   step = true,
   case_id = true,
@@ -214,6 +281,7 @@ local action_receipt_fields = {
   observation = true,
   evidence_pointer = true,
   assertion_results = true,
+  browser_evidence = true,
   fixture_receipt_path = true,
 }
 
@@ -252,6 +320,7 @@ local function validate_action_receipt(value, index)
   elseif value.assertion_status ~= "blocked" or blocked == 0 or failed > 0 then
     fail("inconsistent-action-receipt", "blocked action requires a blocked assertion and no failed assertions")
   end
+  if value.browser_evidence ~= nil then validate_browser_evidence(value.browser_evidence) end
   if value.fixture_receipt_path ~= nil then require_artifact_pointer(value.fixture_receipt_path, "fixture_receipt_path") end
   return value
 end
