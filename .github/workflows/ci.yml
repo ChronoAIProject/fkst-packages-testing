@@ -22,6 +22,8 @@ jobs:
     steps:
       - name: Checkout fkst-packages-testing
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Hydrate pinned fkst-packages source
         shell: bash
@@ -75,9 +77,11 @@ jobs:
       - name: Run repository checks and package tests
         env:
           BIN: ${{ github.workspace }}/fkst-substrate/target/debug/fkst-framework
+          FKST_LUA_COVERAGE_BASE_REF: ${{ github.base_ref || github.ref_name }}
         run: |
           test -x "$BIN"
           scripts/run.sh host -- check
           scripts/run.sh host -- test
           scripts/run.sh check
           scripts/run.sh test
+          scripts/run.sh ai-pipeline-smoke

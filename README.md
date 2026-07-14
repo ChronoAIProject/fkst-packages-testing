@@ -112,7 +112,22 @@ Set `BIN` to a built `fkst-framework`, then run package verification:
 ```sh
 scripts/run.sh check
 scripts/run.sh test
+scripts/run.sh ai-pipeline-smoke
 scripts/run.sh test testing-runner
+```
+
+`scripts/run.sh test` writes a canonical Lua coverage artifact to `.fkst/run/lua-coverage/coverage.json`
+and enforces the shrink-only `migration/coverage-uncovered.allowlist` ratchet during full-repository
+runs. `scripts/run.sh ai-pipeline-smoke` is a hermetic smoke for the AI-authored test case path:
+AI authoring, consensus review, pointer-only resume, CDP execution handoff, and publication handoff.
+
+To verify the live local-browser runtime path, start a local app and a Chrome/Chromium instance with
+remote debugging, then run:
+
+```sh
+FKST_LIVE_BASE_URL=http://127.0.0.1:8317 \
+FKST_LIVE_CDP_URL=http://127.0.0.1:9222 \
+scripts/run.sh live-cdp-smoke
 ```
 
 The repository host topology is separate from package verification. It loads the pinned `fkst-packages` development control plane and defaults `FKST_WORKFLOW_CATALOG_ROOT` to `.fkst/workflow`:
@@ -123,7 +138,10 @@ scripts/run.sh host -- test
 scripts/run.sh host -- supervise --durable-root "$FKST_DURABLE_ROOT" --restart
 ```
 
-CI builds `fkst-framework` from the full SHA in `.fkst/substrate-ref` and runs both host-topology and package verification.
+CI builds `fkst-framework` from the full SHA in `.fkst/substrate-ref` and runs host-topology
+verification, package verification, Lua coverage ratchet enforcement, and the hermetic AI pipeline
+smoke. The live CDP smoke is intentionally local/environment-gated because it requires a running
+loopback app and browser debugging endpoint.
 
 ## Runtime posture
 

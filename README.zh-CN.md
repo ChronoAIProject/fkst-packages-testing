@@ -90,6 +90,21 @@ cp env.example .env
 $EDITOR .env
 scripts/run.sh check
 scripts/run.sh test
+scripts/run.sh ai-pipeline-smoke
+```
+
+`scripts/run.sh test` 会在全仓测试时写出标准 Lua coverage artifact：
+`.fkst/run/lua-coverage/coverage.json`，并执行 `migration/coverage-uncovered.allowlist` 的
+shrink-only ratchet。`scripts/run.sh ai-pipeline-smoke` 是 hermetic smoke，用来验证 AI 自动生成
+测试用例、consensus review、pointer-only resume、CDP execution handoff 和 publication handoff。
+
+如果要验证真实本地浏览器 runtime path，先启动本地 app 和带 remote debugging 的 Chrome/Chromium，
+然后运行：
+
+```sh
+FKST_LIVE_BASE_URL=http://127.0.0.1:8317 \
+FKST_LIVE_CDP_URL=http://127.0.0.1:9222 \
+scripts/run.sh live-cdp-smoke
 ```
 
 测试 package 默认 dry-run。fkst event 不应保存凭证、cookie、token、浏览器 storage、测试账号密码或大体积报告正文；payload 只携带小控制字段和稳定 artifact 指针。
