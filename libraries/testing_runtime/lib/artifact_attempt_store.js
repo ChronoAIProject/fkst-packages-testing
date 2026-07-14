@@ -217,6 +217,20 @@ function validateCompletion(completion, intent) {
   return completion;
 }
 
+function validateArtifactAttemptCompletion(completion) {
+  const intent = {
+    schema: INTENT_SCHEMA,
+    run_id: completion && completion.run_id,
+    trace_id: completion && completion.trace_id,
+    dedup_key: completion && completion.dedup_key,
+    artifact_kind: completion && completion.artifact_kind,
+    attempt_id: completion && completion.attempt_id,
+    fence_version: completion && completion.fence_version,
+  };
+  validateIntent(intent);
+  return validateCompletion(completion, intent);
+}
+
 function publishCompletion(completion, intent, durableRoot) {
   const target = completionPath(intent, durableRoot);
   const parent = path.dirname(target);
@@ -272,4 +286,5 @@ module.exports = {
   commitArtifactAttempt,
   deriveArtifactPointer,
   lookupArtifactAttempt,
+  validateArtifactAttemptCompletion,
 };

@@ -16,6 +16,11 @@ const {
   deriveArtifactPointer,
   lookupArtifactAttempt,
 } = require('../lib/artifact_attempt_store');
+const {
+  acquireRun,
+  completeRun,
+  lookupRun,
+} = require('../lib/run_ledger_store');
 
 function stableStringify(value) {
   if (value === null || typeof value !== 'object') return JSON.stringify(value);
@@ -296,6 +301,15 @@ function artifactAttemptIntent(options) {
   };
 }
 
+function runIdentity(options) {
+  return {
+    schema: 'testing-runner.run-identity.v1',
+    job: options.job,
+    trace_id: options.traceId,
+    dedup_key: options.dedupKey,
+  };
+}
+
 function durableRoot() {
   return process.env.FKST_DURABLE_ROOT || '.fkst/run/durable';
 }
@@ -329,6 +343,27 @@ async function main(argv) {
     const completion = lookupArtifactAttempt(artifactAttemptIntent(options), durableRoot());
     const envelope = completion === null ? { found: false } : { found: true, completion };
     process.stdout.write(`${stableStringify(envelope)}\n`);
+    return;
+  }
+  if (command === 'run-ledger-lookup') {
+    const record = lookupRun(runIdentity(options), durableRoot());
+    const envelope = record === null ? { found: false } : { found: true, record };
+    process.stdout.write(`${stableStringify(envelope)}\n`);
+    return;
+  }
+  if (command === 'run-ledger-acquire') {
+    process.stdout.write(`${stableStringify(acquireRun(runIdentity(options), durableRoot()))}\n`);
+    return;
+  }
+  if (command === 'run-ledger-complete') {
+    const record = completeRun(
+      runIdentity(options),
+      Number(options.fenceVersion),
+      JSON.parse(options.terminalAttempt),
+      JSON.parse(options.terminalResult),
+      durableRoot(),
+    );
+    process.stdout.write(`${stableStringify(record)}\n`);
     return;
   }
   if (command === 'execute') {

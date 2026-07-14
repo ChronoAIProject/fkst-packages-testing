@@ -15,9 +15,10 @@ end
 
 local function act(event)
   local payload = event.payload or {}
-  local result = core.run("module", payload)
+  local result, replayed = core.run("module", payload)
   log.info("testing-runner dept=run_module_loop tag=" .. string.upper(result.status) .. " module=" .. tostring(payload.module))
-  raise("testing_result", result)
+  if not replayed then raise("testing_result", result) end
+  return result
 end
 
 local M = saga.department(spec, { done = done, act = act, name = "run_module_loop" })

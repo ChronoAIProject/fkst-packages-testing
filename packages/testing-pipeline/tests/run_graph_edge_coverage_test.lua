@@ -1,4 +1,5 @@
 local graph = require("testkit.graph")
+local strings = require("contract.strings")
 
 local t = fkst.test
 local verdict_label = "\226\159\166FKST:VERDICT\226\159\167"
@@ -81,7 +82,7 @@ local function consensus_event(queue, schema)
   }
 end
 
-local function module_start_event()
+local function module_start_event(dedup_key)
   return {
     queue = "module_start",
     source_ref = event_source_ref("edge-coverage-module"),
@@ -94,7 +95,7 @@ local function module_start_event()
       native_argv = { "true" },
       artifact_root = ".testing/runs/edge-coverage-module",
       source_ref = source_ref("edge-coverage-module"),
-      dedup_key = "edge-coverage-module-run",
+      dedup_key = dedup_key or "edge-coverage-module-run",
     },
   }
 end
@@ -112,19 +113,28 @@ return {
   end,
 
   test_run_graph_module_loop_edges_are_covered = function()
-    t.mock_command("'true'", {
-      stdout = "",
-      stderr = "",
-      exit_code = 0,
-    })
+    t.with_command_cassette({
+      path = "tests/run-graph-edge-durable-commands.json",
+      mode = "record",
+    }, function()
+      t.mock_command("'true'", {
+        stdout = "",
+        stderr = "",
+        exit_code = 0,
+      })
 
-    local trace = graph.require_quiescent(graph.run(module_start_event(), { max_steps = 12 }))
+      local run_key = strings.decimal_checksum(tostring(os.getenv("FKST_DURABLE_ROOT") or "edge-coverage"))
+      local trace = graph.require_quiescent(graph.run(
+        module_start_event("edge-coverage-module-run-" .. run_key),
+        { max_steps = 12 }
+      ))
 
-    graph.assert_covers(trace, {
-      "testing-pipeline.module_start -> testing-pipeline.start_module",
-      "module-test-loop.module_loop_request -> module-test-loop.start",
-      "testing-runner.module_test_request -> testing-runner.run_module_loop",
-    })
+      graph.assert_covers(trace, {
+        "testing-pipeline.module_start -> testing-pipeline.start_module",
+        "module-test-loop.module_loop_request -> module-test-loop.start",
+        "testing-runner.module_test_request -> testing-runner.run_module_loop",
+      })
+    end)
   end,
 
   test_run_graph_ai_generation_request_routes_to_author = function()
