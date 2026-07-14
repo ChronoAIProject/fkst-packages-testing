@@ -498,6 +498,7 @@ run_pkg_engine() {
 
 cmd_check() {
   local fail=0 ran=0 pkg
+  "$PYTHON_BIN" -B "$ROOT/scripts/check_ci_contract.py" || fail=1
   run_source_ratchets || fail=1
   resolve_testing_bin
   echo "=== engine conformance (composed closed-world / flat single-root) ==="
