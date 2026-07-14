@@ -98,6 +98,96 @@ function textProbeExpression(target, click) {
   })()`;
 }
 
+function domTarget(value, label) {
+  if (!value || value.type !== 'css-selector' || typeof value.selector !== 'string'
+    || value.selector.length === 0 || value.selector.length > 512 || /[\x00-\x1f]/.test(value.selector)) {
+    throw new Error(`${label} must be a bounded CSS selector target`);
+  }
+  return { type: 'css-selector', selector: value.selector };
+}
+
+function domProbeExpression(target) {
+  const selector = JSON.stringify(domTarget(target, 'DOM target').selector);
+  return `(() => {
+    const node = document.querySelector(${selector});
+    const visible = (item) => !!item && !!(item.offsetWidth || item.offsetHeight || item.getClientRects().length);
+    if (!node) return { found: false, visible: false, enabled: false, nodeName: '', nodeId: '', text: '' };
+    return {
+      found: true,
+      visible: visible(node),
+      enabled: node.disabled !== true && node.getAttribute('aria-disabled') !== 'true',
+      nodeName: String(node.nodeName || '').toLowerCase(),
+      nodeId: String(node.id || ''),
+      text: String(node.innerText || node.textContent || node.value || node.getAttribute('aria-label') || '').trim().slice(0, 512),
+    };
+  })()`;
+}
+
+function domClickExpression(target) {
+  const selector = JSON.stringify(domTarget(target, 'click target').selector);
+  return `(() => {
+    const node = document.querySelector(${selector});
+    if (!node) return false;
+    node.click();
+    return true;
+  })()`;
+}
+
+async function probeDomTarget(cdp, target) {
+  return evaluate(cdp, domProbeExpression(target));
+}
+
+async function waitForVisibleDomTarget(cdp, target) {
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    const state = await probeDomTarget(cdp, target);
+    if (state && state.visible) return state;
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return probeDomTarget(cdp, target);
+}
+
+async function executeClick(cdp, action) {
+  const target = domTarget(action.target, 'click target');
+  const expected = action.expected && action.expected.type === 'visible-dom-target'
+    ? domTarget(action.expected.target, 'click expected target') : null;
+  if (!expected) throw new Error('click expected observation must be a visible DOM target');
+
+  const targetState = await probeDomTarget(cdp, target);
+  const expectedBefore = await probeDomTarget(cdp, expected);
+  const preconditions = new Set(Array.isArray(action.preconditions) ? action.preconditions : []);
+  if (preconditions.has('target-present') && !targetState.found) throw new Error('click target was not present');
+  if (preconditions.has('target-visible') && !targetState.visible) throw new Error('click target was not visible');
+  if (preconditions.has('target-enabled') && !targetState.enabled) throw new Error('click target was not enabled');
+  if (preconditions.has('expected-observation-absent') && expectedBefore.visible) {
+    throw new Error('click expected observation was already visible');
+  }
+
+  const clicked = await evaluate(cdp, domClickExpression(target));
+  if (clicked !== true) throw new Error('click target could not be resolved');
+  const expectedAfter = await waitForVisibleDomTarget(cdp, expected);
+  if (!expectedAfter || !expectedAfter.visible) throw new Error('click expected observation did not become visible');
+
+  return {
+    resolved_target: {
+      type: target.type,
+      selector: target.selector,
+      node_name: cleanText(targetState.nodeName, 'unknown'),
+      ...(targetState.nodeId ? { node_id: cleanText(targetState.nodeId) } : {}),
+    },
+    observed_post_action_state: {
+      type: 'visible-dom-target',
+      target: expected,
+      visible: true,
+      text: cleanText(expectedAfter.text, expected.selector),
+      was_visible_before: Boolean(expectedBefore && expectedBefore.visible),
+    },
+  };
+}
+
+const runtimeHandlers = {
+  'cdp.click': executeClick,
+};
+
 function eventFacts(events) {
   const severeConsole = [];
   const failedRequests = [];
@@ -133,6 +223,13 @@ async function assertionResult(cdp, assertion, action, facts, evidencePointer) {
     const result = await evaluate(cdp, textProbeExpression(target, false));
     passed = Boolean(result && result.found);
     observation = passed ? `visible target: ${cleanText(result.label)}` : `visible target missing: ${cleanText(target)}`;
+  } else if (assertion.type === 'visible-dom-target') {
+    const target = domTarget(assertion.target, 'assertion target');
+    const result = await probeDomTarget(cdp, target);
+    passed = Boolean(result && result.visible);
+    observation = passed
+      ? `visible DOM target: ${cleanText(target.selector)}`
+      : `visible DOM target missing: ${cleanText(target.selector)}`;
   } else if (assertion.type === 'no-severe-console') {
     passed = facts.severeConsole.length === 0;
     observation = passed ? 'no severe console events' : `${facts.severeConsole.length} severe console events`;
@@ -153,7 +250,12 @@ async function executeAction(cdp, request, action) {
   const actionUrl = action.url || request.base_url;
   if (!allowedUrl(actionUrl, request)) throw new Error(`action left allowed scope: ${action.case_id}`);
 
-  if (action.action === 'navigate' || action.action === 'bounded-navigation') {
+  let handlerEvidence = {};
+  if (action.runtime_handler) {
+    const handler = runtimeHandlers[action.runtime_handler];
+    if (!handler) throw new Error(`unsupported runtime handler: ${cleanText(action.runtime_handler)}`);
+    handlerEvidence = await handler(cdp, action);
+  } else if (action.action === 'navigate' || action.action === 'bounded-navigation') {
     const previousTimeOrigin = await evaluate(cdp, 'performance.timeOrigin');
     await cdp.send('Page.navigate', { url: actionUrl });
     await waitForPage(cdp, previousTimeOrigin);
@@ -187,7 +289,11 @@ async function executeAction(cdp, request, action) {
     severe_console_count: facts.severeConsole.length,
     failed_request_count: facts.failedRequests.length,
     assertions: assertionResults,
+    ...handlerEvidence,
   };
+  for (const field of action.evidence_requirements || []) {
+    if (evidence[field] === undefined) throw new Error(`required action evidence missing: ${cleanText(field)}`);
+  }
   writeJson(evidencePointer, evidence);
   return {
     step: action.step,
@@ -198,6 +304,7 @@ async function executeAction(cdp, request, action) {
     observation: failed ? 'one or more typed assertions failed' : 'typed browser action and assertions completed',
     evidence_pointer: evidencePointer,
     assertion_results: assertionResults,
+    ...handlerEvidence,
     ...(action.fixture_receipt_path ? { fixture_receipt_path: action.fixture_receipt_path } : {}),
   };
 }

@@ -1,16 +1,8 @@
 local execution = require("testing_runtime.execution")
 local execution_contract = require("contract.testing_execution")
+local action_capabilities = require("contract.testing_action_capabilities")
 
 local M = {}
-
-local supported_actions = {
-  navigate = true,
-  ["wait-for-load"] = true,
-  ["inspect-visible-elements"] = true,
-  ["collect-console-network-health"] = true,
-  ["bounded-navigation"] = true,
-  ["open-visible-surface"] = true,
-}
 
 local function local_cdp_url(value)
   if type(value) ~= "string" or value == "" or #value > 512 then return nil end
@@ -56,6 +48,13 @@ local function assertion(kind, target)
 end
 
 local function assertions_for(action)
+  local capability = action_capabilities.get(action.action)
+  if capability ~= nil then
+    local normalized = action_capabilities.validate_action(action)
+    return {
+      assertion(capability.observation_requirements.type, normalized.expected.target),
+    }
+  end
   if action.action == "navigate" then
     return { assertion("url-within-scope"), assertion("document-ready") }
   end
@@ -88,22 +87,34 @@ end
 local function build_request(artifact, result, payload, cdp_url)
   local actions, planner_indexes = {}, {}
   for planner_index, action in ipairs(artifact.actions or {}) do
-    local assertions = type(action) == "table" and assertions_for(action) or nil
-    if type(action) == "table"
-      and action.execution_status == "planned"
-      and supported_actions[action.action] == true
-      and assertions ~= nil then
-      table.insert(actions, {
-        step = #actions + 1,
-        module_id = action.module_id,
-        case_id = action.case_id,
-        priority = action.priority,
-        action = action.action,
-        target = action.target,
-        url = action.url,
-        assertions = assertions,
-      })
-      table.insert(planner_indexes, planner_index)
+    if type(action) == "table" and action.execution_status == "planned" then
+      local capability = action_capabilities.get(action.action)
+      if capability == nil and not execution_contract.is_action_kind(action.action) then
+        action_capabilities.require(action.action)
+      end
+      local assertions = assertions_for(action)
+      if assertions ~= nil then
+        local planned = {
+          step = #actions + 1,
+          module_id = action.module_id,
+          case_id = action.case_id,
+          priority = action.priority,
+          action = action.action,
+          target = action.target,
+          url = action.url,
+          assertions = assertions,
+        }
+        if capability ~= nil then
+          local normalized = action_capabilities.validate_action(action)
+          planned.target = normalized.target
+          planned.expected = normalized.expected
+          planned.runtime_handler = capability.runtime_handler
+          planned.preconditions = capability.preconditions
+          planned.evidence_requirements = capability.evidence_requirements
+        end
+        table.insert(actions, planned)
+        table.insert(planner_indexes, planner_index)
+      end
     end
   end
   if #actions == 0 then return nil, planner_indexes end
@@ -165,6 +176,10 @@ local function reconcile(artifact, receipt, planner_indexes, paths)
     action.observation = action_receipt.observation
     action.evidence_pointer = action_receipt.evidence_pointer
     action.assertion_results = copy_assertion_results(action_receipt.assertion_results)
+    if action_receipt.resolved_target ~= nil then action.resolved_target = action_receipt.resolved_target end
+    if action_receipt.observed_post_action_state ~= nil then
+      action.observed_post_action_state = action_receipt.observed_post_action_state
+    end
   end
   artifact.browser_execution_plan_path = paths.plan
   artifact.browser_execution_request_path = paths.request

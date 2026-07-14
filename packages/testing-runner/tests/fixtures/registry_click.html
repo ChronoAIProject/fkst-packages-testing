@@ -1,0 +1,16 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>Registry click fixture</title>
+  </head>
+  <body>
+    <button id="registry-click-button" type="button">Run registered action</button>
+    <p id="registry-click-result" hidden>Registered click completed</p>
+    <script>
+      document.getElementById('registry-click-button').addEventListener('click', () => {
+        document.getElementById('registry-click-result').hidden = false;
+      });
+    </script>
+  </body>
+</html>

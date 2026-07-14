@@ -1,5 +1,6 @@
 -- contract.testing_execution: value-only contracts for typed testing execution.
 local strings = require("contract.strings")
+local action_capabilities = require("contract.testing_action_capabilities")
 
 local E = {}
 
@@ -21,6 +22,10 @@ E.action_kinds = {
   ["safe-mutation-fixture"] = true,
 }
 
+function E.is_action_kind(value)
+  return E.action_kinds[value] == true or action_capabilities.is_registered(value)
+end
+
 E.assertion_kinds = {
   ["url-within-scope"] = true,
   ["document-ready"] = true,
@@ -29,6 +34,15 @@ E.assertion_kinds = {
   ["no-severe-console"] = true,
   ["no-failed-document-request"] = true,
 }
+
+function E.is_assertion_kind(value)
+  if E.assertion_kinds[value] == true then return true end
+  for _, action_kind in ipairs(action_capabilities.registered_kinds()) do
+    local definition = action_capabilities.get(action_kind)
+    if definition.observation_requirements.type == value then return true end
+  end
+  return false
+end
 
 E.mutation_kinds = {
   ["create-test-data"] = true,
@@ -109,8 +123,12 @@ local assertion_fields = {
 
 local function validate_assertion(value)
   only_fields(value, assertion_fields, "assertion")
-  if E.assertion_kinds[value.type] ~= true then fail("unsupported-assertion", tostring(value.type)) end
-  if value.target ~= nil then require_bounded(value.target, "assertion.target") end
+  if not E.is_assertion_kind(value.type) then fail("unsupported-assertion", tostring(value.type)) end
+  if E.assertion_kinds[value.type] ~= true then
+    action_capabilities.validate_target(value.target, "assertion.target")
+  elseif value.target ~= nil then
+    require_bounded(value.target, "assertion.target")
+  end
   if value.expected ~= nil then require_bounded(value.expected, "assertion.expected") end
   return value
 end
@@ -122,8 +140,12 @@ local action_fields = {
   priority = true,
   action = true,
   target = true,
+  expected = true,
   url = true,
   assertions = true,
+  runtime_handler = true,
+  preconditions = true,
+  evidence_requirements = true,
   mutation_kind = true,
   fixture_lifecycle_path = true,
 }
@@ -134,8 +156,25 @@ local function validate_action(value, index)
   require_bounded(value.module_id, "action.module_id", 180)
   require_bounded(value.case_id, "action.case_id", 180)
   require_bounded(value.priority, "action.priority", 8)
-  if E.action_kinds[value.action] ~= true then fail("unsupported-action", tostring(value.action)) end
-  require_bounded(value.target, "action.target")
+  if not E.is_action_kind(value.action) then fail("unsupported-action", tostring(value.action)) end
+  local capability = action_capabilities.get(value.action)
+  if capability ~= nil then
+    action_capabilities.validate_action(value)
+    if value.runtime_handler ~= capability.runtime_handler then
+      fail("runtime-handler-mismatch", "action.runtime_handler does not match the registered capability")
+    end
+    if not action_capabilities.same_list(value.preconditions, capability.preconditions) then
+      fail("precondition-mismatch", "action.preconditions do not match the registered capability")
+    end
+    if not action_capabilities.same_list(value.evidence_requirements, capability.evidence_requirements) then
+      fail("evidence-requirement-mismatch", "action.evidence_requirements do not match the registered capability")
+    end
+  else
+    require_bounded(value.target, "action.target")
+    if value.expected ~= nil or value.runtime_handler ~= nil or value.preconditions ~= nil or value.evidence_requirements ~= nil then
+      fail("malformed-action", "capability fields are only valid for registered actions")
+    end
+  end
   if value.url ~= nil then require_bounded(value.url, "action.url") end
   if not dense_list(value.assertions, max_assertions) or #value.assertions == 0 then
     fail("malformed-assertions", "action.assertions must be a non-empty bounded dense list")
@@ -196,7 +235,7 @@ local assertion_result_fields = {
 
 local function validate_assertion_result(value)
   only_fields(value, assertion_result_fields, "assertion-result")
-  if E.assertion_kinds[value.type] ~= true then fail("unsupported-assertion", tostring(value.type)) end
+  if not E.is_assertion_kind(value.type) then fail("unsupported-assertion", tostring(value.type)) end
   if value.status ~= "passed" and value.status ~= "failed" and value.status ~= "blocked" then
     fail("malformed-assertion-result", "unsupported status")
   end
@@ -214,6 +253,8 @@ local action_receipt_fields = {
   observation = true,
   evidence_pointer = true,
   assertion_results = true,
+  resolved_target = true,
+  observed_post_action_state = true,
   fixture_receipt_path = true,
 }
 
@@ -222,7 +263,7 @@ local function validate_action_receipt(value, index)
   require_integer(value.step, "receipt.actions.step", 1, max_actions)
   if value.step ~= index then fail("malformed-action-receipt", "receipt action steps must be contiguous and ordered") end
   require_bounded(value.case_id, "receipt.actions.case_id", 180)
-  if E.action_kinds[value.action] ~= true then fail("unsupported-action", tostring(value.action)) end
+  if not E.is_action_kind(value.action) then fail("unsupported-action", tostring(value.action)) end
   if value.execution_status ~= "executed" and value.execution_status ~= "failed" and value.execution_status ~= "blocked" then
     fail("malformed-action-receipt", "unsupported execution_status")
   end
@@ -240,6 +281,19 @@ local function validate_action_receipt(value, index)
     if result.status == "passed" then passed = passed + 1
     elseif result.status == "failed" then failed = failed + 1
     else blocked = blocked + 1 end
+  end
+  local capability = action_capabilities.get(value.action)
+  if capability ~= nil then
+    for _, field in ipairs(capability.evidence_requirements) do
+      if value[field] == nil then fail("missing-action-evidence", field) end
+    end
+    action_capabilities.validate_resolved_target(value.resolved_target, "receipt.actions.resolved_target")
+    action_capabilities.validate_observed_post_action_state(
+      value.observed_post_action_state,
+      "receipt.actions.observed_post_action_state"
+    )
+  elseif value.resolved_target ~= nil or value.observed_post_action_state ~= nil then
+    fail("malformed-action-receipt", "typed DOM evidence is only valid for registered actions")
   end
   if value.execution_status == "executed" then
     if value.assertion_status ~= "passed" or passed ~= #value.assertion_results then

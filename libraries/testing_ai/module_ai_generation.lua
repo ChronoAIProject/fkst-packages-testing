@@ -1,6 +1,7 @@
 local M = {}
 
 local strings = require("contract.strings")
+local action_capabilities = require("contract.testing_action_capabilities")
 local workflow_codex = require("workflow.codex")
 local ai_agents = require("testing_ai.module_ai_agents")
 local ai_util = require("testing_ai.module_ai_util")
@@ -54,6 +55,17 @@ local allowed_action_kinds = {
   ["module-transition"] = true,
   ["safe-mutation-fixture"] = true,
 }
+
+local supported_action_kinds = setmetatable({}, {
+  __index = function(_, action_kind)
+    return allowed_action_kinds[action_kind] == true or action_capabilities.is_registered(action_kind)
+  end,
+})
+
+local function require_supported_action_kind(action_kind)
+  if allowed_action_kinds[action_kind] == true then return nil end
+  return action_capabilities.require(action_kind)
+end
 
 local generated_case_fields = {
   actions = true,
@@ -225,7 +237,7 @@ function M.validate_request(value)
     end
   end
   copy_string_list(value.allowed_case_kinds, nil, allowed_case_kinds, "testing-runner: malformed-request: ai_generation.allowed_case_kinds", max_actions)
-  copy_string_list(value.allowed_action_kinds, nil, allowed_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)
+  copy_string_list(value.allowed_action_kinds, nil, supported_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)
   for _, key in ipairs({
     "context_manifest_path",
     "generated_cases_path",
@@ -348,7 +360,7 @@ local function requested_sets(request)
       "clear-filter-readonly",
       "module-transition",
       "safe-mutation-fixture",
-    }, allowed_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)),
+    }, supported_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)),
   }
 end
 
@@ -391,22 +403,29 @@ function M.canonicalize_candidates(context, request, candidates, invocation_dige
     for _, action in ipairs(candidate.actions) do
       if type(action) ~= "table" then error("testing-runner: malformed-ai-candidate: action must be a table") end
       validate_fields(action, candidate_action_fields, "testing-runner: malformed-ai-candidate: action")
-      if allowed_action_kinds[action.action] ~= true or sets.actions[action.action] ~= true then
+      local capability = require_supported_action_kind(action.action)
+      if sets.actions[action.action] ~= true then
         error("testing-runner: malformed-ai-candidate: action kind is unsupported")
       end
-      if not bounded_string(action.target, max_string) or not target_within_scope(action.target, context) then
-        error("testing-runner: malformed-ai-candidate: action target leaves local allowed scope")
-      end
-      if action.expected ~= nil and not bounded_string(action.expected, max_string) then
-        error("testing-runner: malformed-ai-candidate: action expected value is invalid")
+      local normalized_capability_action
+      if capability ~= nil then
+        normalized_capability_action = action_capabilities.validate_action(action)
+      else
+        if not bounded_string(action.target, max_string) or not target_within_scope(action.target, context) then
+          error("testing-runner: malformed-ai-candidate: action target leaves local allowed scope")
+        end
+        if action.expected ~= nil and not bounded_string(action.expected, max_string) then
+          error("testing-runner: malformed-ai-candidate: action expected value is invalid")
+        end
       end
       if action.target_module_id ~= nil and modules[action.target_module_id] == nil then
         error("testing-runner: malformed-ai-candidate: target_module_id is unknown")
       end
       table.insert(actions, {
         action = action.action,
-        target = strip_url_detail(action.target),
-        expected = action.expected or "bounded observable outcome",
+        target = normalized_capability_action and normalized_capability_action.target or strip_url_detail(action.target),
+        expected = normalized_capability_action and normalized_capability_action.expected
+          or action.expected or "bounded observable outcome",
         target_module_id = action.target_module_id,
         evidence_pointer = module.evidence_pointer,
       })
@@ -479,14 +498,20 @@ end
 local function validate_action(action, context, module, request_sets)
   if type(action) ~= "table" then error("testing-runner: malformed-generated-case: actions items must be tables") end
   validate_fields(action, action_fields, "generated case action")
-  if allowed_action_kinds[action.action] ~= true or request_sets.actions[action.action] ~= true then error("testing-runner: malformed-generated-case: action kind is unsupported") end
-  if not bounded_string(action.target, max_string) then error("testing-runner: malformed-generated-case: action.target is required") end
-  if not target_within_scope(action.target, context) then error("testing-runner: malformed-generated-case: action target leaves local allowed origins") end
-  local item = {
-    action = action.action,
-    target = strip_url_detail(action.target),
-    expected = bounded_string(action.expected, max_string) and action.expected or "bounded observable outcome",
-  }
+  local capability = require_supported_action_kind(action.action)
+  if request_sets.actions[action.action] ~= true then error("testing-runner: malformed-generated-case: action kind is unsupported") end
+  local item
+  if capability ~= nil then
+    item = action_capabilities.validate_action(action)
+  else
+    if not bounded_string(action.target, max_string) then error("testing-runner: malformed-generated-case: action.target is required") end
+    if not target_within_scope(action.target, context) then error("testing-runner: malformed-generated-case: action target leaves local allowed origins") end
+    item = {
+      action = action.action,
+      target = strip_url_detail(action.target),
+      expected = bounded_string(action.expected, max_string) and action.expected or "bounded observable outcome",
+    }
+  end
   if action.target_module_id ~= nil then
     if not bounded_id(action.target_module_id) then error("testing-runner: malformed-generated-case: action.target_module_id must be bounded") end
     item.target_module_id = action.target_module_id
@@ -613,7 +638,7 @@ function M.gate_generated_cases(generated, context, request)
   end
   local request_sets = {
     kinds = set_from_list(copy_string_list(request.allowed_case_kinds, { "entry-health", "primary-interaction", "read-only-interaction", "module-transition", "mutation-or-edge" }, allowed_case_kinds, "testing-runner: malformed-request: ai_generation.allowed_case_kinds", max_actions)),
-    actions = set_from_list(copy_string_list(request.allowed_action_kinds, { "bounded-navigation", "open-visible-surface", "close-visible-surface", "search-or-filter-readonly", "clear-filter-readonly", "module-transition", "safe-mutation-fixture" }, allowed_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)),
+    actions = set_from_list(copy_string_list(request.allowed_action_kinds, { "bounded-navigation", "open-visible-surface", "close-visible-surface", "search-or-filter-readonly", "clear-filter-readonly", "module-transition", "safe-mutation-fixture" }, supported_action_kinds, "testing-runner: malformed-request: ai_generation.allowed_action_kinds", max_actions)),
   }
   local decisions, cases = {}, {}
   local counts = { accepted = 0, executable = 0, blocked = 0, rejected = 0, ["not-executed-risk"] = 0 }
@@ -636,7 +661,7 @@ function M.gate_generated_cases(generated, context, request)
       table.insert(decisions, {
         case_id = bounded_string(type(case) == "table" and case.id or nil, max_id) and case.id or "rejected-generated-case",
         review_status = "rejected",
-        classification = "schema-or-safety-rejected",
+        classification = action_capabilities.classify_error(normalized_or_error) or "schema-or-safety-rejected",
         reason = tostring(normalized_or_error):sub(1, max_string),
       })
     end

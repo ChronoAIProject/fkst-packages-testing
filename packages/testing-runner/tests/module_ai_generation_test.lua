@@ -306,7 +306,7 @@ return {
     }), context, ai_request())
     t.eq(gate.status, "blocked")
     t.eq(gate.rejected_count, 1)
-    t.eq(gate.decisions[1].classification, "schema-or-safety-rejected")
+    t.eq(gate.decisions[1].classification, "unregistered-action")
 
     gate = ai.gate_generated_cases(generated_payload({
       id = "dashboard:ai-external",

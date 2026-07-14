@@ -293,10 +293,12 @@ local function generated_action_descriptors(module, case)
       table.insert(out, {
         index = index,
         action = item.action,
-        target = strip_url_detail(item.target or module.entry_url or module.id or "module"),
+        target = type(item.target) == "table"
+          and item.target or strip_url_detail(item.target or module.entry_url or module.id or "module"),
         expected = bounded_string(item.expected, max_string) and item.expected or case.expected_observable,
         evidence_pointer = item.evidence_pointer,
       })
+      if type(item.expected) == "table" then out[#out].expected = item.expected end
     end
   end
   return #out > 0 and out or nil
@@ -345,7 +347,11 @@ local function append_action(actions, artifact_root, module, case, step, descrip
     action.case_origin = "ai-generated"
     action.provenance_digest = ((case.provenance or {}).model_invocation_digest)
     action.observation = "AI-generated read-only action planned through the FKST bounded action schema"
-    action.expected_observable = descriptor.expected or case.expected_observable
+    if type(descriptor.expected) == "table" then
+      action.expected = descriptor.expected
+    else
+      action.expected_observable = descriptor.expected or case.expected_observable
+    end
     local blocked_segment = blocked_route_target(target)
     if blocked_segment ~= nil then
       action.execution_status = "blocked"

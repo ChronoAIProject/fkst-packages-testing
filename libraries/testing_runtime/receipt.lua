@@ -1,4 +1,5 @@
 local contract = require("contract.testing_execution")
+local action_capabilities = require("contract.testing_action_capabilities")
 
 local R = {}
 
@@ -48,6 +49,17 @@ function R.validate(request, receipt)
     end
     if action.action == "safe-mutation-fixture" and action_receipt.fixture_receipt_path == nil then
       error("testing-runtime: fixture-receipt-missing: " .. tostring(action.case_id))
+    end
+    local capability = action_capabilities.get(action.action)
+    if capability ~= nil then
+      local resolved = action_capabilities.validate_resolved_target(action_receipt.resolved_target)
+      local observed = action_capabilities.validate_observed_post_action_state(action_receipt.observed_post_action_state)
+      if resolved.selector ~= action.target.selector then
+        error("testing-runtime: receipt-target-mismatch: step " .. tostring(index))
+      end
+      if observed.target.selector ~= action.expected.target.selector then
+        error("testing-runtime: receipt-observation-mismatch: step " .. tostring(index))
+      end
     end
   end
   return receipt
