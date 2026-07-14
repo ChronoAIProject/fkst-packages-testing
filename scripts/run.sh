@@ -75,12 +75,13 @@ PY
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|live-cdp-smoke|example|supervise|host> [args]
+usage: scripts/run.sh <check|test|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  ai-pipeline-smoke   run the hermetic AI authoring/review/CDP handoff smoke across pipeline seams
   live-cdp-smoke      run the environment-gated testing_runtime smoke against local Chrome/CDP
   example <name>      run a downstream integration fixture from examples/<name>
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
@@ -116,9 +117,11 @@ resolve_testing_bin() {
 # repo as an external project root. Reused verbatim from the pinned checkout.
 run_source_ratchets() {
   echo "=== source ratchets ==="
-  local args=(--project-root "$ROOT")
+  local args=(--project-root "$ROOT") env_args=() coverage_base
   [ -d "$ROOT/.fkst/conformance/allowlists" ] && args+=(--allowlist-dir "$ROOT/.fkst/conformance/allowlists")
-  PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -B "$shared/scripts/check_repo.py" "${args[@]}"
+  coverage_base="$(local_coverage_base_ref)"
+  [ -z "$coverage_base" ] || env_args+=(FKST_LUA_COVERAGE_BASE_REF="$coverage_base")
+  env "${env_args[@]}" PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -B "$shared/scripts/check_repo.py" "${args[@]}"
 }
 
 list_packages() {
@@ -146,6 +149,18 @@ run_engine() {
   rc=${PIPESTATUS[0]}
   set -e
   return "$rc"
+}
+
+local_coverage_base_ref() {
+  if [ -n "${FKST_LUA_COVERAGE_BASE_REF:-}" ] || [ -n "${GITHUB_BASE_REF:-}" ]; then
+    return 0
+  fi
+  local branch
+  branch="$(git -C "$ROOT" rev-parse --abbrev-ref HEAD 2>/dev/null || true)"
+  case "$branch" in
+    ""|HEAD|/*|-*|*..*) return 0 ;;
+    *) printf '%s\n' "$branch" ;;
+  esac
 }
 
 # --- Composed-package support -------------------------------------------------------------------
@@ -230,7 +245,8 @@ TOML
 }
 
 composed_test_workspace() {
-  local name="$1" roots="$2" work lib t src dep_name source_root="${3:-$ROOT/packages/$name}"
+  local name="$1" roots="$2" work lib t src dep_name source_root
+  source_root="${3:-$ROOT/packages/$name}"
   work="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-composed.XXXXXX")"
   mkdir -p "$work/packages" "$work/libraries"
   cat > "$work/fkst.workspace.toml" <<'TOML'
@@ -326,8 +342,56 @@ run_browser_observation_self_test() {
   fi
 }
 
+append_coverage_artifact() {
+  local package_name="$1" coverage_dir="$2" artifact="$coverage_dir/coverage.json"
+  if [ ! -f "$artifact" ]; then
+    echo "error: fkst-framework test --coverage did not write coverage.json for $package_name in $coverage_dir" >&2
+    return 1
+  fi
+  COVERAGE_ARTIFACTS+=("$package_name=$artifact")
+}
+
+enforce_lua_coverage_ratchet() {
+  local output="${FKST_LUA_COVERAGE_OUTPUT:-$ROOT/.fkst/run/lua-coverage/coverage.json}" env_args=() coverage_base
+  if [ "${#COVERAGE_ARTIFACTS[@]}" -eq 0 ]; then
+    echo "error: Lua coverage ratchet has no package coverage artifacts" >&2
+    return 1
+  fi
+  PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+    FKST_LUA_COVERAGE_MERGED_OUTPUT="$output" \
+    "$PYTHON_BIN" -B - "$ROOT" "${COVERAGE_ARTIFACTS[@]}" <<'PY'
+import os
+import sys
+from pathlib import Path
+
+import check_repo_coverage as coverage
+
+root = Path(sys.argv[1])
+artifacts = [coverage.parse_covered_json_arg(value) for value in sys.argv[2:]]
+count = coverage.write_canonical_coverage_json(
+    coverage.merge_covered_sets(artifacts),
+    Path(os.environ["FKST_LUA_COVERAGE_MERGED_OUTPUT"]),
+    root,
+)
+print(f"wrote {count} file(s) to {os.environ['FKST_LUA_COVERAGE_MERGED_OUTPUT']}")
+PY
+  if [ ! -f "$output" ]; then
+    echo "error: Lua coverage ratchet did not write coverage artifact: $output" >&2
+    return 1
+  fi
+  (
+    cd "$ROOT"
+    coverage_base="$(local_coverage_base_ref)"
+    [ -z "$coverage_base" ] || env_args+=(FKST_LUA_COVERAGE_BASE_REF="$coverage_base")
+    env "${env_args[@]}" \
+      PYTHONPATH="$shared/scripts${PYTHONPATH:+:$PYTHONPATH}" \
+      FKST_LUA_COVERAGE_JSON="$output" \
+      "$PYTHON_BIN" -B "$shared/scripts/check_repo_coverage.py"
+  )
+}
+
 cmd_test() {
-  local target="${1:-}" fail=0 ran=0 pkg name
+  local target="${1:-}" fail=0 ran=0 pkg name coverage_dir
   cmd_check
   resolve_testing_bin
 
@@ -339,6 +403,7 @@ cmd_test() {
   export FKST_RUNTIME_ROOT="$TEST_RT" FKST_DURABLE_ROOT="$TEST_DURABLE"
   unset FKST_GITHUB_WRITE FKST_SUPERVISOR_PID 2>/dev/null || true
   echo "test hermetic: FKST_RUNTIME_ROOT=$TEST_RT FKST_DURABLE_ROOT=$TEST_DURABLE"
+  COVERAGE_ARTIFACTS=()
 
   echo "=== self-test ==="
   "$BIN" --self-test >/dev/null
@@ -363,16 +428,62 @@ cmd_test() {
         args+=(--package-root "$work/packages/${t#@platform/}")
       done
       echo "    (composed tests, closed-world: $name + $roots)"
-      run_engine "$BIN" test "${args[@]}" || fail=1
+      coverage_dir="$TEST_RT/package-lua-coverage/$name"
+      rm -rf "$coverage_dir"
+      mkdir -p "$coverage_dir"
+      if run_engine "$BIN" test "${args[@]}" --coverage "$coverage_dir"; then
+        append_coverage_artifact "$name" "$coverage_dir" || fail=1
+      else
+        fail=1
+      fi
+      rm -rf "$work"
     else
       work="$(flat_test_workspace "$name" "$pkg")" || { fail=1; continue; }
-      if ! run_engine "$BIN" test --project-root "$work" --package-root "$work"; then fail=1; fi
+      coverage_dir="$TEST_RT/package-lua-coverage/$name"
+      rm -rf "$coverage_dir"
+      mkdir -p "$coverage_dir"
+      if run_engine "$BIN" test --project-root "$work" --package-root "$work" --coverage "$coverage_dir"; then
+        append_coverage_artifact "$name" "$coverage_dir" || fail=1
+      else
+        fail=1
+      fi
       rm -rf "$(dirname "$work")"
     fi
   done < <(list_packages)
   if [ "$ran" -eq 0 ]; then echo "error: no packages matched${target:+ for '$target'}" >&2; return 1; fi
   if [ "$fail" -ne 0 ]; then echo "FAILED: $fail package(s)" >&2; return 1; fi
+  if [ -z "$target" ]; then
+    echo "=== Lua coverage ratchet ==="
+    enforce_lua_coverage_ratchet || return 1
+  fi
   echo "OK: $ran package(s)"
+}
+
+cmd_ai_pipeline_smoke() {
+  local roots work args t rc=0 source_root
+  resolve_testing_bin
+
+  roots="$(composed_roots_for testing-pipeline)"
+  [ -n "$roots" ] || { echo "error: testing-pipeline composed roots are not declared" >&2; return 1; }
+  work="$(composed_test_workspace "testing-pipeline" "$roots")" || return 1
+  rm -f "$work/packages/testing-pipeline/tests/"*_test.lua
+  cp "$ROOT/scripts/ai_pipeline_author_review_smoke_test.lua" "$work/packages/testing-pipeline/tests/ai_pipeline_author_review_smoke_test.lua"
+  args=(--project-root "$work" --package-root "$work/packages/testing-pipeline")
+  for t in $roots; do
+    args+=(--package-root "$work/packages/${t#@platform/}")
+  done
+  echo "=== ai pipeline smoke: authoring, consensus review, publication handoff ==="
+  run_engine "$BIN" test "${args[@]}" || rc=1
+  rm -rf "$work"
+
+  source_root="$ROOT/packages/testing-runner"
+  work="$(flat_test_workspace "testing-runner" "$source_root")" || return 1
+  rm -f "$work/tests/"*_test.lua
+  cp "$ROOT/scripts/ai_pipeline_runner_smoke_test.lua" "$work/tests/ai_pipeline_runner_smoke_test.lua"
+  echo "=== ai pipeline smoke: reviewed AI case resumes into CDP execution ==="
+  run_engine "$BIN" test --project-root "$work" --package-root "$work" || rc=1
+  rm -rf "$(dirname "$work")"
+  return "$rc"
 }
 
 cmd_live_cdp_smoke() {
@@ -499,7 +610,7 @@ cmd_host() {
 }
 
 case "${1:-}" in
-  check|test|live-cdp-smoke|example|supervise|host) ;;
+  check|test|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -522,6 +633,7 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  ai-pipeline-smoke) cmd_ai_pipeline_smoke ;;
   live-cdp-smoke) cmd_live_cdp_smoke ;;
   example) cmd_example "$@" ;;
   supervise) cmd_supervise "$@" ;;
