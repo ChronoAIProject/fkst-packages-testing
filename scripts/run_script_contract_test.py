@@ -14,6 +14,8 @@ from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_RUN_SH = SOURCE_ROOT / "scripts" / "run.sh"
+SOURCE_CI_CONTRACT = SOURCE_ROOT / "scripts" / "check_ci_contract.py"
+SOURCE_CI_WORKFLOW = SOURCE_ROOT / ".github" / "workflows" / "ci.yml"
 
 
 def dedent(value: str) -> str:
@@ -91,6 +93,11 @@ class RunnerWorkspace:
         (self.root / "scripts").mkdir()
         shutil.copy2(SOURCE_RUN_SH, self.root / "scripts" / "run.sh")
         (self.root / "scripts" / "run.sh").chmod(0o755)
+        shutil.copy2(SOURCE_CI_CONTRACT, self.root / "scripts" / "check_ci_contract.py")
+        self.write(
+            ".github/workflows/ci.yml",
+            SOURCE_CI_WORKFLOW.read_text(encoding="utf-8"),
+        )
         self.write("scripts/check_single_platform_pin.py", "raise SystemExit(0)\n")
         self.write(
             "fkst.workspace.toml",
