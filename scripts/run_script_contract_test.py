@@ -117,6 +117,11 @@ class RunnerWorkspace:
             ".fkst/conformance/composed-roots",
             "parent dependency @platform/platform-dep\n",
         )
+        self.write(
+            ".fkst/local-libraries/forge/fkst.toml",
+            'kind = "library"\n[library]\nname = "forge"\n',
+        )
+        self.write(".fkst/local-libraries/forge/tracked-mirror.txt", "tracked local forge\n")
 
         checkout = self.root / ".fkst" / "run" / "fkst-packages-conformance"
         checkout.mkdir(parents=True)
@@ -211,12 +216,18 @@ class RunnerWorkspace:
                         str(path.relative_to(project_root))
                         for path in Path(project_root).rglob("*_test.lua")
                     )
+                forge_marker = None
+                if project_root:
+                    marker_path = Path(project_root) / "libraries" / "forge" / "tracked-mirror.txt"
+                    if marker_path.is_file():
+                        forge_marker = marker_path.read_text(encoding="utf-8")
                 record = {{
                     "argv": argv,
                     "subcommand": subcommand,
                     "project_root": project_root,
                     "package_roots": package_roots,
                     "test_files": test_files,
+                    "forge_marker": forge_marker,
                     "runtime_root": os.environ.get("FKST_RUNTIME_ROOT"),
                     "durable_root": os.environ.get("FKST_DURABLE_ROOT"),
                     "github_write": os.environ.get("FKST_GITHUB_WRITE"),
@@ -306,6 +317,7 @@ class RunnerContractTest(unittest.TestCase):
         self.assertEqual(len(tests), 1)
         self.assertEqual(tests[0]["project_root"], tests[0]["package_roots"][0])
         self.assertTrue(all("flat_one_test.lua" in path for path in tests[0]["test_files"]))
+        self.assertEqual(tests[0]["forge_marker"], "tracked local forge\n")
         self.assertNotIn("full repository", result.stdout.lower())
         self.assertEqual(fixture.coverage_records(), [])
 
@@ -324,6 +336,7 @@ class RunnerContractTest(unittest.TestCase):
         self.assertTrue(any("parent_test.lua" in path for path in tests[0]["test_files"]))
         self.assertFalse(any("dependency_test.lua" in path for path in tests[0]["test_files"]))
         self.assertFalse(any("platform_dep_test.lua" in path for path in tests[0]["test_files"]))
+        self.assertEqual(tests[0]["forge_marker"], "tracked local forge\n")
         self.assertFalse(Path(tests[0]["project_root"]).exists())
 
     def test_selected_package_without_tests_fails_closed(self) -> None:
