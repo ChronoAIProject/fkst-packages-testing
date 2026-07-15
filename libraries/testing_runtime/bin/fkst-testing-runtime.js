@@ -314,6 +314,7 @@ async function captureFailureScreenshot(cdp, request) {
   const screenshotPath = `${request.artifact_root}/evidence/screenshots/failure.png`;
   let animationsPaused = false;
   let scriptsDisabled = false;
+  let pageFrozen = false;
   let body;
   try {
     await cdp.send('DOM.enable');
@@ -322,21 +323,34 @@ async function captureFailureScreenshot(cdp, request) {
     animationsPaused = true;
     await cdp.send('Emulation.setScriptExecutionDisabled', { value: true });
     scriptsDisabled = true;
+    await cdp.send('Page.setWebLifecycleState', { state: 'frozen' });
+    pageFrozen = true;
     const redaction = await collectRedactionRects(cdp, selectors);
     const screenshot = await cdp.send('Page.captureScreenshot', {
       format: 'png',
       fromSurface: true,
       captureBeyondViewport: false,
     });
+    const confirmedRedaction = await collectRedactionRects(cdp, selectors);
+    if (stableStringify(confirmedRedaction) !== stableStringify(redaction)) {
+      throw new Error('screenshot redaction geometry changed during capture');
+    }
     const raw = Buffer.from(String(screenshot && screenshot.data || ''), 'base64');
     body = redactPng(raw, redaction.rects, redaction.viewport);
   } finally {
     let cleanupError;
+    if (pageFrozen) {
+      try {
+        await cdp.send('Page.setWebLifecycleState', { state: 'active' });
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
     if (scriptsDisabled) {
       try {
         await cdp.send('Emulation.setScriptExecutionDisabled', { value: false });
       } catch (error) {
-        cleanupError = error;
+        cleanupError = cleanupError || error;
       }
     }
     if (animationsPaused) {
