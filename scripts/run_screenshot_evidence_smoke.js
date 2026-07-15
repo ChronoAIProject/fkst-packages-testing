@@ -17,7 +17,8 @@ if (!bin || !workspace || !repositoryRoot) {
 const artifactRoot = '.testing/runs/screenshot-evidence-smoke';
 const fixture = fs.readFileSync(path.join(repositoryRoot, 'scripts/fixtures/screenshot-evidence/app/dashboard/index.html'));
 const { captureFailureScreenshot } = require(path.join(repositoryRoot, 'libraries/testing_runtime/bin/fkst-testing-runtime.js'));
-const twoPixelPng = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=';
+const twoPixelBaselinePng = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR4nGP4DwUMMAYAj4IP8TylVlEAAAAASUVORK5CYII=';
+const twoPixelChangedPng = 'iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAAFElEQVR4nGNgYGD4DwJg8qaB6n8AWvkLJavQaDwAAAAASUVORK5CYII=';
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
@@ -86,23 +87,25 @@ function runChild(command, args, options) {
   });
 }
 
-async function verifyGeometryRaceFailsClosed() {
-  let boxModelCalls = 0;
+async function verifyRasterBindingFailsClosed() {
+  let screenshotCalls = 0;
+  let geometryCalls = 0;
   const lifecycleStates = [];
+  const overlayMethods = [];
   const cdp = {
     async send(method, params = {}) {
       if (method === 'Page.setWebLifecycleState') lifecycleStates.push(params.state);
+      if (method.startsWith('Overlay.')) overlayMethods.push(method);
       if (method === 'DOM.getDocument') return { root: { nodeId: 1 } };
-      if (method === 'Page.getLayoutMetrics') {
-        return { cssVisualViewport: { pageX: 0, pageY: 0, clientWidth: 2, clientHeight: 2 } };
-      }
       if (method === 'DOM.querySelectorAll') return { nodeIds: [2] };
-      if (method === 'DOM.getBoxModel') {
-        boxModelCalls += 1;
-        const border = boxModelCalls === 1 ? [0, 0, 1, 0, 1, 1, 0, 1] : [1, 1, 2, 1, 2, 2, 1, 2];
-        return { model: { border } };
+      if (method === 'DOM.getBoxModel' || method === 'Page.getLayoutMetrics') {
+        geometryCalls += 1;
+        throw new Error('geometry sampling must not be used for screenshot redaction');
       }
-      if (method === 'Page.captureScreenshot') return { data: twoPixelPng };
+      if (method === 'Page.captureScreenshot') {
+        screenshotCalls += 1;
+        return { data: screenshotCalls === 1 ? twoPixelBaselinePng : twoPixelChangedPng };
+      }
       return {};
     },
   };
@@ -116,18 +119,19 @@ async function verifyGeometryRaceFailsClosed() {
       redaction_selectors: ['[data-fkst-sensitive]'],
     });
   } catch (error) {
-    rejected = error.message === 'screenshot redaction geometry changed during capture';
+    rejected = error.message === 'screenshot redaction raster changed while binding compositor mask';
   } finally {
     process.chdir(originalDirectory);
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
-  if (!rejected || boxModelCalls !== 2 || lifecycleStates.join(',') !== 'frozen,active') {
-    throw new Error('screenshot redaction accepted mutable geometry-to-raster state');
+  if (!rejected || screenshotCalls !== 2 || geometryCalls !== 0 || lifecycleStates.join(',') !== 'frozen,active'
+    || overlayMethods.join(',') !== 'Overlay.enable,Overlay.highlightNode,Overlay.hideHighlight,Overlay.disable') {
+    throw new Error('screenshot redaction accepted a compositor mask that was not bound to the baseline raster');
   }
 }
 
 async function main() {
-  await verifyGeometryRaceFailsClosed();
+  await verifyRasterBindingFailsClosed();
   const chrome = chromeBinary();
   if (!chrome) throw new Error('Chrome/Chromium is required for screenshot evidence smoke');
   const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'fkst-screenshot-chrome-'));

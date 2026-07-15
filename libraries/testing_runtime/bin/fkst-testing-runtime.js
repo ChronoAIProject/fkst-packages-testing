@@ -14,6 +14,13 @@ const {
 } = require('../lib/cdp_client');
 
 const REDACTION_MASK_RGB = [217, 48, 37];
+const REDACTION_HIGHLIGHT_CONFIG = {
+  showInfo: false,
+  contentColor: { r: REDACTION_MASK_RGB[0], g: REDACTION_MASK_RGB[1], b: REDACTION_MASK_RGB[2], a: 1 },
+  paddingColor: { r: REDACTION_MASK_RGB[0], g: REDACTION_MASK_RGB[1], b: REDACTION_MASK_RGB[2], a: 1 },
+  borderColor: { r: REDACTION_MASK_RGB[0], g: REDACTION_MASK_RGB[1], b: REDACTION_MASK_RGB[2], a: 1 },
+  marginColor: { r: REDACTION_MASK_RGB[0], g: REDACTION_MASK_RGB[1], b: REDACTION_MASK_RGB[2], a: 1 },
+};
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 const redactionSelectorPattern = /^(?:#[A-Za-z][A-Za-z0-9_-]*|\.[A-Za-z][A-Za-z0-9_-]*|\[data-[A-Za-z][A-Za-z0-9_-]*\])$/;
 const pngCrcTable = Array.from({ length: 256 }, (_unused, value) => {
@@ -223,80 +230,52 @@ function encodePng(image) {
   ]);
 }
 
-function redactPng(buffer, rects, viewport) {
-  const image = decodePng(buffer);
-  const scaleX = image.width / viewport.clientWidth;
-  const scaleY = image.height / viewport.clientHeight;
-  if (!Number.isFinite(scaleX) || scaleX <= 0 || !Number.isFinite(scaleY) || scaleY <= 0) {
-    throw new Error('screenshot redaction viewport is invalid');
+function bindCompositorMask(baseline, output, highlightedBuffer) {
+  const highlighted = decodePng(highlightedBuffer);
+  if (highlighted.width !== baseline.width || highlighted.height !== baseline.height || highlighted.channels !== baseline.channels) {
+    throw new Error('screenshot redaction raster dimensions changed during capture');
   }
-  const stride = image.width * image.channels;
-  for (const rect of rects) {
-    const left = Math.max(0, Math.floor(rect.left * scaleX));
-    const top = Math.max(0, Math.floor(rect.top * scaleY));
-    const right = Math.min(image.width, Math.ceil(rect.right * scaleX));
-    const bottom = Math.min(image.height, Math.ceil(rect.bottom * scaleY));
-    if (right <= left || bottom <= top) throw new Error('screenshot redaction rectangle is invalid');
-    for (let y = top; y < bottom; y += 1) {
-      for (let x = left; x < right; x += 1) {
-        const index = y * stride + x * image.channels;
-        image.pixels[index] = REDACTION_MASK_RGB[0];
-        image.pixels[index + 1] = REDACTION_MASK_RGB[1];
-        image.pixels[index + 2] = REDACTION_MASK_RGB[2];
-        if (image.channels === 4) image.pixels[index + 3] = 255;
-      }
+  let changedMaskPixels = 0;
+  for (let index = 0; index < baseline.pixels.length; index += baseline.channels) {
+    let same = true;
+    for (let channel = 0; channel < baseline.channels; channel += 1) {
+      if (baseline.pixels[index + channel] !== highlighted.pixels[index + channel]) same = false;
     }
+    const masked = highlighted.pixels[index] === REDACTION_MASK_RGB[0]
+      && highlighted.pixels[index + 1] === REDACTION_MASK_RGB[1]
+      && highlighted.pixels[index + 2] === REDACTION_MASK_RGB[2]
+      && (baseline.channels === 3 || highlighted.pixels[index + 3] === 255);
+    if (!masked) {
+      if (!same) throw new Error('screenshot redaction raster changed while binding compositor mask');
+      continue;
+    }
+    if (!same) changedMaskPixels += 1;
+    output.pixels[index] = REDACTION_MASK_RGB[0];
+    output.pixels[index + 1] = REDACTION_MASK_RGB[1];
+    output.pixels[index + 2] = REDACTION_MASK_RGB[2];
+    if (output.channels === 4) output.pixels[index + 3] = 255;
   }
-  return encodePng(image);
+  return changedMaskPixels;
 }
 
-function quadToViewportRect(quad, viewport) {
-  if (!Array.isArray(quad) || quad.length !== 8 || quad.some((value) => !Number.isFinite(value))) return null;
-  const xs = [quad[0], quad[2], quad[4], quad[6]];
-  const ys = [quad[1], quad[3], quad[5], quad[7]];
-  const left = Math.max(0, Math.min(...xs) - viewport.pageX);
-  const top = Math.max(0, Math.min(...ys) - viewport.pageY);
-  const right = Math.min(viewport.clientWidth, Math.max(...xs) - viewport.pageX);
-  const bottom = Math.min(viewport.clientHeight, Math.max(...ys) - viewport.pageY);
-  return right > left && bottom > top ? { left, top, right, bottom } : null;
-}
-
-async function collectRedactionRects(cdp, selectors) {
+async function collectRedactionNodeIds(cdp, selectors) {
   const documentResult = await cdp.send('DOM.getDocument', { pierce: true });
-  const metrics = await cdp.send('Page.getLayoutMetrics');
-  const sourceViewport = metrics.cssVisualViewport || metrics.visualViewport;
-  const viewport = sourceViewport && {
-    pageX: Number(sourceViewport.pageX || 0),
-    pageY: Number(sourceViewport.pageY || 0),
-    clientWidth: Number(sourceViewport.clientWidth),
-    clientHeight: Number(sourceViewport.clientHeight),
-  };
-  if (!documentResult.root || !documentResult.root.nodeId || !viewport
-    || !Number.isFinite(viewport.pageX) || !Number.isFinite(viewport.pageY)
-    || !Number.isFinite(viewport.clientWidth) || viewport.clientWidth <= 0
-    || !Number.isFinite(viewport.clientHeight) || viewport.clientHeight <= 0) {
-    throw new Error('screenshot redaction geometry is unavailable');
-  }
-  const rects = [];
+  if (!documentResult.root || !documentResult.root.nodeId) throw new Error('screenshot redaction document is unavailable');
+  const nodeIds = [];
+  const seen = new Set();
   for (const selector of selectors) {
     const result = await cdp.send('DOM.querySelectorAll', { nodeId: documentResult.root.nodeId, selector });
-    let selectorRectCount = 0;
     for (const nodeId of result.nodeIds || []) {
-      let box;
-      try {
-        box = await cdp.send('DOM.getBoxModel', { nodeId });
-      } catch (_error) {
-        continue;
-      }
-      const rect = box.model && quadToViewportRect(box.model.border, viewport);
-      if (rect !== null) {
-        rects.push(rect);
-        selectorRectCount += 1;
-      }
+      if (!Number.isInteger(nodeId) || nodeId < 1 || seen.has(nodeId)) continue;
+      seen.add(nodeId);
+      nodeIds.push(nodeId);
     }
-    if (selectorRectCount === 0) throw new Error('screenshot redaction could not locate every configured element');
+    if (!Array.isArray(result.nodeIds) || result.nodeIds.length === 0) {
+      throw new Error('screenshot redaction could not locate every configured element');
+    }
   }
-  return { rects, viewport };
+  if (nodeIds.length === 0) throw new Error('screenshot redaction could not locate every configured element');
+  return nodeIds;
 }
 
 function validateRedactionSelectors(value) {
@@ -315,9 +294,13 @@ async function captureFailureScreenshot(cdp, request) {
   let animationsPaused = false;
   let scriptsDisabled = false;
   let pageFrozen = false;
+  let overlayEnabled = false;
+  let highlightVisible = false;
   let body;
   try {
     await cdp.send('DOM.enable');
+    await cdp.send('Overlay.enable');
+    overlayEnabled = true;
     await cdp.send('Animation.enable');
     await cdp.send('Animation.setPlaybackRate', { playbackRate: 0 });
     animationsPaused = true;
@@ -325,20 +308,48 @@ async function captureFailureScreenshot(cdp, request) {
     scriptsDisabled = true;
     await cdp.send('Page.setWebLifecycleState', { state: 'frozen' });
     pageFrozen = true;
-    const redaction = await collectRedactionRects(cdp, selectors);
-    const screenshot = await cdp.send('Page.captureScreenshot', {
+    const nodeIds = await collectRedactionNodeIds(cdp, selectors);
+    const baselineScreenshot = await cdp.send('Page.captureScreenshot', {
       format: 'png',
       fromSurface: true,
       captureBeyondViewport: false,
     });
-    const confirmedRedaction = await collectRedactionRects(cdp, selectors);
-    if (stableStringify(confirmedRedaction) !== stableStringify(redaction)) {
-      throw new Error('screenshot redaction geometry changed during capture');
+    const baseline = decodePng(Buffer.from(String(baselineScreenshot && baselineScreenshot.data || ''), 'base64'));
+    const output = { ...baseline, pixels: Buffer.from(baseline.pixels) };
+    for (const nodeId of nodeIds) {
+      await cdp.send('Overlay.highlightNode', { nodeId, highlightConfig: REDACTION_HIGHLIGHT_CONFIG });
+      highlightVisible = true;
+      const highlightedScreenshot = await cdp.send('Page.captureScreenshot', {
+        format: 'png',
+        fromSurface: true,
+        captureBeyondViewport: false,
+      });
+      const changedMaskPixels = bindCompositorMask(
+        baseline,
+        output,
+        Buffer.from(String(highlightedScreenshot && highlightedScreenshot.data || ''), 'base64'),
+      );
+      await cdp.send('Overlay.hideHighlight');
+      highlightVisible = false;
+      if (changedMaskPixels === 0) throw new Error('screenshot redaction compositor mask is unavailable');
     }
-    const raw = Buffer.from(String(screenshot && screenshot.data || ''), 'base64');
-    body = redactPng(raw, redaction.rects, redaction.viewport);
+    body = encodePng(output);
   } finally {
     let cleanupError;
+    if (highlightVisible) {
+      try {
+        await cdp.send('Overlay.hideHighlight');
+      } catch (error) {
+        cleanupError = error;
+      }
+    }
+    if (overlayEnabled) {
+      try {
+        await cdp.send('Overlay.disable');
+      } catch (error) {
+        cleanupError = cleanupError || error;
+      }
+    }
     if (pageFrozen) {
       try {
         await cdp.send('Page.setWebLifecycleState', { state: 'active' });
