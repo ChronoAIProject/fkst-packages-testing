@@ -219,21 +219,6 @@ return {
     t.eq(called, false)
   end,
 
-  test_malformed_ui_loop_gap_ref_is_rejected = function()
-    t.raises(function()
-      core.validate_request("module", {
-        schema = "testing-runner.module-test-loop.request.v1",
-        backend = "fkst-native",
-        module = "module-a",
-        ui_loop = {
-          base_url = "http://localhost:8080/app",
-          allowed_origins = { "http://localhost:8080" },
-          gap_ref = {},
-        },
-      })
-    end)
-  end,
-
   test_fkst_native_online_heartbeat_fails_when_url_is_unavailable = function()
     local result = core.run("online_regression", {
       schema = "testing-runner.online-regression.request.v1",

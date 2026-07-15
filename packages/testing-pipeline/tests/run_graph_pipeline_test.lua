@@ -1,7 +1,6 @@
 local graph = require("testkit.graph")
 local testing = require("testkit.testing")
 local ai_orchestration = require("ai_orchestration")
-local strings = require("contract.strings")
 local start_module = require("departments.start_module.main")
 local ai_generate = require("departments.ai_generate.main")
 local ai_consensus = require("departments.ai_consensus.main")
@@ -80,7 +79,7 @@ local function cdp_result_event(status)
   }
 end
 
-local function module_start_event(dedup_key)
+local function module_start_event()
   return {
     queue = "module_start",
     payload = {
@@ -92,7 +91,7 @@ local function module_start_event(dedup_key)
       native_argv = { "true" },
       artifact_root = ".testing/runs/module-a",
       source_ref = { kind = "external", ref = "module-a" },
-      dedup_key = dedup_key or "module-a-run",
+      dedup_key = "module-a-run",
     },
     source_ref = { kind = "external", reference = "module-a" },
   }
@@ -374,57 +373,49 @@ return {
   end,
 
   test_run_graph_no_browser_module_reaches_publication_request = function()
-    t.with_command_cassette({
-      path = "tests/run-graph-durable-commands.json",
-      mode = "record",
-    }, function()
-      prepare_artifact_dir()
-      t.mock_command("'true'", {
-        stdout = "",
-        stderr = "",
-        exit_code = 0,
-      })
+    prepare_artifact_dir()
+    t.mock_command("'true'", {
+      stdout = "",
+      stderr = "",
+      exit_code = 0,
+    })
 
-      local run_key = strings.decimal_checksum(tostring(os.getenv("FKST_DURABLE_ROOT") or "module-graph"))
-      local dedup_key = "module-a-run-" .. run_key
-      local trace = graph.require_quiescent(graph.run(module_start_event(dedup_key), { max_steps = 12 }))
+    local trace = graph.require_quiescent(graph.run(module_start_event(), { max_steps = 12 }))
 
-      graph.require_delivery(trace, {
-        queue = "testing-pipeline.module_start",
-        consumer = "testing-pipeline.start_module",
-      })
-      graph.require_delivery(trace, {
-        queue = "module-test-loop.module_loop_request",
-        consumer = "module-test-loop.start",
-      })
-      graph.require_delivery(trace, {
-        queue = "testing-runner.module_test_request",
-        consumer = "testing-runner.run_module_loop",
-      })
-      graph.require_delivery(trace, {
-        queue = "test-artifacts.testing_result",
-        consumer = "test-artifacts.summarize",
-      })
-      graph.require_delivery(trace, {
-        queue = "test-publication.artifact_summary",
-        consumer = "test-publication.prepare_publication",
-      })
+    graph.require_delivery(trace, {
+      queue = "testing-pipeline.module_start",
+      consumer = "testing-pipeline.start_module",
+    })
+    graph.require_delivery(trace, {
+      queue = "module-test-loop.module_loop_request",
+      consumer = "module-test-loop.start",
+    })
+    graph.require_delivery(trace, {
+      queue = "testing-runner.module_test_request",
+      consumer = "testing-runner.run_module_loop",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-artifacts.testing_result",
+      consumer = "test-artifacts.summarize",
+    })
+    graph.require_delivery(trace, {
+      queue = "test-publication.artifact_summary",
+      consumer = "test-publication.prepare_publication",
+    })
 
-      local result = graph.require_raise(trace, "testing-runner.testing_result")
-      t.eq(result.payload.status, "passed")
-      t.eq(result.payload.exit_code, 0)
-      t.eq(result.payload.adapter.name, "fkst-native")
-      t.eq(result.payload.adapter.mode, "module-no-browser")
-      t.eq(result.payload.native_summary.mode, "argv")
-      t.is_true(result.payload.artifact_root:match("/artifact%-attempts/testing%-run/attempt%-1/fence%-1%-") ~= nil)
+    local result = graph.require_raise(trace, "testing-runner.testing_result")
+    t.eq(result.payload.status, "passed")
+    t.eq(result.payload.exit_code, 0)
+    t.eq(result.payload.adapter.name, "fkst-native")
+    t.eq(result.payload.adapter.mode, "module-no-browser")
+    t.eq(result.payload.native_summary.mode, "argv")
 
-      local publication = graph.require_raise(trace, "test-publication.publication_request")
-      t.eq(publication.payload.status, "passed")
-      t.eq(publication.payload.severity, "success")
-      t.eq(publication.payload.subject, "Testing passed: module-test-loop")
-      t.eq(publication.payload.dedup_key, dedup_key)
-      t.eq(publication.payload.artifact_root, result.payload.artifact_root)
-    end)
+    local publication = graph.require_raise(trace, "test-publication.publication_request")
+    t.eq(publication.payload.status, "passed")
+    t.eq(publication.payload.severity, "success")
+    t.eq(publication.payload.subject, "Testing passed: module-test-loop")
+    t.eq(publication.payload.dedup_key, "module-a-run")
+    t.eq(publication.payload.artifact_root, ".testing/runs/module-a")
   end,
 
   test_run_graph_module_discovery_reaches_inventory_publication_request = function()

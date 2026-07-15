@@ -2,34 +2,6 @@
 
 Testing packages exchange artifact pointers, not report bodies.
 
-## Verified artifact attempts
-
-`test-artifacts.attempt-commit-intent.v1` identifies one immutable commit attempt with:
-
-- `run_id`: stable run identity and safe artifact-path segment
-- `trace_id`: bounded logical trace identity
-- `dedup_key`: bounded stable deduplication identity
-- `artifact_kind`: bounded artifact-kind identity and safe path segment
-- `attempt_id`: stable attempt identity and safe path segment
-- `fence_version`: the single positive monotonic fencing generation accepted by this contract
-
-The staged directory contains artifact bytes plus `artifact-manifest.json`. The manifest uses
-`test-artifacts.manifest.v1`, names the derived immutable attempt pointer as `artifact_root`, and
-contains sorted SHA-256 entries. Commit recomputes every staged entry digest and the manifest root
-digest, materializes the files under a temporary non-current path, verifies the materialized bytes,
-and renames that directory to the immutable pointer. Only then is the canonical completion fact
-published with a same-filesystem atomic rename under `FKST_DURABLE_ROOT`.
-
-`test-artifacts.attempt-completed.v1` contains only:
-
-- the six intent identity fields above
-- `manifest_sha256`: SHA-256 of the canonical published manifest bytes
-- `artifact_pointer`: the immutable `.testing/runs/.../artifact-attempts/...` pointer
-
-A fresh `test-artifacts` attempt store derives the same durable completion key from the versioned
-intent and returns the canonical completion fact. Artifact bytes, manifest bodies, screenshots,
-traces, browser state, credentials, cookies, and tokens are forbidden from the completion contract.
-
 ## Artifact summary
 
 `test-artifacts.artifact_summary` uses `test-artifacts.summary.v1`:

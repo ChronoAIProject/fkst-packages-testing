@@ -3,11 +3,7 @@ local M = {}
 local fkst_native = require("fkst_native")
 local module_cdp_execution = require("module_cdp_execution")
 local module_inventory = require("module_inventory")
-local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
-local artifact_attempt = require("testing_runtime.artifact_attempt")
-local artifact_manifest = require("testing_runtime.artifact_manifest")
-local run_ledger = require("testing_runtime.run_ledger")
 
 local max_string = 512
 local max_path = 4096
@@ -375,120 +371,12 @@ local function normalize_dependencies(value)
   return { exec = value.exec, runtime_ports = value.runtime_ports }
 end
 
-local function durable_replay_path(job, payload)
-  return job == "module"
-    and M.resolve_backend(payload) == "fkst-native"
-    and payload.dry_run == false
-    and payload.no_browser == true
-    and payload.native_argv ~= nil
-    and testing_contract.is_bounded_id(payload.trace_id)
-    and testing_contract.is_bounded_id(payload.dedup_key)
-    and payload.artifact_writer == nil
-end
-
-local function run_identity(job, payload)
-  return {
-    schema = run_ledger.identity_schema,
-    job = spec_for(job).output_job,
-    trace_id = payload.trace_id,
-    dedup_key = payload.dedup_key,
-  }
-end
-
-local function attempt_intent(identity, fence_version)
-  return {
-    schema = "test-artifacts.attempt-commit-intent.v1",
-    run_id = safe_key(identity.job .. "-" .. identity.dedup_key),
-    trace_id = identity.trace_id,
-    dedup_key = identity.dedup_key,
-    artifact_kind = "testing-run",
-    attempt_id = "attempt-1",
-    fence_version = fence_version,
-  }
-end
-
-local function staging_writer(staged_root, artifact_pointer)
-  local prefix = artifact_pointer .. "/"
-  local recorded = {}
-  local function write(path, body)
-    if type(path) ~= "string" or path:sub(1, #prefix) ~= prefix then return nil, "artifact path is outside the acquired attempt" end
-    local relative = path:sub(#prefix + 1)
-    if relative == "" or relative:find("..", 1, true) ~= nil or relative:find("\\", 1, true) ~= nil then return nil, "artifact path is unsafe" end
-    if recorded[relative] then return nil, "staged artifact overwrite is forbidden" end
-    local target = staged_root .. "/" .. relative
-    local directory = target:match("^(.*)/[^/]+$")
-    local ok = os.execute("mkdir -p " .. quote(directory))
-    if ok ~= true and ok ~= 0 then return nil, "failed to create staging directory" end
-    local existing = io.open(target, "r")
-    if existing ~= nil then existing:close(); return nil, "staged artifact already exists" end
-    local handle, open_error = io.open(target, "w")
-    if handle == nil then return nil, open_error or "failed to open staged artifact" end
-    local wrote, write_error = handle:write(body)
-    handle:close()
-    if not wrote then return nil, write_error or "failed to write staged artifact" end
-    recorded[relative] = true
-    return true
-  end
-  local function paths()
-    local values = {}
-    for relative, _ in pairs(recorded) do table.insert(values, relative) end
-    table.sort(values)
-    return values
-  end
-  return write, paths
-end
-
-local function cleanup_staging(staged_root)
-  if not safe_artifact_root(staged_root) or staged_root:find("/staged-attempts/", 1, true) == nil then return end
-  pcall(os.execute, "rm -rf -- " .. quote(staged_root))
-end
-
-local function run_durable(job, payload, dependencies)
-  local identity = run_identity(job, payload)
-  local ledger = run_ledger.new(dependencies.runtime_ports)
-  local existing = ledger:lookup(identity)
-  if existing ~= nil then
-    if existing.state ~= "completed" then error("testing-runner: durable-run-incomplete: acquired run has no terminal result") end
-    return existing.terminal_result, true
-  end
-
-  local acquired, created = ledger:acquire(identity)
-  if not created and acquired.state == "completed" then return acquired.terminal_result, true end
-  if not created then error("testing-runner: durable-run-contended: another delivery acquired the run") end
-
-  local intent = attempt_intent(identity, acquired.fence_version)
-  local attempts = artifact_attempt.new(dependencies.runtime_ports)
-  local artifact_pointer = attempts:artifact_pointer(intent)
-  local durable_generation = strings.decimal_checksum(tostring(os.getenv("FKST_DURABLE_ROOT") or "default"))
-  local staged_root = ".testing/runs/" .. intent.run_id .. "/staged-attempts/" .. intent.attempt_id
-    .. "/fence-" .. tostring(intent.fence_version) .. "-" .. durable_generation
-  local write, staged_paths = staging_writer(staged_root, artifact_pointer)
-  local execution_payload = {}
-  for key, value in pairs(payload) do execution_payload[key] = value end
-  execution_payload.artifact_root = artifact_pointer
-  execution_payload.artifact_writer = write
-
-  local result = fkst_native.run(job, execution_payload, adapter_context(job, execution_payload), dependencies)
-  if result.artifact_root ~= artifact_pointer or result.trace_id ~= identity.trace_id or result.dedup_key ~= identity.dedup_key then error("testing-runner: durable-result-mismatch: terminal result identity changed") end
-  local paths = staged_paths()
-  if #paths == 0 then error("testing-runner: durable-artifacts-empty: run produced no staged artifacts") end
-  artifact_manifest.build_staged(staged_root, artifact_pointer, paths, dependencies.runtime_ports)
-  local completion = attempts:commit(intent, staged_root)
-  local verified = attempts:lookup(intent)
-  if verified == nil or verified.artifact_pointer ~= completion.artifact_pointer or verified.manifest_sha256 ~= completion.manifest_sha256 then error("testing-runner: durable-attempt-invalid: artifact attempt verification failed") end
-  cleanup_staging(staged_root)
-  local completed = ledger:complete(identity, acquired.fence_version, verified, result)
-  return completed.terminal_result, false
-end
-
 function M.run(job, payload, dependencies)
   M.validate_request(job, payload)
   local backend = M.resolve_backend(payload)
   local context = adapter_context(job, payload)
-  local normalized = normalize_dependencies(dependencies)
   if backend == "fkst-native" then
-    if durable_replay_path(job, payload) then return run_durable(job, payload, normalized) end
-    return fkst_native.run(job, payload, context, normalized)
+    return fkst_native.run(job, payload, context, normalize_dependencies(dependencies))
   end
   return M.result_payload(job, payload, "blocked", {
     adapter = { name = "fkst-native", mode = "legacy-backend-blocked" },
