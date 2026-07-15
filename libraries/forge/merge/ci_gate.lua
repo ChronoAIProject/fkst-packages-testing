@@ -2,15 +2,9 @@ local S = {}
 local check_runs = require("forge.github.check_runs")
 local forge_validators = require("forge.gitref")
 
-local additional_merge_gate_reason_classes = {
-  ["ci-wait"] = true,
-  ["gate-failed"] = true,
-  ["head-sha-mismatch"] = true,
-  ["predecessor-set-mismatch"] = true,
-}
-
 function S.install(M, shared, opts)
 local github = opts.github_handle
+local strings = shared.strings
 local is_open_pr = shared.is_open_pr
 local log_check_runs_fallback = shared.log_check_runs_fallback
 local fetch_commit_check_runs = shared.fetch_commit_check_runs
@@ -142,15 +136,6 @@ end
 local function evaluate_ci_merge_gate(pr, opts)
   local mergeable, mergeable_reason = pr_mergeable(pr)
   if not mergeable then
-    if mergeable_reason == "merge-state-blocked" then
-      local rollup_green, rollup_reason = pr_rollup_green(pr)
-      if not rollup_green and rollup_reason == "rollup-red" then
-        local classification = classify_pr_ci_gate(pr, opts)
-        if classification.actionable then
-          return false, classification.reason, classification
-        end
-      end
-    end
     return false, mergeable_reason
   end
   local green, green_reason = evaluate_ci_status_gate(pr, opts)
@@ -173,10 +158,7 @@ local function merge_gate_reason_class(reason)
   if is_not_mergeable_reason(text) then
     return text
   end
-  if additional_merge_gate_reason_classes[text] then
-    return text
-  end
-  return "gate-failed"
+  return strings.sanitize_key(text ~= "" and text or "gate-failed", false):gsub("/", "-")
 end
 
 local function merge_gate_reason_requires_pr_merge_product(reason)

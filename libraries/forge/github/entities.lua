@@ -125,19 +125,6 @@ local function pr_list_head_argv(repo, branch, base_branch)
   return { "gh", "api", "--paginate", "--slurp", query }
 end
 
-local function pr_list_promotions_argv(repo, head_branch, base_branch)
-  local owner = repo_owner(repo)
-  local head_filter = owner ~= nil and (owner .. ":" .. tostring(head_branch)) or tostring(head_branch)
-  return {
-    "gh",
-    "api",
-    "--paginate",
-    "--slurp",
-    "repos/" .. tostring(repo) .. "/pulls?state=closed&head=" .. shell.url_encode(head_filter)
-      .. "&base=" .. shell.url_encode(base_branch) .. "&per_page=100",
-  }
-end
-
 local function pr_view_argv(repo, pr_number)
   return { "gh", "api", "repos/" .. tostring(repo) .. "/pulls/" .. tostring(pr_number) }
 end
@@ -147,11 +134,6 @@ local function pr_view_cli_argv(repo, pr_number, fields)
 end
 
 local merge_pr_fields = "headRefName,headRefOid,baseRefName,baseRefOid,state,updatedAt,isDraft,mergedAt,comments,headRepository,headRepositoryOwner,isCrossRepository,mergeable,mergeStateStatus,statusCheckRollup"
-
-local function commit_check_runs_argv(repo, head_sha)
-  local sha = gitref.require_safe_sha("commit check-runs head sha", head_sha, "github-devloop")
-  return { "gh", "api", "repos/" .. tostring(repo) .. "/commits/" .. sha .. "/check-runs" }
-end
 
 local function pr_diff_argv(repo, pr_number)
   return { "gh", "pr", "diff", tostring(pr_number), "--repo", tostring(repo) }
@@ -444,19 +426,6 @@ function M.install(handle)
     return handle._exec(pr_list_head_argv(repo, branch, base_branch), timeout, "gh pr list --head", stdout_policy.content_json("pr_list"))
   end
 
-  function handle.pr_list_promotions(repo, head_branch, base_branch, timeout)
-    return handle._exec(
-      pr_list_promotions_argv(repo, head_branch, base_branch),
-      timeout,
-      "gh PR promotion list",
-      stdout_policy.content_json("pr_list")
-    )
-  end
-
-  function handle.pr_list_promotions_cmd(repo, head_branch, base_branch)
-    return render_gh_argv(pr_list_promotions_argv(repo, head_branch, base_branch), { 5 })
-  end
-
   function handle.pr_list_merge_queue(repo, base, timeout)
     return handle._exec(
       pr_list_merge_queue_argv(repo, base),
@@ -484,17 +453,9 @@ function M.install(handle)
   end
 
   function handle.gh_pr_view_merge(repo, pr_number, timeout)
-    local command_result = gh_result(function()
+    return gh_result(function()
       return handle.pr_cli_view(repo, pr_number, merge_pr_fields, timeout)
     end)
-    if type(command_result) ~= "table" or tonumber(command_result.exit_code) ~= 0 then
-      return nil, command_result
-    end
-    local ok, parsed = pcall(json.decode, command_result.stdout or "{}")
-    if not ok or type(parsed) ~= "table" then
-      error("forge.github: gh pr view returned invalid JSON")
-    end
-    return parsed
   end
 
   function handle.pr_cli_view_cmd(repo, pr_number, fields)
@@ -561,7 +522,7 @@ function M.install(handle)
 
   function handle.gh_commit_check_runs(repo, head_sha, timeout)
     return gh_result(function()
-      return handle._exec(commit_check_runs_argv(repo, head_sha), timeout, "gh api GET", stdout_policy.trusted_metadata_json())
+      return handle.api_get(repo, "commits/" .. gitref.require_safe_sha("commit check-runs head sha", head_sha, "github-devloop") .. "/check-runs", timeout)
     end)
   end
 

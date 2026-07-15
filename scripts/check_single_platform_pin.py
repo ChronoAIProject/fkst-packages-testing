@@ -171,7 +171,7 @@ def tree_digest(root: Path) -> tuple[str, list[str]]:
 
 
 def check_forge_mirror() -> None:
-    local_digest, local_paths = tree_digest(ROOT / ".fkst" / "local-libraries" / "forge")
+    local_digest, local_paths = tree_digest(ROOT / "libraries" / "forge")
     platform_digest, platform_paths = tree_digest(CHECKOUT / "libraries" / "forge")
     if local_paths != platform_paths or local_digest != platform_digest:
         fail("local forge mirror differs from the pinned platform export")
