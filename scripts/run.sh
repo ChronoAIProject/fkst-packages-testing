@@ -385,8 +385,16 @@ copy_tree() {
   fi
 }
 
+copy_repo_libraries() {
+  local work="$1" lib
+  for lib in "$ROOT"/libraries/*/ "$ROOT"/.fkst/local-libraries/*/; do
+    [ -d "$lib" ] || continue
+    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
+  done
+}
+
 flat_test_workspace() {
-  local name="$1" source_root="$2" parent work lib
+  local name="$1" source_root="$2" parent work
   parent="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-flat.XXXXXX")"
   work="$parent/$name"
   mkdir -p "$work/packages/$name" "$work/libraries"
@@ -416,15 +424,12 @@ libraries = ["libraries/*"]
 [registries]
 workspace = "workspace"
 TOML
-  for lib in "$ROOT"/libraries/*/; do
-    [ -d "$lib" ] || continue
-    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
-  done
+  copy_repo_libraries "$work"
   printf '%s\n' "$work"
 }
 
 composed_test_workspace() {
-  local name="$1" roots="$2" work lib t src dep_name source_root
+  local name="$1" roots="$2" work t src dep_name source_root
   source_root="${3:-$ROOT/packages/$name}"
   work="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-composed.XXXXXX")"
   mkdir -p "$work/packages" "$work/libraries"
@@ -437,13 +442,9 @@ libraries = ["libraries/*"]
 [registries]
 workspace = "workspace"
 TOML
-  for lib in "$ROOT"/libraries/*/; do
-    [ -d "$lib" ] || continue
-    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
-  done
-  # Platform packages use source-scoped forge/devloop libraries. The local forge mirror wins for
-  # host-owned packages; copy any missing platform library so composed package tests close the same
-  # library graph as host conformance.
+  copy_repo_libraries "$work"
+  # Repo-owned library names win over source-scoped forge/devloop; copy missing platform libraries
+  # so composed package tests close the same library graph as host conformance.
   for dep_name in forge devloop; do
     [ -d "$work/libraries/$dep_name" ] && continue
     [ -d "$shared/libraries/$dep_name" ] || {
