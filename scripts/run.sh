@@ -75,14 +75,12 @@ PY
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host> [args]
+usage: scripts/run.sh <check|test|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
-  test-affected       run targeted package tests when only package paths changed; otherwise run the
-                      full repository test command
   ai-pipeline-smoke   run the hermetic AI authoring/review/CDP handoff smoke across pipeline seams
   live-cdp-smoke      run the environment-gated testing_runtime smoke against local Chrome/CDP
   example <name>      run a downstream integration fixture from examples/<name>
@@ -644,10 +642,6 @@ cmd_test() {
   echo "OK: $ran package(s)"
 }
 
-cmd_test_affected() {
-  "$PYTHON_BIN" -B "$ROOT/scripts/test_affected.py"
-}
-
 cmd_ai_pipeline_smoke() {
   local roots work args t rc=0 source_root
   resolve_testing_bin
@@ -801,7 +795,7 @@ cmd_host() {
 }
 
 case "${1:-}" in
-  check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host) ;;
+  check|test|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -824,7 +818,6 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
-  test-affected) cmd_test_affected ;;
   ai-pipeline-smoke) cmd_ai_pipeline_smoke ;;
   live-cdp-smoke) cmd_live_cdp_smoke ;;
   example) cmd_example "$@" ;;
