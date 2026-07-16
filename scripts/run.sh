@@ -385,8 +385,16 @@ copy_tree() {
   fi
 }
 
+copy_repo_libraries() {
+  local work="$1" lib
+  for lib in "$ROOT"/libraries/*/ "$ROOT"/.fkst/local-libraries/*/; do
+    [ -d "$lib" ] || continue
+    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
+  done
+}
+
 flat_test_workspace() {
-  local name="$1" source_root="$2" parent work lib
+  local name="$1" source_root="$2" parent work
   parent="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-flat.XXXXXX")"
   work="$parent/$name"
   mkdir -p "$work/packages/$name" "$work/libraries"
@@ -416,15 +424,12 @@ libraries = ["libraries/*"]
 [registries]
 workspace = "workspace"
 TOML
-  for lib in "$ROOT"/libraries/*/; do
-    [ -d "$lib" ] || continue
-    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
-  done
+  copy_repo_libraries "$work"
   printf '%s\n' "$work"
 }
 
 composed_test_workspace() {
-  local name="$1" roots="$2" work lib t src dep_name source_root
+  local name="$1" roots="$2" work t src dep_name source_root
   source_root="${3:-$ROOT/packages/$name}"
   work="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-composed.XXXXXX")"
   mkdir -p "$work/packages" "$work/libraries"
@@ -437,13 +442,9 @@ libraries = ["libraries/*"]
 [registries]
 workspace = "workspace"
 TOML
-  for lib in "$ROOT"/libraries/*/; do
-    [ -d "$lib" ] || continue
-    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
-  done
-  # Platform packages use source-scoped forge/devloop libraries. The local forge mirror wins for
-  # host-owned packages; copy any missing platform library so composed package tests close the same
-  # library graph as host conformance.
+  copy_repo_libraries "$work"
+  # Repo-owned library names win over source-scoped forge/devloop; copy missing platform libraries
+  # so composed package tests close the same library graph as host conformance.
   for dep_name in forge devloop; do
     [ -d "$work/libraries/$dep_name" ] && continue
     [ -d "$shared/libraries/$dep_name" ] || {
@@ -825,6 +826,32 @@ cmd_supervise() {
   exec "$BIN" supervise --project-root "$pkg" --package-root "$pkg" --framework-bin "$BIN"
 }
 
+run_host_check() {
+  local python_shim_dir="$1" hermetic_root rc
+  if ! hermetic_root="$(mktemp -d "${TMPDIR:-/tmp}/fkst-host-check.XXXXXX")"; then
+    echo "error: failed to create hermetic host check root" >&2
+    return 1
+  fi
+  set +e
+  (
+    set -e
+    trap 'rm -rf "$hermetic_root"' EXIT
+    export FKST_RUNTIME_ROOT="$hermetic_root/runtime"
+    export FKST_DURABLE_ROOT="$hermetic_root/durable"
+    unset FKST_GITHUB_WRITE FKST_SUPERVISOR_PID 2>/dev/null || true
+    mkdir -p "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT"
+    echo "host check hermetic: FKST_RUNTIME_ROOT=$FKST_RUNTIME_ROOT FKST_DURABLE_ROOT=$FKST_DURABLE_ROOT"
+    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" host \
+      --host-root "$ROOT" \
+      --platform-root "$shared" \
+      --local-packages "$ROOT/packages" \
+      -- check
+  )
+  rc=$?
+  set -e
+  return "$rc"
+}
+
 cmd_host() {
   local python_shim_dir="$ROOT/.fkst/run/python-bin"
   local catalog_root="${FKST_WORKFLOW_CATALOG_ROOT:-$ROOT/.fkst/workflow}"
@@ -838,16 +865,21 @@ cmd_host() {
   mkdir -p "$python_shim_dir"
   ln -sfn "$PYTHON_BIN" "$python_shim_dir/python3"
 
+  if [ "${1:-}" = "--" ] && [ "${2:-}" = "check" ]; then
+    if [ "$#" -ne 2 ]; then
+      echo "error: host check does not accept trailing arguments" >&2
+      return 2
+    fi
+    run_host_check "$python_shim_dir" || return $?
+    return 0
+  fi
+
   if [ "${1:-}" = "--" ] && [ "${2:-}" = "test" ]; then
     if [ -n "${3:-}" ] && [ "${3:-}" != "github-devloop-workflow" ]; then
       echo "error: unknown workflow host test package: ${3:-}" >&2
       return 2
     fi
-    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" host \
-      --host-root "$ROOT" \
-      --platform-root "$shared" \
-      --local-packages "$ROOT/packages" \
-      -- check
+    run_host_check "$python_shim_dir" || return $?
     PATH="$python_shim_dir:$PATH" \
       env -u FKST_COMPETENCE_BASE_REF -u FKST_LUA_COVERAGE_BASE_REF -u GITHUB_BASE_REF \
       "$shared/scripts/run.sh" test github-devloop-workflow

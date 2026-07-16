@@ -91,6 +91,7 @@ class RunnerWorkspace:
 
     def _write_fixture(self) -> None:
         (self.root / "scripts").mkdir()
+        (self.root / ".fkst" / "workflow").mkdir(parents=True)
         shutil.copy2(SOURCE_RUN_SH, self.root / "scripts" / "run.sh")
         (self.root / "scripts" / "run.sh").chmod(0o755)
         shutil.copy2(SOURCE_CI_CONTRACT, self.root / "scripts" / "check_ci_contract.py")
@@ -117,6 +118,11 @@ class RunnerWorkspace:
             ".fkst/conformance/composed-roots",
             "parent dependency @platform/platform-dep\n",
         )
+        self.write(
+            ".fkst/local-libraries/forge/fkst.toml",
+            'kind = "library"\n[library]\nname = "forge"\n',
+        )
+        self.write(".fkst/local-libraries/forge/tracked-mirror.txt", "tracked local forge\n")
 
         checkout = self.root / ".fkst" / "run" / "fkst-packages-conformance"
         checkout.mkdir(parents=True)
@@ -127,6 +133,38 @@ class RunnerWorkspace:
         self.write(
             ".fkst/run/fkst-packages-conformance/scripts/bin_bootstrap.sh",
             "resolve_bin_contract() { return 1; }\n",
+        )
+        self.write(
+            ".fkst/run/fkst-packages-conformance/scripts/run.sh",
+            dedent(
+                """
+                #!/usr/bin/env bash
+                set -euo pipefail
+
+                case "${1:-}" in
+                  host)
+                    shift
+                    host_root=""
+                    while [ "$#" -gt 0 ]; do
+                      case "$1" in
+                        --host-root) host_root="$2"; shift 2 ;;
+                        --) shift; break ;;
+                        *) shift ;;
+                      esac
+                    done
+                    [ "${1:-}" = "check" ] || exit 2
+                    "$BIN" conformance --project-root "$host_root"
+                    ;;
+                  test)
+                    exit 0
+                    ;;
+                  *)
+                    exit 2
+                    ;;
+                esac
+                """
+            ),
+            executable=True,
         )
         self.write(
             ".fkst/run/fkst-packages-conformance/scripts/check_repo_coverage.py",
@@ -211,12 +249,18 @@ class RunnerWorkspace:
                         str(path.relative_to(project_root))
                         for path in Path(project_root).rglob("*_test.lua")
                     )
+                forge_marker = None
+                if project_root:
+                    marker_path = Path(project_root) / "libraries" / "forge" / "tracked-mirror.txt"
+                    if marker_path.is_file():
+                        forge_marker = marker_path.read_text(encoding="utf-8")
                 record = {{
                     "argv": argv,
                     "subcommand": subcommand,
                     "project_root": project_root,
                     "package_roots": package_roots,
                     "test_files": test_files,
+                    "forge_marker": forge_marker,
                     "runtime_root": os.environ.get("FKST_RUNTIME_ROOT"),
                     "durable_root": os.environ.get("FKST_DURABLE_ROOT"),
                     "github_write": os.environ.get("FKST_GITHUB_WRITE"),
@@ -306,6 +350,7 @@ class RunnerContractTest(unittest.TestCase):
         self.assertEqual(len(tests), 1)
         self.assertEqual(tests[0]["project_root"], tests[0]["package_roots"][0])
         self.assertTrue(all("flat_one_test.lua" in path for path in tests[0]["test_files"]))
+        self.assertEqual(tests[0]["forge_marker"], "tracked local forge\n")
         self.assertNotIn("full repository", result.stdout.lower())
         self.assertEqual(fixture.coverage_records(), [])
 
@@ -324,6 +369,7 @@ class RunnerContractTest(unittest.TestCase):
         self.assertTrue(any("parent_test.lua" in path for path in tests[0]["test_files"]))
         self.assertFalse(any("dependency_test.lua" in path for path in tests[0]["test_files"]))
         self.assertFalse(any("platform_dep_test.lua" in path for path in tests[0]["test_files"]))
+        self.assertEqual(tests[0]["forge_marker"], "tracked local forge\n")
         self.assertFalse(Path(tests[0]["project_root"]).exists())
 
     def test_selected_package_without_tests_fails_closed(self) -> None:
@@ -366,6 +412,66 @@ class RunnerContractTest(unittest.TestCase):
         self.assertIsNone(record["supervisor_pid"])
         self.assertFalse(Path(record["runtime_root"]).exists())
         self.assertFalse(Path(record["durable_root"]).exists())
+
+    def test_host_checks_use_hermetic_environment_and_cleanup_after_success(self) -> None:
+        for arguments in (("host", "--", "check"), ("host", "--", "test")):
+            with self.subTest(arguments=arguments):
+                fixture = self.workspace()
+                ambient_runtime = fixture.root / "ambient-runtime"
+                ambient_durable = fixture.root / "ambient-durable"
+                result = fixture.run(
+                    *arguments,
+                    extra_env={
+                        "FKST_RUNTIME_ROOT": str(ambient_runtime),
+                        "FKST_DURABLE_ROOT": str(ambient_durable),
+                    },
+                )
+                self.assert_success(result)
+                checks = fixture.records("conformance")
+                self.assertEqual(len(checks), 1)
+                record = checks[0]
+                self.assertNotEqual(record["runtime_root"], str(ambient_runtime))
+                self.assertNotEqual(record["durable_root"], str(ambient_durable))
+                self.assertIsNone(record["github_write"])
+                self.assertIsNone(record["supervisor_pid"])
+                self.assertFalse(Path(record["runtime_root"]).exists())
+                self.assertFalse(Path(record["durable_root"]).exists())
+
+    def test_host_check_failure_propagates_and_cleans_hermetic_roots(self) -> None:
+        fixture = self.workspace()
+        result = fixture.run("host", "--", "check", extra_env={"FAKE_FAIL_SUBCOMMAND": "conformance"})
+        self.assert_failure(result)
+        self.assertEqual(result.returncode, 23, result.stdout)
+        record = fixture.records("conformance")[0]
+        self.assertFalse(Path(record["runtime_root"]).exists())
+        self.assertFalse(Path(record["durable_root"]).exists())
+
+    def test_host_check_rejects_trailing_arguments(self) -> None:
+        fixture = self.workspace()
+        result = fixture.run("host", "--", "check", "unexpected")
+        self.assertEqual(result.returncode, 2, result.stdout)
+        self.assertIn("does not accept trailing arguments", result.stdout)
+        self.assertEqual(fixture.records("conformance"), [])
+
+    def test_host_check_fails_closed_when_hermetic_root_cannot_be_created(self) -> None:
+        fixture = self.workspace()
+        fixture.write(
+            "fixture-bin/mktemp",
+            dedent(
+                """
+                #!/usr/bin/env bash
+                case "$*" in
+                  *fkst-host-check*) exit 9 ;;
+                esac
+                exec /usr/bin/mktemp "$@"
+                """
+            ),
+            executable=True,
+        )
+        result = fixture.run("host", "--", "check")
+        self.assert_failure(result)
+        self.assertIn("failed to create hermetic host check root", result.stdout)
+        self.assertEqual(fixture.records("conformance"), [])
 
     def test_missing_package_coverage_fails(self) -> None:
         fixture = self.workspace()
