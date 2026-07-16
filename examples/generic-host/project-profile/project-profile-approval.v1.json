@@ -1,0 +1,18 @@
+{
+  "schema": "testing-project-profile-approval.v1",
+  "approval_id": "controlled-fixture-approval-1",
+  "canonicalization": "fkst-project-profile-canonical-json.v1",
+  "profile_sha256": "7d4a830e50ec7d62baa77a9044f35c6e86c57f7d2765cc3e6c5981e194a1042c",
+  "repository": {
+    "url": "https://example.invalid/testing/controlled-fixture.git",
+    "commit_sha": "1111111111111111111111111111111111111111"
+  },
+  "authority": {"kind": "host-policy", "ref": "fixtures/project-profile"},
+  "policy_revision": "controlled-policy-1",
+  "evidence_ref": {"kind": "signed-attestation", "ref": "fixtures/approvals/controlled-fixture-1"},
+  "issued_at": "2026-07-16T00:00:00Z",
+  "expires_at": "2026-07-16T01:00:00Z",
+  "max_uses": 1,
+  "trace_id": "trace-controlled-fixture-1",
+  "dedup_key": "controlled-fixture-1"
+}
