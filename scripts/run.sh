@@ -826,6 +826,32 @@ cmd_supervise() {
   exec "$BIN" supervise --project-root "$pkg" --package-root "$pkg" --framework-bin "$BIN"
 }
 
+run_host_check() {
+  local python_shim_dir="$1" hermetic_root rc
+  if ! hermetic_root="$(mktemp -d "${TMPDIR:-/tmp}/fkst-host-check.XXXXXX")"; then
+    echo "error: failed to create hermetic host check root" >&2
+    return 1
+  fi
+  set +e
+  (
+    set -e
+    trap 'rm -rf "$hermetic_root"' EXIT
+    export FKST_RUNTIME_ROOT="$hermetic_root/runtime"
+    export FKST_DURABLE_ROOT="$hermetic_root/durable"
+    unset FKST_GITHUB_WRITE FKST_SUPERVISOR_PID 2>/dev/null || true
+    mkdir -p "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT"
+    echo "host check hermetic: FKST_RUNTIME_ROOT=$FKST_RUNTIME_ROOT FKST_DURABLE_ROOT=$FKST_DURABLE_ROOT"
+    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" host \
+      --host-root "$ROOT" \
+      --platform-root "$shared" \
+      --local-packages "$ROOT/packages" \
+      -- check
+  )
+  rc=$?
+  set -e
+  return "$rc"
+}
+
 cmd_host() {
   local python_shim_dir="$ROOT/.fkst/run/python-bin"
   local catalog_root="${FKST_WORKFLOW_CATALOG_ROOT:-$ROOT/.fkst/workflow}"
@@ -839,16 +865,21 @@ cmd_host() {
   mkdir -p "$python_shim_dir"
   ln -sfn "$PYTHON_BIN" "$python_shim_dir/python3"
 
+  if [ "${1:-}" = "--" ] && [ "${2:-}" = "check" ]; then
+    if [ "$#" -ne 2 ]; then
+      echo "error: host check does not accept trailing arguments" >&2
+      return 2
+    fi
+    run_host_check "$python_shim_dir" || return $?
+    return 0
+  fi
+
   if [ "${1:-}" = "--" ] && [ "${2:-}" = "test" ]; then
     if [ -n "${3:-}" ] && [ "${3:-}" != "github-devloop-workflow" ]; then
       echo "error: unknown workflow host test package: ${3:-}" >&2
       return 2
     fi
-    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" host \
-      --host-root "$ROOT" \
-      --platform-root "$shared" \
-      --local-packages "$ROOT/packages" \
-      -- check
+    run_host_check "$python_shim_dir" || return $?
     PATH="$python_shim_dir:$PATH" \
       env -u FKST_COMPETENCE_BASE_REF -u FKST_LUA_COVERAGE_BASE_REF -u GITHUB_BASE_REF \
       "$shared/scripts/run.sh" test github-devloop-workflow
