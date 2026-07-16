@@ -31,6 +31,7 @@ packages/<name>/
   departments/<department>/main.lua
   tests/*_test.lua
 contracts/
+  project-profile.v1.md
   testing-runner.v1.md
   testing-discovery.v1.md
 libraries/
@@ -49,6 +50,14 @@ A typical host flow is:
 4. Run it through `testing-runner`; omitted `backend` resolves to `fkst-native`, the only executable backend.
 
 Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixtures under `examples/generic-host/` show how host-owned native module, browser-driver, and UI-loop profiles can translate into these existing events without adding product facts to this repo.
+
+Project startup configuration uses the separate `testing-project-profile.v1` and
+`testing-project-profile-approval.v1` contracts documented in `contracts/project-profile.v1.md`.
+Profile validity and canonical digest identity never grant execution permission: a host trust root must
+authenticate the exact approval, and `contract.project_profile.authorize_execution` must recheck the
+profile, immutable repository commit, approval, validation receipt, freshness, and replay claim
+immediately before checkout or command execution. The controlled JSON fixture lives under
+`examples/generic-host/project-profile/`.
 
 For autonomous coverage, a host can submit `testing-discovery.app-scope.v1` with local scope, sessions, policy, and bounded AI/browser/navigation/accessibility observations. `testing-discovery` derives module starts automatically, writes a sanitized discovery plan under `.testing/runs/...`, and reuses the existing `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication path. Hosts provide only bootstrap scope and safety policy; product-specific module catalogs are not required in this package set.
 

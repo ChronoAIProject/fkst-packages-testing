@@ -75,12 +75,14 @@ PY
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host> [args]
+usage: scripts/run.sh <check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
   test [pkg]          check + engine self-test + per-package single-root unit tests (hermetic,
                       codex-free); optional single package
+  test-affected       run targeted package tests when only package paths changed; otherwise run the
+                      full repository test command
   ai-pipeline-smoke   run the hermetic AI authoring/review/CDP handoff smoke across pipeline seams
   live-cdp-smoke      run the environment-gated testing_runtime smoke against local Chrome/CDP
   example <name>      run a downstream integration fixture from examples/<name>
@@ -383,8 +385,16 @@ copy_tree() {
   fi
 }
 
+copy_repo_libraries() {
+  local work="$1" lib
+  for lib in "$ROOT"/libraries/*/ "$ROOT"/.fkst/local-libraries/*/; do
+    [ -d "$lib" ] || continue
+    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
+  done
+}
+
 flat_test_workspace() {
-  local name="$1" source_root="$2" parent work lib
+  local name="$1" source_root="$2" parent work
   parent="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-flat.XXXXXX")"
   work="$parent/$name"
   mkdir -p "$work/packages/$name" "$work/libraries"
@@ -414,15 +424,12 @@ libraries = ["libraries/*"]
 [registries]
 workspace = "workspace"
 TOML
-  for lib in "$ROOT"/libraries/*/; do
-    [ -d "$lib" ] || continue
-    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
-  done
+  copy_repo_libraries "$work"
   printf '%s\n' "$work"
 }
 
 composed_test_workspace() {
-  local name="$1" roots="$2" work lib t src dep_name source_root
+  local name="$1" roots="$2" work t src dep_name source_root
   source_root="${3:-$ROOT/packages/$name}"
   work="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-composed.XXXXXX")"
   mkdir -p "$work/packages" "$work/libraries"
@@ -435,23 +442,27 @@ libraries = ["libraries/*"]
 [registries]
 workspace = "workspace"
 TOML
-  for lib in "$ROOT"/libraries/*/; do
-    [ -d "$lib" ] || continue
-    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
-  done
-  # Platform packages use source-scoped forge/devloop libraries. The local forge mirror wins for
-  # host-owned packages; copy any missing platform library so composed package tests close the same
-  # library graph as host conformance.
+  copy_repo_libraries "$work"
+  # Repo-owned library names win over source-scoped forge/devloop; copy missing platform libraries
+  # so composed package tests close the same library graph as host conformance.
   for dep_name in forge devloop; do
     [ -d "$work/libraries/$dep_name" ] && continue
-    [ -d "$shared/libraries/$dep_name" ] || { echo "error: pinned platform library missing: $dep_name" >&2; return 1; }
+    [ -d "$shared/libraries/$dep_name" ] || {
+      echo "error: pinned platform library missing: $dep_name" >&2
+      rm -rf "$work"
+      return 1
+    }
     copy_tree "$shared/libraries/$dep_name" "$work/libraries/$dep_name" 0
   done
   copy_tree "$source_root" "$work/packages/$name" 0
   for t in $roots; do
     src="$(resolve_composed_root "$t")"
     dep_name="${t#@platform/}"
-    [ -d "$src" ] || { echo "error: composed root '$t' -> $src not found (hydrate the pin / check packages/)" >&2; return 1; }
+    [ -d "$src" ] || {
+      echo "error: composed root '$t' -> $src not found (hydrate the pin / check packages/)" >&2
+      rm -rf "$work"
+      return 1
+    }
     copy_tree "$src" "$work/packages/$dep_name" 1
   done
   printf '%s\n' "$work"
@@ -496,8 +507,43 @@ run_pkg_engine() {
   return "$rc"
 }
 
+# Exercise one package's production conformance path against a supplied package source fixture.
+# The package and composed-root inventories still come from repository-owned declarations.
+run_conformance_fixture() {
+  local name="$1" source_root="$2" roots work rc t
+  [ -d "$source_root" ] || { echo "error: conformance fixture source does not exist: $source_root" >&2; return 1; }
+  roots="$(composed_roots_for "$name")"
+  if package_is_composed "$source_root" && [ -z "$roots" ]; then
+    echo "error: $name declares [event_deps] but has no .fkst/conformance/composed-roots entry; declare its closed-world package roots" >&2
+    return 1
+  fi
+
+  if [ -n "$roots" ]; then
+    work="$(composed_test_workspace "$name" "$roots" "$source_root")" || return 1
+    local args=(--project-root "$work" --package-root "$work/packages/$name")
+    for t in $roots; do
+      args+=(--package-root "$work/packages/${t#@platform/}")
+    done
+    set +e
+    run_engine "$BIN" conformance "${args[@]}"
+    rc=$?
+    set -e
+    rm -rf "$work"
+    return "$rc"
+  fi
+
+  work="$(flat_test_workspace "$name" "$source_root")" || return 1
+  set +e
+  run_engine "$BIN" conformance --project-root "$work" --package-root "$work"
+  rc=$?
+  set -e
+  rm -rf "$(dirname "$work")"
+  return "$rc"
+}
+
 cmd_check() {
   local fail=0 ran=0 pkg
+  "$PYTHON_BIN" -B "$ROOT/scripts/check_ci_contract.py" || fail=1
   run_source_ratchets || fail=1
   resolve_testing_bin
   echo "=== engine conformance (composed closed-world / flat single-root) ==="
@@ -517,6 +563,17 @@ run_browser_observation_self_test() {
     echo "=== browser-observation JS self-test ==="
     node "$ROOT/packages/browser-observation/bin/fkst-cdp-observer.js" --self-test
   fi
+}
+
+package_has_tests() {
+  [ -n "$(find "$1/tests" -maxdepth 1 -type f -name '*_test.lua' -print -quit 2>/dev/null)" ]
+}
+
+run_repository_contract_tests() {
+  echo "=== package conformance contract tests ==="
+  "$PYTHON_BIN" -B "$ROOT/scripts/conformance_contract_test.py"
+  echo "=== runner script contract tests ==="
+  "$PYTHON_BIN" -B "$ROOT/scripts/run_script_contract_test.py"
 }
 
 append_coverage_artifact() {
@@ -573,10 +630,7 @@ PY
 }
 
 cmd_test() {
-  local target="${1:-}" fail=0 ran=0 pkg name coverage_dir
-  cmd_check
-  resolve_testing_bin
-
+  local target="${1:-}" fail=0 ran=0 pkg name coverage_dir roots work
   # Hermetic roots so local runs predict CI and never touch ambient durable state. Script-global
   # (not `local`) so the EXIT trap can still see them; `:-` keeps the trap safe under set -u.
   TEST_RT="$(mktemp -d "${TMPDIR:-/tmp}/fkst-testing-rt.XXXXXX")"
@@ -586,6 +640,9 @@ cmd_test() {
   unset FKST_GITHUB_WRITE FKST_SUPERVISOR_PID 2>/dev/null || true
   echo "test hermetic: FKST_RUNTIME_ROOT=$TEST_RT FKST_DURABLE_ROOT=$TEST_DURABLE"
   COVERAGE_ARTIFACTS=()
+
+  cmd_check
+  resolve_testing_bin
 
   echo "=== self-test ==="
   "$BIN" --self-test >/dev/null
@@ -602,6 +659,11 @@ cmd_test() {
     fi
     echo "--- $name ---"
     ran=$((ran + 1))
+    if ! package_has_tests "$pkg"; then
+      echo "error: package '$name' is selected for testing but has no tests/*_test.lua files" >&2
+      fail=1
+      continue
+    fi
     roots="$(composed_roots_for "$name")"
     if [ -n "$roots" ]; then
       work="$(composed_test_workspace "$name" "$roots")" || { fail=1; continue; }
@@ -635,10 +697,17 @@ cmd_test() {
   if [ "$ran" -eq 0 ]; then echo "error: no packages matched${target:+ for '$target'}" >&2; return 1; fi
   if [ "$fail" -ne 0 ]; then echo "FAILED: $fail package(s)" >&2; return 1; fi
   if [ -z "$target" ]; then
+    if [ "${FKST_SKIP_REPOSITORY_CONTRACT_TESTS:-}" != "1" ]; then
+      run_repository_contract_tests
+    fi
     echo "=== Lua coverage ratchet ==="
     enforce_lua_coverage_ratchet || return 1
   fi
   echo "OK: $ran package(s)"
+}
+
+cmd_test_affected() {
+  "$PYTHON_BIN" -B "$ROOT/scripts/test_affected.py"
 }
 
 cmd_ai_pipeline_smoke() {
@@ -757,6 +826,32 @@ cmd_supervise() {
   exec "$BIN" supervise --project-root "$pkg" --package-root "$pkg" --framework-bin "$BIN"
 }
 
+run_host_check() {
+  local python_shim_dir="$1" hermetic_root rc
+  if ! hermetic_root="$(mktemp -d "${TMPDIR:-/tmp}/fkst-host-check.XXXXXX")"; then
+    echo "error: failed to create hermetic host check root" >&2
+    return 1
+  fi
+  set +e
+  (
+    set -e
+    trap 'rm -rf "$hermetic_root"' EXIT
+    export FKST_RUNTIME_ROOT="$hermetic_root/runtime"
+    export FKST_DURABLE_ROOT="$hermetic_root/durable"
+    unset FKST_GITHUB_WRITE FKST_SUPERVISOR_PID 2>/dev/null || true
+    mkdir -p "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT"
+    echo "host check hermetic: FKST_RUNTIME_ROOT=$FKST_RUNTIME_ROOT FKST_DURABLE_ROOT=$FKST_DURABLE_ROOT"
+    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" host \
+      --host-root "$ROOT" \
+      --platform-root "$shared" \
+      --local-packages "$ROOT/packages" \
+      -- check
+  )
+  rc=$?
+  set -e
+  return "$rc"
+}
+
 cmd_host() {
   local python_shim_dir="$ROOT/.fkst/run/python-bin"
   local catalog_root="${FKST_WORKFLOW_CATALOG_ROOT:-$ROOT/.fkst/workflow}"
@@ -770,17 +865,24 @@ cmd_host() {
   mkdir -p "$python_shim_dir"
   ln -sfn "$PYTHON_BIN" "$python_shim_dir/python3"
 
+  if [ "${1:-}" = "--" ] && [ "${2:-}" = "check" ]; then
+    if [ "$#" -ne 2 ]; then
+      echo "error: host check does not accept trailing arguments" >&2
+      return 2
+    fi
+    run_host_check "$python_shim_dir" || return $?
+    return 0
+  fi
+
   if [ "${1:-}" = "--" ] && [ "${2:-}" = "test" ]; then
     if [ -n "${3:-}" ] && [ "${3:-}" != "github-devloop-workflow" ]; then
       echo "error: unknown workflow host test package: ${3:-}" >&2
       return 2
     fi
-    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" host \
-      --host-root "$ROOT" \
-      --platform-root "$shared" \
-      --local-packages "$ROOT/packages" \
-      -- check
-    PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" test github-devloop-workflow
+    run_host_check "$python_shim_dir" || return $?
+    PATH="$python_shim_dir:$PATH" \
+      env -u FKST_COMPETENCE_BASE_REF -u FKST_LUA_COVERAGE_BASE_REF -u GITHUB_BASE_REF \
+      "$shared/scripts/run.sh" test github-devloop-workflow
     return
   fi
 
@@ -791,8 +893,12 @@ cmd_host() {
     "$@"
 }
 
+if [ "${BASH_SOURCE[0]}" != "$0" ]; then
+  return 0
+fi
+
 case "${1:-}" in
-  check|test|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host) ;;
+  check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -815,6 +921,7 @@ sub="$1"; shift
 case "$sub" in
   check) cmd_check ;;
   test) cmd_test "$@" ;;
+  test-affected) cmd_test_affected ;;
   ai-pipeline-smoke) cmd_ai_pipeline_smoke ;;
   live-cdp-smoke) cmd_live_cdp_smoke ;;
   example) cmd_example "$@" ;;
