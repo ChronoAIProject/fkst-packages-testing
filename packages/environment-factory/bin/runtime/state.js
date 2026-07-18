@@ -1,11 +1,11 @@
 'use strict';
 
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const {
   acquireLock,
   artifactPath,
-  hmac,
   readJson,
   runtimeConfig,
   samePointer,
@@ -20,6 +20,18 @@ function authenticationBytes(pointer, state, keyRevision, revision) {
     state_ref: pointer,
     state,
   });
+}
+
+function stateMacKey(config) {
+  return crypto.scryptSync(
+    config.state_auth_key,
+    `environment-factory-state-v1\0${config.state_auth_key_revision}`,
+    32,
+  );
+}
+
+function stateMac(value, config) {
+  return crypto.createHmac('sha256', stateMacKey(config)).update(value).digest('hex');
 }
 
 function loadState(payload) {
@@ -39,14 +51,14 @@ function loadState(payload) {
   const bindingMatches = envelope.key_revision === config.state_auth_key_revision
     && Number.isInteger(envelope.revision) && envelope.revision >= 1
     && samePointer(envelope.state_ref, payload.ref);
-  const actual = hmac(
+  const actual = stateMac(
     authenticationBytes(payload.ref, envelope.state, config.state_auth_key_revision, envelope.revision),
-    config.state_auth_key,
+    config,
   );
   const left = Buffer.from(actual);
   const right = Buffer.from(envelope.mac);
   const authenticated = bindingMatches && left.length === right.length
-    && require('crypto').timingSafeEqual(left, right);
+    && crypto.timingSafeEqual(left, right);
   return { authenticated, state: envelope.state, revision: envelope.revision };
 }
 
@@ -72,9 +84,9 @@ function saveState(payload) {
       revision,
       state_ref: payload.ref,
       state: payload.state,
-      mac: hmac(
+      mac: stateMac(
         authenticationBytes(payload.ref, payload.state, config.state_auth_key_revision, revision),
-        config.state_auth_key,
+        config,
       ),
     };
     writeJsonAtomic(statePath, envelope);

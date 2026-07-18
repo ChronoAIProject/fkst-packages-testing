@@ -166,6 +166,15 @@ async function main() {
     assert.strictEqual(loaded.authenticated, true);
     assert.strictEqual(loaded.revision, 1);
     assert.strictEqual(loaded.state.value, 1);
+
+    fs.writeFileSync(runtimeConfigRef.ref, `${JSON.stringify({
+      schema: 'environment-factory.runtime-config.v1',
+      revision: 'node-runtime-test-2',
+      state_auth_key: 'node-runtime-state-auth-key-which-is-long-enough',
+      state_auth_key_revision: 'node-runtime-key-2',
+    })}\n`);
+    const rotated = await dispatch('load-state', { ref: stateRef, runtime_config_ref: runtimeConfigRef });
+    assert.strictEqual(rotated.authenticated, false);
   } finally {
     if (previousDurable === undefined) delete process.env.FKST_DURABLE_ROOT;
     else process.env.FKST_DURABLE_ROOT = previousDurable;
