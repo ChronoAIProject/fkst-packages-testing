@@ -146,7 +146,7 @@ async function main() {
       schema: 'environment-factory.runtime-config.v1',
       revision: 'node-runtime-test-1',
       state_auth_key: 'node-runtime-state-auth-key-which-is-long-enough',
-      state_auth_key_revision: 'node-runtime-key-1',
+      state_mac_generation: 'node-runtime-key-1',
     })}\n`);
     const firstSave = await dispatch('save-state', {
       ref: stateRef,
@@ -171,7 +171,7 @@ async function main() {
       schema: 'environment-factory.runtime-config.v1',
       revision: 'node-runtime-test-2',
       state_auth_key: 'node-runtime-state-auth-key-which-is-long-enough',
-      state_auth_key_revision: 'node-runtime-key-2',
+      state_mac_generation: 'node-runtime-key-2',
     })}\n`);
     const rotated = await dispatch('load-state', { ref: stateRef, runtime_config_ref: runtimeConfigRef });
     assert.strictEqual(rotated.authenticated, false);
