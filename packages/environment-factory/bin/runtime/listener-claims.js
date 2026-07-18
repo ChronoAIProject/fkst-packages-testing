@@ -166,7 +166,7 @@ function createListenerClaims(deps) {
         runtime_ports: ports,
         listener_claimed_ports: payload.listener_claimed_ports || [],
         listener_already_owned_ports: payload.listener_already_owned_ports || [],
-        state_authentication: 'hmac-sha256',
+        state_authentication: 'scrypt-hmac-sha256',
         runtime_config_revision: config.revision,
       });
       const outcome = {

@@ -38,10 +38,6 @@ function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
 }
 
-function hmac(value, key) {
-  return crypto.createHmac('sha256', key).update(value).digest('hex');
-}
-
 function parseArgs(argv) {
   const values = {};
   for (let index = 0; index < argv.length; index += 2) {
@@ -252,7 +248,6 @@ module.exports = {
   authorizationArtifact,
   boundedText,
   commandResult,
-  hmac,
   isSafeArtifactPath,
   minimalEnvironment,
   parseArgs,
