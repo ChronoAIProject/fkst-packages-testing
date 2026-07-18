@@ -39,9 +39,11 @@ local function profile()
       start = { "node", "server.js" },
       cleanup = { "scripts/cleanup-test-project" },
     },
+    application_listener_mode = project_profile.listener_mode,
     dependent_services = {
       {
         name = "cache",
+        listener_mode = project_profile.listener_mode,
         start_argv = { "redis-server", "--port", "6380" },
         cleanup_argv = { "redis-cli", "-p", "6380", "shutdown" },
         readiness_checks = {
@@ -418,6 +420,14 @@ return {
     t.raises(function() project_profile.validate_profile(value) end)
 
     value = profile()
+    value.readiness_checks[1].url = "http://127.0.0.1:4174/health"
+    t.raises(function() project_profile.validate_profile(value) end)
+
+    value = profile()
+    value.readiness_checks[1] = { type = "unsupported" }
+    t.raises(function() project_profile.validate_profile(value) end)
+
+    value = profile()
     value.readiness_checks[2].url = "http://127.0.0.1:4173/health"
     t.raises(function() project_profile.validate_profile(value) end)
 
@@ -444,6 +454,73 @@ return {
     value = profile()
     value.mutation_policy = { mode = "unbounded" }
     t.raises(function() project_profile.validate_profile(value) end)
+  end,
+
+  test_listener_modes_service_http_and_total_timeout_are_explicit = function()
+    local value = profile()
+    value.application_listener_mode = nil
+    t.raises(function() project_profile.validate_profile(value) end)
+
+    value = profile()
+    value.application_listener_mode = "direct-bind"
+    t.raises(function() project_profile.validate_profile(value) end)
+
+    value = profile()
+    value.dependent_services[1].listener_mode = nil
+    t.raises(function() project_profile.validate_profile(value) end)
+
+    value = profile()
+    value.dependent_services[1].readiness_checks = {
+      { type = "http", url = "http://127.0.0.1:6380/ready", expected_status = 200 },
+    }
+    t.eq(project_profile.validate_profile(value).dependent_services[1].readiness_checks[1].type, "http")
+
+    value = profile()
+    value.dependent_services[1].readiness_checks = {
+      { type = "http", url = "https://example.invalid:6380/ready", expected_status = 200 },
+    }
+    t.raises(function() project_profile.validate_profile(value) end)
+
+    value = profile()
+    value.dependent_services = nil
+    value.timeouts.total_seconds = 179
+    t.raises(function() project_profile.validate_profile(value) end)
+    value.timeouts.total_seconds = 180
+    t.eq(project_profile.validate_profile(value).timeouts.total_seconds, 180)
+
+    value = profile()
+    value.timeouts.total_seconds = 239
+    t.raises(function() project_profile.validate_profile(value) end)
+    value.timeouts.total_seconds = 240
+    t.eq(project_profile.validate_profile(value).timeouts.total_seconds, 240)
+
+    value = profile()
+    local template = copy(value.dependent_services[1])
+    value.dependent_services = {}
+    for index = 1, 16 do
+      local service = copy(template)
+      service.name = "cache-" .. tostring(index)
+      service.readiness_checks[1].port = 6380 + index
+      table.insert(value.dependent_services, service)
+    end
+    value.timeouts.total_seconds = 239
+    t.raises(function() project_profile.validate_profile(value) end)
+    value.timeouts.total_seconds = 240
+    t.eq(project_profile.validate_profile(value).timeouts.total_seconds, 240)
+  end,
+
+  test_network_request_budget_preserves_zero_one_and_maximum = function()
+    for _, attempts in ipairs({ 0, 1, 100000 }) do
+      local value = profile()
+      value.resource_budgets.network_requests = attempts
+      t.eq(project_profile.validate_profile(value).resource_budgets.network_requests, attempts)
+    end
+    local below = profile()
+    below.resource_budgets.network_requests = -1
+    t.raises(function() project_profile.validate_profile(below) end)
+    local above = profile()
+    above.resource_budgets.network_requests = 100001
+    t.raises(function() project_profile.validate_profile(above) end)
   end,
 
   test_rejects_noncanonical_urls_and_accepts_bracketed_ipv6_origins = function()

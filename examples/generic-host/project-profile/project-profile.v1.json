@@ -12,9 +12,11 @@
     "start": ["fixture-runtime", "server.js"],
     "cleanup": ["scripts/cleanup-controlled-fixture"]
   },
+  "application_listener_mode": "fkst-inherited-listeners-v1",
   "dependent_services": [
     {
       "name": "fixture-cache",
+      "listener_mode": "fkst-inherited-listeners-v1",
       "start_argv": ["fixture-cache", "start", "--port", "6380"],
       "cleanup_argv": ["fixture-cache", "stop", "--port", "6380"],
       "readiness_checks": [

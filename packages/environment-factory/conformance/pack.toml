@@ -1,0 +1,30 @@
+schema = 1
+runner_protocol = "fkst-declarative-rulepack@1"
+owner_package = "environment-factory"
+
+[[rules]]
+id = "environment-factory-shell-free"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["**/*.lua"]
+exclude = ["tests/**", "packages/environment-factory/tests/**"]
+pattern = "os\\.execute|io\\.popen|sh[[:space:]]+-c|bash[[:space:]]+-c"
+message = "environment factory must execute approved direct argv through runtime ports"
+
+[[rules]]
+id = "environment-factory-js-shell-free"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["bin/**/*.js", "packages/environment-factory/bin/**/*.js"]
+exclude = ["tests/**", "packages/environment-factory/tests/**"]
+pattern = "shell[[:space:]]*:[[:space:]]*true|child_process\\.(exec|execSync)"
+message = "environment factory JavaScript must use direct argv with shell disabled"
+
+[[rules]]
+id = "environment-factory-pointer-only-events"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["departments/**/*.lua", "packages/environment-factory/departments/**/*.lua"]
+exclude = ["tests/**", "packages/environment-factory/tests/**"]
+pattern = "stdout|stderr|process_id|raw_env|cookie|localStorage|sessionStorage|secret_value"
+message = "environment factory events must contain pointers and bounded control metadata only"

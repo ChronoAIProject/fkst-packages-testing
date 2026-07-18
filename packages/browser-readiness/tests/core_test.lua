@@ -83,6 +83,76 @@ return {
     end)
   end,
 
+  test_rejects_non_table_correlation = function()
+    local payload = request()
+    payload.correlation = "not-a-table"
+    t.raises(function() core.validate_request(payload) end)
+  end,
+
+  test_correlation_is_bounded_credential_free_control_metadata = function()
+    local payload = request()
+    payload.correlation = {
+      attempt_id = "attempt-1",
+      retry = 2,
+      enabled = true,
+      nested = { sessions = { { role = "admin" } } },
+    }
+    core.validate_request(payload)
+
+    local cases = {
+      { cookies = "inline" },
+      { nested = { storage = { localStorage = true } } },
+      { stdout = "raw output" },
+      { token = "secret-value" },
+      { pointer = "https://user:password@localhost/control" },
+      { value = string.rep("x", 1025) },
+      { value = 0 / 0 },
+      { value = function() return true end },
+      { sparse = { [2] = "value" } },
+      { nested = { a = { b = { c = { d = { e = true } } } } } },
+    }
+    local oversized = {}
+    for index = 1, 65 do oversized[index] = index end
+    table.insert(cases, { oversized = oversized })
+    for _, correlation in ipairs(cases) do
+      local changed = request()
+      changed.correlation = correlation
+      t.raises(function() core.validate_request(changed) end)
+    end
+  end,
+
+  test_rejects_credential_markers_in_local_cdp_paths = function()
+    local payload = request()
+    payload.sessions[2] = {
+      role = "user1",
+      cdp_url = "http://127.0.0.1:9222/devtools/token=value",
+    }
+    t.raises(function() core.validate_request(payload) end)
+  end,
+
+  test_results_deep_copy_nested_correlation = function()
+    local payload = request()
+    payload.correlation = {
+      attempt_id = "attempt-1",
+      nested = { sessions = { { role = "admin" } } },
+    }
+    local normal = core.result(payload, {
+      probe = probe(
+        { APP_USER1_CDP_ENDPOINT = "http://127.0.0.1:9222/json/version" },
+        { ["browser-harness"] = true },
+        { ["http://localhost:8080/"] = true }
+      ),
+    })
+    local forced = core.result(payload, "planned")
+
+    payload.correlation.nested.sessions[1].role = "mutated-input"
+    t.eq(normal.correlation.nested.sessions[1].role, "admin")
+    t.eq(forced.correlation.nested.sessions[1].role, "admin")
+
+    normal.correlation.nested.sessions[1].role = "mutated-result"
+    t.eq(forced.correlation.nested.sessions[1].role, "admin")
+  end,
+
   test_ready_when_local_base_url_harness_and_cdp_are_available = function()
     local result = core.result(request(), {
       probe = probe(
@@ -152,6 +222,21 @@ return {
     t.eq(result.sessions[1].status, "blocked")
     t.eq(result.sessions[2].checks[1].name, "cdp_url")
     t.eq(result.sessions[2].checks[1].reason, "non-local endpoint")
+  end,
+
+  test_local_cdp_url_is_resolved_into_ready_session = function()
+    local result = core.result({
+      schema = "browser-readiness.check.v1",
+      sessions = {
+        { role = "user1", cdp_url = "http://127.0.0.1:9222/json/version" },
+      },
+    }, {
+      probe = probe({}, {}, {}),
+    })
+
+    t.eq(result.status, "ready")
+    t.eq(result.sessions[1].checks[1].name, "cdp_url")
+    t.eq(result.sessions[1].cdp_url, "http://127.0.0.1:9222/json/version")
   end,
 
   test_command_name_rejects_shell_metacharacters = function()

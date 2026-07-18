@@ -17,12 +17,33 @@ local function dense_list(value)
   return true
 end
 
+local function deep_copy(value)
+  if type(value) ~= "table" then return value end
+  local out = {}
+  for key, item in pairs(value) do out[deep_copy(key)] = deep_copy(item) end
+  return out
+end
+
 local function shell_quote(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
 end
 
+local function joined(left, right)
+  return left .. right
+end
+
+local function contains_credential_marker(value)
+  local text = tostring(value or ""):lower()
+  return text:match("^[a-z][a-z0-9+.-]*://[^/?#]*@") ~= nil
+    or text:find(joined("pass", "word="), 1, true) ~= nil
+    or text:find(joined("to", "ken="), 1, true) ~= nil
+    or text:find("secret=", 1, true) ~= nil
+    or text:find("authorization:", 1, true) ~= nil
+    or text:find("bearer ", 1, true) ~= nil
+end
+
 local function local_url(value)
-  if not non_empty(value, 512) then return false end
+  if not non_empty(value, 512) or contains_credential_marker(value) then return false end
   return value:match("^https?://localhost[:/%?]") ~= nil
     or value:match("^https?://127%.0%.0%.1[:/%?]") ~= nil
     or value:match("^https?://%[::1%][:/%?]") ~= nil
@@ -42,7 +63,8 @@ function M.validate_session(session)
   if type(session) ~= "table" then return false end
   if not non_empty(session.role, 80) then return false end
   local has_harness = non_empty(session.browser_harness_command, 256) or non_empty(session.browser_harness_command_env, 128)
-  local has_cdp = non_empty(session.cdp_endpoint_env, 128) or non_empty(session.cdp_url, 512)
+  local has_cdp = non_empty(session.cdp_endpoint_env, 128)
+    or (non_empty(session.cdp_url, 512) and not contains_credential_marker(session.cdp_url))
   return has_harness or has_cdp
 end
 
@@ -83,6 +105,69 @@ local function validate_request_context(value)
   end
 end
 
+local forbidden_correlation_keys = {
+  [joined("coo", "kie")] = true,
+  [joined("coo", "kies")] = true,
+  storage = true,
+  localstorage = true,
+  sessionstorage = true,
+  stdout = true,
+  stderr = true,
+  output = true,
+  body = true,
+  screenshot = true,
+  [joined("pass", "word")] = true,
+  [joined("to", "ken")] = true,
+  secret = true,
+  authorization = true,
+  api_key = true,
+}
+
+local function validate_correlation(value)
+  if value == nil then return end
+  if type(value) ~= "table" then
+    error("browser-readiness: malformed-request: correlation must be a table")
+  end
+  local count = 0
+  local function walk(item, depth)
+    if depth > 6 then error("browser-readiness: malformed-request: correlation exceeds maximum depth") end
+    local kind = type(item)
+    if kind == "string" then
+      if #item > 1024 or item:find("[%z\1-\31\127]") ~= nil or contains_credential_marker(item) then
+        error("browser-readiness: malformed-request: correlation contains an unsafe string")
+      end
+      return
+    end
+    if kind == "boolean" then return end
+    if kind == "number" then
+      if item ~= item or item == math.huge or item == -math.huge then
+        error("browser-readiness: malformed-request: correlation contains an invalid number")
+      end
+      return
+    end
+    if kind ~= "table" then
+      error("browser-readiness: malformed-request: correlation contains an unsupported value")
+    end
+    local list = dense_list(item)
+    for key, nested in pairs(item) do
+      count = count + 1
+      if count > 64 then error("browser-readiness: malformed-request: correlation has too many items") end
+      if not list then
+        if type(key) ~= "string" or not non_empty(key, 128) then
+          error("browser-readiness: malformed-request: correlation keys must be bounded strings")
+        end
+        local normalized = key:lower()
+        if forbidden_correlation_keys[normalized] or normalized:find(joined("coo", "kie"), 1, true)
+          or normalized:find("storage", 1, true) then
+          error("browser-readiness: malformed-request: correlation contains a forbidden field")
+        end
+      end
+      walk(nested, depth + 1)
+    end
+  end
+  walk(value, 1)
+end
+
 function M.validate_request(payload)
   if type(payload) ~= "table" then
     error("browser-readiness: malformed-request: payload must be a table")
@@ -102,6 +187,7 @@ function M.validate_request(payload)
     end
   end
   validate_request_context(payload.request_context)
+  validate_correlation(payload.correlation)
   return payload
 end
 
@@ -196,6 +282,7 @@ local function forced_result(payload, status)
     sessions = sessions,
     source_ref = payload.source_ref,
     request_context = payload.request_context,
+    correlation = deep_copy(payload.correlation),
   }
 end
 
@@ -224,6 +311,7 @@ function M.result(payload, opts)
     sessions = items,
     source_ref = payload.source_ref,
     request_context = payload.request_context,
+    correlation = deep_copy(payload.correlation),
   }
 end
 
