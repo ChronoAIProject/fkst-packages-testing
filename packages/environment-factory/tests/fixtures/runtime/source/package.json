@@ -1,0 +1,8 @@
+{
+  "name": "environment-factory-hermetic-fixture",
+  "version": "1.0.0",
+  "private": true,
+  "dependencies": {
+    "fixture-protocol": "file:vendor/protocol"
+  }
+}
