@@ -176,9 +176,9 @@ function runtimeConfig(payload) {
   if (typeof config.state_auth_key !== 'string' || config.state_auth_key.length < 32 || config.state_auth_key.length > 512) {
     throw new Error('runtime config requires a bounded state_auth_key');
   }
-  if (typeof config.state_auth_key_revision !== 'string' || config.state_auth_key_revision.length < 1
-    || config.state_auth_key_revision.length > 180 || /[\x00-\x20\x7f]/.test(config.state_auth_key_revision)) {
-    throw new Error('runtime config requires a bounded state_auth_key_revision');
+  if (typeof config.state_mac_generation !== 'string' || config.state_mac_generation.length < 1
+    || config.state_mac_generation.length > 180 || /[\x00-\x20\x7f]/.test(config.state_mac_generation)) {
+    throw new Error('runtime config requires a bounded state_mac_generation');
   }
   return config;
 }

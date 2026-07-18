@@ -13,9 +13,9 @@ const {
   writeJsonAtomic,
 } = require('./common');
 
-function authenticationBytes(pointer, state, keyRevision, revision) {
+function authenticationBytes(pointer, state, macGeneration, revision) {
   return stableStringify({
-    key_revision: keyRevision,
+    mac_generation: macGeneration,
     revision,
     state_ref: pointer,
     state,
@@ -25,7 +25,7 @@ function authenticationBytes(pointer, state, keyRevision, revision) {
 function stateMacKey(config) {
   return crypto.scryptSync(
     config.state_auth_key,
-    `environment-factory-state-v1\0${config.state_auth_key_revision}`,
+    `environment-factory-state-v1\0${config.state_mac_generation}`,
     32,
   );
 }
@@ -48,11 +48,11 @@ function loadState(payload) {
     || typeof envelope.mac !== 'string') {
     return { authenticated: false, state: envelope && envelope.state ? envelope.state : envelope };
   }
-  const bindingMatches = envelope.key_revision === config.state_auth_key_revision
+  const bindingMatches = envelope.mac_generation === config.state_mac_generation
     && Number.isInteger(envelope.revision) && envelope.revision >= 1
     && samePointer(envelope.state_ref, payload.ref);
   const actual = stateMac(
-    authenticationBytes(payload.ref, envelope.state, config.state_auth_key_revision, envelope.revision),
+    authenticationBytes(payload.ref, envelope.state, config.state_mac_generation, envelope.revision),
     config,
   );
   const left = Buffer.from(actual);
@@ -80,12 +80,12 @@ function saveState(payload) {
     const revision = currentRevision + 1;
     const envelope = {
       schema: 'environment-factory.authenticated-state.v1',
-      key_revision: config.state_auth_key_revision,
+      mac_generation: config.state_mac_generation,
       revision,
       state_ref: payload.ref,
       state: payload.state,
       mac: stateMac(
-        authenticationBytes(payload.ref, payload.state, config.state_auth_key_revision, revision),
+        authenticationBytes(payload.ref, payload.state, config.state_mac_generation, revision),
         config,
       ),
     };

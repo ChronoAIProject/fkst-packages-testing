@@ -284,7 +284,7 @@ local function request_fixture(ctx, ports, commit_sha)
     schema = "environment-factory.runtime-config.v1",
     revision = "environment-runtime-config-1",
     state_auth_key = "environment-runtime-test-state-auth-key-2026",
-    state_auth_key_revision = "environment-runtime-test-key-1",
+    state_mac_generation = "environment-runtime-test-key-1",
     now = "2026-07-16T00:00:30Z",
     trusted_authorities = {},
     repository_mirrors = { [repository.url] = ctx.source_root },
