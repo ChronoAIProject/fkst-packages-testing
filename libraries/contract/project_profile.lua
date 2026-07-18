@@ -10,6 +10,7 @@ P.schemas = {
 }
 
 P.canonicalization = "fkst-project-profile-canonical-json.v1"
+P.listener_mode = "fkst-inherited-listeners-v1"
 
 local max_string = 1024
 local max_id = 180
@@ -344,14 +345,24 @@ local readiness_fields = {
   argv = true,
 }
 
-local function validate_readiness_check(value, field, allowed_origins)
+local function loopback_http_origin(origin)
+  return origin:match("^https?://127%.0%.0%.1:%d+$") ~= nil
+    or origin:match("^https?://localhost:%d+$") ~= nil
+    or origin:match("^https?://%[::1%]:%d+$") ~= nil
+end
+
+local function validate_readiness_check(value, field, allowed_origins, service_check)
   only_fields(value, readiness_fields, "readiness-check")
   if value.type == "http" then
     if value.host ~= nil or value.port ~= nil or value.argv ~= nil then
       fail("malformed-readiness", field .. " http checks contain unsupported fields")
     end
     local origin = http_url_parts(value.url, field .. ".url")
-    if allowed_origins[origin] ~= true then fail("foreign-origin", field .. ".url is outside allowed_origins") end
+    if service_check then
+      if not loopback_http_origin(origin) then fail("non-loopback", field .. ".url must use an explicit loopback origin") end
+    elseif allowed_origins[origin] ~= true then
+      fail("foreign-origin", field .. ".url is outside allowed_origins")
+    end
     require_integer(value.expected_status, field .. ".expected_status", 100, 599)
   elseif value.type == "tcp" then
     if value.url ~= nil or value.expected_status ~= nil or value.argv ~= nil then
@@ -374,12 +385,12 @@ local function validate_readiness_check(value, field, allowed_origins)
   return value
 end
 
-local function validate_readiness_checks(value, field, allowed_origins)
+local function validate_readiness_checks(value, field, allowed_origins, service_check)
   if not dense_list(value, max_list) or #value == 0 then
     fail("malformed-readiness", field .. " must be a non-empty bounded dense list")
   end
   for index, item in ipairs(value) do
-    validate_readiness_check(item, field .. "[" .. tostring(index) .. "]", allowed_origins)
+    validate_readiness_check(item, field .. "[" .. tostring(index) .. "]", allowed_origins, service_check)
   end
   return value
 end
@@ -399,6 +410,13 @@ local function validate_commands(value)
   return value
 end
 
+local function validate_listener_mode(value, field)
+  if value ~= P.listener_mode then
+    fail("unsupported-listener-mode", field .. " must be " .. P.listener_mode)
+  end
+  return value
+end
+
 local function validate_services(value, allowed_origins)
   if value == nil then return nil end
   if not dense_list(value, 16) or #value == 0 then
@@ -408,17 +426,19 @@ local function validate_services(value, allowed_origins)
   for index, service in ipairs(value) do
     only_fields(service, {
       name = true,
+      listener_mode = true,
       start_argv = true,
       cleanup_argv = true,
       readiness_checks = true,
     }, "dependent-service")
     require_id(service.name, "dependent_services[" .. tostring(index) .. "].name")
+    validate_listener_mode(service.listener_mode, "dependent_services[" .. tostring(index) .. "].listener_mode")
     if seen[service.name] then fail("duplicate-service", service.name) end
     seen[service.name] = true
     validate_argv(service.start_argv, "dependent_services[" .. tostring(index) .. "].start_argv")
     validate_argv(service.cleanup_argv, "dependent_services[" .. tostring(index) .. "].cleanup_argv")
     local readiness_field = "dependent_services[" .. tostring(index) .. "].readiness_checks"
-    validate_readiness_checks(service.readiness_checks, readiness_field, allowed_origins)
+    validate_readiness_checks(service.readiness_checks, readiness_field, allowed_origins, true)
   end
   return value
 end
@@ -460,7 +480,7 @@ local timeout_fields = {
   receipt_ttl_seconds = true,
 }
 
-local function validate_timeouts(value, commands)
+local function validate_timeouts(value, commands, service_count)
   only_fields(value, timeout_fields, "timeouts")
   local phase_seconds = {
     install = require_integer(value.install_seconds, "timeouts.install_seconds", 1, 3600),
@@ -468,8 +488,8 @@ local function validate_timeouts(value, commands)
     migrate = require_integer(value.migrate_seconds, "timeouts.migrate_seconds", 1, 3600),
     seed = require_integer(value.seed_seconds, "timeouts.seed_seconds", 1, 3600),
     start = require_integer(value.start_seconds, "timeouts.start_seconds", 1, 3600),
-    cleanup = require_integer(value.cleanup_seconds, "timeouts.cleanup_seconds", 1, 3600),
   }
+  require_integer(value.cleanup_seconds, "timeouts.cleanup_seconds", 1, 3600)
   local readiness = require_integer(value.readiness_seconds, "timeouts.readiness_seconds", 1, 3600)
   local total = require_integer(value.total_seconds, "timeouts.total_seconds", 1, 14400)
   require_integer(value.receipt_ttl_seconds, "timeouts.receipt_ttl_seconds", 1, 300)
@@ -477,6 +497,7 @@ local function validate_timeouts(value, commands)
   for phase, seconds in pairs(phase_seconds) do
     if commands[phase] ~= nil then required = required + seconds end
   end
+  if (service_count or 0) > 0 then required = required + phase_seconds.start + readiness end
   if total < required then fail("unbounded-value", "timeouts.total_seconds is below the declared lifecycle bound") end
   return value
 end
@@ -508,6 +529,7 @@ function P.validate_profile(value)
     repository = true,
     working_directory = true,
     commands = true,
+    application_listener_mode = true,
     dependent_services = true,
     readiness_checks = true,
     allowed_origins = true,
@@ -521,12 +543,13 @@ function P.validate_profile(value)
   validate_repository(value.repository, "repository")
   require_safe_workdir(value.working_directory, "working_directory")
   validate_commands(value.commands)
+  validate_listener_mode(value.application_listener_mode, "application_listener_mode")
   local origins = validate_origins(value.allowed_origins)
   validate_services(value.dependent_services, origins)
-  validate_readiness_checks(value.readiness_checks, "readiness_checks", origins)
+  validate_readiness_checks(value.readiness_checks, "readiness_checks", origins, false)
   validate_secret_refs(value.secret_refs)
   validate_mutation_policy(value.mutation_policy)
-  validate_timeouts(value.timeouts, value.commands)
+  validate_timeouts(value.timeouts, value.commands, #(value.dependent_services or {}))
   validate_resource_budgets(value.resource_budgets)
   return value
 end

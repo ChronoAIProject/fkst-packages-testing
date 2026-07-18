@@ -30,6 +30,15 @@ RULE_FIXTURES = {
     "browser-observation-no-fixed-host-config": RuleFixture(
         "departments/contract_fixture/main.lua", joined("APP", "_FIXED_ENDPOINT")
     ),
+    "environment-factory-shell-free": RuleFixture(
+        "contract_fixture.lua", joined("os", ".execute")
+    ),
+    "environment-factory-js-shell-free": RuleFixture(
+        "bin/contract_fixture.js", joined("shell", ": true")
+    ),
+    "environment-factory-pointer-only-events": RuleFixture(
+        "departments/contract_fixture/main.lua", joined("std", "out")
+    ),
     "browser-observation-no-legacy-runner": RuleFixture(
         "departments/contract_fixture/main.lua", joined("agentic", "_testing")
     ),

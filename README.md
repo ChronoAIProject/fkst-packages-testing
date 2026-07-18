@@ -18,6 +18,7 @@ This repository contains no engine Rust and no host application state.
 | `test-publication` | flat adapter | Converts testing publication handoff artifacts into publication requests, intended to compose with `github-proxy`. | skeleton |
 | `testing-pipeline` | composed lifecycle | Composes module loop, runner, artifact summary, and publication handoff for graph-level testing flows. | skeleton |
 | `testing-discovery` | composed lifecycle | Converts bounded local app-scope observations into FKST-native module starts without a hand-authored product module catalog. | experimental |
+| `environment-factory` | composed lifecycle | Uses an approved project-profile snapshot to prepare an exact disposable loopback environment, hand it to browser readiness and the testing pipeline, and finalize it through an opaque cleanup reference. | experimental |
 | `module-test-loop` | composed lifecycle | Module-level testing lifecycle orchestration that delegates runner execution to `testing-runner`. | migrating |
 | `platform-test-loop` | composed lifecycle | Platform-level multi-module testing lifecycle orchestration. Initially delegates to `module-test-loop` / `testing-runner`. | skeleton |
 | `online-regression` | flat adapter | Online regression / heartbeat entry point with a first native no-browser heartbeat path. | migrating |
@@ -31,6 +32,7 @@ packages/<name>/
   departments/<department>/main.lua
   tests/*_test.lua
 contracts/
+  environment-factory.v1.md
   project-profile.v1.md
   testing-runner.v1.md
   testing-discovery.v1.md
@@ -58,6 +60,19 @@ authenticate the exact approval, and `contract.project_profile.authorize_executi
 profile, immutable repository commit, approval, validation receipt, freshness, and replay claim
 immediately before checkout or command execution. The controlled JSON fixture lives under
 `examples/generic-host/project-profile/`.
+
+`environment-factory` accepts only pointer-based start events and binds every immutable request
+field. Its host runtime re-enters `authorize_execution` through a serialized durable exact-port
+lease; the lease is the immediate first target effect, preflights OS availability, and returns the
+trusted deep-copied snapshot used by checkout and direct argv phases. Post-start readiness proves the
+exact loopback listener set belongs to the supervised process group. Authenticated durable state,
+immutable per-status receipts, provisioning/resource budgets, frozen dependency enforcement, reverse
+cleanup, cancellation, and interruption are part of the contract. The package reuses the existing
+`browser-readiness` -> `testing-pipeline` interfaces and redelivers one idempotent handoff payload
+until terminal acknowledgement. Its production adapter is
+`packages/environment-factory/runtime.lua`, backed by the shell-free Node effect runner at
+`packages/environment-factory/bin/environment-factory-runtime.js`; the hermetic package test drives
+that adapter through real Git, process, readiness, receipt, handoff, and cleanup effects.
 
 For autonomous coverage, a host can submit `testing-discovery.app-scope.v1` with local scope, sessions, policy, and bounded AI/browser/navigation/accessibility observations. `testing-discovery` derives module starts automatically, writes a sanitized discovery plan under `.testing/runs/...`, and reuses the existing `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication path. Hosts provide only bootstrap scope and safety policy; product-specific module catalogs are not required in this package set.
 

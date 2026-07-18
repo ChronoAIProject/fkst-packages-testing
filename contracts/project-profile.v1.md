@@ -30,8 +30,11 @@ The profile has these exact top-level fields:
   backslashes
 - `commands`: direct dense argv lists for optional `install`, `build`, `migrate`, and `seed`, plus
   required `start` and `cleanup`; shell interpreters and command strings are invalid
-- `dependent_services`: optional bounded dense list of `{ name, start_argv, cleanup_argv,
-  readiness_checks }`
+- `application_listener_mode`: exactly `fkst-inherited-listeners-v1`; the application receives its
+  approved loopback listeners from the host rather than binding released probe ports
+- `dependent_services`: optional bounded dense list of `{ name, listener_mode, start_argv,
+  cleanup_argv, readiness_checks }`, where `listener_mode` is exactly
+  `fkst-inherited-listeners-v1`
 - `readiness_checks`: non-empty bounded dense list of typed `http`, `tcp`, or `argv` checks
 - `allowed_origins`: non-empty bounded dense list of credential-free HTTP(S) origins; HTTP readiness
   checks must remain within this set
