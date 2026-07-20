@@ -1,0 +1,43 @@
+{
+  "schema": "fkst-opensandbox-host.run-config.v1",
+  "image": "ghcr.io/example/fkst-qa@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "ttl_seconds": 1800,
+  "resource_limits": {
+    "cpu": "2",
+    "memory": "4Gi",
+    "disk": "10Gi"
+  },
+  "network_policy": {
+    "default_action": "deny",
+    "rules": [
+      { "action": "allow", "target": "github.com" },
+      { "action": "allow", "target": "registry.npmjs.org" }
+    ]
+  },
+  "repository_ref": {
+    "kind": "github-repository",
+    "ref": "ChronoAIProject/NyxID@0123456789012345678901234567890123456789"
+  },
+  "project_profile_ref": {
+    "kind": "artifact",
+    "ref": "/run/fkst/approved/project-profile.v1.json"
+  },
+  "project_profile_approval_ref": {
+    "kind": "artifact",
+    "ref": "/run/fkst/approved/project-profile-approval.v1.json"
+  },
+  "runtime_config_ref": {
+    "kind": "artifact",
+    "ref": "/run/fkst/approved/runtime-config.v1.json"
+  },
+  "artifact_destination": {
+    "kind": "filesystem",
+    "root": ".testing/opensandbox-host-published"
+  },
+  "required_artifacts": [
+    { "path": ".testing/runs/nyxid/metadata.json", "max_bytes": 1048576 },
+    { "path": ".testing/runs/nyxid/final-receipt.json", "max_bytes": 1048576 }
+  ],
+  "trace_id": "trace-nyxid-opensandbox",
+  "dedup_key": "nyxid-opensandbox-run"
+}
