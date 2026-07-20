@@ -25,13 +25,55 @@ function stopGroup(child) {
   }
 }
 
-function spawnListener(source, ports) {
-  const child = spawn(process.execPath, ['-e', source, ...ports.map(String)], {
+async function spawnListener(addresses, temp) {
+  const readyPath = path.join(temp, `listener-${process.pid}-${Date.now()}-${Math.random()}.json`);
+  const source = `
+    const fs = require('fs');
+    const net = require('net');
+    const addresses = JSON.parse(process.argv[1]);
+    const readyPath = process.argv[2];
+    const ports = new Array(addresses.length);
+    let remaining = addresses.length;
+    const publish = (value) => {
+      const pendingPath = readyPath + '.tmp';
+      fs.writeFileSync(pendingPath, JSON.stringify(value));
+      fs.renameSync(pendingPath, readyPath);
+    };
+    const fail = (error) => {
+      publish({ error: error.message });
+      process.exit(1);
+    };
+    addresses.forEach((address, index) => {
+      const server = net.createServer();
+      server.once('error', fail);
+      server.listen(0, address, () => {
+        ports[index] = server.address().port;
+        remaining -= 1;
+        if (remaining === 0) publish({ ports });
+      });
+    });
+    setInterval(() => {}, 1000);
+  `;
+  const child = spawn(process.execPath, ['-e', source, JSON.stringify(addresses), readyPath], {
     detached: true,
     stdio: 'ignore',
   });
   child.unref();
-  return child;
+  const deadline = Date.now() + 5_000;
+  while (!fs.existsSync(readyPath)) {
+    if (Date.now() >= deadline) {
+      stopGroup(child);
+      throw new Error(`listener readiness timed out: ${readyPath}`);
+    }
+    await delay(10);
+  }
+  const ready = JSON.parse(fs.readFileSync(readyPath, 'utf8'));
+  fs.rmSync(readyPath, { force: true });
+  if (ready.error) {
+    stopGroup(child);
+    throw new Error(`listener startup failed: ${ready.error}`);
+  }
+  return { child, ports: ready.ports };
 }
 
 async function main() {
@@ -101,27 +143,22 @@ async function main() {
     assert.strictEqual(bounded.outputExceeded, true);
     assert.strictEqual(Buffer.byteLength(bounded.stdout) + Buffer.byteLength(bounded.stderr) <= 1024, true);
 
-    const expectedPort = 62000 + (process.pid % 1000);
-    const extraPort = expectedPort + 1000;
-    const extra = spawnListener(
-      "const n=require('net');n.createServer().listen(Number(process.argv[1]),'127.0.0.1');n.createServer().listen(Number(process.argv[2]),'127.0.0.1');setInterval(()=>{},1000)",
-      [expectedPort, extraPort],
+    const extra = await spawnListener(['127.0.0.1', '127.0.0.1'], temp);
+    const extraResult = listenersOwnedByProcessGroup(
+      [{ name: 'expected', port: extra.ports[0] }],
+      extra.child.pid,
     );
-    await delay(250);
-    const extraResult = listenersOwnedByProcessGroup([{ name: 'expected', port: expectedPort }], extra.pid);
-    stopGroup(extra);
+    stopGroup(extra.child);
     assert.strictEqual(extraResult.supported, true);
     assert.strictEqual(extraResult.owned, false);
     assert.match(extraResult.reason, /^extra-listener:/);
 
-    const wildcardPort = expectedPort + 2000;
-    const wildcard = spawnListener(
-      "require('net').createServer().listen(Number(process.argv[1]),'0.0.0.0');setInterval(()=>{},1000)",
-      [wildcardPort],
+    const wildcard = await spawnListener(['0.0.0.0'], temp);
+    const wildcardResult = listenersOwnedByProcessGroup(
+      [{ name: 'expected', port: wildcard.ports[0] }],
+      wildcard.child.pid,
     );
-    await delay(250);
-    const wildcardResult = listenersOwnedByProcessGroup([{ name: 'expected', port: wildcardPort }], wildcard.pid);
-    stopGroup(wildcard);
+    stopGroup(wildcard.child);
     assert.strictEqual(wildcardResult.supported, true);
     assert.strictEqual(wildcardResult.owned, false);
     assert.match(wildcardResult.reason, /^non-loopback-listener:/);
