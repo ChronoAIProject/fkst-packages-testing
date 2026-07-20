@@ -12,3 +12,4 @@ online-regression testing-runner
 testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus
 testing-discovery browser-readiness testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus
 environment-factory browser-readiness testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus
+testing-design

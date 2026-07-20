@@ -1,0 +1,13 @@
+kind = "package.composed"
+name = "testing-design"
+persistence_class = "saga"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow", "testkit", "testing_runtime"]
+
+[conformance]
+pack = "conformance/pack.toml"
+function = "core.saga_conformance_errors"

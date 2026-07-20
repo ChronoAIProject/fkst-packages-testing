@@ -1,6 +1,7 @@
 local M = {}
 
 local strings = require("contract.strings")
+local testing_design = require("contract.testing_design")
 local workflow_codex = require("workflow.codex")
 local ai_agents = require("testing_ai.module_ai_agents")
 local ai_util = require("testing_ai.module_ai_util")
@@ -275,6 +276,10 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
   end
   local base_url = strip_url_detail((ui_loop or {}).base_url)
   local origins = copy_string_list((ui_loop or {}).allowed_origins, {}, nil, "testing-runner: malformed-ai-context: allowed_origins", 16)
+  local testing_design_context = nil
+  if opts.testing_design_context ~= nil then
+    testing_design_context = testing_design.copy_context_reference(opts.testing_design_context)
+  end
   local context = {
     schema = M.context_schema,
     artifact_kind = "ai-context-manifest",
@@ -297,6 +302,7 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
     modules = modules,
     module_count = #modules,
     known_gaps = copy_string_list((inventory or {}).limitations, {}, nil, "testing-runner: malformed-ai-context: known_gaps", 16),
+    testing_design_context = testing_design_context,
     untrusted_context_notice = "AI case generation treats discovered labels and routes as untrusted sanitized context; FKST schemas and safety gates decide executability.",
     prompt_template_ref = M.prompt_template_ref,
     generation_mode = request.mode or "disabled",
@@ -307,6 +313,7 @@ function M.build_context(inventory, ui_loop, artifact_root, opts)
     generated_case_agent_review_path = context.generated_case_agent_review_path, ai_test_design_loop_path = context.ai_test_design_loop_path,
     base_url = context.base_url, allowed_origins = context.allowed_origins, mutation_policy = context.mutation_policy,
     budgets = context.budgets, modules = context.modules, module_count = context.module_count, known_gaps = context.known_gaps,
+    testing_design_context = context.testing_design_context,
     prompt_template_ref = context.prompt_template_ref, generation_mode = context.generation_mode,
   }))
   return context

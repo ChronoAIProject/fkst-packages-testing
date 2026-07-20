@@ -73,6 +73,12 @@ RULE_FIXTURES = {
     "testing-pipeline-pointer-only": RuleFixture(
         "departments/contract_fixture/main.lua", joined("attachment_", "body")
     ),
+    "testing-design-pointer-only-events": RuleFixture(
+        "departments/contract_fixture/main.lua", joined("raw_", "prompt")
+    ),
+    "testing-design-no-target-execution": RuleFixture(
+        "departments/contract_fixture/main.lua", joined("target_", "command")
+    ),
     "no-large-inline-test-bodies": RuleFixture(
         "departments/contract_fixture/main.lua", joined("stdout_", "body")
     ),

@@ -97,6 +97,25 @@ local function ai_request(overrides)
   return value
 end
 
+local function testing_design_context(digest)
+  local function reference(schema, filename, value)
+    return {
+      schema = "testing-design.artifact-reference.v1",
+      artifact_schema = schema,
+      artifact_pointer = ".testing/runs/testing-design/" .. filename,
+      artifact_digest = value,
+    }
+  end
+  local analysis_key = string.rep("a", 64)
+  return {
+    schema = "testing-design.context-reference.v1",
+    analysis_key = analysis_key,
+    repository_analysis = reference("testing-design.repository-analysis.v1", "repository-analysis.v1.json", digest or string.rep("b", 64)),
+    requirements_index = reference("testing-design.requirements-index.v1", "requirements-index.v1.json", string.rep("c", 64)),
+    traceability_seed = reference("testing-design.traceability-seed.v1", "traceability-seed.v1.json", string.rep("d", 64)),
+  }
+end
+
 local function generated_gate(request, generated)
   local effective_request = request or ai_request()
   local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
@@ -192,6 +211,31 @@ return {
     t.eq(context.budgets.step_budget, 6)
     t.eq(context.prompt_template_ref, "testing-runner.ai-case-generation.prompt.v1")
     t.eq(context.untrusted_context_notice:find("untrusted sanitized context", 1, true) ~= nil, true)
+  end,
+
+  test_build_context_binds_testing_design_artifact_pointers_and_digests = function()
+    local design_context = testing_design_context()
+    local context = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request(),
+      testing_design_context = design_context,
+    })
+    t.eq(context.testing_design_context.schema, "testing-design.context-reference.v1")
+    t.eq(context.testing_design_context.analysis_key, design_context.analysis_key)
+    t.eq(context.testing_design_context.repository_analysis.artifact_pointer, design_context.repository_analysis.artifact_pointer)
+    t.eq(context.testing_design_context.repository_analysis.artifact_digest, design_context.repository_analysis.artifact_digest)
+    t.eq(context.testing_design_context.repository_content, nil)
+  end,
+
+  test_context_digest_changes_when_testing_design_digest_changes = function()
+    local first = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request(),
+      testing_design_context = testing_design_context(string.rep("b", 64)),
+    })
+    local second = ai.build_context(inventory(), ui_loop(), ".testing/runs/module-a-inventory", {
+      ai_generation = ai_request(),
+      testing_design_context = testing_design_context(string.rep("e", 64)),
+    })
+    t.is_true(first.input_digest ~= second.input_digest)
   end,
 
   test_build_context_respects_custom_ai_artifact_paths = function()

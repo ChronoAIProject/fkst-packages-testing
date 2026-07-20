@@ -1,0 +1,21 @@
+schema = 1
+runner_protocol = "fkst-declarative-rulepack@1"
+owner_package = "testing-design"
+
+[[rules]]
+id = "testing-design-pointer-only-events"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["core.lua", "ports.lua", "runtime.lua", "departments/**/*.lua", "raisers/**/*.lua"]
+exclude = ["tests/**", "packages/testing-design/tests/**"]
+pattern = "raw_document|raw_environment|raw_report|raw_prompt|raw_response|cookie|password|bearer|authorization_header"
+message = "testing design events must remain pointer-only and credential-free"
+
+[[rules]]
+id = "testing-design-no-target-execution"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["core.lua", "ports.lua", "runtime.lua", "departments/**/*.lua", "raisers/**/*.lua"]
+exclude = ["tests/**", "packages/testing-design/tests/**"]
+pattern = "target_argv|target_command|execute_target|source_command"
+message = "testing design must inspect target content as data and never execute it"
