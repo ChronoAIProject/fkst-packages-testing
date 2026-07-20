@@ -53,6 +53,8 @@ A typical host flow is:
 
 Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixtures under `examples/generic-host/` show how host-owned native module, browser-driver, and UI-loop profiles can translate into these existing events without adding product facts to this repo.
 
+For sandbox-hosted QA, `examples/opensandbox-host/` provides the provider-specific downstream adapter: it binds a pinned OpenSandbox image or snapshot, approved capability pointers, bounded resources and network policy, one idempotent sandbox receipt, artifact hashing/publication, and teardown. OpenSandbox details remain outside the reusable packages and do not change `environment-factory.v1`.
+
 Project startup configuration uses the separate `testing-project-profile.v1` and
 `testing-project-profile-approval.v1` contracts documented in `contracts/project-profile.v1.md`.
 Profile validity and canonical digest identity never grant execution permission: a host trust root must
