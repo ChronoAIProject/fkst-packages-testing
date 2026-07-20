@@ -600,6 +600,7 @@ local function write_module_inventory(result, payload, context, opts)
     ai_agent_generation = ((payload.cdp_execution or {}).ai_agent_generation),
     generated_cases = ((payload.cdp_execution or {}).generated_cases),
     generated_case_agent_review = ((payload.cdp_execution or {}).generated_case_agent_review),
+    ai_design_loop_state = opts.ai_design_loop_state,
     step_budget = ((payload.cdp_execution or {}).step_budget),
     case_priorities = ((payload.cdp_execution or {}).case_priorities),
   }

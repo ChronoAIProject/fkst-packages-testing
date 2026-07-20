@@ -94,3 +94,27 @@ Structured headless API/CLI execution uses the independent
 `testing-runner.structured_execution_request` seam and contracts documented in
 `structured-execution.v1.md`. It does not extend legacy module `native_argv` authority: every plan
 requires a separate authenticated approval bound to the plan digest and exact positive capabilities.
+
+## Iterative AI test-design loop
+
+The bounded test-design loop is a pointer-only artifact protocol layered above deterministic module planning. FKST events and graph requests carry `testing-runner.ai-design-loop.artifact-reference.v1` values containing only `artifact_pointer` and `artifact_digest`; seed cases, requirement/repository scope, coverage bodies, reviewer findings, patches, and state remain under `.testing/runs/...`.
+
+The public artifact schemas are:
+
+- `testing-runner.ai-seed-cases.v1` and `testing-runner.deterministic-test-cases.v1`: bounded case lists with stable IDs, module IDs, actions, coverage subject IDs, and pointer-based provenance.
+- `testing-runner.coverage-scope.v1`: bounded requirement, repository-signal, and discovered-module subjects with P0/P1/P2 priority and evidence pointers.
+- `testing-runner.coverage-matrix.v1`: one entry per in-scope subject, classified as `covered`, `intentionally-excluded`, `blocked`, `duplicate`, `not-executed-risk`, or `missing-evidence`, with case IDs, evidence pointer, and rationale.
+- `testing-runner.reviewer-findings.v1`: structured coverage decisions; conflicting decisions for the same subject fail closed.
+- `testing-runner.supplementation-patch.v1`: digest-bound round operations to add or revise cases, remove semantic duplicates, downgrade unsafe cases, request evidence, or set coverage.
+- `testing-runner.ai-design-round-plan.v1`: stable round identity, case/action counts, coverage digest, previous-round digest, and current round digest.
+- `testing-runner.ai-design-loop-state.v1`: persisted bounded state, source references, applied-patch digests, current artifacts, budgets, and trace/dedup identity.
+- `testing-runner.ai-design-closure.v1`: terminal `reviewed-complete`, `residual-risk`, `blocked`, or `round-limit` verdict bound to the final coverage matrix.
+- `testing-runner.residual-risk.v1`: explicit unresolved coverage entries and high-priority unresolved count for every non-complete closure.
+
+`testing-pipeline.start_design_loop` reads the three digest-bound input references, persists the initial state and round artifacts, and returns artifact references only. `testing-pipeline.apply_design_round` reads a persisted state and structured patch by reference, applies one deterministic bounded round, persists completed artifacts before returning, and reports either the next round plan or terminal closure. Canonical latest artifacts are accompanied by immutable per-round snapshots under `<artifact_root>/rounds/<round>/`. Reapplying an already-recorded patch is idempotent. Stale round digests, malformed patches, missing artifacts, digest mismatches, conflicting findings, and mutations after closure fail closed without replacing the last completed state.
+
+When `cdp_execution.ai_design_loop_request` is present on the testing-pipeline module start, the existing generation consensus still gates the authored candidate artifact, but an approved execution review enters `testing-ai-design-round` proposals instead of immediately resuming the runner. Each reached design-round consensus carries only a digest-bound `patch_ref`; non-terminal rounds emit the next stable proposal, while a terminal closure replaces the pipeline-only request with `ai_design_loop_state_ref` before raising the runner request. Requests without this field retain the legacy one-pass compatibility path.
+
+Completeness is derived from the coverage matrix rather than a bare approve vote. A round closes as `reviewed-complete` only when every subject is covered, intentionally excluded, or deduplicated. Explicit risk acceptance or blocking emits residual risk; reaching `max_rounds` with unresolved coverage emits `round-limit`. Case, action, operation, subject, and round budgets remain bounded.
+
+A completed state may enter `testing-runner.module-cdp-execution.v1` only through `ai_design_loop_state_ref`. The runner verifies the state digest and terminal closure before merging executable reviewed cases into the deterministic module test plan. Stable case IDs prevent duplicate planning on replay. Blocked, duplicate, and not-executed-risk cases remain non-executable.

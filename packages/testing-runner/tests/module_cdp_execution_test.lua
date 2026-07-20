@@ -1,4 +1,5 @@
 local ai = require("module_ai_generation")
+local design_loop = require("module_ai_design_loop")
 local cdp = require("module_cdp_execution")
 local inventory_module = require("module_inventory")
 local native = require("fkst_native")
@@ -162,6 +163,60 @@ local function reviewed_artifacts(value, review_status, generated_overrides)
   }
   return function(path)
     return native.json_encode(documents[path])
+  end
+end
+
+local function reviewed_design_state(value)
+  local root = ".testing/runs/module-a-cdp/design"
+  local function design_case(id, subject_id, origin)
+    return {
+      id = id,
+      module_id = "dashboard",
+      priority = "P1",
+      title = "Verify " .. id,
+      objective = "Verify " .. id,
+      case_kind = "read-only-interaction",
+      actions = {
+        { action = "open-visible-surface", target = "Dashboard", expected = "Dashboard is visible" },
+      },
+      expected_observable = "Dashboard remains visible.",
+      coverage_subject_ids = { subject_id },
+      provenance = { origin = origin, source_pointer = root .. "/source.json" },
+    }
+  end
+  local documents = {
+    seed_cases = { schema = design_loop.schemas.seed_cases, cases = { design_case("dashboard:reviewed-design", "module-dashboard", "user-seed") } },
+    deterministic_cases = { schema = design_loop.schemas.deterministic_cases, cases = { design_case("dashboard:reviewed-requirement", "REQ-HEALTH", "deterministic") } },
+    coverage_scope = {
+      schema = design_loop.schemas.coverage_scope,
+      subjects = {
+        { id = "REQ-HEALTH", kind = "requirement", priority = "P0", evidence_pointer = root .. "/requirements.json" },
+        { id = "module-dashboard", kind = "module", priority = "P1", evidence_pointer = root .. "/inventory.json" },
+      },
+    },
+  }
+  local function ref(name)
+    return { artifact_pointer = root .. "/" .. name .. ".json", artifact_digest = design_loop.document_digest(documents[name]) }
+  end
+  local state = design_loop.start({
+    schema = design_loop.schemas.request,
+    artifact_root = root,
+    seed_cases_ref = ref("seed_cases"),
+    deterministic_cases_ref = ref("deterministic_cases"),
+    coverage_scope_ref = ref("coverage_scope"),
+    max_rounds = 3,
+    case_budget = 8,
+    action_budget = 24,
+    trace_id = "trace-cdp-design",
+    dedup_key = "dedup-cdp-design",
+  }, documents)
+  value.cdp_execution.ai_design_loop_state_ref = {
+    artifact_pointer = state.paths.state,
+    artifact_digest = design_loop.document_digest(state),
+  }
+  return function(path)
+    if path == state.paths.state then return native.json_encode(state) end
+    error("unexpected artifact path " .. tostring(path))
   end
 end
 
@@ -364,5 +419,32 @@ return {
     t.eq(artifact.execution_status, "blocked")
     t.eq(artifact.classification, "ai-artifact-invalid")
     t.eq(artifact.executed_action_count, 0)
+  end,
+
+  test_final_design_loop_state_merges_reviewed_cases_before_bounded_execution = function()
+    local value = payload()
+    local reader = reviewed_design_state(value)
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", {
+      readiness = { status = "ready" },
+      artifact_reader = reader,
+    })
+    t.eq(artifact.execution_status, "planned")
+    local seen = {}
+    for _, action in ipairs(artifact.actions) do seen[action.case_id] = true end
+    t.eq(seen["dashboard:reviewed-design"], true)
+    t.eq(seen["dashboard:reviewed-requirement"], true)
+  end,
+
+  test_design_loop_state_digest_mismatch_blocks_before_execution = function()
+    local value = payload()
+    local reader = reviewed_design_state(value)
+    value.cdp_execution.ai_design_loop_state_ref.artifact_digest = "wrong-digest"
+    local artifact = cdp.build(value, ".testing/runs/module-a-cdp", {
+      readiness = { status = "ready" },
+      artifact_reader = reader,
+    })
+    t.eq(artifact.execution_status, "blocked")
+    t.eq(artifact.classification, "ai-design-loop-artifact-invalid")
+    t.eq(artifact.action_count, 0)
   end,
 }

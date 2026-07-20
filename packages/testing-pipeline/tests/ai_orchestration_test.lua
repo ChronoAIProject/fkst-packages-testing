@@ -1,4 +1,5 @@
 local ai = require("ai_orchestration")
+local design_loop = require("testing_ai.module_ai_design_loop")
 local t = fkst.test
 
 local fixture_origin = "http://localhost:8080"
@@ -69,6 +70,67 @@ local function all_writes(model)
   local parts = {}
   for path, body in pairs(model.writes) do table.insert(parts, path .. "\n" .. body) end
   return table.concat(parts, "\n")
+end
+
+local function design_case(id, subject_ids)
+  return {
+    id = id,
+    module_id = "dashboard",
+    priority = "P1",
+    title = "Verify " .. id,
+    objective = "Verify " .. id,
+    case_kind = "read-only-interaction",
+    actions = {
+      { action = "open-visible-surface", target = "Dashboard", expected = "Dashboard is visible" },
+    },
+    expected_observable = "Dashboard remains visible.",
+    coverage_subject_ids = subject_ids,
+    provenance = { origin = "deterministic", source_pointer = artifact_root .. "/design/source.json" },
+  }
+end
+
+local function design_fixture(model, max_rounds, extra_subject)
+  local root = artifact_root .. "/design"
+  local documents = {
+    seed_cases = { schema = design_loop.schemas.seed_cases, cases = {} },
+    deterministic_cases = { schema = design_loop.schemas.deterministic_cases, cases = { design_case("health", { "REQ-HEALTH" }) } },
+    coverage_scope = {
+      schema = design_loop.schemas.coverage_scope,
+      subjects = {
+        { id = "REQ-HEALTH", kind = "requirement", priority = "P0", evidence_pointer = root .. "/requirements.json" },
+        { id = "module-dashboard", kind = "module", priority = "P1", evidence_pointer = root .. "/inventory.json" },
+      },
+    },
+  }
+  local paths = {
+    seed_cases = root .. "/seed-cases.json",
+    deterministic_cases = root .. "/deterministic-cases.json",
+    coverage_scope = root .. "/coverage-scope.json",
+  }
+  if extra_subject then
+    documents.coverage_scope.subjects[3] = {
+      id = "repository-dashboard-route",
+      kind = "repository-signal",
+      priority = "P1",
+      evidence_pointer = root .. "/repository-context.json",
+    }
+  end
+  for key, path in pairs(paths) do model.writes[path] = ai.json_encode(documents[key]) end
+  local function ref(key)
+    return { artifact_pointer = paths[key], artifact_digest = design_loop.document_digest(documents[key]) }
+  end
+  return {
+    schema = design_loop.schemas.request,
+    artifact_root = root,
+    seed_cases_ref = ref("seed_cases"),
+    deterministic_cases_ref = ref("deterministic_cases"),
+    coverage_scope_ref = ref("coverage_scope"),
+    max_rounds = max_rounds or 3,
+    case_budget = 8,
+    action_budget = 24,
+    trace_id = "trace-design-graph",
+    dedup_key = "dedup-design-graph",
+  }
 end
 
 local function module_start(overrides)
@@ -305,6 +367,10 @@ return {
           generated_case_agent_review_path = custom_root .. "/execution-review.json",
           ai_test_design_loop_path = custom_root .. "/closure.json",
         },
+        ai_design_loop_state_ref = {
+          artifact_pointer = custom_root .. "/design-state.json",
+          artifact_digest = "design-state-digest",
+        },
       },
     })
     local start = ai.start(start_payload, model.ports)
@@ -324,11 +390,165 @@ return {
     t.eq(action.request.cdp_execution.ai_generation.ai_agent_generation_path, custom_root .. "/generation-review.json")
     t.eq(action.request.cdp_execution.ai_generation.generated_case_agent_review_path, custom_root .. "/execution-review.json")
     t.eq(action.request.cdp_execution.ai_generation.ai_test_design_loop_path, custom_root .. "/closure.json")
+    t.eq(action.request.cdp_execution.ai_design_loop_state_ref.artifact_pointer, custom_root .. "/design-state.json")
+    t.eq(action.request.cdp_execution.ai_design_loop_state_ref.artifact_digest, "design-state-digest")
     t.eq(model.writes[custom_root .. "/context.json"] ~= nil, true)
     t.eq(model.writes[custom_root .. "/generated.json"] ~= nil, true)
     t.eq(model.writes[custom_root .. "/gate.json"] ~= nil, true)
     t.eq(model.writes[custom_root .. "/generation-review.json"] ~= nil, true)
     t.eq(model.writes[custom_root .. "/execution-review.json"] ~= nil, true)
     t.eq(model.writes[custom_root .. "/closure.json"] ~= nil, true)
+  end,
+
+  test_design_graph_supplements_persists_and_replays_without_duplication = function()
+    local model = memory_io()
+    local started = ai.start_design_loop(design_fixture(model), model.ports)
+    t.eq(started.kind, "design-round-plan")
+    local round_plan = decode(model, artifact_root .. "/design/ai-design-round-plan.json")
+    local patch = {
+      schema = design_loop.schemas.patch,
+      round = 1,
+      base_round_digest = round_plan.round_digest,
+      operations = {
+        { operation = "add-case", case = design_case("dashboard-visible", { "module-dashboard" }) },
+      },
+    }
+    local patch_path = artifact_root .. "/design/reviewer-patch-input.json"
+    model.writes[patch_path] = ai.json_encode(patch)
+    local patch_ref = { artifact_pointer = patch_path, artifact_digest = design_loop.document_digest(patch) }
+    local applied = ai.apply_design_round({
+      schema = ai.design_round_request_schema,
+      state_ref = started.refs.state_ref,
+      patch_ref = patch_ref,
+      trace_id = "trace-design-graph",
+      dedup_key = "dedup-design-graph",
+    }, model.ports)
+    t.eq(applied.kind, "design-closure")
+    t.eq(model.writes[artifact_root .. "/design/rounds/1/ai-design-round-plan.json"] ~= nil, true)
+    t.eq(model.writes[artifact_root .. "/design/rounds/2/ai-design-round-plan.json"] ~= nil, true)
+    local closure = decode(model, artifact_root .. "/design/ai-design-closure.json")
+    t.eq(closure.status, "reviewed-complete")
+    local replay = ai.apply_design_round({
+      schema = ai.design_round_request_schema,
+      state_ref = applied.refs.state_ref,
+      patch_ref = patch_ref,
+    }, model.ports)
+    t.eq(replay.replayed, true)
+    t.eq(replay.refs.state_ref.artifact_digest, applied.refs.state_ref.artifact_digest)
+  end,
+
+  test_existing_consensus_review_enters_design_rounds_before_runner_resume = function()
+    local model = memory_io()
+    local start_payload = module_start()
+    start_payload.cdp_execution.ai_design_loop_request = design_fixture(model, 3, true)
+    local start = ai.start(start_payload, model.ports)
+    local generated = ai.generate(start.request, model.ports)
+    local review = ai.handle_consensus_reached(consensus_reached(generated.proposal), model.ports)
+    local design = ai.handle_consensus_reached(consensus_reached(review.proposal), model.ports)
+    t.eq(design.kind, "review-proposal")
+    t.eq(design.proposal.source_ref.kind, "testing-ai-design-round")
+    local round_plan = decode(model, artifact_root .. "/design/ai-design-round-plan.json")
+    local patch = {
+      schema = design_loop.schemas.patch,
+      round = 1,
+      base_round_digest = round_plan.round_digest,
+      operations = {
+        { operation = "add-case", case = design_case("dashboard-consensus-reviewed", { "module-dashboard" }) },
+      },
+    }
+    local patch_path = artifact_root .. "/design/consensus-patch.json"
+    model.writes[patch_path] = ai.json_encode(patch)
+    local reached = consensus_reached(design.proposal)
+    reached.patch_ref = { artifact_pointer = patch_path, artifact_digest = design_loop.document_digest(patch) }
+    local next_round = ai.handle_consensus_reached(reached, model.ports)
+    t.eq(next_round.kind, "review-proposal")
+    local second_plan = decode(model, artifact_root .. "/design/ai-design-round-plan.json")
+    local second_patch = {
+      schema = design_loop.schemas.patch,
+      round = 2,
+      base_round_digest = second_plan.round_digest,
+      operations = {
+        { operation = "add-case", case = design_case("dashboard-repository-signal", { "repository-dashboard-route" }) },
+      },
+    }
+    local second_path = artifact_root .. "/design/consensus-patch-round-2.json"
+    model.writes[second_path] = ai.json_encode(second_patch)
+    local second_reached = consensus_reached(next_round.proposal)
+    second_reached.patch_ref = { artifact_pointer = second_path, artifact_digest = design_loop.document_digest(second_patch) }
+    local resumed = ai.handle_consensus_reached(second_reached, model.ports)
+    t.eq(resumed.kind, "module-loop-request")
+    t.eq(resumed.request.cdp_execution.ai_design_loop_request, nil)
+    t.eq(resumed.request.cdp_execution.ai_design_loop_state_ref.artifact_pointer, artifact_root .. "/design/ai-design-loop-state.json")
+  end,
+
+  test_design_consensus_rejection_fails_closed = function()
+    local model = memory_io()
+    local start_payload = module_start()
+    start_payload.cdp_execution.ai_design_loop_request = design_fixture(model)
+    local start = ai.start(start_payload, model.ports)
+    local generated = ai.generate(start.request, model.ports)
+    local review = ai.handle_consensus_reached(consensus_reached(generated.proposal), model.ports)
+    local design = ai.handle_consensus_reached(consensus_reached(review.proposal), model.ports)
+    local blocked = ai.handle_consensus_reached(consensus_reached(design.proposal, "reject"), model.ports)
+    t.eq(blocked.kind, "blocked-result")
+    local state = decode(model, artifact_root .. "/ai-orchestration-state.json")
+    t.eq(state.design.status, "blocked")
+  end,
+
+  test_design_graph_preserves_completed_round_on_conflict_or_digest_mismatch = function()
+    local model = memory_io()
+    local started = ai.start_design_loop(design_fixture(model), model.ports)
+    local original_state = model.writes[started.refs.state_ref.artifact_pointer]
+    local round_plan = decode(model, artifact_root .. "/design/ai-design-round-plan.json")
+    local patch = {
+      schema = design_loop.schemas.patch,
+      round = 1,
+      base_round_digest = round_plan.round_digest,
+      operations = {},
+      findings = {
+        schema = design_loop.schemas.reviewer_findings,
+        findings = {
+          { subject_id = "module-dashboard", status = "blocked", rationale = "Missing browser evidence." },
+          { subject_id = "module-dashboard", status = "covered", rationale = "Reviewer disagrees." },
+        },
+      },
+    }
+    local patch_path = artifact_root .. "/design/conflicting-patch.json"
+    model.writes[patch_path] = ai.json_encode(patch)
+    t.raises(function()
+      ai.apply_design_round({
+        schema = ai.design_round_request_schema,
+        state_ref = started.refs.state_ref,
+        patch_ref = { artifact_pointer = patch_path, artifact_digest = design_loop.document_digest(patch) },
+      }, model.ports)
+    end)
+    t.eq(model.writes[started.refs.state_ref.artifact_pointer], original_state)
+    t.raises(function()
+      ai.apply_design_round({
+        schema = ai.design_round_request_schema,
+        state_ref = { artifact_pointer = started.refs.state_ref.artifact_pointer, artifact_digest = "wrong-digest" },
+        patch_ref = { artifact_pointer = patch_path, artifact_digest = design_loop.document_digest(patch) },
+      }, model.ports)
+    end)
+  end,
+
+  test_design_graph_emits_round_limit_residual_risk_for_missing_evidence = function()
+    local model = memory_io()
+    local started = ai.start_design_loop(design_fixture(model, 1), model.ports)
+    t.eq(started.kind, "design-closure")
+    local closure = decode(model, artifact_root .. "/design/ai-design-closure.json")
+    local residual = decode(model, artifact_root .. "/design/residual-risk.json")
+    t.eq(closure.status, "round-limit")
+    t.eq(residual.unresolved[1].status, "missing-evidence")
+    t.eq(closure.residual_risk_digest, design_loop.document_digest(residual))
+  end,
+
+  test_design_graph_rejects_malformed_round_requests_and_json = function()
+    t.raises(function() ai.json_decode("{") end)
+    t.raises(function() ai.json_decode("x") end)
+    t.raises(function() ai.apply_design_round({}, memory_io().ports) end)
+    t.raises(function()
+      ai.apply_design_round({ schema = ai.design_round_request_schema, unsupported = true }, memory_io().ports)
+    end)
   end,
 }

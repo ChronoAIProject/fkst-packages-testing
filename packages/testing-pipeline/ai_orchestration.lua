@@ -2,21 +2,21 @@ local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
 local module_inventory = require("testing_ai.module_inventory")
 local ai_generation = require("testing_ai.module_ai_generation")
+local ai_design_loop = require("testing_ai.module_ai_design_loop")
+local ai_design_consensus = require("testing_ai.module_ai_design_consensus")
 
 local M = {}
 
 M.state_schema = "testing-pipeline.ai-orchestration-state.v1"
 M.generation_request_schema = "testing-pipeline.ai-generation-request.v1"
+M.design_round_request_schema = "testing-pipeline.ai-design-round.request.v1"
 M.state_filename = "ai-orchestration-state.json"
-
 local max_string = 512
 local max_id = 180
 local max_items = 32
-
 local function has_no_control(value)
   return type(value) == "string" and value:find("[%z\1-\31]") == nil
 end
-
 local function bounded(value, limit)
   return type(value) == "string" and value ~= "" and #value <= (limit or max_string) and has_no_control(value)
 end
@@ -263,7 +263,89 @@ local function write_json(path, value, ports)
   if not ok then error(err or "testing-pipeline: AI orchestration write failed") end
 end
 
-local function read_json(path, ports)
+local read_json
+local function reference(path, value)
+  return {
+    artifact_pointer = path,
+    artifact_digest = ai_design_loop.document_digest(value),
+  }
+end
+local function read_referenced_document(value, ports, field)
+  ai_design_loop.validate_artifact_reference(value)
+  local document = read_json(value.artifact_pointer, ports)
+  if ai_design_loop.document_digest(document) ~= value.artifact_digest then
+    error("testing-pipeline: ai-design-loop-digest-mismatch: " .. field)
+  end
+  return document
+end
+local function persist_design_state(state, artifacts, ports)
+  local paths = state.paths
+  local round_root = state.artifact_root .. "/rounds/" .. tostring(state.round)
+  local round_paths = {
+    coverage_matrix = round_root .. "/coverage-matrix.json",
+    reviewer_findings = round_root .. "/reviewer-findings.json",
+    supplementation_patch = round_root .. "/supplementation-patch.json",
+    round_plan = round_root .. "/ai-design-round-plan.json",
+  }
+  write_json(paths.coverage_matrix, artifacts.coverage_matrix, ports)
+  write_json(paths.round_plan, artifacts.round_plan, ports)
+  write_json(round_paths.coverage_matrix, artifacts.coverage_matrix, ports)
+  write_json(round_paths.round_plan, artifacts.round_plan, ports)
+  if artifacts.reviewer_findings ~= nil then write_json(paths.reviewer_findings, artifacts.reviewer_findings, ports) end
+  if artifacts.supplementation_patch ~= nil then write_json(paths.supplementation_patch, artifacts.supplementation_patch, ports) end
+  if artifacts.reviewer_findings ~= nil then write_json(round_paths.reviewer_findings, artifacts.reviewer_findings, ports) end
+  if artifacts.supplementation_patch ~= nil then write_json(round_paths.supplementation_patch, artifacts.supplementation_patch, ports) end
+  if artifacts.closure ~= nil then write_json(paths.closure, artifacts.closure, ports) end
+  if artifacts.residual_risk ~= nil then write_json(paths.residual_risk, artifacts.residual_risk, ports) end
+  write_json(paths.state, state, ports)
+  return {
+    state_ref = reference(paths.state, state),
+    coverage_matrix_ref = reference(paths.coverage_matrix, artifacts.coverage_matrix),
+    round_plan_ref = reference(paths.round_plan, artifacts.round_plan),
+    closure_ref = artifacts.closure and reference(paths.closure, artifacts.closure) or nil,
+    residual_risk_ref = artifacts.residual_risk and reference(paths.residual_risk, artifacts.residual_risk) or nil,
+    round_artifact_root = round_root,
+  }
+end
+function M.start_design_loop(request, ports)
+  ai_design_loop.validate_request(request)
+  local documents = {
+    seed_cases = read_referenced_document(request.seed_cases_ref, ports, "seed_cases"),
+    coverage_scope = read_referenced_document(request.coverage_scope_ref, ports, "coverage_scope"),
+    deterministic_cases = read_referenced_document(request.deterministic_cases_ref, ports, "deterministic_cases"),
+  }
+  local state, artifacts = ai_design_loop.start(request, documents)
+  local refs = persist_design_state(state, artifacts, ports)
+  return {
+    kind = artifacts.closure and "design-closure" or "design-round-plan",
+    round = state.round,
+    refs = refs,
+  }
+end
+function M.apply_design_round(request, ports)
+  if type(request) ~= "table" or request.schema ~= M.design_round_request_schema then
+    error("testing-pipeline: malformed-ai-design-round: request schema is invalid")
+  end
+  for key, _ in pairs(request) do
+    if key ~= "schema" and key ~= "state_ref" and key ~= "patch_ref" and key ~= "trace_id" and key ~= "dedup_key" then
+      error("testing-pipeline: malformed-ai-design-round: unsupported field")
+    end
+  end
+  local state = ai_design_loop.validate_state(read_referenced_document(request.state_ref, ports, "state"))
+  local patch = ai_design_loop.validate_patch(read_referenced_document(request.patch_ref, ports, "patch"))
+  if request.trace_id ~= nil and request.trace_id ~= state.trace_id then error("testing-pipeline: stale-ai-design-round: trace mismatch") end
+  if request.dedup_key ~= nil and request.dedup_key ~= state.dedup_key then error("testing-pipeline: stale-ai-design-round: dedup mismatch") end
+  local next_state, artifacts, replayed = ai_design_loop.apply_round(state, patch)
+  local refs = persist_design_state(next_state, artifacts, ports)
+  return {
+    kind = artifacts.closure and "design-closure" or "design-round-plan",
+    round = next_state.round,
+    replayed = replayed,
+    refs = refs,
+  }
+end
+
+read_json = function(path, ports)
   if not safe_artifact_pointer(path) then error("testing-pipeline: malformed-ai-orchestration: unsafe artifact path") end
   local read = ports and ports.read or default_read
   return json_decode(read(path))
@@ -448,6 +530,11 @@ local function copy_cdp_execution(value)
     stop_conditions = copy_string_list(value.stop_conditions, 16, max_string),
     mutation_fixtures = copy_table_list(value.mutation_fixtures, copy_mutation_fixture, 16),
     ai_generation = copy_ai_request(value.ai_generation),
+    ai_design_loop_request = ai_design_consensus.copy_request(value.ai_design_loop_request),
+    ai_design_loop_state_ref = type(value.ai_design_loop_state_ref) == "table" and {
+      artifact_pointer = safe_artifact_pointer(value.ai_design_loop_state_ref.artifact_pointer) and value.ai_design_loop_state_ref.artifact_pointer or nil,
+      artifact_digest = copy_string(value.ai_design_loop_state_ref.artifact_digest, nil, max_id),
+    } or nil,
   }
 end
 
@@ -608,6 +695,9 @@ local function fail_closed(state, payload, phase, ports, reason)
     elseif phase == "review" then
       state.review = state.review or {}
       state.review.status = "blocked"
+    elseif phase == "design" then
+      state.design = state.design or {}
+      state.design.status = "blocked"
     end
     pcall(write_state, state, ports)
   end
@@ -620,7 +710,7 @@ function M.is_testing_ai_consensus(payload)
   if type(payload.proposal_id) ~= "string" or payload.proposal_id:sub(1, 11) ~= "testing-ai/" then return false end
   local source = payload.source_ref
   if type(source) ~= "table" then return false end
-  if source.kind ~= "testing-ai-generation" and source.kind ~= "testing-ai-review" then return false end
+  if source.kind ~= "testing-ai-generation" and source.kind ~= "testing-ai-review" and source.kind ~= "testing-ai-design-round" then return false end
   return context_ref_to_root(source.ref) ~= nil
 end
 
@@ -750,6 +840,24 @@ local function read_generated_stage(state, context, ports)
   return generated, gate
 end
 
+local function resume_after_design(state, context, state_ref, ports)
+  local resume = sanitize_module_start(state.module_start)
+  resume.cdp_execution = resume.cdp_execution or { schema = "testing-runner.module-cdp-execution.v1" }
+  resume.cdp_execution.ai_design_loop_request = nil
+  resume.cdp_execution.ai_design_loop_state_ref = state_ref
+  resume.cdp_execution.ai_generation = resume.cdp_execution.ai_generation or { schema = ai_generation.request_schema, mode = "autonomous-reviewed" }
+  resume.cdp_execution.ai_generation.context_manifest_path = context.context_manifest_path
+  resume.cdp_execution.ai_generation.generated_cases_path = context.generated_cases_path
+  resume.cdp_execution.ai_generation.generated_case_gate_path = context.generated_case_gate_path
+  resume.cdp_execution.ai_generation.ai_agent_generation_path = context.ai_agent_generation_path
+  resume.cdp_execution.ai_generation.generated_case_agent_review_path = context.generated_case_agent_review_path
+  resume.cdp_execution.ai_generation.ai_test_design_loop_path = context.ai_test_design_loop_path
+  state.phase = "resumed"
+  state.design.status = "closed"
+  write_state(state, ports)
+  return { kind = "module-loop-request", request = module_loop_request(resume) }
+end
+
 local function handle_review_reached(payload, state, ports)
   if payload.proposal_id ~= (state.review or {}).proposal_id then return fail_closed(state, payload, "review", ports) end
   if payload.decision ~= "approve" then return fail_closed(state, payload, "review", ports) end
@@ -761,6 +869,18 @@ local function handle_review_reached(payload, state, ports)
   local closure = ai_generation.build_review_closure(context, generated, gate, agent_generation, agent_review)
   write_json(context.generated_case_agent_review_path, agent_review, ports)
   write_json(context.ai_test_design_loop_path, closure, ports)
+  local design_request = state.module_start.cdp_execution and state.module_start.cdp_execution.ai_design_loop_request
+  if design_request ~= nil then
+    local result = M.start_design_loop(design_request, ports)
+    state.review.status = agent_review.status
+    state.design = { status = result.kind == "design-closure" and "closed" or "proposed", state_ref = result.refs.state_ref }
+    if result.kind == "design-closure" then return resume_after_design(state, context, result.refs.state_ref, ports) end
+    local proposal = ai_design_consensus.round_proposal(state, result)
+    state.phase = "design-review-proposed"
+    state.design.proposal_id = proposal.proposal_id
+    write_state(state, ports)
+    return { kind = "review-proposal", proposal = proposal }
+  end
   state.phase = "resumed"
   state.review.status = agent_review.status
   write_state(state, ports)
@@ -780,11 +900,33 @@ local function handle_review_reached(payload, state, ports)
   return { kind = "module-loop-request", request = module_loop_request(resume) }
 end
 
+local function handle_design_round_reached(payload, state, ports)
+  if payload.proposal_id ~= (state.design or {}).proposal_id then return fail_closed(state, payload, "design", ports) end
+  if payload.decision ~= "approve" or type(payload.patch_ref) ~= "table" then return fail_closed(state, payload, "design", ports) end
+  local request = state.module_start.cdp_execution.ai_design_loop_request
+  local result = M.apply_design_round({
+    schema = M.design_round_request_schema,
+    state_ref = state.design.state_ref,
+    patch_ref = payload.patch_ref,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }, ports)
+  state.design.state_ref = result.refs.state_ref
+  if result.kind == "design-closure" then return resume_after_design(state, build_context_from_state(state), result.refs.state_ref, ports) end
+  local proposal = ai_design_consensus.round_proposal(state, result)
+  state.phase = "design-review-proposed"
+  state.design.status = "proposed"
+  state.design.proposal_id = proposal.proposal_id
+  write_state(state, ports)
+  return { kind = "review-proposal", proposal = proposal }
+end
+
 local function handle_reached_inner(payload, ports)
   if not M.is_testing_ai_consensus(payload) then return { kind = "skip" } end
   local state = load_state_for(payload, ports)
   if payload.source_ref.kind == "testing-ai-generation" then return handle_generation_reached(payload, state, ports) end
   if payload.source_ref.kind == "testing-ai-review" then return handle_review_reached(payload, state, ports) end
+  if payload.source_ref.kind == "testing-ai-design-round" then return handle_design_round_reached(payload, state, ports) end
   return { kind = "skip" }
 end
 
@@ -799,7 +941,8 @@ end
 local function handle_converge_inner(payload, ports)
   if not M.is_testing_ai_consensus(payload) then return { kind = "skip" } end
   local state = load_state_for(payload, ports)
-  local phase = payload.source_ref.kind == "testing-ai-generation" and "generation" or "review"
+  local phase = payload.source_ref.kind == "testing-ai-generation" and "generation"
+    or (payload.source_ref.kind == "testing-ai-design-round" and "design" or "review")
   return fail_closed(state, payload, phase, ports)
 end
 

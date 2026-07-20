@@ -1,6 +1,7 @@
 local M = {}
 
 local ai_generation = require("module_ai_generation")
+local ai_design_loop = require("module_ai_design_loop")
 
 M.feature_inventory_schema = "testing-runner.feature-inventory.v1"
 M.test_plan_schema = "testing-runner.module-test-plan.v1"
@@ -177,6 +178,12 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     })
   end
 
+  local ai_design_case_count = 0
+  if opts.ai_design_loop_state ~= nil then
+    ai_design_loop.validate_state(opts.ai_design_loop_state)
+    ai_design_case_count = ai_design_loop.merge_into_plan(plan_modules, opts.ai_design_loop_state)
+  end
+
   local ai_context, generated_cases, generated_case_gate, agent_generation, agent_review, ai_review_closure
   if ai_generation.enabled(opts.ai_generation) then
     ai_context = ai_generation.build_context(inventory, ui_loop, artifact_root, {
@@ -245,6 +252,8 @@ function M.build(inventory, ui_loop, artifact_root, opts)
       blocked_count = counts.blocked,
       not_executed_risk_count = counts["not-executed-risk"],
       ai_generation = ai_summary,
+      ai_design_case_count = ai_design_case_count,
+      ai_design_closure = opts.ai_design_loop_state and opts.ai_design_loop_state.current_artifacts.closure or nil,
     },
     ai_generation = ai_summary,
     ai_test_design_loop = ai_review_closure,
@@ -263,6 +272,7 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     ai_agent_generation = agent_generation,
     generated_case_agent_review = agent_review,
     ai_review_closure = ai_review_closure,
+    ai_design_loop_state = opts.ai_design_loop_state,
   }
 end
 
