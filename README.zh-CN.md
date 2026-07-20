@@ -15,7 +15,7 @@ runtime adapter 默认走 `fkst-native`。旧 `agentic-testing` Python CLI 和 h
 | `testing-runner` | flat adapter | 通过 FKST-native runtime boundary 运行普通测试任务和 approval-bound 的结构化 API/CLI 计划，并输出标准 testing result payload；legacy `agentic-testing` 请求会被 blocked。 | migrating |
 | `browser-readiness` | flat adapter | 检查本地 browser-harness/CDP/base URL readiness，并可透传 bounded execution context。 | migrating |
 | `test-artifacts` | flat library package | 定义标准 `.testing` artifact summary contract。 | skeleton |
-| `test-publication` | durable adapter | 将 testing handoff 转换为 pointer-only publication request，并通过 host-routed `github-proxy` seam 提供 replay-safe QA checkpoint、immutable GitHub artifact receipt 和对账后的 aggregate report。 | migrating |
+| `test-publication` | durable adapter | 将 testing handoff 转换为 pointer-only publication request，把已验证的产品缺陷发布为幂等 development Issue，并通过 host-routed `github-proxy` seam 提供 replay-safe QA checkpoint、immutable GitHub artifact receipt 和对账后的 aggregate report。 | migrating |
 | `testing-pipeline` | composed lifecycle | 组合 module loop、runner、artifact summary 和 publication handoff，用于 graph-level testing flows。 | skeleton |
 | `testing-discovery` | composed lifecycle | 将本地 app scope 的 bounded observations 转成 FKST-native module starts，不需要手写产品 module catalog。 | experimental |
 | `module-test-loop` | composed lifecycle | 模块级测试生命周期编排，并委托 `testing-runner` 执行 runner path。 | migrating |
@@ -48,6 +48,12 @@ GitHub 可见的 durable QA 报告使用 `contracts/qa-publication.v1.md` 中的
 seam。`test-publication` 维护 compare-and-swap run ledger，通过 host capability 发布 immutable
 artifact receipt，对 terminal case results 和 cleanup receipt 做对账，并输出 bounded
 `github-proxy.v1` comment intent。GitHub credential 和命令不会进入 testing package。
+
+结构化执行中已验证的产品缺陷使用 `contracts/defect-publication.v1.md` 定义的 pointer-only
+request、issue-draft artifact、GitHub Issue intent、acknowledgement 和逐 case receipt 协议。只有
+`product-defect` 会发出 Issue intent；环境、fixture、harness、passed 和 not-executed 结果只进入
+summary。Host 负责把出站 Issue seam 和 durable issue-written acknowledgement 映射到固定版本的
+`github-proxy` package。
 
 ### 下游 generic 接入示例
 

@@ -15,7 +15,7 @@ This repository contains no engine Rust and no host application state.
 | `testing-runner` | flat adapter | Runs configured jobs plus approval-bound structured API/CLI plans through the FKST-native runtime boundary and emits normalized testing result payloads; legacy `agentic-testing` requests are blocked. | migrating |
 | `browser-readiness` | flat adapter | Checks local browser-harness/CDP/base URL readiness and can carry bounded execution context through the readiness gate. | migrating |
 | `test-artifacts` | flat library package | Defines the normalized `.testing` artifact summary contract. | skeleton |
-| `test-publication` | durable adapter | Converts testing handoffs into pointer-only publication requests and provides replay-safe QA checkpoints, immutable GitHub artifact receipts, and reconciled aggregate reports through a host-routed `github-proxy` seam. | migrating |
+| `test-publication` | durable adapter | Converts testing handoffs into pointer-only publication requests, publishes verified product defects as deduplicated development Issues, and provides replay-safe QA checkpoints, immutable GitHub artifact receipts, and reconciled aggregate reports through host-routed `github-proxy` seams. | migrating |
 | `testing-pipeline` | composed lifecycle | Composes module loop, runner, artifact summary, and publication handoff for graph-level testing flows. | skeleton |
 | `testing-discovery` | composed lifecycle | Converts bounded local app-scope observations into FKST-native module starts without a hand-authored product module catalog. | experimental |
 | `environment-factory` | composed lifecycle | Uses an approved project-profile snapshot to prepare an exact disposable loopback environment, hand it to browser readiness and the testing pipeline, and finalize it through an opaque cleanup reference. | experimental |
@@ -32,6 +32,7 @@ packages/<name>/
   departments/<department>/main.lua
   tests/*_test.lua
 contracts/
+  defect-publication.v1.md
   environment-factory.v1.md
   project-profile.v1.md
   qa-publication.v1.md
@@ -68,6 +69,12 @@ publishes immutable artifact receipts through host capabilities, reconciles term
 verified cleanup, and emits bounded `github-proxy.v1` comment intents. The host maps the package's
 outbound and acknowledgement seams to the pinned `github-proxy`; raw GitHub credentials and commands
 never enter the testing packages.
+
+Verified structured-execution product defects use the pointer-only request, issue-draft artifact,
+GitHub Issue intent, acknowledgement, and per-case receipt protocol in
+`contracts/defect-publication.v1.md`. Only `product-defect` cases emit Issue intents; environment,
+fixture, harness, passed, and not-executed outcomes remain summary-only. The host maps the outbound
+Issue seam and durable issue-written acknowledgement to the pinned `github-proxy` package.
 
 For sandbox-hosted QA, `examples/opensandbox-host/` provides the provider-specific downstream adapter: it binds a pinned OpenSandbox image or snapshot, approved capability pointers, bounded resources and network policy, one idempotent sandbox receipt, artifact hashing/publication, and teardown. OpenSandbox details remain outside the reusable packages and do not change `environment-factory.v1`.
 

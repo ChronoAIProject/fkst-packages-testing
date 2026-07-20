@@ -2,7 +2,10 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "qa_publication_tick" },
-  produces = { "qa_checkpoint_request", "qa_finalize_request", "github_comment_written" },
+  produces = {
+    "qa_checkpoint_request", "qa_finalize_request", "github_comment_written",
+    "defect_publication_request", "github_issue_written",
+  },
   stall_window = "30s",
   retry = false,
 }
