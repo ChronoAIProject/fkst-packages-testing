@@ -516,4 +516,64 @@ function M.production_ports()
   return ports
 end
 
+function M.saga_conformance_errors()
+  local state
+  local publish_count, receipt_write_count = 0, 0
+  local commit_sha = string.rep("1", 40)
+  local request = {
+    schema = "test-publication.qa-checkpoint.request.v1",
+    repository = { slug = "owner/repo", commit_sha = commit_sha },
+    run_id = "qa-publication-conformance",
+    issue_number = 107,
+    stage = "intake",
+    attempt = 1,
+    status = "passed",
+    artifact_root = ".testing/runs/qa-publication-conformance",
+    artifact_ref = ".testing/runs/qa-publication-conformance/intake.json",
+    artifact_sha256 = string.rep("a", 64),
+    ledger_ref = ".testing/runs/qa-publication-conformance/run-ledger.json",
+    trace_id = "trace-qa-publication-conformance",
+    dedup_key = "dedup-qa-publication-conformance",
+  }
+  local ports = {
+    load_ledger = function() return state end,
+    save_ledger = function(_, value, expected_version)
+      if state ~= nil and state.version ~= expected_version then return false end
+      if state == nil and expected_version ~= 0 then return false end
+      state = value
+      return true
+    end,
+    publish_artifact = function(value)
+      publish_count = publish_count + 1
+      return {
+        status = "published",
+        remote_url = "https://github.com/owner/repo/blob/" .. commit_sha .. "/qa/intake.json",
+        digest = value.digest,
+        source_commit = commit_sha,
+        receipt_ref = request.artifact_root .. "/publication/intake-1.json",
+      }
+    end,
+    write_artifact = function()
+      receipt_write_count = receipt_write_count + 1
+      return true
+    end,
+  }
+  local first = M.prepare_checkpoint(request, ports)
+  assert(first.status == "pending", "test-publication first checkpoint must progress")
+  local replay = M.prepare_checkpoint(request, ports)
+  assert(replay.replayed == true, "test-publication checkpoint replay must be detected")
+  assert(publish_count == 1, "test-publication checkpoint replay must not republish")
+  local written = {
+    schema = "github-proxy.comment-written.v1",
+    comment_id = "501",
+    request_dedup_key = first.comment_request.dedup_key,
+    handoff = first.comment_request.handoff,
+  }
+  local receipt = M.acknowledge_comment(written, ports)
+  local replayed_receipt = M.acknowledge_comment(written, ports)
+  assert(receipt_write_count == 1, "test-publication acknowledgement replay must not rewrite receipt")
+  assert(receipt.receipt_ref == replayed_receipt.receipt_ref, "test-publication acknowledgement replay must reuse receipt")
+  return {}
+end
+
 return M

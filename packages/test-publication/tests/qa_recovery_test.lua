@@ -157,4 +157,8 @@ return {
     t.eq(qa_publication.production_ports(), ports)
     _G.qa_publication_runtime = nil
   end,
+
+  test_saga_conformance_proves_checkpoint_and_ack_replay = function()
+    t.eq(#qa_publication.saga_conformance_errors(), 0)
+  end,
 }
