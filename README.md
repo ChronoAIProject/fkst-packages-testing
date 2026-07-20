@@ -15,7 +15,7 @@ This repository contains no engine Rust and no host application state.
 | `testing-runner` | flat adapter | Runs configured jobs plus approval-bound structured API/CLI plans through the FKST-native runtime boundary and emits normalized testing result payloads; legacy `agentic-testing` requests are blocked. | migrating |
 | `browser-readiness` | flat adapter | Checks local browser-harness/CDP/base URL readiness and can carry bounded execution context through the readiness gate. | migrating |
 | `test-artifacts` | flat library package | Defines the normalized `.testing` artifact summary contract. | skeleton |
-| `test-publication` | flat adapter | Converts testing publication handoff artifacts into publication requests, intended to compose with `github-proxy`. | skeleton |
+| `test-publication` | durable adapter | Converts testing handoffs into pointer-only publication requests and provides replay-safe QA checkpoints, immutable GitHub artifact receipts, and reconciled aggregate reports through a host-routed `github-proxy` seam. | migrating |
 | `testing-pipeline` | composed lifecycle | Composes module loop, runner, artifact summary, and publication handoff for graph-level testing flows. | skeleton |
 | `testing-discovery` | composed lifecycle | Converts bounded local app-scope observations into FKST-native module starts without a hand-authored product module catalog. | experimental |
 | `environment-factory` | composed lifecycle | Uses an approved project-profile snapshot to prepare an exact disposable loopback environment, hand it to browser readiness and the testing pipeline, and finalize it through an opaque cleanup reference. | experimental |
@@ -34,6 +34,7 @@ packages/<name>/
 contracts/
   environment-factory.v1.md
   project-profile.v1.md
+  qa-publication.v1.md
   structured-execution.v1.md
   testing-runner.v1.md
   testing-discovery.v1.md
@@ -60,6 +61,13 @@ For headless API/CLI plans, hosts publish the pointer-only
 plan digest to positive argv and HTTP capabilities. The runner performs direct argv/HTTP effects only
 after point-of-use verification and an atomic replay claim, then forwards aggregate pointers through
 the existing artifact and publication packages.
+
+Durable GitHub-visible QA reporting uses the checkpoint and finalization seams in
+`contracts/qa-publication.v1.md`. `test-publication` maintains a compare-and-swap run ledger,
+publishes immutable artifact receipts through host capabilities, reconciles terminal case results and
+verified cleanup, and emits bounded `github-proxy.v1` comment intents. The host maps the package's
+outbound and acknowledgement seams to the pinned `github-proxy`; raw GitHub credentials and commands
+never enter the testing packages.
 
 For sandbox-hosted QA, `examples/opensandbox-host/` provides the provider-specific downstream adapter: it binds a pinned OpenSandbox image or snapshot, approved capability pointers, bounded resources and network policy, one idempotent sandbox receipt, artifact hashing/publication, and teardown. OpenSandbox details remain outside the reusable packages and do not change `environment-factory.v1`.
 

@@ -15,7 +15,7 @@ runtime adapter 默认走 `fkst-native`。旧 `agentic-testing` Python CLI 和 h
 | `testing-runner` | flat adapter | 通过 FKST-native runtime boundary 运行普通测试任务和 approval-bound 的结构化 API/CLI 计划，并输出标准 testing result payload；legacy `agentic-testing` 请求会被 blocked。 | migrating |
 | `browser-readiness` | flat adapter | 检查本地 browser-harness/CDP/base URL readiness，并可透传 bounded execution context。 | migrating |
 | `test-artifacts` | flat library package | 定义标准 `.testing` artifact summary contract。 | skeleton |
-| `test-publication` | flat adapter | 将 testing publication handoff artifacts 转换为 publication requests，后续用于组合 `github-proxy`。 | skeleton |
+| `test-publication` | durable adapter | 将 testing handoff 转换为 pointer-only publication request，并通过 host-routed `github-proxy` seam 提供 replay-safe QA checkpoint、immutable GitHub artifact receipt 和对账后的 aggregate report。 | migrating |
 | `testing-pipeline` | composed lifecycle | 组合 module loop、runner、artifact summary 和 publication handoff，用于 graph-level testing flows。 | skeleton |
 | `testing-discovery` | composed lifecycle | 将本地 app scope 的 bounded observations 转成 FKST-native module starts，不需要手写产品 module catalog。 | experimental |
 | `module-test-loop` | composed lifecycle | 模块级测试生命周期编排，并委托 `testing-runner` 执行 runner path。 | migrating |
@@ -43,6 +43,11 @@ Host 仓负责组合这些 packages，并提供自己的应用默认值。本仓
 `testing-runner.structured-execution.request.v1` pointer-only seam。独立、已认证、单次使用的 approval
 把精确 plan digest 绑定到正向 argv 与 HTTP capability；runner 只有在 point-of-use 验证和原子 replay
 claim 后才执行 direct argv/HTTP effect，并继续复用现有 artifact/publication packages。
+
+GitHub 可见的 durable QA 报告使用 `contracts/qa-publication.v1.md` 中的 checkpoint 与 finalize
+seam。`test-publication` 维护 compare-and-swap run ledger，通过 host capability 发布 immutable
+artifact receipt，对 terminal case results 和 cleanup receipt 做对账，并输出 bounded
+`github-proxy.v1` comment intent。GitHub credential 和命令不会进入 testing package。
 
 ### 下游 generic 接入示例
 
