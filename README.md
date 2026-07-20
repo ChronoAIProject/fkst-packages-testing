@@ -12,7 +12,7 @@ This repository contains no engine Rust and no host application state.
 
 | Package | Shape | What it does | Status |
 | --- | --- | --- | --- |
-| `testing-runner` | flat adapter | Runs configured testing jobs through the FKST-native runtime boundary and emits normalized testing result payloads; legacy `agentic-testing` requests are blocked. | migrating |
+| `testing-runner` | flat adapter | Runs configured jobs plus approval-bound structured API/CLI plans through the FKST-native runtime boundary and emits normalized testing result payloads; legacy `agentic-testing` requests are blocked. | migrating |
 | `browser-readiness` | flat adapter | Checks local browser-harness/CDP/base URL readiness and can carry bounded execution context through the readiness gate. | migrating |
 | `test-artifacts` | flat library package | Defines the normalized `.testing` artifact summary contract. | skeleton |
 | `test-publication` | flat adapter | Converts testing publication handoff artifacts into publication requests, intended to compose with `github-proxy`. | skeleton |
@@ -34,6 +34,7 @@ packages/<name>/
 contracts/
   environment-factory.v1.md
   project-profile.v1.md
+  structured-execution.v1.md
   testing-runner.v1.md
   testing-discovery.v1.md
 libraries/
@@ -52,6 +53,13 @@ A typical host flow is:
 4. Run it through `testing-runner`; omitted `backend` resolves to `fkst-native`, the only executable backend.
 
 Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixtures under `examples/generic-host/` show how host-owned native module, browser-driver, and UI-loop profiles can translate into these existing events without adding product facts to this repo.
+
+For headless API/CLI plans, hosts publish the pointer-only
+`testing-runner.structured-execution.request.v1` seam documented in
+`contracts/structured-execution.v1.md`. A separate authenticated single-use approval binds the exact
+plan digest to positive argv and HTTP capabilities. The runner performs direct argv/HTTP effects only
+after point-of-use verification and an atomic replay claim, then forwards aggregate pointers through
+the existing artifact and publication packages.
 
 For sandbox-hosted QA, `examples/opensandbox-host/` provides the provider-specific downstream adapter: it binds a pinned OpenSandbox image or snapshot, approved capability pointers, bounded resources and network policy, one idempotent sandbox receipt, artifact hashing/publication, and teardown. OpenSandbox details remain outside the reusable packages and do not change `environment-factory.v1`.
 

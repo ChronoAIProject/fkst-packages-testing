@@ -89,3 +89,8 @@ For online regression, native no-browser execution is only the HTTP heartbeat pa
 `fkst-native` must not construct or invoke `agentic_testing.cli` or the legacy `agentic-testing` host wrapper. `agentic_testing_repo_root` is not an active request field.
 
 Payloads must carry small control fields and artifact pointers only; large report bodies, browser storage, credentials, cookies, and tokens stay outside fkst events.
+
+Structured headless API/CLI execution uses the independent
+`testing-runner.structured_execution_request` seam and contracts documented in
+`structured-execution.v1.md`. It does not extend legacy module `native_argv` authority: every plan
+requires a separate authenticated approval bound to the plan digest and exact positive capabilities.

@@ -57,6 +57,19 @@ local function copy_dry_run_pointers(request, summary)
     end
     request.publication_dry_run = true
   end
+  if native.schema == "testing-runner.structured-execution-summary.v1" then
+    for _, field in ipairs({ "test_plan_path", "execution_path", "case_results_path" }) do
+      local expected = summary.artifact_root .. "/" .. ({
+        test_plan_path = "test-plan.json",
+        execution_path = "execution.json",
+        case_results_path = "case-results.json",
+      })[field]
+      if native[field] ~= expected then
+        error("test-publication: malformed-summary: " .. field .. " must point under artifact_root")
+      end
+      request[field] = native[field]
+    end
+  end
   return request
 end
 

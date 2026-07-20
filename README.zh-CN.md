@@ -12,7 +12,7 @@ runtime adapter 默认走 `fkst-native`。旧 `agentic-testing` Python CLI 和 h
 
 | Package | 形态 | 作用 | 状态 |
 | --- | --- | --- | --- |
-| `testing-runner` | flat adapter | 通过 FKST-native runtime boundary 运行测试任务并输出标准 testing result payload；legacy `agentic-testing` 请求会被 blocked。 | migrating |
+| `testing-runner` | flat adapter | 通过 FKST-native runtime boundary 运行普通测试任务和 approval-bound 的结构化 API/CLI 计划，并输出标准 testing result payload；legacy `agentic-testing` 请求会被 blocked。 | migrating |
 | `browser-readiness` | flat adapter | 检查本地 browser-harness/CDP/base URL readiness，并可透传 bounded execution context。 | migrating |
 | `test-artifacts` | flat library package | 定义标准 `.testing` artifact summary contract。 | skeleton |
 | `test-publication` | flat adapter | 将 testing publication handoff artifacts 转换为 publication requests，后续用于组合 `github-proxy`。 | skeleton |
@@ -38,6 +38,11 @@ Host 仓负责组合这些 packages，并提供自己的应用默认值。本仓
 对于 sandbox 托管的 QA，`examples/opensandbox-host/` 提供 provider-specific downstream adapter：绑定固定 OpenSandbox image/snapshot、获批 capability 指针、受限资源和网络策略、单一幂等 sandbox receipt、artifact 哈希/发布及 teardown。OpenSandbox 细节仍位于可复用 packages 之外，也不会改变 `environment-factory.v1`。
 
 对于无人手写 module catalog 的覆盖，host 可以提交 `testing-discovery.app-scope.v1`，只包含本地 scope、sessions、安全策略，以及 bounded AI/browser/navigation/accessibility observations。`testing-discovery` 会自动推导 module starts，把 sanitized discovery plan 写到 `.testing/runs/...`，并复用现有 `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication 路径。host 只提供 bootstrap scope 和 safety policy；产品模块目录不属于本 package set。
+
+对于 headless API/CLI 计划，host 使用 `contracts/structured-execution.v1.md` 定义的
+`testing-runner.structured-execution.request.v1` pointer-only seam。独立、已认证、单次使用的 approval
+把精确 plan digest 绑定到正向 argv 与 HTTP capability；runner 只有在 point-of-use 验证和原子 replay
+claim 后才执行 direct argv/HTTP effect，并继续复用现有 artifact/publication packages。
 
 ### 下游 generic 接入示例
 
