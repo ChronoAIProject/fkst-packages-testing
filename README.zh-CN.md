@@ -35,6 +35,8 @@ Host 仓负责组合这些 packages，并提供自己的应用默认值。本仓
 
 产品特定 profile 应放在 downstream host 仓。本仓只提供可复用的 testing/QA building blocks 和中性 contract。
 
+对于 sandbox 托管的 QA，`examples/opensandbox-host/` 提供 provider-specific downstream adapter：绑定固定 OpenSandbox image/snapshot、获批 capability 指针、受限资源和网络策略、单一幂等 sandbox receipt、artifact 哈希/发布及 teardown。OpenSandbox 细节仍位于可复用 packages 之外，也不会改变 `environment-factory.v1`。
+
 对于无人手写 module catalog 的覆盖，host 可以提交 `testing-discovery.app-scope.v1`，只包含本地 scope、sessions、安全策略，以及 bounded AI/browser/navigation/accessibility observations。`testing-discovery` 会自动推导 module starts，把 sanitized discovery plan 写到 `.testing/runs/...`，并复用现有 `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication 路径。host 只提供 bootstrap scope 和 safety policy；产品模块目录不属于本 package set。
 
 ### 下游 generic 接入示例

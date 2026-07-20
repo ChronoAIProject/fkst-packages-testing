@@ -1,0 +1,12 @@
+{
+  "name": "fkst-opensandbox-host-example",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test tests/*.js",
+    "live-smoke": "node live_smoke.js"
+  },
+  "dependencies": {
+    "@alibaba-group/opensandbox": "0.1.10"
+  }
+}

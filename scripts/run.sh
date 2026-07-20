@@ -574,6 +574,8 @@ run_repository_contract_tests() {
   "$PYTHON_BIN" -B "$ROOT/scripts/conformance_contract_test.py"
   echo "=== runner script contract tests ==="
   "$PYTHON_BIN" -B "$ROOT/scripts/run_script_contract_test.py"
+  echo "=== OpenSandbox host adapter tests ==="
+  node --test "$ROOT/examples/opensandbox-host/tests/"*.js
 }
 
 append_coverage_artifact() {
