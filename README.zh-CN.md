@@ -111,6 +111,12 @@ scripts/run.sh test
 scripts/run.sh ai-pipeline-smoke
 ```
 
+每次执行 `check`、`test`、`host` 或 `supervise`，都会先验证所选 `fkst-framework` 的 build-time
+source pin 与 `.fkst/substrate-ref` 完全一致。显式 `BIN` 或 `.fkst/env` 不匹配时 fail closed；PATH
+或 sibling checkout 中的旧 binary 会被跳过，且不会修改其源码目录，随后复用或构建精确的
+content-addressed pinned binary。启动日志会输出 expected/observed full pin、selected binary 和标准化
+`ENGINE_VER` invariant。
+
 `scripts/run.sh test` 会在全仓测试时写出标准 Lua coverage artifact：
 `.fkst/run/lua-coverage/coverage.json`，并执行 `migration/coverage-uncovered.allowlist` 的
 shrink-only ratchet。`scripts/run.sh ai-pipeline-smoke` 是 hermetic smoke，用来验证 AI 自动生成

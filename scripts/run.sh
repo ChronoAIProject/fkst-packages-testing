@@ -98,13 +98,14 @@ validated/run CLOSED-WORLD over the full package-root set declared in .fkst/conf
 EOF
 }
 
-# Reuse the shared BIN-resolution contract from the pinned checkout (DRY): $BIN > .fkst/env > PATH >
-# sibling ../fkst-substrate > pinned-source cache. CI injects BIN and never builds.
+# Resolve only an engine that proves the exact build-time substrate pin. Ambient candidates may be
+# reused after verification; the content-addressed pinned cache remains the canonical fallback.
 resolve_testing_bin() {
-  [ -n "${BIN:-}" ] && [ -x "${BIN:-}" ] && return 0
   # shellcheck source=/dev/null
   . "$shared/scripts/bin_bootstrap.sh"
-  if ! resolve_bin_contract "$ROOT" "bootstrap"; then
+  # shellcheck source=scripts/engine_provenance.sh
+  . "$ROOT/scripts/engine_provenance.sh"
+  if ! resolve_pinned_engine "$ROOT" "bootstrap"; then
     echo "error: $RESOLVE_BIN_ERROR" >&2
     if [ -n "${CI:-}" ] || [ -n "${GITHUB_ACTIONS:-}" ]; then
       echo "  CI must build fkst-substrate and inject BIN; scripts/run.sh will not build in CI." >&2
@@ -112,7 +113,8 @@ resolve_testing_bin() {
     exit 1
   fi
   BIN="$RESOLVED_BIN"
-  export BIN
+  export BIN FKST_ENGINE_SOURCE_PIN FKST_ENGINE_VER
+  echo "PASS engine-provenance expected_pin=$RESOLVED_ENGINE_PIN observed_pin=$FKST_ENGINE_SOURCE_PIN selected_bin=$BIN ENGINE_VER=$FKST_ENGINE_VER"
 }
 
 ensure_host_lock() {
@@ -574,6 +576,8 @@ run_repository_contract_tests() {
   "$PYTHON_BIN" -B "$ROOT/scripts/conformance_contract_test.py"
   echo "=== runner script contract tests ==="
   "$PYTHON_BIN" -B "$ROOT/scripts/run_script_contract_test.py"
+  echo "=== engine provenance contract tests ==="
+  "$PYTHON_BIN" -B "$ROOT/scripts/engine_provenance_test.py"
   echo "=== OpenSandbox host adapter tests ==="
   node --test "$ROOT/examples/opensandbox-host/tests/"*.js
 }

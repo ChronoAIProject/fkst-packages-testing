@@ -14,8 +14,10 @@ from pathlib import Path
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_RUN_SH = SOURCE_ROOT / "scripts" / "run.sh"
+SOURCE_ENGINE_PROVENANCE = SOURCE_ROOT / "scripts" / "engine_provenance.sh"
 SOURCE_CI_CONTRACT = SOURCE_ROOT / "scripts" / "check_ci_contract.py"
 SOURCE_CI_WORKFLOW = SOURCE_ROOT / ".github" / "workflows" / "ci.yml"
+SUBSTRATE_PIN = "1" * 40
 
 
 def dedent(value: str) -> str:
@@ -94,12 +96,15 @@ class RunnerWorkspace:
         (self.root / ".fkst" / "workflow").mkdir(parents=True)
         shutil.copy2(SOURCE_RUN_SH, self.root / "scripts" / "run.sh")
         (self.root / "scripts" / "run.sh").chmod(0o755)
+        shutil.copy2(SOURCE_ENGINE_PROVENANCE, self.root / "scripts" / "engine_provenance.sh")
+        (self.root / "scripts" / "engine_provenance.sh").chmod(0o755)
         shutil.copy2(SOURCE_CI_CONTRACT, self.root / "scripts" / "check_ci_contract.py")
         self.write(
             ".github/workflows/ci.yml",
             SOURCE_CI_WORKFLOW.read_text(encoding="utf-8"),
         )
         self.write("scripts/check_single_platform_pin.py", "raise SystemExit(0)\n")
+        self.write(".fkst/substrate-ref", SUBSTRATE_PIN + "\n")
         self.write(
             "fkst.workspace.toml",
             dedent(
@@ -236,6 +241,10 @@ class RunnerWorkspace:
 
                 argv = sys.argv[1:]
                 subcommand = argv[0] if argv else ""
+                if subcommand == "init-package-repo":
+                    Path(".fkst-substrate-ref").write_text({SUBSTRATE_PIN!r} + "\\n", encoding="utf-8")
+                    print("init-package-repo substrate_ref=" + {SUBSTRATE_PIN!r})
+                    raise SystemExit(0)
                 project_root = None
                 package_roots = []
                 for index, value in enumerate(argv):
@@ -352,11 +361,20 @@ class RunnerContractTest(unittest.TestCase):
         self.assertTrue(all("flat_one_test.lua" in path for path in tests[0]["test_files"]))
         self.assertEqual(tests[0]["forge_marker"], "tracked local forge\n")
         self.assertNotIn("full repository", result.stdout.lower())
+        self.assertIn(f"PASS engine-provenance expected_pin={SUBSTRATE_PIN}", result.stdout)
         self.assertEqual(fixture.coverage_records(), [])
 
         unknown = fixture.run("test", "unknown-package")
         self.assert_failure(unknown)
         self.assertIn("no packages matched for 'unknown-package'", unknown.stdout)
+
+    def test_check_test_and_supervise_emit_exact_engine_invariant(self) -> None:
+        fixture = self.workspace()
+        for arguments in (("check",), ("test", "flat-one"), ("supervise", "flat-one")):
+            result = fixture.run(*arguments)
+            self.assert_success(result)
+            self.assertIn(f"PASS engine-provenance expected_pin={SUBSTRATE_PIN}", result.stdout)
+            self.assertIn(f"ENGINE_VER={SUBSTRATE_PIN[:12]}", result.stdout)
 
     def test_composed_target_uses_declared_roots_and_excludes_dependency_tests(self) -> None:
         fixture = self.workspace()

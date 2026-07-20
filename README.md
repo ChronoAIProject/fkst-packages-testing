@@ -165,6 +165,12 @@ scripts/run.sh ai-pipeline-smoke
 scripts/run.sh test testing-runner
 ```
 
+Every `check`, `test`, `host`, and `supervise` launch verifies the selected `fkst-framework` build-time
+source pin against `.fkst/substrate-ref` before executing runtime work. A mismatched explicit `BIN` or
+`.fkst/env` entry fails closed. Stale PATH and sibling-checkout binaries are skipped without modifying
+their source trees, then the exact content-addressed pinned binary is reused or built. Startup prints
+the expected and observed full pin, selected binary, and normalized `ENGINE_VER` invariant.
+
 `scripts/run.sh test` writes a canonical Lua coverage artifact to `.fkst/run/lua-coverage/coverage.json`
 and enforces the shrink-only `migration/coverage-uncovered.allowlist` ratchet during full-repository
 runs. `scripts/run.sh ai-pipeline-smoke` is a hermetic smoke for the AI-authored test case path:
