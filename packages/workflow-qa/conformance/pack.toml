@@ -1,0 +1,21 @@
+schema = 1
+runner_protocol = "fkst-declarative-rulepack@1"
+owner_package = "workflow-qa"
+
+[[rules]]
+id = "workflow-qa-no-shell-or-network"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["core.lua", "ports.lua", "departments/**/*.lua", "raisers/**/*.lua"]
+exclude = ["tests/**", "packages/workflow-qa/tests/**"]
+pattern = "exec_argv|exec_sync|os.execute|io.popen|curl|docker|kubectl"
+message = "workflow-qa must orchestrate reusable packages instead of running shell or network effects"
+
+[[rules]]
+id = "workflow-qa-no-dev-intake-consumer"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["departments/**/*.lua", "raisers/**/*.lua"]
+exclude = ["tests/**", "packages/workflow-qa/tests/**"]
+pattern = "devloop_intake_candidate"
+message = "workflow-qa must claim only its fkst-qa seam"

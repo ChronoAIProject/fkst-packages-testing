@@ -13,3 +13,4 @@ testing-pipeline module-test-loop testing-runner test-artifacts test-publication
 testing-discovery browser-readiness testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus
 environment-factory browser-readiness testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus
 testing-design
+workflow-qa environment-factory testing-design browser-readiness testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus @platform/github-proxy

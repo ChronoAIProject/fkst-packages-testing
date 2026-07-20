@@ -79,6 +79,12 @@ RULE_FIXTURES = {
     "testing-design-no-target-execution": RuleFixture(
         "departments/contract_fixture/main.lua", joined("target_", "command")
     ),
+    "workflow-qa-no-shell-or-network": RuleFixture(
+        "departments/contract_fixture/main.lua", joined("os", ".execute")
+    ),
+    "workflow-qa-no-dev-intake-consumer": RuleFixture(
+        "departments/contract_fixture/main.lua", joined("devloop_", "intake_candidate")
+    ),
     "no-large-inline-test-bodies": RuleFixture(
         "departments/contract_fixture/main.lua", joined("stdout_", "body")
     ),

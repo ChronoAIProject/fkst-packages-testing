@@ -104,6 +104,11 @@ lists attempted resources, verified removals, and remaining owner-bound cleanup 
 workspace and cleanup references fail closed, and a run cannot report completion without verified
 cleanup publication.
 
+`workflow-qa` is the composed `fkst-qa` entry point. It binds one open labelled request to an
+immutable repository run, preserves bounded user seed cases, orchestrates environment, design,
+structured execution, defect publication, verified cleanup, and the final GitHub-visible aggregate
+receipt without consuming the development intake seam.
+
 For autonomous coverage, a host can submit `testing-discovery.app-scope.v1` with local scope, sessions, policy, and bounded AI/browser/navigation/accessibility observations. `testing-discovery` derives module starts automatically, writes a sanitized discovery plan under `.testing/runs/...`, and reuses the existing `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication path. Hosts provide only bootstrap scope and safety policy; product-specific module catalogs are not required in this package set.
 
 ### Generic downstream integration example

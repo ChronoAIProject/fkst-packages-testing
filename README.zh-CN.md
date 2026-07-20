@@ -22,6 +22,7 @@ runtime adapter 默认走 `fkst-native`。旧 `agentic-testing` Python CLI 和 h
 | `platform-test-loop` | composed lifecycle | 平台级多模块测试生命周期编排；初始委托给 `module-test-loop` / `testing-runner`。 | skeleton |
 | `online-regression` | flat adapter | 在线回归 / heartbeat 入口，已具备第一条 native no-browser heartbeat path。 | migrating |
 | `environment-factory` | composed lifecycle | 从已批准的 project profile 创建 owner-bound 一次性本地环境，并通过 typed cleanup receipt 验证所有终态清理。 | experimental |
+| `workflow-qa` | composed lifecycle | `fkst-qa` 总入口：组合环境、测试设计、结构化执行、缺陷发布、清理和 GitHub 汇总，不消费开发 intake seam。 | experimental |
 
 ## 下游使用方式
 

@@ -1,0 +1,20 @@
+kind = "package.composed"
+name = "workflow-qa"
+persistence_class = "saga"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow", "testkit", "testing_ai"]
+
+[event_deps]
+packages = [
+  "environment-factory", "testing-design", "testing-pipeline", "testing-runner",
+  "test-artifacts", "test-publication", "browser-readiness", "module-test-loop",
+  "consensus", "github-proxy",
+]
+
+[conformance]
+pack = "conformance/pack.toml"
+function = "core.saga_conformance_errors"
