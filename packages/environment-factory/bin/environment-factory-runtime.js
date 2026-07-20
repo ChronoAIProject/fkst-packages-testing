@@ -117,15 +117,16 @@ function writeDiagnostic(request, label, value) {
   return ref;
 }
 
-function workspaceRecord(workspaceRef) {
+function workspaceRecord(workspaceRef, operationId) {
   if (!workspaceRef || workspaceRef.kind !== 'workspace') throw new Error('workspace_ref is required');
   const resource = readIfExists(resourcePath(workspaceRef.ref));
   if (!resource || resource.kind !== 'workspace') throw new Error('workspace resource is unavailable');
+  if (resource.operation_id !== operationId) throw new Error('workspace ownership binding is invalid');
   return resource;
 }
 
 function workspaceCwd(request) {
-  const workspace = workspaceRecord(request.workspace_ref);
+  const workspace = workspaceRecord(request.workspace_ref, request.operation_id);
   const working = typeof request.working_directory === 'string' ? request.working_directory : '.';
   if (path.isAbsolute(working)) throw new Error('working_directory must be relative');
   const workspaceRoot = fs.realpathSync(workspace.path);
@@ -358,7 +359,7 @@ async function runArgvEffect(payload) {
         cwd,
         env: baseEnv,
         timeoutMs,
-        workspacePath: workspaceRecord(payload.workspace_ref).path,
+        workspacePath: workspaceRecord(payload.workspace_ref, payload.operation_id).path,
       });
       let frozenEnforced = false;
       if (frozen && result.reason === null) {
@@ -405,7 +406,7 @@ async function runArgvEffect(payload) {
     };
     const inheritedStdio = listenerNames.map((_name, index) => 3 + index);
     resourceBudgets(payload);
-    const workspacePath = workspaceRecord(payload.workspace_ref).path;
+    const workspacePath = workspaceRecord(payload.workspace_ref, payload.operation_id).path;
     const before = enforceCurrentBudgets(payload, workspacePath);
     if (!before.passed) {
       return {
@@ -552,7 +553,7 @@ async function readinessCheck(check, payload, deadline) {
   if (check.type === 'tcp') return checkTcp(check, Math.min(500, remaining));
   if (check.type === 'http') return checkHttp(check, Math.min(500, remaining));
   if (check.type === 'argv') {
-    const workspace = workspaceRecord(payload.workspace_ref);
+    const workspace = workspaceRecord(payload.workspace_ref, payload.operation_id);
     const result = await executeBudgetedCommand(payload, validateArgv(check.argv), {
       cwd: workspaceCwd(payload),
       env: minimalEnvironment(runtimeConfig(payload).command_environment || {}),
@@ -584,7 +585,7 @@ async function waitReadiness(payload) {
       || !sameArray(processResource.runtime_ports, ports)) {
       throw new Error('readiness process ownership binding is invalid');
     }
-    const workspacePath = workspaceRecord(payload.workspace_ref).path;
+    const workspacePath = workspaceRecord(payload.workspace_ref, payload.operation_id).path;
     const deadline = Date.now() + Math.max(1, Number(payload.timeout_seconds) || 1) * 1000;
     let { attempts, probes, reason } = initialReadinessState(budgets, checks);
     let ready = false;
@@ -706,6 +707,9 @@ async function cleanup(payload) {
           status: 'blocked', reason: 'resource record is unavailable',
         }),
       };
+    }
+    if (resource.operation_id !== payload.operation_id) {
+      throw new Error('resource ownership binding is invalid');
     }
     const cached = effectRecord(payload.effect_id);
     if (cached && cached.request_sha256 !== digest) throw new Error('effect request binding differs');

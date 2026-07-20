@@ -176,6 +176,33 @@ async function main() {
       operation_state_ref: { kind: 'artifact', ref: `${artifactRoot}/foreign-state.json` },
     }), /effect request binding differs/);
 
+    const ownedWorkspace = path.join(temp, 'owned-workspace');
+    fs.mkdirSync(ownedWorkspace);
+    const ownedResourceRef = `owned-workspace-${process.pid}`;
+    const ownedResourcePath = path.join(
+      process.env.FKST_DURABLE_ROOT,
+      'environment-factory',
+      'resources',
+      `${require('../bin/environment-factory-runtime').sha256(ownedResourceRef)}.json`,
+    );
+    fs.mkdirSync(path.dirname(ownedResourcePath), { recursive: true });
+    fs.writeFileSync(ownedResourcePath, `${JSON.stringify({
+      schema: 'environment-factory.resource.v1',
+      kind: 'workspace',
+      operation_id: `owner-${process.pid}`,
+      ref: ownedResourceRef,
+      path: ownedWorkspace,
+      cleaned: false,
+    })}\n`);
+    await assert.rejects(() => dispatch('cleanup', {
+      effect_id: `foreign-${process.pid}/cleanup/workspace`,
+      operation_id: `foreign-${process.pid}`,
+      artifact_root: artifactRoot,
+      cleanup_ref: { kind: 'resource-cleanup', ref: ownedResourceRef },
+      timeout_seconds: 1,
+    }), /resource ownership binding is invalid/);
+    assert.strictEqual(fs.existsSync(ownedWorkspace), true);
+
     const runtimeConfigRef = { kind: 'artifact', ref: `${hostRoot}/runtime-config.json` };
     const stateRef = { kind: 'artifact', ref: `${artifactRoot}/operation-state.json` };
     fs.mkdirSync(hostRoot, { recursive: true });

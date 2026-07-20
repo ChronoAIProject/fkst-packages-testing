@@ -806,7 +806,7 @@ return {
         for key, value in pairs(changes) do budgets[key] = value end
         return runtime_ports.run_argv({
           effect_id = request.dedup_key .. "/environment-factory/budget/" .. label,
-          operation_id = request.operation_id .. "-budget-" .. label,
+          operation_id = request.operation_id,
           artifact_root = request.artifact_root,
           workspace_ref = state_before.state.workspace_ref,
           working_directory = ".",

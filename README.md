@@ -99,6 +99,11 @@ until terminal acknowledgement. Its production adapter is
 `packages/environment-factory/bin/environment-factory-runtime.js`; the hermetic package test drives
 that adapter through real Git, process, readiness, receipt, handoff, and cleanup effects.
 
+Terminal Environment Factory results include an immutable typed cleanup-receipt pointer. The receipt
+lists attempted resources, verified removals, and remaining owner-bound cleanup handles; cross-run
+workspace and cleanup references fail closed, and a run cannot report completion without verified
+cleanup publication.
+
 For autonomous coverage, a host can submit `testing-discovery.app-scope.v1` with local scope, sessions, policy, and bounded AI/browser/navigation/accessibility observations. `testing-discovery` derives module starts automatically, writes a sanitized discovery plan under `.testing/runs/...`, and reuses the existing `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication path. Hosts provide only bootstrap scope and safety policy; product-specific module catalogs are not required in this package set.
 
 ### Generic downstream integration example

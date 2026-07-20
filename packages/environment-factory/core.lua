@@ -35,6 +35,13 @@ local function receipt_ref(request, status)
   }
 end
 
+local function cleanup_receipt_ref(state, status)
+  return {
+    kind = "artifact",
+    ref = state.artifact_root .. "/cleanup-receipt-" .. status .. ".json",
+  }
+end
+
 local function public_cleanup_ref(request)
   return { kind = "environment-cleanup", ref = request.operation_id }
 end
@@ -174,6 +181,7 @@ local function initial_state(request, bundle, claim)
     diagnostic_refs = {},
     completed = { port_claim = true },
     receipt_refs = {},
+    cleanup_receipt_refs = {},
     resources = { {
       id = "ports",
       kind = "ports",
@@ -484,17 +492,91 @@ local function cleanup_resources(state, ports)
           diagnostic_ref = true,
         })
       end
+      complete = complete and ok
       if ok then
         add_diagnostic(state, outcome.diagnostic_ref)
+        resource.cleanup_diagnostic_ref = copy(outcome.diagnostic_ref)
         if outcome.status == "cleaned" then resource.cleaned = true else complete = false end
-      else
-        complete = false
       end
       if not try_save_state(ports, state) then complete = false end
     end
   end
   state.cleanup_status = complete and "complete" or "incomplete"
   return complete
+end
+
+local function cleanup_receipt(state)
+  local attempted, verified, remaining = {}, {}, {}
+  for _, resource in ipairs(state.resources) do
+    local status = resource.cleaned == true and "cleaned" or "remaining"
+    local item = {
+      resource_id = resource.id,
+      resource_kind = resource.kind,
+      status = status,
+    }
+    if resource.cleanup_diagnostic_ref ~= nil then
+      item.diagnostic_ref = copy(resource.cleanup_diagnostic_ref)
+    end
+    table.insert(attempted, item)
+    if status == "cleaned" then
+      table.insert(verified, resource.id)
+    else
+      table.insert(remaining, {
+        resource_id = resource.id,
+        resource_kind = resource.kind,
+        cleanup_ref = copy(resource.cleanup_ref),
+      })
+    end
+  end
+  return contract.validate_cleanup_receipt({
+    schema = contract.schemas.cleanup_receipt,
+    operation_id = state.operation_id,
+    status = state.cleanup_status,
+    attempted_resources = attempted,
+    verified_removals = verified,
+    remaining_resources = remaining,
+    artifact_root = state.artifact_root,
+    trace_id = state.trace_id,
+    dedup_key = state.dedup_key,
+  })
+end
+
+local function write_cleanup_receipt(state, ports)
+  local ref = cleanup_receipt_ref(state, state.cleanup_status)
+  local outcome = ports.write_receipt(add_budget({
+    effect_id = effect_id(state, "cleanup-receipt/" .. state.cleanup_status),
+    operation_id = state.operation_id,
+    artifact_root = state.artifact_root,
+    receipt_ref = copy(ref),
+    receipt = cleanup_receipt(state),
+  }, effect_budget(state, ports, state.profile_snapshot.timeouts.cleanup_seconds, true)))
+  runtime_outcomes.validate_effect(outcome, "write-cleanup-receipt", {
+    status = true,
+    diagnostic_ref = true,
+  })
+  add_diagnostic(state, outcome.diagnostic_ref)
+  if outcome.status ~= "passed" then
+    error("environment-factory: cleanup-receipt-write-failed: runtime did not persist the cleanup receipt")
+  end
+  state.cleanup_receipt_refs = state.cleanup_receipt_refs or {}
+  state.cleanup_receipt_refs[state.cleanup_status] = copy(ref)
+  save_state(ports, state)
+  return ref
+end
+
+local function persist_cleanup_receipt(state, ports)
+  state.public_result = nil
+  state.cleanup_receipt_ref = nil
+  local ok, ref = pcall(write_cleanup_receipt, state, ports)
+  if ok then
+    state.cleanup_receipt_ref = ref
+    return ref
+  end
+  state.status = "blocked"
+  state.failure_class = "cleanup-receipt-write-failed"
+  state.cleanup_status = "incomplete"
+  try_save_state(ports, state)
+  error("environment-factory: cleanup-receipt-unavailable: cleanup receipt persistence failed")
 end
 
 local function failure_class(value)
@@ -518,6 +600,7 @@ local function receipt(state, status, classification)
     artifact_root = state.artifact_root,
     diagnostic_refs = copy_list(state.diagnostic_refs),
     cleanup_ref = copy(state.cleanup_ref),
+    cleanup_receipt_ref = state.cleanup_receipt_ref and copy(state.cleanup_receipt_ref) or nil,
     cleanup_status = state.cleanup_status,
     trace_id = state.trace_id,
     dedup_key = state.dedup_key,
@@ -538,6 +621,7 @@ local function result(state, status, classification, persisted_ref)
     trace_id = state.trace_id,
     dedup_key = state.dedup_key,
   }
+  if status ~= "ready" then value.cleanup_receipt_ref = copy(state.cleanup_receipt_ref) end
   if status == "ready" then
     value.base_url = state.base_url
     value.sessions = copy_list(state.sessions)
@@ -570,6 +654,7 @@ local function mark_blocked(state, ports, err)
   state.status = "blocked"
   state.failure_class = classification
   state.cleanup_status = complete and "complete" or "incomplete"
+  persist_cleanup_receipt(state, ports)
   local ok, persisted = pcall(write_receipt, state, ports, "blocked", classification)
   if not ok then
     state.public_result = nil
@@ -793,6 +878,7 @@ local function terminate(request, status, ports)
   local complete = cleanup_resources(state, ports)
   state.status = complete and status or "blocked"
   state.failure_class = complete and nil or "cleanup-incomplete"
+  persist_cleanup_receipt(state, ports)
   local persisted = write_receipt(state, ports, state.status, state.failure_class)
   state.public_result = result(state, state.status, state.failure_class, persisted)
   save_state(ports, state)

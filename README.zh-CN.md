@@ -21,6 +21,7 @@ runtime adapter 默认走 `fkst-native`。旧 `agentic-testing` Python CLI 和 h
 | `module-test-loop` | composed lifecycle | 模块级测试生命周期编排，并委托 `testing-runner` 执行 runner path。 | migrating |
 | `platform-test-loop` | composed lifecycle | 平台级多模块测试生命周期编排；初始委托给 `module-test-loop` / `testing-runner`。 | skeleton |
 | `online-regression` | flat adapter | 在线回归 / heartbeat 入口，已具备第一条 native no-browser heartbeat path。 | migrating |
+| `environment-factory` | composed lifecycle | 从已批准的 project profile 创建 owner-bound 一次性本地环境，并通过 typed cleanup receipt 验证所有终态清理。 | experimental |
 
 ## 下游使用方式
 
@@ -36,6 +37,10 @@ Host 仓负责组合这些 packages，并提供自己的应用默认值。本仓
 产品特定 profile 应放在 downstream host 仓。本仓只提供可复用的 testing/QA building blocks 和中性 contract。
 
 对于 sandbox 托管的 QA，`examples/opensandbox-host/` 提供 provider-specific downstream adapter：绑定固定 OpenSandbox image/snapshot、获批 capability 指针、受限资源和网络策略、单一幂等 sandbox receipt、artifact 哈希/发布及 teardown。OpenSandbox 细节仍位于可复用 packages 之外，也不会改变 `environment-factory.v1`。
+
+Environment Factory 的终态结果包含 immutable typed cleanup-receipt 指针。receipt 会列出已尝试资源、
+已验证删除项和仍存在的 owner-bound cleanup handle；跨 run 的 workspace/cleanup 引用会 fail closed，
+未完成 cleanup 验证与 receipt 持久化的 run 不得报告完成。
 
 对于无人手写 module catalog 的覆盖，host 可以提交 `testing-discovery.app-scope.v1`，只包含本地 scope、sessions、安全策略，以及 bounded AI/browser/navigation/accessibility observations。`testing-discovery` 会自动推导 module starts，把 sanitized discovery plan 写到 `.testing/runs/...`，并复用现有 `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication 路径。host 只提供 bootstrap scope 和 safety policy；产品模块目录不属于本 package set。
 

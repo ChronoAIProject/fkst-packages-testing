@@ -11,6 +11,7 @@ E.schemas = {
   interrupt = "environment-factory.interrupt.v1",
   result = "environment-factory.result.v1",
   receipt = "environment-factory.receipt.v1",
+  cleanup_receipt = "environment-factory.cleanup-receipt.v1",
   state = "environment-factory.operation-state.v1",
   start_binding = "environment-factory.start-binding.v1",
   readiness_correlation = "environment-factory.browser-readiness-correlation.v1",
@@ -22,6 +23,7 @@ local max_id = 180
 local max_string = 1024
 local max_ports = 32
 local max_sessions = 16
+local max_resources = 64
 
 local function fail(classification, message)
   error("contract.environment-factory: " .. classification .. ": " .. message)
@@ -545,12 +547,108 @@ local result_fields = {
   sessions = true,
   readiness_correlation = true,
   environment_receipt_ref = true,
+  cleanup_receipt_ref = true,
   cleanup_ref = true,
   diagnostic_refs = true,
   cleanup_status = true,
   trace_id = true,
   dedup_key = true,
 }
+
+local cleanup_receipt_fields = {
+  schema = true,
+  operation_id = true,
+  status = true,
+  attempted_resources = true,
+  verified_removals = true,
+  remaining_resources = true,
+  artifact_root = true,
+  trace_id = true,
+  dedup_key = true,
+}
+
+function E.validate_cleanup_receipt(value)
+  only_fields(value, cleanup_receipt_fields, "cleanup-receipt")
+  if value.schema ~= E.schemas.cleanup_receipt then
+    fail("unknown-schema", "expected " .. E.schemas.cleanup_receipt)
+  end
+  require_id(value.operation_id, "operation_id")
+  if value.status ~= "complete" and value.status ~= "incomplete" then
+    fail("malformed-cleanup-status", tostring(value.status))
+  end
+  if not dense_list(value.attempted_resources, max_resources, true) then
+    fail("malformed-cleanup-receipt", "attempted_resources must be a non-empty bounded dense list")
+  end
+  local attempted = {}
+  local cleaned = {}
+  for index, resource in ipairs(value.attempted_resources) do
+    only_fields(resource, {
+      resource_id = true,
+      resource_kind = true,
+      status = true,
+      diagnostic_ref = true,
+    }, "cleanup-attempt")
+    local resource_id = require_id(resource.resource_id, "attempted_resources[" .. index .. "].resource_id")
+    if attempted[resource_id] then fail("duplicate-resource", resource_id) end
+    attempted[resource_id] = true
+    require_id(resource.resource_kind, "attempted_resources[" .. index .. "].resource_kind")
+    if resource.status ~= "cleaned" and resource.status ~= "remaining" then
+      fail("malformed-cleanup-status", tostring(resource.status))
+    end
+    if resource.status == "cleaned" then cleaned[resource_id] = true end
+    if resource.diagnostic_ref ~= nil then
+      validate_artifact_ref(resource.diagnostic_ref, "attempted_resources[" .. index .. "].diagnostic_ref")
+    end
+  end
+  if not dense_list(value.verified_removals, max_resources, false) then
+    fail("malformed-cleanup-receipt", "verified_removals must be a bounded dense list")
+  end
+  local verified = {}
+  for index, resource_id in ipairs(value.verified_removals) do
+    require_id(resource_id, "verified_removals[" .. index .. "]")
+    if verified[resource_id] or cleaned[resource_id] ~= true then
+      fail("invalid-verified-removal", resource_id)
+    end
+    verified[resource_id] = true
+  end
+  if not dense_list(value.remaining_resources, max_resources, false) then
+    fail("malformed-cleanup-receipt", "remaining_resources must be a bounded dense list")
+  end
+  local remaining = {}
+  for index, resource in ipairs(value.remaining_resources) do
+    only_fields(resource, {
+      resource_id = true,
+      resource_kind = true,
+      cleanup_ref = true,
+    }, "remaining-resource")
+    local resource_id = require_id(resource.resource_id, "remaining_resources[" .. index .. "].resource_id")
+    if remaining[resource_id] or attempted[resource_id] ~= true or cleaned[resource_id] == true then
+      fail("invalid-remaining-resource", resource_id)
+    end
+    remaining[resource_id] = true
+    require_id(resource.resource_kind, "remaining_resources[" .. index .. "].resource_kind")
+    validate_ref(resource.cleanup_ref, "remaining_resources[" .. index .. "].cleanup_ref")
+  end
+  for resource_id, _ in pairs(attempted) do
+    if cleaned[resource_id] == true then
+      if verified[resource_id] ~= true then fail("missing-verified-removal", resource_id) end
+    elseif remaining[resource_id] ~= true then
+      fail("missing-remaining-resource", resource_id)
+    end
+  end
+  if value.status == "complete" and next(remaining) ~= nil then
+    fail("cleanup-status-mismatch", "complete receipt has remaining resources")
+  end
+  if value.status == "incomplete" and next(remaining) == nil then
+    fail("cleanup-status-mismatch", "incomplete receipt has no remaining resources")
+  end
+  if not strings.is_artifact_root(value.artifact_root) then
+    fail("malformed-artifact-root", "artifact_root must be a safe .testing/runs/... path")
+  end
+  require_id(value.trace_id, "trace_id")
+  require_id(value.dedup_key, "dedup_key")
+  return value
+end
 
 function E.validate_result(value)
   only_fields(value, result_fields, "result")
@@ -579,6 +677,17 @@ function E.validate_result(value)
   if value.cleanup_status ~= nil and value.cleanup_status ~= "pending"
     and value.cleanup_status ~= "complete" and value.cleanup_status ~= "incomplete" then
     fail("malformed-cleanup-status", tostring(value.cleanup_status))
+  end
+  if value.status == "ready" then
+    if value.cleanup_receipt_ref ~= nil then
+      fail("premature-cleanup-receipt", "ready result must not include cleanup_receipt_ref")
+    end
+  else
+    validate_artifact_ref(value.cleanup_receipt_ref, "cleanup_receipt_ref")
+    local cleanup_suffix = "/cleanup-receipt-" .. value.cleanup_status .. ".json"
+    if value.cleanup_receipt_ref.ref:sub(-#cleanup_suffix) ~= cleanup_suffix then
+      fail("mutable-cleanup-receipt-pointer", "cleanup receipt pointer must match cleanup status")
+    end
   end
   require_id(value.trace_id, "trace_id")
   require_id(value.dedup_key, "dedup_key")

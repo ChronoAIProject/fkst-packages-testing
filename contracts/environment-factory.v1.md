@@ -11,6 +11,7 @@ endpoints, argv, authority identities, and secret locations remain host-owned.
 - Cancellation/interruption request: `environment-factory.interrupt.v1`
 - Result: `environment-factory.result.v1`
 - Environment receipt artifact: `environment-factory.receipt.v1`
+- Cleanup receipt artifact: `environment-factory.cleanup-receipt.v1`
 
 Start requests contain exact repository identity, profile/approval/validation-receipt pointers,
 durable state pointer, artifact root, exact loopback ports, base URL, browser session bootstrap,
@@ -102,8 +103,18 @@ unclaimed runtime ports fail closed and trigger reverse cleanup.
 Application, services, workspace, and port claim are recorded as one resource stack. Provisioning
 failure, readiness failure, source mismatch, timeout, finalization, cancellation, and interruption
 all invoke the same reverse-order cleanup function. Cleanup requests use stable effect IDs and are
-safe to replay. The public cleanup reference is intentionally compatible with issue #92 and does
-not define a separate cleanup architecture.
+safe to replay. `operation_id` is the canonical run owner for the artifact root, checkout workspace,
+fixture database state under that workspace, service/process namespace, exact listener claims, and
+browser session/profile capabilities. Runtime effects reject workspace or cleanup references whose
+durable resource record belongs to another operation, and port release removes only exact claims
+owned by the same operation and effect.
+
+Every terminal path writes an immutable `environment-factory.cleanup-receipt.v1` before publishing
+the terminal environment receipt. The cleanup receipt records every attempted resource, verified
+removals, remaining resource cleanup pointers, aggregate `complete` or `incomplete` status, artifact
+root, trace ID, and dedup key. Terminal `environment-factory.result.v1` payloads carry its immutable
+artifact pointer. A run remains blocked and has no reusable terminal result when that receipt cannot
+be persisted or when any removal cannot be verified.
 
 A result is constructed only after its receipt write succeeds. If ready-receipt persistence fails,
 the factory cleans up and may publish only a successfully persisted blocked receipt. If blocked-

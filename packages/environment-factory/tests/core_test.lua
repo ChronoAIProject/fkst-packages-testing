@@ -308,6 +308,7 @@ local function fake_runtime(fx, options, shared)
       return cached(request.effect_id, function()
         local id = request.effect_id:match("/cleanup/(.+)$")
         table.insert(cleanup_order, id); target_effects = target_effects + 1
+        if opts.raise_cleanup == id then error("cleanup runtime failed") end
         if id == "ports" then
           for _, item in ipairs(fx.request.runtime_ports) do if shared_state.port_owners[item.port] == fx.request.operation_id then shared_state.port_owners[item.port] = nil end end
           active.ports = nil
@@ -444,9 +445,12 @@ return {
   end,
 
   test_receipt_write_failure_never_returns_dangling_pointer = function()
-    local fx = fixture(); local ports, observed = fake_runtime(fx, { fail_receipts = true })
+    local fx = fixture(); local ports, observed = fake_runtime(fx, { fail_receipts = { ready = true, blocked = true } })
     t.raises(function() core.start(fx.request, ports) end)
-    local state = observed.state(); t.eq(state.public_result, nil); t.eq(state.receipt_refs.blocked, nil); t.eq(next(observed.receipts), nil); t.eq(observed.active_count(), 0)
+    local state = observed.state(); t.eq(state.public_result, nil); t.eq(state.receipt_refs.blocked, nil)
+    t.eq(state.cleanup_receipt_ref.ref, fx.request.artifact_root .. "/cleanup-receipt-complete.json")
+    t.eq(observed.receipts[state.cleanup_receipt_ref.ref].status, "complete")
+    t.eq(observed.active_count(), 0)
   end,
 
   test_state_save_failure_stops_execution_and_still_releases_acquired_ports = function()
@@ -679,7 +683,7 @@ return {
     local blocked = core.start(fx.request, ports)
     t.eq(blocked.status, "blocked")
     t.eq(blocked.failure_class, "lifecycle-deadline")
-    t.eq(table.concat(observed.calls, ","), "authorize,claim-ports,receipt-blocked")
+    t.eq(table.concat(observed.calls, ","), "authorize,claim-ports,receipt-complete,receipt-blocked")
     t.eq(table.concat(observed.cleanup_order, ","), "ports")
     t.eq(observed.shared.port_owners[4173], nil)
   end,
@@ -705,11 +709,63 @@ return {
 
   test_cleanup_failure_marks_terminal_result_incomplete = function()
     local fx = fixture({ operation_id = "cleanup-incomplete" })
-    local ports = fake_runtime(fx, { fail_cleanup = "application" })
+    local ports, observed = fake_runtime(fx, { fail_cleanup = "application" })
     local ready = core.start(fx.request, ports)
     local blocked = core.finalize(finalize_request(fx, ready), ports)
     t.eq(blocked.status, "blocked")
     t.eq(blocked.cleanup_status, "incomplete")
+    t.eq(blocked.cleanup_receipt_ref.ref, fx.request.artifact_root .. "/cleanup-receipt-incomplete.json")
+    local receipt = observed.receipts[blocked.cleanup_receipt_ref.ref]
+    environment_contract.validate_cleanup_receipt(receipt)
+    t.eq(receipt.status, "incomplete")
+    t.eq(#receipt.attempted_resources, 4)
+    t.eq(#receipt.verified_removals, 3)
+    t.eq(#receipt.remaining_resources, 1)
+    t.eq(receipt.remaining_resources[1].resource_id, "application")
+  end,
+
+  test_cleanup_runtime_error_is_recorded_as_remaining_resource = function()
+    local fx = fixture({ operation_id = "cleanup-runtime-error" })
+    local ports, observed = fake_runtime(fx, { raise_cleanup = "service-1" })
+    local ready = core.start(fx.request, ports)
+    local blocked = core.finalize(finalize_request(fx, ready), ports)
+    t.eq(blocked.status, "blocked")
+    local receipt = observed.receipts[blocked.cleanup_receipt_ref.ref]
+    t.eq(receipt.status, "incomplete")
+    t.eq(receipt.remaining_resources[1].resource_id, "service-1")
+  end,
+
+  test_terminal_cleanup_receipt_is_complete_replay_safe_and_owned = function()
+    local fx = fixture({ operation_id = "cleanup-receipt-complete" })
+    local ports, observed = fake_runtime(fx)
+    local ready = core.start(fx.request, ports)
+    local finalized = core.finalize(finalize_request(fx, ready), ports)
+    t.eq(finalized.status, "finalized")
+    t.eq(finalized.cleanup_receipt_ref.ref, fx.request.artifact_root .. "/cleanup-receipt-complete.json")
+    local receipt = observed.receipts[finalized.cleanup_receipt_ref.ref]
+    environment_contract.validate_cleanup_receipt(receipt)
+    t.eq(receipt.operation_id, fx.request.operation_id)
+    t.eq(receipt.status, "complete")
+    t.eq(#receipt.attempted_resources, 4)
+    t.eq(#receipt.verified_removals, 4)
+    t.eq(#receipt.remaining_resources, 0)
+    local cleanup_count = #observed.cleanup_order
+    local replay = core.finalize(finalize_request(fx, ready), ports)
+    t.eq(replay.cleanup_receipt_ref.ref, finalized.cleanup_receipt_ref.ref)
+    t.eq(#observed.cleanup_order, cleanup_count)
+  end,
+
+  test_cleanup_receipt_write_failure_never_replays_a_ready_result = function()
+    local fx = fixture({ operation_id = "cleanup-receipt-write-failure" })
+    local ports, observed = fake_runtime(fx, { fail_receipts = { complete = true } })
+    local ready = core.start(fx.request, ports)
+    t.raises(function() core.finalize(finalize_request(fx, ready), ports) end)
+    local state = observed.state()
+    t.eq(state.status, "blocked")
+    t.eq(state.failure_class, "cleanup-receipt-write-failed")
+    t.eq(state.cleanup_status, "incomplete")
+    t.eq(state.cleanup_receipt_ref, nil)
+    t.eq(state.public_result, nil)
   end,
 
   test_browser_readiness_rejects_forged_stale_and_smuggled_results = function()
@@ -753,6 +809,10 @@ return {
       })
     end)
     local not_ready = copy(ready); not_ready.status = "blocked"; not_ready.environment_receipt_ref.ref = fx.request.artifact_root .. "/environment-receipt-blocked.json"; not_ready.base_url = nil; not_ready.sessions = nil
+    not_ready.readiness_correlation = nil
+    not_ready.cleanup_status = "complete"
+    not_ready.cleanup_receipt_ref = { kind = "artifact", ref = fx.request.artifact_root .. "/cleanup-receipt-complete.json" }
+    t.raises(function() core.browser_readiness_check(not_ready, { operation_state_ref = fx.request.operation_state_ref }) end)
     t.raises(function() core.browser_readiness_check(not_ready, {}) end)
     t.raises(function() core.handle_browser_readiness({ schema = "other" }, ports) end)
 

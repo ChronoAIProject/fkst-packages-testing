@@ -82,6 +82,27 @@ local function browser_result()
   }
 end
 
+local function cleanup_receipt()
+  return {
+    schema = contract.schemas.cleanup_receipt,
+    operation_id = "contract-fixture",
+    status = "complete",
+    attempted_resources = {
+      {
+        resource_id = "workspace",
+        resource_kind = "workspace",
+        status = "cleaned",
+        diagnostic_ref = { kind = "artifact", ref = ".testing/runs/contract-fixture/diagnostics/cleanup-workspace.json" },
+      },
+    },
+    verified_removals = { "workspace" },
+    remaining_resources = {},
+    artifact_root = ".testing/runs/contract-fixture",
+    trace_id = "trace-contract-fixture",
+    dedup_key = "dedup-contract-fixture",
+  }
+end
+
 return {
   test_exported_pointer_copy_is_closed = function()
     local copied = contract.copy_ref({ kind = "artifact", ref = ".testing/runs/x.json", ignored = true })
@@ -210,6 +231,22 @@ return {
       function(v) v.cleanup_status = "unknown" end,
       function(v) v.diagnostic_refs = {}; for i = 1, contract.max_diagnostic_refs + 1 do v.diagnostic_refs[i] = { kind = "artifact", ref = ".testing/runs/op/d" .. i .. ".json" } end end,
     }) do local changed = copy(result); mutate(changed); t.raises(function() contract.validate_result(changed) end) end
+
+    local terminal = copy(result)
+    terminal.status = "finalized"
+    terminal.base_url = nil
+    terminal.sessions = nil
+    terminal.readiness_correlation = nil
+    terminal.environment_receipt_ref.ref = ".testing/runs/op/environment-receipt-finalized.json"
+    terminal.cleanup_status = "complete"
+    terminal.cleanup_receipt_ref = { kind = "artifact", ref = ".testing/runs/op/cleanup-receipt-complete.json" }
+    contract.validate_result(terminal)
+    terminal.cleanup_receipt_ref.ref = ".testing/runs/op/cleanup-receipt-incomplete.json"
+    t.raises(function() contract.validate_result(terminal) end)
+
+    local premature = copy(result)
+    premature.cleanup_receipt_ref = { kind = "artifact", ref = ".testing/runs/op/cleanup-receipt-pending.json" }
+    t.raises(function() contract.validate_result(premature) end)
   end,
 
   test_readiness_browser_result_and_ready_result_failure_matrix = function()
@@ -264,5 +301,38 @@ return {
       { status = "passed", cleanup_ref = { kind = "cleanup", ref = "token=value" } },
       { status = "passed", runtime_ports = {} },
     }) do t.raises(function() contract.validate_runtime_outcome(value, "fixture") end) end
+  end,
+
+  test_cleanup_receipt_contract_is_typed_bounded_and_pointer_only = function()
+    contract.validate_cleanup_receipt(cleanup_receipt())
+    for _, mutate in ipairs({
+      function(v) v.schema = "other" end,
+      function(v) v.status = "unknown" end,
+      function(v) v.attempted_resources = {} end,
+      function(v) v.attempted_resources[1].resource_id = "bad id" end,
+      function(v) v.attempted_resources[1].status = "unknown" end,
+      function(v) v.attempted_resources[1].diagnostic_ref.ref = "outside.json" end,
+      function(v) v.verified_removals = { "foreign" } end,
+      function(v) v.verified_removals = { [2] = "workspace" } end,
+      function(v) v.remaining_resources = { [2] = {
+        resource_id = "workspace", resource_kind = "workspace",
+        cleanup_ref = { kind = "resource-cleanup", ref = "workspace" },
+      } } end,
+      function(v) v.status = "incomplete"; v.attempted_resources[1].status = "remaining"; v.verified_removals = {} end,
+      function(v) v.status = "complete"; v.attempted_resources[1].status = "remaining"; v.verified_removals = {}; v.remaining_resources = { {
+        resource_id = "workspace", resource_kind = "workspace",
+        cleanup_ref = { kind = "resource-cleanup", ref = "workspace" },
+      } } end,
+      function(v) v.artifact_root = "outside" end,
+      function(v) v.remaining_resources = { {
+        resource_id = "workspace", resource_kind = "workspace",
+        cleanup_ref = { kind = "resource-cleanup", ref = "token=value" },
+      } } end,
+      function(v) v.secret = "inline" end,
+    }) do
+      local malformed = cleanup_receipt()
+      mutate(malformed)
+      t.raises(function() contract.validate_cleanup_receipt(malformed) end)
+    end
   end,
 }
