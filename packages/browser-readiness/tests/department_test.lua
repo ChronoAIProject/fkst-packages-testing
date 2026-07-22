@@ -42,8 +42,8 @@ return {
         },
         source_ref = { kind = "host-readiness", ref = "readiness-request" },
         request_context = request_context,
-        probe = ready_probe(),
       },
+      test_probe = ready_probe(),
     })
 
     t.eq(#trace.raises, 1)

@@ -14,6 +14,15 @@
 - `testing-runner.online_regression_request`
   - `schema`: `testing-runner.online-regression.request.v1`
   - optional: `backend`, `config`, `driver`, `heartbeat_url`, `final_summary`, `no_browser`, `dry_run`, `dry_run_github`, `preflight_result`, `artifact_root`, `source_ref`, `trace_id`, `dedup_key`
+- `testing-runner.structured_plan_request`
+  - `schema`: `testing-runner.structured-plan.request.v1`
+  - pointer-only compilation of reviewed cases against a host case catalog and ready receipt-v2
+- `testing-runner.structured_execution_request`
+  - `schema`: `testing-runner.structured-execution.request.v2`
+  - fixed API/CLI execution only
+- `testing-runner.ai_browser_control_request`
+  - `schema`: `testing-runner.ai-browser-control.request.v1`
+  - one reviewed browser case, one exact target, one authenticated single-use browser grant
 
 `backend` defaults to `fkst-native`, which is the only executable runtime backend. `agentic-testing-cli` is accepted only as blocked legacy compatibility and must never construct or invoke the old Python runner. `agentic_testing_repo_root` is not an active request field.
 
@@ -58,7 +67,7 @@ The preferred native UI posture is `backend = "fkst-native"`, `dry_run = false`,
 All request types emit `testing-runner.testing_result` with:
 
 - `schema`: `testing-runner.result.v1`
-- `job`: `module-test-loop`, `platform-test-loop`, or `online-regression`
+- `job`: `module-test-loop`, `platform-test-loop`, `online-regression`, `structured-execution`, or `ai-browser-control`
 - `status`: `planned`, `passed`, `failed`, `blocked`, or `degraded`
 - `artifact_root`: stable pointer under `.testing/runs/...`
 - `source_ref`: bounded source reference
@@ -90,10 +99,18 @@ For online regression, native no-browser execution is only the HTTP heartbeat pa
 
 Payloads must carry small control fields and artifact pointers only; large report bodies, browser storage, credentials, cookies, and tokens stay outside fkst events.
 
-Structured headless API/CLI execution uses the independent
-`testing-runner.structured_execution_request` seam and contracts documented in
-`structured-execution.v1.md`. It does not extend legacy module `native_argv` authority: every plan
-requires a separate authenticated approval bound to the plan digest and exact positive capabilities.
+Structured execution uses the independent plan, grant, and executor seams documented in
+`structured-execution.v2.md`. Fixed API/CLI execution does not extend legacy module `native_argv`
+authority: every plan requires a separate authenticated single-use grant bound to the plan digest
+and exact positive capabilities.
+
+Agentic browser execution uses `testing-runner.ai_browser_control_request` and
+`agentic-browser-execution.v1.md`. It accepts only a one-case `agentic-browser` plan and exact-target
+browser grant. The model receives one sanitized observation and returns one selector-free typed action
+per turn through `workflow.codex.dispatch`. The Node runtime re-observes before each effect, resolves
+approved secret refs only through host secret stdin, and never persists raw prompts, responses, DOM,
+storage, cookies, URL query or fragment data, account identifiers, or secret values. AI finish is
+advisory; callback, process exit, identity CLI, and authenticated status signals determine success.
 
 ## Iterative AI test-design loop
 
@@ -111,9 +128,9 @@ The public artifact schemas are:
 - `testing-runner.ai-design-closure.v1`: terminal `reviewed-complete`, `residual-risk`, `blocked`, or `round-limit` verdict bound to the final coverage matrix.
 - `testing-runner.residual-risk.v1`: explicit unresolved coverage entries and high-priority unresolved count for every non-complete closure.
 
-`testing-pipeline.start_design_loop` reads the three digest-bound input references, persists the initial state and round artifacts, and returns artifact references only. `testing-pipeline.apply_design_round` reads a persisted state and structured patch by reference, applies one deterministic bounded round, persists completed artifacts before returning, and reports either the next round plan or terminal closure. Canonical latest artifacts are accompanied by immutable per-round snapshots under `<artifact_root>/rounds/<round>/`. Reapplying an already-recorded patch is idempotent. Stale round digests, malformed patches, missing artifacts, digest mismatches, conflicting findings, and mutations after closure fail closed without replacing the last completed state.
+`module-testing-pipeline.start_design_loop` reads the three digest-bound input references, persists the initial state and round artifacts, and returns artifact references only. `module-testing-pipeline.apply_design_round` reads a persisted state and structured patch by reference, applies one deterministic bounded round, persists completed artifacts before returning, and reports either the next round plan or terminal closure. Canonical latest artifacts are accompanied by immutable per-round snapshots under `<artifact_root>/rounds/<round>/`. Reapplying an already-recorded patch is idempotent. Stale round digests, malformed patches, missing artifacts, digest mismatches, conflicting findings, and mutations after closure fail closed without replacing the last completed state.
 
-When `cdp_execution.ai_design_loop_request` is present on the testing-pipeline module start, the existing generation consensus still gates the authored candidate artifact, but an approved execution review enters `testing-ai-design-round` proposals instead of immediately resuming the runner. Each reached design-round consensus carries only a digest-bound `patch_ref`; non-terminal rounds emit the next stable proposal, while a terminal closure replaces the pipeline-only request with `ai_design_loop_state_ref` before raising the runner request. Requests without this field retain the legacy one-pass compatibility path.
+When `cdp_execution.ai_design_loop_request` is present on the module-testing-pipeline module start, the existing generation consensus still gates the authored candidate artifact, but an approved execution review enters `testing-ai-design-round` proposals instead of immediately resuming the runner. Each reached design-round consensus carries only a digest-bound `patch_ref`; non-terminal rounds emit the next stable proposal, while a terminal closure replaces the pipeline-only request with `ai_design_loop_state_ref` before raising the runner request. Requests without this field retain the legacy one-pass compatibility path.
 
 Completeness is derived from the coverage matrix rather than a bare approve vote. A round closes as `reviewed-complete` only when every subject is covered, intentionally excluded, or deduplicated. Explicit risk acceptance or blocking emits residual risk; reaching `max_rounds` with unresolved coverage emits `round-limit`. Case, action, operation, subject, and round budgets remain bounded.
 

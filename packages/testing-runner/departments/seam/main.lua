@@ -2,7 +2,10 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "runner_keepalive_tick" },
-  produces = { "module_test_request", "platform_test_request", "online_regression_request", "structured_execution_request" },
+  produces = {
+    "module_test_request", "platform_test_request", "online_regression_request",
+    "structured_plan_request", "structured_execution_request", "ai_browser_control_request",
+  },
   stall_window = "30s",
   retry = false,
 }

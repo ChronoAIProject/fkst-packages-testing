@@ -15,6 +15,7 @@ T.schemas = {
   online_heartbeat_summary = "testing-runner.online-heartbeat-summary.v1",
   browser_driver_summary = "testing-runner.browser-driver-summary.v1",
   structured_execution_summary = "testing-runner.structured-execution-summary.v1",
+  browser_control_summary = "testing-runner.ai-browser-control-summary.v1",
 }
 
 T.runner_statuses = {
@@ -377,6 +378,37 @@ local function copy_structured_execution(value)
   }
 end
 
+local function copy_browser_control(value)
+  if not has_only(value, {
+    schema = true, status = true, classification = true, mode = true, artifact_root = true,
+    test_plan_path = true, execution_path = true, case_results_path = true,
+    case_count = true, passed_count = true, failed_count = true, skipped_count = true,
+    error_count = true, turn_count = true, replayed = true,
+  }) then return nil end
+  if value.schema ~= T.schemas.browser_control_summary or not T.runner_statuses[value.status]
+    or not bounded_field(value.classification, 80) or value.mode ~= "agentic-browser"
+    or not strings.is_artifact_root(value.artifact_root)
+    or value.test_plan_path ~= value.artifact_root .. "/test-plan.json"
+    or value.execution_path ~= value.artifact_root .. "/browser-agent-execution.json"
+    or value.case_results_path ~= value.artifact_root .. "/case-results.json" then return nil end
+  for _, field in ipairs({
+    "case_count", "passed_count", "failed_count", "skipped_count", "error_count", "turn_count",
+  }) do
+    local count = value[field]
+    if type(count) ~= "number" or count < 0 or count > 64 or count ~= math.floor(count) then return nil end
+  end
+  if type(value.replayed) ~= "boolean" then return nil end
+  return {
+    schema = value.schema, status = value.status, classification = value.classification,
+    mode = value.mode, artifact_root = value.artifact_root,
+    test_plan_path = value.test_plan_path, execution_path = value.execution_path,
+    case_results_path = value.case_results_path, case_count = value.case_count,
+    passed_count = value.passed_count, failed_count = value.failed_count,
+    skipped_count = value.skipped_count, error_count = value.error_count,
+    turn_count = value.turn_count, replayed = value.replayed,
+  }
+end
+
 function T.copy_native_summary(value)
   if value == nil then return nil end
   if type(value) ~= "table" then return nil end
@@ -400,6 +432,9 @@ function T.copy_native_summary(value)
   end
   if value.schema == T.schemas.structured_execution_summary then
     return copy_structured_execution(value)
+  end
+  if value.schema == T.schemas.browser_control_summary then
+    return copy_browser_control(value)
   end
   return nil
 end

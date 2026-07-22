@@ -1,21 +1,11 @@
+local contract = require("contract.browser_readiness")
+
 local M = {}
 
 local function non_empty(value, limit)
   return type(value) == "string" and value ~= "" and #value <= (limit or 512)
 end
 
-local function dense_list(value)
-  if type(value) ~= "table" then return false end
-  local seen = 0
-  for index, _ in pairs(value) do
-    if type(index) ~= "number" or index < 1 or index % 1 ~= 0 then return false end
-    if index > seen then seen = index end
-  end
-  for index = 1, seen do
-    if value[index] == nil then return false end
-  end
-  return true
-end
 
 local function deep_copy(value)
   if type(value) ~= "table" then return value end
@@ -68,127 +58,8 @@ function M.validate_session(session)
   return has_harness or has_cdp
 end
 
-local context_keys = {
-  native_argv = true,
-  dry_run = true,
-  no_browser = true,
-}
-
-local function validate_native_argv(value)
-  if value == nil then return end
-  if not dense_list(value) or #value == 0 then
-    error("browser-readiness: malformed-request: request_context.native_argv must be a non-empty dense list")
-  end
-  for _, item in ipairs(value) do
-    if not non_empty(item, 512) then
-      error("browser-readiness: malformed-request: request_context.native_argv items must be bounded strings")
-    end
-  end
-end
-
-local function validate_request_context(value)
-  if value == nil then return end
-  if type(value) ~= "table" then
-    error("browser-readiness: malformed-request: request_context must be a table")
-  end
-  for key, _ in pairs(value) do
-    if context_keys[key] ~= true then
-      error("browser-readiness: malformed-request: request_context has unsupported field")
-    end
-  end
-  validate_native_argv(value.native_argv)
-  if value.dry_run ~= nil and type(value.dry_run) ~= "boolean" then
-    error("browser-readiness: malformed-request: request_context.dry_run must be boolean")
-  end
-  if value.no_browser ~= nil and type(value.no_browser) ~= "boolean" then
-    error("browser-readiness: malformed-request: request_context.no_browser must be boolean")
-  end
-end
-
-local forbidden_correlation_keys = {
-  [joined("coo", "kie")] = true,
-  [joined("coo", "kies")] = true,
-  storage = true,
-  localstorage = true,
-  sessionstorage = true,
-  stdout = true,
-  stderr = true,
-  output = true,
-  body = true,
-  screenshot = true,
-  [joined("pass", "word")] = true,
-  [joined("to", "ken")] = true,
-  secret = true,
-  authorization = true,
-  api_key = true,
-}
-
-local function validate_correlation(value)
-  if value == nil then return end
-  if type(value) ~= "table" then
-    error("browser-readiness: malformed-request: correlation must be a table")
-  end
-  local count = 0
-  local function walk(item, depth)
-    if depth > 6 then error("browser-readiness: malformed-request: correlation exceeds maximum depth") end
-    local kind = type(item)
-    if kind == "string" then
-      if #item > 1024 or item:find("[%z\1-\31\127]") ~= nil or contains_credential_marker(item) then
-        error("browser-readiness: malformed-request: correlation contains an unsafe string")
-      end
-      return
-    end
-    if kind == "boolean" then return end
-    if kind == "number" then
-      if item ~= item or item == math.huge or item == -math.huge then
-        error("browser-readiness: malformed-request: correlation contains an invalid number")
-      end
-      return
-    end
-    if kind ~= "table" then
-      error("browser-readiness: malformed-request: correlation contains an unsupported value")
-    end
-    local list = dense_list(item)
-    for key, nested in pairs(item) do
-      count = count + 1
-      if count > 64 then error("browser-readiness: malformed-request: correlation has too many items") end
-      if not list then
-        if type(key) ~= "string" or not non_empty(key, 128) then
-          error("browser-readiness: malformed-request: correlation keys must be bounded strings")
-        end
-        local normalized = key:lower()
-        if forbidden_correlation_keys[normalized] or normalized:find(joined("coo", "kie"), 1, true)
-          or normalized:find("storage", 1, true) then
-          error("browser-readiness: malformed-request: correlation contains a forbidden field")
-        end
-      end
-      walk(nested, depth + 1)
-    end
-  end
-  walk(value, 1)
-end
-
 function M.validate_request(payload)
-  if type(payload) ~= "table" then
-    error("browser-readiness: malformed-request: payload must be a table")
-  end
-  if payload.schema ~= "browser-readiness.check.v1" then
-    error("browser-readiness: unknown-schema: expected browser-readiness.check.v1")
-  end
-  if payload.base_url ~= nil and not non_empty(payload.base_url, 512) then
-    error("browser-readiness: malformed-request: base_url is too large")
-  end
-  if not dense_list(payload.sessions) or #payload.sessions == 0 then
-    error("browser-readiness: malformed-request: sessions must be a non-empty dense list")
-  end
-  for _, session in ipairs(payload.sessions) do
-    if not M.validate_session(session) then
-      error("browser-readiness: malformed-request: invalid session")
-    end
-  end
-  validate_request_context(payload.request_context)
-  validate_correlation(payload.correlation)
-  return payload
+  return contract.validate_request(payload)
 end
 
 local function default_probe()
@@ -276,14 +147,14 @@ local function forced_result(payload, status)
     if local_url(session.cdp_url) then item.cdp_url = session.cdp_url end
     table.insert(sessions, item)
   end
-  return {
+  return contract.validate_result({
     schema = "browser-readiness.result.v1",
     status = status or "planned",
     sessions = sessions,
     source_ref = payload.source_ref,
     request_context = payload.request_context,
     correlation = deep_copy(payload.correlation),
-  }
+  })
 end
 
 function M.result(payload, opts)
@@ -305,14 +176,14 @@ function M.result(payload, opts)
   for _, session in ipairs(payload.sessions) do
     table.insert(items, session_readiness(session, probe))
   end
-  return {
+  return contract.validate_result({
     schema = "browser-readiness.result.v1",
     status = overall_status(items),
     sessions = items,
     source_ref = payload.source_ref,
     request_context = payload.request_context,
     correlation = deep_copy(payload.correlation),
-  }
+  })
 end
 
 return M

@@ -237,6 +237,23 @@ async function acquireTarget(cdpUrl, baseUrl) {
   return assertLocalWsUrl(created.webSocketDebuggerUrl, 'CDP websocket URL').toString();
 }
 
+async function acquireTargetById(cdpUrl, targetId) {
+  const clean = assertLocalHttpUrl(cdpUrl, 'CDP URL').toString().replace(/\/+$/, '');
+  if (typeof targetId !== 'string' || targetId === '' || targetId.length > 256) {
+    throw new Error('target ID must be bounded');
+  }
+  const targets = await httpJson(`${clean}/json/list`);
+  const matches = Array.isArray(targets)
+    ? targets.filter((target) => target.id === targetId && target.type === 'page' && target.webSocketDebuggerUrl)
+    : [];
+  if (matches.length !== 1) throw new Error('exact approved CDP target is unavailable');
+  return {
+    id: matches[0].id,
+    url: String(matches[0].url || ''),
+    webSocketDebuggerUrl: assertLocalWsUrl(matches[0].webSocketDebuggerUrl, 'CDP websocket URL').toString(),
+  };
+}
+
 function pageStateReady(state, previousTimeOrigin) {
   if (!state || (state.readyState !== 'interactive' && state.readyState !== 'complete')) return false;
   return previousTimeOrigin === undefined || state.timeOrigin !== previousTimeOrigin;
@@ -258,6 +275,7 @@ async function waitForPage(cdp, previousTimeOrigin) {
 module.exports = {
   CdpSocket,
   acquireTarget,
+  acquireTargetById,
   assertLocalHttpUrl,
   assertLocalWsUrl,
   localHost,

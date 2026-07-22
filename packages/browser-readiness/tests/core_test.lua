@@ -1,4 +1,5 @@
 local core = require("core")
+local contract = require("contract.browser_readiness")
 local t = fkst.test
 
 local function request()
@@ -242,5 +243,55 @@ return {
   test_command_name_rejects_shell_metacharacters = function()
     t.eq(core.command_name("browser-harness --project local"), "browser-harness")
     t.eq(core.command_name("browser-harness;rm"), nil)
+  end,
+
+  test_session_helper_and_default_host_probe_are_fail_closed = function()
+    t.eq(core.validate_session(nil), false)
+    t.eq(core.validate_session({ role = "" }), false)
+    t.eq(core.validate_session({ role = "admin", browser_harness_command = "sh" }), true)
+    local result = core.result({
+      schema = contract.schemas.request,
+      base_url = "http://127.0.0.1:1/health",
+      sessions = { { role = "admin", browser_harness_command = "sh" } },
+    })
+    t.eq(result.status, "blocked")
+    t.eq(result.sessions[2].status, "ready")
+  end,
+
+  test_request_and_result_contract_mutation_matrix = function()
+    local request_mutations = {
+      function(value) value.source_ref = { kind = "", ref = "" } end,
+      function(value) value.request_context = { native_argv = {} } end,
+      function(value) value.request_context = { dry_run = "false" } end,
+      function(value) value.request_context = { no_browser = "true" } end,
+      function(value) value.base_url = "" end,
+    }
+    for _, mutate in ipairs(request_mutations) do
+      local value = request()
+      mutate(value)
+      t.raises(function() contract.validate_request(value) end)
+    end
+
+    local valid = core.result(request(), {
+      probe = probe(
+        { APP_USER1_CDP_ENDPOINT = "http://127.0.0.1:9222/json/version" },
+        { ["browser-harness"] = true },
+        { ["http://localhost:8080/"] = true }
+      ),
+    })
+    local result_mutations = {
+      function(value) value.sessions[1].checks[1].status = "unknown" end,
+      function(value) value.sessions[1].role = "" end,
+      function(value) value.sessions[3].cdp_url = "https://example.test/devtools" end,
+      function(value) value.status = "unknown" end,
+    }
+    for _, mutate in ipairs(result_mutations) do
+      local value = contract.copy(valid)
+      mutate(value)
+      t.raises(function() contract.validate_result(value) end)
+    end
+    local copied = contract.copy({ nested = { value = true } })
+    copied.nested.value = false
+    t.eq(valid.status, "ready")
   end,
 }

@@ -1,0 +1,57 @@
+# Structured execution v2
+
+`testing-runner.structured_plan_request` compiles one reviewed module plan into an immutable `testing-structured-plan.v2`. `workflow-qa` then obtains an external single-use grant before dispatching an executor.
+
+The plan declares exactly one execution mode:
+
+- `structured-api-cli`: one or more bounded `cli` and `http` cases;
+- `agentic-browser`: exactly one bounded `browser` case.
+
+Mixed browser and API/CLI execution is invalid. Browser plans never enter the fixed API/CLI executor.
+
+## Planning
+
+`testing-runner.structured-plan.request.v1` binds the immutable repository, module-plan pointer and digest, host case-catalog pointer and digest, ready Environment Factory receipt pointer and digest, output plan pointer, artifact root, source reference, trace ID, and dedup key.
+
+The compiler intersects reviewed executable design cases with host-authorized case mappings. Unmapped reviewed cases remain sorted residual risk. Shell execution, inline headers, credential-bearing URLs, unknown fields, and malformed receipt bindings fail closed.
+
+The compiler emits `testing-runner.structured-plan.result.v1` with the immutable plan pointer, digest, and residual-risk count.
+
+## Grant request
+
+`workflow-qa.execution-grant.request.v1` binds the plan execution mode, preauthorization pointer and digest, plan pointer and digest, ready environment receipt pointer and digest, requested grant pointer, repository, source reference, trace ID, and dedup key.
+
+The grant signer is host-owned and outside this repository. A ready environment or valid plan is not authorization.
+
+For `structured-api-cli`, the signer publishes `testing-structured-execution-grant.v1`. It binds the parent authorization, exact plan and environment digests, repository, positive CLI argv-prefix and HTTP origin/method/path-prefix capabilities, authority and evidence references, policy revision, validity window, trace ID, dedup key, and `max_uses = 1`.
+
+For `agentic-browser`, the signer publishes the separate browser grant documented in `agentic-browser-execution.v1.md`.
+
+## Fixed API/CLI executor
+
+`testing-runner.structured_execution_request` accepts `testing-runner.structured-execution.request.v2`. The request is pointer-only and binds one immutable repository commit, ready Environment Factory receipt-v2, plan-v2, single-use structured grant, artifact root, source reference, trace ID, and dedup key.
+
+The fixed executor accepts only `execution_mode = "structured-api-cli"` and supports:
+
+- `cli`: bounded direct argv, timeout, and `exit-code` assertions;
+- `http`: explicit method, credential-free query-free URL, empty inline headers, timeout, and `status-code` or `body-contains` assertions.
+
+Shell executables are unsupported. HTTP requests and CLI argv must match the positive capabilities in the authenticated grant.
+
+The host verifier returns an attestation bound to the grant digest, authority, policy revision, and evidence reference. An atomic replay guard claims the grant before the first target effect. Completed claims return the existing result and perform no effects or effective writes.
+
+## Results
+
+Cases produce `passed`, `failed`, `skipped`, or `error` with bounded classifications. Typed `skip_reason` values perform no target effect.
+
+The runner writes:
+
+- `test-plan.json`
+- `execution.json`
+- `case-results.json`
+- `evidence/<case_id>.json`
+- `metadata.json`
+
+FKST events carry only aggregate status, counts, and artifact pointers through `testing-runner.result.v1`, `test-artifacts.summary.v1`, and publication contracts.
+
+The host installs `structured_execution_runtime` with authenticated artifact loading, current time, grant verification, atomic replay claim/completion, direct argv and bounded HTTP effects, artifact writing, and completed-result loading. The package does not create sandboxes, resolve secrets, invoke shells, or weaken Environment Factory cleanup.

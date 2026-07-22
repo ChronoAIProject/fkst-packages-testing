@@ -14,7 +14,8 @@ local function done(_event)
 end
 
 local function act(event)
-  local result = core.result(event.payload or {})
+  local opts = event.test_probe and { probe = event.test_probe } or nil
+  local result = core.result(event.payload or {}, opts)
   log.info("browser-readiness dept=check_readiness tag=" .. string.upper(result.status) .. " sessions=" .. tostring(#result.sessions))
   raise("browser_readiness_result", result)
 end

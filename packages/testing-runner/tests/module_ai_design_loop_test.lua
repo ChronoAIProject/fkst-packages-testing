@@ -1,5 +1,6 @@
 local loop = require("module_ai_design_loop")
 local planning = require("module_planning")
+local consensus = require("testing_ai.module_ai_design_consensus")
 local t = fkst.test
 
 local root = ".testing/runs/module-a-design-loop"
@@ -55,6 +56,43 @@ local function request(docs)
 end
 
 return {
+  test_design_consensus_binds_prompt_author_and_round_proposal = function()
+    local docs = documents()
+    local design_request = request(docs)
+    local _, artifacts = loop.start(design_request, docs)
+    local result = {
+      round = 1,
+      refs = {
+        state_ref = reference(root .. "/state.json", { schema = "state" }),
+        coverage_matrix_ref = reference(root .. "/coverage-matrix.json", artifacts.coverage_matrix),
+        round_plan_ref = reference(root .. "/round-plan.json", artifacts.round_plan),
+      },
+    }
+    local orchestration_state = {
+      artifact_root = root,
+      module_start = { dedup_key = "module-design-dedup" },
+    }
+    local prompt = consensus.prompt_for_patch(orchestration_state, result)
+    t.is_true(prompt:find(loop.schemas.patch, 1, true) ~= nil)
+    t.is_true(prompt:find(result.refs.round_plan_ref.artifact_digest, 1, true) ~= nil)
+    t.is_true(prompt:find(result.refs.state_ref.artifact_pointer, 1, true) ~= nil)
+
+    t.mock_command("codex exec", { exit_code = 0, stdout = "{}", stderr = "" })
+    local authored = consensus.author_patch(orchestration_state, result, "/repo")
+    t.eq(authored.exit_code, 0)
+
+    local patch_ref = reference(root .. "/supplementation-patch.json", {
+      schema = loop.schemas.patch,
+      round = 1,
+      base_round_digest = artifacts.round_plan.round_digest,
+      operations = {},
+    })
+    local proposal = consensus.round_proposal(orchestration_state, result, patch_ref)
+    t.eq(proposal.schema, "consensus.proposal.v1")
+    t.eq(proposal.source_ref.ref, root)
+    t.is_true(proposal.body:find(patch_ref.artifact_pointer, 1, true) ~= nil)
+  end,
+
   test_structured_patch_supplements_uncovered_subject_and_converges = function()
     local docs = documents()
     local state, artifacts = loop.start(request(docs), docs)
@@ -253,6 +291,9 @@ return {
     local invalid_coverage = documents()
     invalid_coverage.deterministic_cases.cases[1].coverage_subject_ids = {}
     t.raises(function() loop.start(request(invalid_coverage), invalid_coverage) end)
+    local invalid_subject = documents()
+    invalid_subject.coverage_scope.subjects[1].id = nil
+    t.raises(function() loop.start(request(invalid_subject), invalid_subject) end)
     local invalid_provenance = documents()
     invalid_provenance.deterministic_cases.cases[1].provenance.source_pointer = "/tmp/source.json"
     t.raises(function() loop.start(request(invalid_provenance), invalid_provenance) end)
