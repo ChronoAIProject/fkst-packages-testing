@@ -89,6 +89,15 @@ return {
     graph.assert_covers(trace("test-publication.github_issue_written"), {
       "test-publication.github_issue_written -> test-publication.acknowledge_product_defect",
     })
+    graph.assert_covers(trace("github-proxy.github_comment_written"), {
+      "github-proxy.github_comment_written -> workflow-qa.github_comment_in",
+    })
+    graph.assert_covers(trace("github-proxy.github_issue_comment_request"), {
+      "github-proxy.github_issue_comment_request -> github-proxy.github_comment",
+    })
+    graph.assert_covers(trace("github-proxy.github_issue_create_request"), {
+      "github-proxy.github_issue_create_request -> github-proxy.github_issue_create",
+    })
     graph.assert_covers(trace("github-proxy.github_issue_label_request"), {
       "github-proxy.github_issue_label_request -> github-proxy.github_issue_label",
     })
