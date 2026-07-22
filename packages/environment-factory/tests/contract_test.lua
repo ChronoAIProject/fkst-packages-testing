@@ -22,7 +22,6 @@ local function request()
     base_url = "http://127.0.0.1:4173/health",
     runtime_ports = { { name = "application", port = 4173 } },
     sessions = { { role = "browser", cdp_url = "http://[::1]:9222" } },
-    testing = { module = "fixture", artifact_root = ".testing/runs/contract-fixture/testing", mutation_policy = "read-only" },
     trace_id = "trace-contract-fixture",
     dedup_key = "dedup-contract-fixture",
   }
@@ -60,7 +59,8 @@ local function readiness_correlation()
     attempt_id = "attempt",
     operation_id = "op",
     operation_state_ref = { kind = "artifact", ref = ".testing/runs/op/operation-state.json" },
-    environment_receipt_ref = { kind = "artifact", ref = ".testing/runs/op/environment-receipt-ready.json" },
+    readiness_attempt_ref = { kind = "artifact", ref = ".testing/runs/op/readiness-attempts/attempt.json" },
+    readiness_attempt_sha256 = string.rep("a", 64),
     base_url = "http://127.0.0.1:4173/health",
     sessions = { { role = "browser", cdp_url = "http://127.0.0.1:9222" } },
     trace_id = "trace",
@@ -79,6 +79,28 @@ local function browser_result()
     source_ref = { kind = "artifact", ref = ".testing/runs/op/operation-state.json" },
     request_context = { dry_run = false },
     correlation = readiness_correlation(),
+  }
+end
+
+local function ready_receipt()
+  return {
+    schema = contract.schemas.receipt,
+    operation_id = "op",
+    status = "ready",
+    profile_revision = "profile-1",
+    profile_sha256 = string.rep("b", 64),
+    repository = { url = "https://example.invalid/testing/fixture.git", commit_sha = string.rep("a", 40) },
+    workspace_ref = { kind = "workspace", ref = "op-workspace" },
+    base_url = "http://127.0.0.1:4173/health",
+    runtime_ports = { { name = "application", port = 4173 } },
+    sessions = { { role = "browser", cdp_url = "http://127.0.0.1:9222" } },
+    browser_readiness = browser_result(),
+    artifact_root = ".testing/runs/op",
+    diagnostic_refs = {},
+    cleanup_ref = { kind = "environment-cleanup", ref = "op" },
+    cleanup_status = "pending",
+    trace_id = "trace",
+    dedup_key = "dedup",
   }
 end
 
@@ -137,8 +159,6 @@ return {
       function(v) v.sessions[1] = { role = "env", cdp_endpoint_env = "bad-env" } end,
       function(v) v.sessions[1].cdp_url = "http://example.invalid:9222" end,
       function(v) v.sessions[1].extra = "body" end,
-      function(v) v.testing.artifact_root = ".testing/runs/other" end,
-      function(v) v.testing.mutation_policy = "unsafe" end,
       function(v) v.trace_id = "bad trace" end,
     }
     for _, mutate in ipairs(cases) do expect_start_failure(mutate) end
@@ -151,12 +171,8 @@ return {
     local first = contract.start_binding(value)
     local second = contract.start_binding(copy(value))
     t.eq(contract.same_start_binding(first, second), true)
-    second.request.testing.module = "changed"
+    second.request.sessions[1].role = "changed"
     t.eq(contract.same_start_binding(first, second), false)
-    local escalated = copy(value)
-    escalated.testing.mutation_policy = "host-approved"
-    t.raises(function() contract.validate_profile_binding(escalated, profile(false)) end)
-    contract.validate_profile_binding(escalated, profile(true))
     local foreign = profile(false)
     foreign.repository.commit_sha = string.rep("b", 40)
     t.raises(function() contract.validate_profile_binding(value, foreign) end)
@@ -209,19 +225,9 @@ return {
 
     local result = {
       schema = contract.schemas.result, operation_id = "op", status = "ready",
-      base_url = "http://127.0.0.1:4173/health",
-      sessions = { { role = "browser", cdp_url = "http://127.0.0.1:9222" } },
-      readiness_correlation = {
-        schema = contract.schemas.readiness_correlation,
-        attempt_id = "attempt", operation_id = "op",
-        operation_state_ref = { kind = "artifact", ref = ".testing/runs/op/operation-state.json" },
-        environment_receipt_ref = { kind = "artifact", ref = ".testing/runs/op/environment-receipt-ready.json" },
-        base_url = "http://127.0.0.1:4173/health",
-        sessions = { { role = "browser", cdp_url = "http://127.0.0.1:9222" } },
-        trace_id = "trace", dedup_key = "dedup",
-      },
       environment_receipt_ref = { kind = "artifact", ref = ".testing/runs/op/environment-receipt-ready.json" },
       cleanup_ref = { kind = "cleanup", ref = "op" }, diagnostic_refs = {}, cleanup_status = "pending",
+      source_ref = { kind = "artifact", ref = ".testing/runs/op/operation-state.json" },
       trace_id = "trace", dedup_key = "dedup",
     }
     contract.validate_result(result)
@@ -234,9 +240,6 @@ return {
 
     local terminal = copy(result)
     terminal.status = "finalized"
-    terminal.base_url = nil
-    terminal.sessions = nil
-    terminal.readiness_correlation = nil
     terminal.environment_receipt_ref.ref = ".testing/runs/op/environment-receipt-finalized.json"
     terminal.cleanup_status = "complete"
     terminal.cleanup_receipt_ref = { kind = "artifact", ref = ".testing/runs/op/cleanup-receipt-complete.json" }
@@ -252,6 +255,9 @@ return {
   test_readiness_browser_result_and_ready_result_failure_matrix = function()
     local bad_correlation = readiness_correlation()
     bad_correlation.schema = "other"
+    t.raises(function() contract.validate_readiness_correlation(bad_correlation) end)
+    bad_correlation = readiness_correlation()
+    bad_correlation.readiness_attempt_sha256 = string.rep("A", 64)
     t.raises(function() contract.validate_readiness_correlation(bad_correlation) end)
 
     local browser_mutations = {
@@ -273,12 +279,11 @@ return {
       t.raises(function() contract.sanitize_browser_readiness_result(value) end)
     end
 
-    local missing_correlation = {
+    local non_pointer_result = {
       schema = contract.schemas.result,
       operation_id = "op",
       status = "ready",
       base_url = "http://127.0.0.1:4173/health",
-      sessions = { { role = "browser", cdp_url = "http://127.0.0.1:9222" } },
       environment_receipt_ref = { kind = "artifact", ref = ".testing/runs/op/environment-receipt-ready.json" },
       cleanup_ref = { kind = "cleanup", ref = "op" },
       diagnostic_refs = {},
@@ -286,7 +291,39 @@ return {
       trace_id = "trace",
       dedup_key = "dedup",
     }
-    t.raises(function() contract.validate_result(missing_correlation) end)
+    t.raises(function() contract.validate_result(non_pointer_result) end)
+  end,
+
+  test_ready_receipt_v2_binds_canonical_repository_and_browser_proof = function()
+    local value = ready_receipt()
+    contract.validate_receipt(value)
+    t.eq(value.schema, "environment-factory.receipt.v2")
+    t.eq(value.repository.commit_sha, string.rep("a", 40))
+    t.eq(value.repository.resolved_commit, nil)
+    t.eq(value.browser_readiness.status, "ready")
+    for _, mutate in ipairs({
+      function(v) v.repository.resolved_commit = v.repository.commit_sha end,
+      function(v) v.repository.commit_sha = nil end,
+      function(v) v.browser_readiness = nil end,
+      function(v) v.browser_readiness.correlation.operation_id = "foreign" end,
+      function(v) v.cleanup_receipt_ref = { kind = "artifact", ref = ".testing/runs/op/cleanup-receipt-pending.json" } end,
+      function(v) v.profile_sha256 = string.rep("A", 64) end,
+      function(v) v.artifact_root = "outside" end,
+      function(v) v.diagnostic_refs = { [2] = { kind = "artifact", ref = ".testing/runs/op/diagnostic.json" } } end,
+      function(v) v.cleanup_status = "unknown" end,
+      function(v) v.extra = true end,
+    }) do
+      local malformed = ready_receipt()
+      mutate(malformed)
+      t.raises(function() contract.validate_receipt(malformed) end)
+    end
+    local terminal = ready_receipt()
+    terminal.status = "finalized"
+    terminal.cleanup_status = "complete"
+    terminal.cleanup_receipt_ref = {
+      kind = "artifact", ref = ".testing/runs/op/cleanup-receipt-incomplete.json",
+    }
+    t.raises(function() contract.validate_receipt(terminal) end)
   end,
 
   test_runtime_outcome_validation_matrix = function()

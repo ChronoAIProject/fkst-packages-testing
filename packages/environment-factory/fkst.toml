@@ -9,7 +9,7 @@ root = "."
 libraries = ["contract", "workflow", "testkit", "testing_runtime"]
 
 [event_deps]
-packages = ["browser-readiness", "testing-pipeline", "module-test-loop", "testing-runner", "test-artifacts", "test-publication", "consensus"]
+packages = ["browser-readiness"]
 
 [conformance]
 pack = "conformance/pack.toml"

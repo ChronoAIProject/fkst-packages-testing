@@ -2,6 +2,7 @@
 
 const assert = require('assert');
 const fs = require('fs');
+const http = require('http');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
@@ -12,7 +13,7 @@ const {
 } = require('../bin/runtime/common');
 const { runMeasuredCommand } = require('../bin/runtime/measured-command');
 const { listenersOwnedByProcessGroup } = require('../bin/runtime/platform');
-const { dispatch, initialReadinessState } = require('../bin/environment-factory-runtime');
+const { dispatch, initialReadinessState, sha256 } = require('../bin/environment-factory-runtime');
 
 function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -167,10 +168,43 @@ async function main() {
       effect_id: `node-runtime-${process.pid}/readiness-attempt`,
       operation_id: `node-runtime-${process.pid}`,
       artifact_root: artifactRoot,
-      environment_receipt_ref: { kind: 'artifact', ref: `${artifactRoot}/environment-receipt-ready.json` },
       operation_state_ref: { kind: 'artifact', ref: `${artifactRoot}/operation-state.json` },
+      base_url: 'http://127.0.0.1:4312/health',
+      sessions: [{ role: 'browser', cdp_url: 'http://127.0.0.1:9222' }],
+      trace_id: 'trace-node-runtime',
+      dedup_key: 'dedup-node-runtime',
     };
-    await dispatch('create-readiness-attempt', effectPayload);
+    const readinessAttempt = await dispatch('create-readiness-attempt', effectPayload);
+    assert.strictEqual(readinessAttempt.status, 'passed');
+    assert.match(readinessAttempt.attempt_ref.ref, /\/readiness-attempts\/environment-readiness-/);
+    assert.match(readinessAttempt.attempt_sha256, /^[0-9a-f]{64}$/);
+    assert.strictEqual(readinessAttempt.target_id, undefined);
+
+    const cdpServer = http.createServer((request, response) => {
+      if (request.url !== '/json/list') {
+        response.writeHead(404).end();
+        return;
+      }
+      const origin = `http://127.0.0.1:${cdpServer.address().port}`;
+      response.setHeader('content-type', 'application/json');
+      response.end(JSON.stringify([{
+        id: 'exact-page-target', type: 'page', url: `${origin}/app`,
+        webSocketDebuggerUrl: 'ws://127.0.0.1/devtools/page/exact-page-target',
+      }]));
+    });
+    await new Promise((resolve) => cdpServer.listen(0, '127.0.0.1', resolve));
+    const cdpOrigin = `http://127.0.0.1:${cdpServer.address().port}`;
+    const exactAttempt = await dispatch('create-readiness-attempt', {
+      ...effectPayload,
+      effect_id: `node-runtime-${process.pid}/exact-readiness-attempt`,
+      base_url: `${cdpOrigin}/health`,
+      sessions: [{ role: 'browser', cdp_url: cdpOrigin }],
+    });
+    await new Promise((resolve) => cdpServer.close(resolve));
+    assert.strictEqual(exactAttempt.target_id, 'exact-page-target');
+    assert.strictEqual(exactAttempt.target_sha256, sha256('exact-page-target'));
+    assert.match(exactAttempt.attempt_sha256, /^[0-9a-f]{64}$/);
+
     await assert.rejects(() => dispatch('create-readiness-attempt', {
       ...effectPayload,
       operation_state_ref: { kind: 'artifact', ref: `${artifactRoot}/foreign-state.json` },
@@ -183,7 +217,7 @@ async function main() {
       process.env.FKST_DURABLE_ROOT,
       'environment-factory',
       'resources',
-      `${require('../bin/environment-factory-runtime').sha256(ownedResourceRef)}.json`,
+      `${sha256(ownedResourceRef)}.json`,
     );
     fs.mkdirSync(path.dirname(ownedResourcePath), { recursive: true });
     fs.writeFileSync(ownedResourcePath, `${JSON.stringify({

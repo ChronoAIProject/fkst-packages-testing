@@ -283,6 +283,76 @@ function remainingBudget(payload) {
   return { remaining_seconds: Math.max(0, Math.min(total, deadline - Math.floor(Date.now() / 1000))) };
 }
 
+function localHttpOrigin(value) {
+  let parsed;
+  try {
+    parsed = new URL(value);
+  } catch (_error) {
+    return null;
+  }
+  if (parsed.protocol !== 'http:' || parsed.username !== '' || parsed.password !== '') return null;
+  if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== 'localhost' && parsed.hostname !== '::1') return null;
+  return parsed.origin;
+}
+
+function fetchBoundedJson(url, maximumBytes = 256 * 1024) {
+  return new Promise((resolve, reject) => {
+    const request = http.get(url, { timeout: 3000 }, (response) => {
+      if (response.statusCode !== 200) {
+        response.resume();
+        reject(new Error(`CDP target list returned HTTP ${response.statusCode}`));
+        return;
+      }
+      const chunks = [];
+      let size = 0;
+      response.on('data', (chunk) => {
+        size += chunk.length;
+        if (size > maximumBytes) {
+          request.destroy(new Error('CDP target list exceeds the bounded response size'));
+          return;
+        }
+        chunks.push(chunk);
+      });
+      response.on('end', () => {
+        try {
+          resolve(JSON.parse(Buffer.concat(chunks).toString('utf8')));
+        } catch (error) {
+          reject(error);
+        }
+      });
+    });
+    request.on('timeout', () => request.destroy(new Error('CDP target list timed out')));
+    request.on('error', reject);
+  });
+}
+
+async function exactReadinessTarget(payload) {
+  const endpoints = new Set();
+  for (const session of payload.sessions || []) {
+    const origin = localHttpOrigin(session && session.cdp_url);
+    if (origin) endpoints.add(origin);
+  }
+  const applicationOrigin = localHttpOrigin(payload.base_url);
+  if (endpoints.size !== 1 || applicationOrigin === null) return null;
+  try {
+    const targets = await fetchBoundedJson(`${[...endpoints][0]}/json/list`);
+    const eligible = Array.isArray(targets) ? targets.filter((target) => {
+      if (!target || target.type !== 'page' || typeof target.id !== 'string'
+        || target.id === '' || target.id.length > 256 || typeof target.webSocketDebuggerUrl !== 'string') return false;
+      try {
+        const targetUrl = new URL(target.url);
+        return targetUrl.origin === applicationOrigin;
+      } catch (_error) {
+        return false;
+      }
+    }) : [];
+    if (eligible.length !== 1) return null;
+    return { target_id: eligible[0].id, target_sha256: sha256(eligible[0].id) };
+  } catch (_error) {
+    return null;
+  }
+}
+
 async function createReadinessAttempt(payload) {
   return withEffect(payload, async () => {
     const attemptId = `environment-readiness-${sha256(payload.effect_id).slice(0, 24)}`;
@@ -290,16 +360,26 @@ async function createReadinessAttempt(payload) {
       kind: 'artifact',
       ref: `${payload.artifact_root}/readiness-attempts/${attemptId}.json`,
     };
-    writeJsonImmutable(artifactPath(ref), {
+    const target = await exactReadinessTarget(payload);
+    const attempt = {
       schema: 'environment-factory.readiness-attempt.v1',
       attempt_id: attemptId,
       operation_id: payload.operation_id,
-      environment_receipt_ref: payload.environment_receipt_ref,
       operation_state_ref: payload.operation_state_ref,
-    });
+      base_url: payload.base_url,
+      sessions: payload.sessions,
+      trace_id: payload.trace_id,
+      dedup_key: payload.dedup_key,
+      ...(target || {}),
+    };
+    const body = `${stableStringify(attempt)}\n`;
+    writeJsonImmutable(artifactPath(ref), attempt);
     return {
       status: 'passed',
       attempt_id: attemptId,
+      attempt_ref: ref,
+      attempt_sha256: sha256(Buffer.from(body)),
+      ...(target || {}),
       diagnostic_ref: ref,
     };
   });

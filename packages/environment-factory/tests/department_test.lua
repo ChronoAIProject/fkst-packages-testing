@@ -1,5 +1,4 @@
 local core = require("core")
-local acknowledge = require("departments.acknowledge.main")
 local dead_letter = require("departments.dead_letter.main")
 local finalize = require("departments.finalize.main")
 local handoff = require("departments.handoff.main")
@@ -24,56 +23,68 @@ local function with_methods(methods, fn)
 end
 
 return {
-  test_start_department_ready_and_blocked_paths = function()
+  test_start_department_emits_pending_check_or_terminal_result = function()
     with_methods({
-      start = function(payload) return { schema = "environment-factory.result.v1", status = payload.status } end,
-      browser_readiness_check = function() return { schema = "browser-readiness.check.v1" } end,
-    }, function()
-      local trace = testing.run_fake(start, { queue = "environment_start", payload = { status = "ready", operation_state_ref = { kind = "artifact", ref = ".testing/runs/x/operation-state.json" } } })
-      t.eq(#trace.raises, 2)
-      t.eq(trace.raises[1].queue, "environment_result")
-      t.eq(trace.raises[2].queue, "browser-readiness.browser_readiness_check")
-      trace = testing.run_fake(start, { queue = "environment_start", payload = { status = "blocked" } })
-      t.eq(#trace.raises, 1)
-    end)
-    t.is_true(includes(start.spec.produces, "environment_result"))
-  end,
-
-  test_handoff_department_ready_blocked_and_dedup_paths = function()
-    with_methods({
-      handle_browser_readiness = function(payload)
-        if payload.mode == "ready" or payload.mode == "redelivery" then
-          return { module_start = { schema = "testing-pipeline.module-start.v1", dedup_key = "stable" }, redelivery = payload.mode == "redelivery" }
+      start = function(payload)
+        if payload.mode == "pending" then
+          return { readiness_check = { schema = "browser-readiness.check.v1" } }
         end
-        if payload.mode == "blocked" then return { result = { schema = "environment-factory.result.v1", status = "blocked" } } end
-        return { acknowledged = true }
+        return { result = { schema = "environment-factory.result.v1", status = "blocked" } }
       end,
     }, function()
-      local function event(mode)
-        return { queue = "browser-readiness.browser_readiness_result", payload = { mode = mode, source_ref = { kind = "artifact", ref = ".testing/runs/x/operation-state.json" } } }
-      end
-      local trace = testing.run_fake(handoff, event("ready"))
-      t.eq(trace.raises[1].queue, "testing-pipeline.module_start")
-      trace = testing.run_fake(handoff, event("redelivery"))
-      t.eq(trace.raises[1].queue, "testing-pipeline.module_start")
-      t.eq(trace.raises[1].payload.dedup_key, "stable")
-      trace = testing.run_fake(handoff, event("blocked"))
+      local trace = testing.run_fake(start, {
+        queue = "environment_start", payload = { mode = "pending" },
+      })
+      t.eq(#trace.raises, 1)
+      t.eq(trace.raises[1].queue, "browser-readiness.browser_readiness_check")
+      trace = testing.run_fake(start, {
+        queue = "environment_start", payload = { mode = "blocked" },
+      })
+      t.eq(#trace.raises, 1)
       t.eq(trace.raises[1].queue, "environment_result")
-      trace = testing.run_fake(handoff, event("dedup"))
-      t.eq(#trace.raises, 0)
     end)
-    t.is_true(includes(handoff.spec.consumes, "browser-readiness.browser_readiness_result"))
+    with_methods({ start = function() return {} end }, function()
+      t.raises(function()
+        testing.run_fake(start, { queue = "environment_start", payload = {} })
+      end)
+    end)
+    t.is_true(includes(start.spec.produces, "environment_result"))
+    t.is_true(includes(start.spec.produces, "browser-readiness.browser_readiness_check"))
   end,
 
-  test_terminal_acknowledgement_department_marks_pending_outbox = function()
-    with_methods({ acknowledge_testing_terminal = function() return { acknowledged = true } end }, function()
-      local trace = testing.run_fake(acknowledge, {
-        queue = "test-publication.publication_request",
-        payload = { source_ref = { kind = "artifact", ref = ".testing/runs/x/environment-receipt-ready.json" } },
-      })
-      t.eq(#trace.raises, 0)
+  test_handoff_department_publishes_only_environment_results = function()
+    with_methods({
+      handle_browser_readiness = function(payload)
+        return { result = {
+          schema = "environment-factory.result.v1",
+          status = payload.status,
+        } }
+      end,
+    }, function()
+      for _, status in ipairs({ "ready", "blocked" }) do
+        local trace = testing.run_fake(handoff, {
+          queue = "browser-readiness.browser_readiness_result",
+          payload = {
+            status = status,
+            source_ref = { kind = "artifact", ref = ".testing/runs/x/operation-state.json" },
+          },
+        })
+        t.eq(#trace.raises, 1)
+        t.eq(trace.raises[1].queue, "environment_result")
+        t.eq(trace.raises[1].payload.status, status)
+      end
     end)
-    t.is_true(includes(acknowledge.spec.consumes, "test-publication.publication_request"))
+    with_methods({ handle_browser_readiness = function() return {} end }, function()
+      t.raises(function()
+        testing.run_fake(handoff, {
+          queue = "browser-readiness.browser_readiness_result",
+          payload = { source_ref = { kind = "artifact", ref = ".testing/runs/x/operation-state.json" } },
+        })
+      end)
+    end)
+    t.is_true(includes(handoff.spec.consumes, "browser-readiness.browser_readiness_result"))
+    t.eq(#handoff.spec.produces, 1)
+    t.eq(handoff.spec.produces[1], "environment_result")
   end,
 
   test_finalize_and_interrupt_departments_publish_results = function()

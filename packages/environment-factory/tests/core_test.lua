@@ -136,7 +136,6 @@ local function fixture(options)
     operation_state_ref = { kind = "artifact", ref = root .. "/operation-state.json" },
     artifact_root = root, base_url = "http://127.0.0.1:4173/health", runtime_ports = runtime_ports,
     sessions = opts.sessions or { { role = "browser", cdp_url = "http://127.0.0.1:9222" } },
-    testing = { module = "fixture-module", artifact_root = root .. "/testing", mutation_policy = opts.testing_mutation or "read-only" },
     trace_id = artifact.trace_id, dedup_key = artifact.dedup_key,
   }
   return { profile = value, approval = artifact, receipt = validation_receipt, context = context, request = request, claims = function() return claims end }
@@ -257,6 +256,10 @@ local function fake_runtime(fx, options, shared)
         return {
           status = opts.fail_readiness_attempt and "blocked" or "passed",
           attempt_id = opts.fail_readiness_attempt and nil or fx.request.operation_id .. "-readiness-1",
+          attempt_ref = opts.fail_readiness_attempt and nil or {
+            kind = "artifact", ref = fx.request.artifact_root .. "/readiness-attempts/readiness-1.json",
+          },
+          attempt_sha256 = opts.fail_readiness_attempt and nil or string.rep("a", 64),
           diagnostic_ref = { kind = "artifact", ref = fx.request.artifact_root .. "/diagnostics/readiness-attempt.json" },
         }
       end)
@@ -346,18 +349,39 @@ local function fake_runtime(fx, options, shared)
   }
 end
 
-local function ready_browser_event(fx, ready)
+local function browser_event(fx, correlation, status)
+  local browser_status = status or "ready"
   return {
     schema = "browser-readiness.result.v1",
-    status = "ready",
+    status = browser_status,
     sessions = {
-      { role = "base_url", status = "ready", checks = { { name = "local_http", status = "ready" } } },
-      { role = "browser", status = "ready", checks = { { name = "cdp_url", status = "ready" } }, cdp_url = "http://127.0.0.1:9222" },
+      {
+        role = "base_url",
+        status = browser_status,
+        checks = { { name = "local_http", status = browser_status,
+          reason = browser_status == "blocked" and "browser gate blocked" or nil } },
+      },
+      {
+        role = "browser",
+        status = browser_status,
+        checks = { { name = "cdp_url", status = browser_status,
+          reason = browser_status == "blocked" and "browser gate blocked" or nil } },
+        cdp_url = "http://127.0.0.1:9222",
+      },
     },
     source_ref = copy(fx.request.operation_state_ref),
     request_context = { dry_run = false },
-    correlation = copy(ready.readiness_correlation),
+    correlation = copy(correlation),
   }
+end
+
+local function start_environment(fx, ports, browser_status)
+  local action = core.start(fx.request, ports)
+  if action.result ~= nil then return action.result end
+  t.is_true(action.readiness_check ~= nil)
+  return core.handle_browser_readiness(
+    browser_event(fx, action.readiness_check.correlation, browser_status), ports
+  ).result
 end
 
 local function finalize_request(fx, ready)
@@ -379,14 +403,27 @@ local function public_text(value)
 end
 
 return {
-  test_controlled_fixture_reaches_ready_handoff_and_distinct_final_receipt = function()
+  test_controlled_fixture_persists_pending_then_browser_gate_publishes_ready = function()
     local fx = fixture(); local ports, observed = fake_runtime(fx)
-    local ready = core.start(fx.request, ports)
+    local pending = core.start(fx.request, ports)
+    t.is_true(pending.readiness_check ~= nil)
+    t.eq(pending.result, nil)
+    t.eq(observed.state().status, "readiness-pending")
+    t.eq(observed.receipts[fx.request.artifact_root .. "/environment-receipt-ready.json"], nil)
+    local replay = core.start(fx.request, ports)
+    t.eq(environment_contract.same_value(replay.readiness_check, pending.readiness_check), true)
+    local ready = core.handle_browser_readiness(
+      browser_event(fx, pending.readiness_check.correlation), ports
+    ).result
     t.eq(ready.status, "ready")
     t.eq(ready.environment_receipt_ref.ref, fx.request.artifact_root .. "/environment-receipt-ready.json")
     local ready_receipt = copy(observed.receipts[ready.environment_receipt_ref.ref])
-    local handoff = core.handle_browser_readiness(ready_browser_event(fx, ready), ports)
-    t.eq(handoff.module_start.schema, "testing-pipeline.module-start.v1")
+    t.eq(ready_receipt.schema, "environment-factory.receipt.v2")
+    t.eq(ready_receipt.repository.commit_sha, commit_sha)
+    t.eq(ready_receipt.repository.resolved_commit, nil)
+    t.eq(ready_receipt.browser_readiness.status, "ready")
+    t.eq(ready.base_url, nil)
+    t.eq(ready.sessions, nil)
     local finalized = core.finalize(finalize_request(fx, ready), ports)
     t.eq(finalized.status, "finalized")
     t.eq(finalized.environment_receipt_ref.ref, fx.request.artifact_root .. "/environment-receipt-finalized.json")
@@ -398,7 +435,7 @@ return {
 
   test_services_and_application_receive_exact_owned_port_subsets = function()
     local fx = fixture(); local ports, observed = fake_runtime(fx)
-    local ready = core.start(fx.request, ports)
+    local ready = start_environment(fx, ports)
     t.eq(ready.status, "ready")
     t.eq(#observed.supervised_ports, 2)
     t.eq(#observed.supervised_ports[1], 1)
@@ -412,27 +449,26 @@ return {
   end,
 
   test_replay_validates_every_closed_start_binding = function()
-    local fx = fixture(); local ports, observed = fake_runtime(fx); core.start(fx.request, ports)
+    local fx = fixture(); local ports, observed = fake_runtime(fx); start_environment(fx, ports)
     local before = observed.target_effects()
     local mutations = {
       function(v) v.repository.commit_sha = string.rep("b", 40) end,
       function(v) v.profile_ref.ref = v.profile_ref.ref .. "-changed" end,
       function(v) v.approval_ref.ref = v.approval_ref.ref .. "-changed" end,
       function(v) v.validation_receipt_ref.ref = ".testing/approvals/changed.receipt.json" end,
-      function(v) v.artifact_root = ".testing/runs/changed"; v.operation_state_ref.ref = v.artifact_root .. "/operation-state.json"; v.testing.artifact_root = v.artifact_root .. "/testing" end,
+      function(v) v.artifact_root = ".testing/runs/changed"; v.operation_state_ref.ref = v.artifact_root .. "/operation-state.json" end,
       function(v) v.base_url = "http://127.0.0.1:4173/other" end,
       function(v) v.runtime_ports[1].name = "changed" end,
       function(v) v.sessions[1].role = "changed" end,
-      function(v) v.testing.module = "changed" end,
-      function(v) v.testing.mutation_policy = "host-approved" end,
     }
     for index, mutate in ipairs(mutations) do
       local changed = copy(fx.request)
       mutate(changed)
       local ok, replay = pcall(core.start, changed, ports)
       if ok then
-        t.eq(replay.status, "blocked", "closed start binding replay must fail closed index=" .. index)
-        t.is_true(type(replay.failure_class) == "string")
+        t.is_true(replay.result ~= nil, "closed start binding replay must fail closed index=" .. index)
+        t.eq(replay.result.status, "blocked")
+        t.is_true(type(replay.result.failure_class) == "string")
       end
       t.eq(observed.target_effects(), before)
     end
@@ -446,7 +482,7 @@ return {
 
   test_receipt_write_failure_never_returns_dangling_pointer = function()
     local fx = fixture(); local ports, observed = fake_runtime(fx, { fail_receipts = { ready = true, blocked = true } })
-    t.raises(function() core.start(fx.request, ports) end)
+    t.raises(function() start_environment(fx, ports) end)
     local state = observed.state(); t.eq(state.public_result, nil); t.eq(state.receipt_refs.blocked, nil)
     t.eq(state.cleanup_receipt_ref.ref, fx.request.artifact_root .. "/cleanup-receipt-complete.json")
     t.eq(observed.receipts[state.cleanup_receipt_ref.ref].status, "complete")
@@ -456,7 +492,7 @@ return {
   test_state_save_failure_stops_execution_and_still_releases_acquired_ports = function()
     local fx = fixture({ operation_id = "state-save-failure" })
     local ports, observed = fake_runtime(fx, { fail_save = true })
-    t.raises(function() core.start(fx.request, ports) end)
+    t.raises(function() start_environment(fx, ports) end)
     t.eq(observed.active_count(), 0)
     t.eq(observed.shared.port_owners[4173], nil)
   end,
@@ -464,7 +500,7 @@ return {
   test_authenticated_state_accepts_boolean_save_and_rejects_stale_revision = function()
     local accepted = fixture({ operation_id = "state-save-boolean" })
     local accepted_ports = fake_runtime(accepted, { save_returns_true = true })
-    t.eq(core.start(accepted.request, accepted_ports).status, "ready")
+    t.eq(start_environment(accepted, accepted_ports).status, "ready")
 
     local stale = fixture({ operation_id = "state-save-stale" })
     local stale_ports = fake_runtime(stale)
@@ -475,7 +511,7 @@ return {
       if save_calls == 1 then return { saved = false, stale = true, revision = 0 } end
       return original_save(...)
     end
-    local blocked = core.start(stale.request, stale_ports)
+    local blocked = core.start(stale.request, stale_ports).result
     t.eq(blocked.status, "blocked")
     t.eq(blocked.failure_class, "state-save-conflict")
   end,
@@ -484,85 +520,104 @@ return {
     for _, missing_id in ipairs({ "service-1", "application" }) do
       local fx = fixture({ operation_id = "missing-cleanup-" .. missing_id })
       local ports, observed = fake_runtime(fx)
-      core.start(fx.request, ports)
+      start_environment(fx, ports)
       local state = observed.state()
       state.public_result = nil
       for index = #state.resources, 1, -1 do
         if state.resources[index].id == missing_id then table.remove(state.resources, index) end
       end
       observed.set_state(state, true)
-      local blocked = core.start(fx.request, ports)
+      local blocked = start_environment(fx, ports)
       t.eq(blocked.status, "blocked")
       t.eq(blocked.failure_class, "missing-cleanup-ref")
     end
   end,
 
   test_diagnostics_are_deduplicated_and_capped_for_max_services = function()
-    local fx = fixture({ service_count = 16 }); local ports = fake_runtime(fx); local ready = core.start(fx.request, ports)
+    local fx = fixture({ service_count = 16 }); local ports = fake_runtime(fx); local ready = start_environment(fx, ports)
     t.eq(#ready.diagnostic_refs, environment_contract.max_diagnostic_refs); environment_contract.validate_result(ready)
   end,
 
-  test_browser_handoff_outbox_redelivers_identical_event_until_terminal_ack = function()
-    local fx = fixture(); local ports = fake_runtime(fx); local ready = core.start(fx.request, ports)
-    local event = ready_browser_event(fx, ready)
+  test_browser_result_replay_returns_identical_ready_pointer_without_new_receipt = function()
+    local fx = fixture(); local ports, observed = fake_runtime(fx)
+    local pending = core.start(fx.request, ports)
+    local event = browser_event(fx, pending.readiness_check.correlation)
     local first = core.handle_browser_readiness(event, ports)
+    local receipt_count = 0
+    for _, _ in pairs(observed.receipts) do receipt_count = receipt_count + 1 end
     local second = core.handle_browser_readiness(event, ports)
-    t.is_true(first.module_start ~= nil)
-    t.eq(second.redelivery, true)
-    t.eq(environment_contract.same_value(first.module_start, second.module_start), true)
-    t.eq(first.module_start.dedup_key, second.module_start.dedup_key)
-    local acknowledged = core.acknowledge_testing_terminal({
-      schema = "test-publication.publication-request.v1",
-      publication_kind = "testing-summary",
-      channel = "testing",
-      severity = "success",
-      subject = "Testing passed: " .. first.module_start.module,
-      source_ref = copy(first.module_start.source_ref),
-      trace_id = first.module_start.trace_id,
-      dedup_key = first.module_start.dedup_key,
-      status = "passed",
-      job = "module-test-loop",
-      artifact_root = first.module_start.artifact_root,
-      metadata_path = first.module_start.artifact_root .. "/metadata.json",
-    }, ports)
-    t.eq(acknowledged.acknowledged, true)
-    local third = core.handle_browser_readiness(event, ports)
-    t.eq(third.acknowledged, true)
-    t.eq(third.module_start, nil)
+    local replay_count = 0
+    for _, _ in pairs(observed.receipts) do replay_count = replay_count + 1 end
+    t.eq(first.result.status, "ready")
+    t.eq(second.replay, true)
+    t.eq(environment_contract.same_value(first.result, second.result), true)
+    t.eq(replay_count, receipt_count)
+  end,
+
+  test_start_replays_terminal_results_and_resumes_existing_readiness_correlation = function()
+    do
+      local fx = fixture({ operation_id = "blocked-start-replay" })
+      local ports = fake_runtime(fx)
+      local blocked = start_environment(fx, ports, "blocked")
+      local replay = core.start(fx.request, ports)
+      t.eq(replay.replay, true)
+      t.eq(environment_contract.same_value(replay.result, blocked), true)
+    end
+    do
+      local fx = fixture({ operation_id = "ready-start-replay" })
+      local ports = fake_runtime(fx)
+      local ready = start_environment(fx, ports)
+      local replay = core.start(fx.request, ports)
+      t.eq(replay.replay, true)
+      t.eq(environment_contract.same_value(replay.result, ready), true)
+    end
+    do
+      local fx = fixture({ operation_id = "readiness-correlation-resume" })
+      local ports, observed = fake_runtime(fx)
+      local pending = core.start(fx.request, ports)
+      local state = observed.state()
+      state.status = "provisioning"
+      observed.set_state(state, true)
+      local resumed = core.start(fx.request, ports)
+      t.eq(resumed.replay, true)
+      t.eq(environment_contract.same_value(
+        resumed.readiness_check.correlation, pending.readiness_check.correlation
+      ), true)
+    end
   end,
 
   test_plain_corrupted_state_cannot_inject_commands_resources_or_completed_flags = function()
-    local fx = fixture(); local ports, observed = fake_runtime(fx); core.start(fx.request, ports)
+    local fx = fixture(); local ports, observed = fake_runtime(fx); start_environment(fx, ports)
     local before_effects, before_argv = observed.target_effects(), #observed.executed_argv
     observed.corrupt_state(function(state) state.profile_snapshot.commands.start = { "attacker-selected" }; state.resources = { { id = "application", cleanup_ref = { kind = "resource-cleanup", ref = "attacker" } } }; state.completed = { checkout = true, ["application-start"] = true } end)
-    t.raises(function() core.start(fx.request, ports) end); t.eq(observed.target_effects(), before_effects); t.eq(#observed.executed_argv, before_argv)
+    t.raises(function() start_environment(fx, ports) end); t.eq(observed.target_effects(), before_effects); t.eq(#observed.executed_argv, before_argv)
   end,
 
   test_partial_checkout_failure_persists_handle_unwinds_and_writes_blocked_receipt = function()
-    local fx = fixture(); local ports, observed = fake_runtime(fx, { checkout_partial = true }); local blocked = core.start(fx.request, ports)
+    local fx = fixture(); local ports, observed = fake_runtime(fx, { checkout_partial = true }); local blocked = start_environment(fx, ports)
     t.eq(blocked.status, "blocked"); t.eq(blocked.failure_class, "checkout-failed"); t.eq(blocked.environment_receipt_ref.ref, fx.request.artifact_root .. "/environment-receipt-blocked.json")
     t.eq(table.concat(observed.cleanup_order, ","), "workspace,ports"); t.eq(observed.active_count(), 0)
   end,
 
   test_serialized_port_lease_prevents_concurrent_exact_port_owners = function()
     local shared = { port_owners = {} }
-    local first = fixture({ operation_id = "concurrent-first" }); local first_ports, first_observed = fake_runtime(first, nil, shared); local ready = core.start(first.request, first_ports)
+    local first = fixture({ operation_id = "concurrent-first" }); local first_ports, first_observed = fake_runtime(first, nil, shared); local ready = start_environment(first, first_ports)
     local second = fixture({ operation_id = "concurrent-second" }); local second_ports, second_observed = fake_runtime(second, nil, shared)
     t.raises(function() core.start(second.request, second_ports) end); t.eq(second_observed.target_effects(), 1); t.eq(second_observed.active_count(), 0)
     core.finalize(finalize_request(first, ready), first_ports); t.eq(first_observed.active_count(), 0)
-    local third = fixture({ operation_id = "concurrent-third" }); local third_ports = fake_runtime(third, nil, shared); t.eq(core.start(third.request, third_ports).status, "ready")
+    local third = fixture({ operation_id = "concurrent-third" }); local third_ports = fake_runtime(third, nil, shared); t.eq(start_environment(third, third_ports).status, "ready")
   end,
 
   test_cancel_and_interrupt_use_same_reverse_cleanup_for_app_and_partial_service = function()
-    local app = fixture({ operation_id = "cancel-app" }); local app_ports, app_observed = fake_runtime(app); local app_ready = core.start(app.request, app_ports)
+    local app = fixture({ operation_id = "cancel-app" }); local app_ports, app_observed = fake_runtime(app); local app_ready = start_environment(app, app_ports)
     t.eq(core.interrupt(interrupt_request(app, app_ready, "cancelled"), app_ports).status, "cancelled"); t.eq(table.concat(app_observed.cleanup_order, ","), "application,service-1,workspace,ports")
-    local partial = fixture({ operation_id = "interrupt-service" }); local partial_ports, partial_observed = fake_runtime(partial); local partial_ready = core.start(partial.request, partial_ports)
+    local partial = fixture({ operation_id = "interrupt-service" }); local partial_ports, partial_observed = fake_runtime(partial); local partial_ready = start_environment(partial, partial_ports)
     local state = partial_observed.state(); table.remove(state.resources, #state.resources); state.status = "provisioning"; state.public_result = nil; state.receipt_refs.ready = nil; partial_observed.set_state(state, true)
     t.eq(core.interrupt(interrupt_request(partial, partial_ready, "interrupted"), partial_ports).status, "interrupted"); t.eq(table.concat(partial_observed.cleanup_order, ","), "service-1,workspace,ports")
   end,
 
   test_install_requires_explicit_frozen_dependency_enforcement = function()
-    local fx = fixture(); local ports, observed = fake_runtime(fx, { no_frozen_dependencies = true }); local blocked = core.start(fx.request, ports)
+    local fx = fixture(); local ports, observed = fake_runtime(fx, { no_frozen_dependencies = true }); local blocked = start_environment(fx, ports)
     t.eq(blocked.status, "blocked"); t.eq(blocked.failure_class, "frozen-dependencies-unavailable"); t.eq(observed.active_count(), 0)
   end,
 
@@ -572,23 +627,19 @@ return {
       { role = "harness-env", browser_harness_command_env = "FIXTURE_BROWSER_COMMAND" },
       { role = "cdp-env", cdp_endpoint_env = "FIXTURE_CDP_ENDPOINT" },
       { role = "cdp", cdp_url = "http://127.0.0.1:9222" },
-    } }); local ports = fake_runtime(fx); local ready = core.start(fx.request, ports)
-    t.eq(#ready.sessions, 4); t.is_true(public_text(ready):find("password", 1, true) == nil)
+    } }); local ports, observed = fake_runtime(fx); local ready = start_environment(fx, ports)
+    local receipt = observed.receipts[ready.environment_receipt_ref.ref]
+    t.eq(#receipt.sessions, 4); t.is_true(public_text(ready):find("password", 1, true) == nil)
     local unsafe = copy(fx.request); unsafe.sessions[1].cookies = "inline"; t.raises(function() environment_contract.validate_start(unsafe) end)
     unsafe = copy(fx.request); unsafe.sessions[1].browser_harness_command = "fixture --token=value"; t.raises(function() environment_contract.validate_start(unsafe) end)
   end,
 
-  test_read_only_profile_cannot_escalate_testing_mutation_policy = function()
-    local fx = fixture({ testing_mutation = "host-approved" }); local ports, observed = fake_runtime(fx); t.raises(function() core.start(fx.request, ports) end); t.eq(observed.target_effects(), 0)
-    local approved = fixture({ operation_id = "fixture-mutation", fixture_scoped = true, testing_mutation = "host-approved" }); local approved_ports = fake_runtime(approved); t.eq(core.start(approved.request, approved_ports).status, "ready")
-  end,
-
   test_authorization_rejection_performs_zero_target_effects = function()
-    local fx = fixture({ reject_authority = true }); local ports, observed = fake_runtime(fx); t.raises(function() core.start(fx.request, ports) end); t.eq(observed.target_effects(), 0)
+    local fx = fixture({ reject_authority = true }); local ports, observed = fake_runtime(fx); t.raises(function() start_environment(fx, ports) end); t.eq(observed.target_effects(), 0)
   end,
 
   test_resolved_source_mismatch_unwinds_workspace_and_port_claim = function()
-    local fx = fixture(); local ports, observed = fake_runtime(fx, { resolved_commit = string.rep("b", 40) }); local blocked = core.start(fx.request, ports)
+    local fx = fixture(); local ports, observed = fake_runtime(fx, { resolved_commit = string.rep("b", 40) }); local blocked = start_environment(fx, ports)
     t.eq(blocked.status, "blocked"); t.eq(blocked.failure_class, "source-mismatch"); t.eq(table.concat(observed.cleanup_order, ","), "workspace,ports")
   end,
 
@@ -607,7 +658,7 @@ return {
     }) do
       local fx = fixture({ operation_id = "runtime-contract-" .. tostring(case_index) })
       local ports, observed = fake_runtime(fx, options)
-      local ok, result = pcall(core.start, fx.request, ports)
+      local ok, result = pcall(start_environment, fx, ports)
       if ok and result.status == "ready" then error("runtime contract case reached ready: " .. case_index) end
       t.eq(observed.active_count(), 0, "runtime contract case left active resources index=" .. case_index)
     end
@@ -617,7 +668,7 @@ return {
     for _, mode in ipairs({ "missing", "bad-receipt", "scope" }) do
       local fx = fixture({ operation_id = "bundle-" .. mode })
       local ports, observed = fake_runtime(fx, { bundle_mode = mode })
-      t.raises(function() core.start(fx.request, ports) end)
+      t.raises(function() start_environment(fx, ports) end)
       t.eq(observed.target_effects(), 0)
     end
   end,
@@ -633,11 +684,11 @@ return {
     for index, mutate in ipairs(mutations) do
       local fx = fixture({ operation_id = "state-failure-" .. index })
       local ports, observed = fake_runtime(fx)
-      core.start(fx.request, ports)
+      start_environment(fx, ports)
       local state = observed.state()
       mutate(state)
       observed.set_state(state, true)
-      local ok, result = pcall(core.start, fx.request, ports)
+      local ok, result = pcall(start_environment, fx, ports)
       if ok and result.status == "ready" then error("state identity case reached ready: " .. index) end
     end
   end,
@@ -653,7 +704,7 @@ return {
     }) do
       local fx = fixture({ operation_id = "supervision-" .. index })
       local ports, observed = fake_runtime(fx, options)
-      local blocked = core.start(fx.request, ports)
+      local blocked = start_environment(fx, ports)
       t.eq(blocked.status, "blocked")
       t.eq(observed.active_count(), 0)
     end
@@ -669,7 +720,7 @@ return {
     for index, options in ipairs(cases) do
       local fx = fixture({ operation_id = "provision-failure-" .. index })
       local ports, observed = fake_runtime(fx, options)
-      local blocked = core.start(fx.request, ports)
+      local blocked = start_environment(fx, ports)
       t.eq(blocked.status, "blocked")
       t.eq(blocked.failure_class, options.failure_class)
       t.eq(observed.active_count(), 0)
@@ -680,7 +731,7 @@ return {
   test_expired_total_deadline_blocks_before_checkout_and_releases_port_claim = function()
     local fx = fixture({ operation_id = "deadline-expired" })
     local ports, observed = fake_runtime(fx, { remaining_seconds = 0 })
-    local blocked = core.start(fx.request, ports)
+    local blocked = start_environment(fx, ports)
     t.eq(blocked.status, "blocked")
     t.eq(blocked.failure_class, "lifecycle-deadline")
     t.eq(table.concat(observed.calls, ","), "authorize,claim-ports,receipt-complete,receipt-blocked")
@@ -688,29 +739,28 @@ return {
     t.eq(observed.shared.port_owners[4173], nil)
   end,
 
-  test_readiness_attempt_failure_and_existing_correlation_replay = function()
+  test_readiness_attempt_failure_and_pending_replay = function()
     local failed = fixture({ operation_id = "readiness-attempt-failed" })
     local failed_ports, failed_observed = fake_runtime(failed, { fail_readiness_attempt = true })
-    local blocked = core.start(failed.request, failed_ports)
+    local blocked = core.start(failed.request, failed_ports).result
     t.eq(blocked.status, "blocked")
     t.eq(blocked.failure_class, "readiness-attempt-failed")
     t.eq(failed_observed.active_count(), 0)
 
     local replay = fixture({ operation_id = "readiness-attempt-replay" })
-    local replay_ports, replay_observed = fake_runtime(replay)
-    local ready = core.start(replay.request, replay_ports)
-    local state = replay_observed.state()
-    state.public_result = nil
-    replay_observed.set_state(state, true)
+    local replay_ports = fake_runtime(replay)
+    local pending = core.start(replay.request, replay_ports)
     local resumed = core.start(replay.request, replay_ports)
-    t.eq(resumed.status, "ready")
-    t.eq(resumed.readiness_correlation.attempt_id, ready.readiness_correlation.attempt_id)
+    t.eq(resumed.replay, true)
+    t.eq(resumed.readiness_check.correlation.attempt_id,
+      pending.readiness_check.correlation.attempt_id)
+    t.eq(environment_contract.same_value(resumed.readiness_check, pending.readiness_check), true)
   end,
 
   test_cleanup_failure_marks_terminal_result_incomplete = function()
     local fx = fixture({ operation_id = "cleanup-incomplete" })
     local ports, observed = fake_runtime(fx, { fail_cleanup = "application" })
-    local ready = core.start(fx.request, ports)
+    local ready = start_environment(fx, ports)
     local blocked = core.finalize(finalize_request(fx, ready), ports)
     t.eq(blocked.status, "blocked")
     t.eq(blocked.cleanup_status, "incomplete")
@@ -727,7 +777,7 @@ return {
   test_cleanup_runtime_error_is_recorded_as_remaining_resource = function()
     local fx = fixture({ operation_id = "cleanup-runtime-error" })
     local ports, observed = fake_runtime(fx, { raise_cleanup = "service-1" })
-    local ready = core.start(fx.request, ports)
+    local ready = start_environment(fx, ports)
     local blocked = core.finalize(finalize_request(fx, ready), ports)
     t.eq(blocked.status, "blocked")
     local receipt = observed.receipts[blocked.cleanup_receipt_ref.ref]
@@ -738,7 +788,7 @@ return {
   test_terminal_cleanup_receipt_is_complete_replay_safe_and_owned = function()
     local fx = fixture({ operation_id = "cleanup-receipt-complete" })
     local ports, observed = fake_runtime(fx)
-    local ready = core.start(fx.request, ports)
+    local ready = start_environment(fx, ports)
     local finalized = core.finalize(finalize_request(fx, ready), ports)
     t.eq(finalized.status, "finalized")
     t.eq(finalized.cleanup_receipt_ref.ref, fx.request.artifact_root .. "/cleanup-receipt-complete.json")
@@ -758,7 +808,7 @@ return {
   test_cleanup_receipt_write_failure_never_replays_a_ready_result = function()
     local fx = fixture({ operation_id = "cleanup-receipt-write-failure" })
     local ports, observed = fake_runtime(fx, { fail_receipts = { complete = true } })
-    local ready = core.start(fx.request, ports)
+    local ready = start_environment(fx, ports)
     t.raises(function() core.finalize(finalize_request(fx, ready), ports) end)
     local state = observed.state()
     t.eq(state.status, "blocked")
@@ -768,11 +818,53 @@ return {
     t.eq(state.public_result, nil)
   end,
 
+  test_browser_result_state_checkpoint_failure_still_cleans_resources = function()
+    local fx = fixture({ operation_id = "browser-state-save-failure" })
+    local ports, observed = fake_runtime(fx)
+    local pending = core.start(fx.request, ports)
+    local original_save = ports.save_state
+    local fail_once = true
+    ports.save_state = function(ref, value, revision)
+      if fail_once and value.browser_readiness ~= nil then
+        fail_once = false
+        return false
+      end
+      return original_save(ref, value, revision)
+    end
+    local blocked = core.handle_browser_readiness(
+      browser_event(fx, pending.readiness_check.correlation), ports
+    ).result
+    t.eq(blocked.status, "blocked")
+    t.eq(blocked.failure_class, "state-save-failed")
+    t.eq(observed.active_count(), 0)
+  end,
+
+  test_ready_result_final_state_save_failure_blocks_and_cleans = function()
+    local fx = fixture({ operation_id = "ready-final-save-failure" })
+    local ports, observed = fake_runtime(fx)
+    local pending = core.start(fx.request, ports)
+    local original_save = ports.save_state
+    local failed = false
+    ports.save_state = function(ref, value, revision)
+      if not failed and value.status == "ready" and value.public_result ~= nil then
+        failed = true
+        return false
+      end
+      return original_save(ref, value, revision)
+    end
+    local blocked = core.handle_browser_readiness(
+      browser_event(fx, pending.readiness_check.correlation), ports
+    ).result
+    t.eq(blocked.status, "blocked")
+    t.eq(blocked.failure_class, "state-save-failed")
+    t.eq(observed.active_count(), 0)
+  end,
+
   test_browser_readiness_rejects_forged_stale_and_smuggled_results = function()
     local fx = fixture({ operation_id = "browser-correlation" })
     local ports, observed = fake_runtime(fx)
-    local ready = core.start(fx.request, ports)
-    local baseline = ready_browser_event(fx, ready)
+    local pending = core.start(fx.request, ports)
+    local baseline = browser_event(fx, pending.readiness_check.correlation)
     for _, mutate in ipairs({
       function(v) v.correlation.attempt_id = "stale-attempt" end,
       function(v) v.correlation.trace_id = "forged-trace" end,
@@ -786,117 +878,74 @@ return {
       mutate(forged)
       t.raises(function() core.handle_browser_readiness(forged, ports) end)
     end
-    t.eq(observed.state().testing_outbox, nil)
+    t.eq(observed.state().status, "readiness-pending")
 
     local accepted = copy(baseline)
     local first = core.handle_browser_readiness(accepted, ports)
     accepted.sessions[1].role = "mutated-after-accept"
     local replay = core.handle_browser_readiness(baseline, ports)
-    t.eq(environment_contract.same_value(first.module_start, replay.module_start), true)
-    t.eq(first.module_start.preflight_result.stdout, nil)
-    t.eq(first.module_start.preflight_result.sessions[1].commands, nil)
+    t.eq(environment_contract.same_value(first.result, replay.result), true)
+    t.raises(function()
+      core.handle_browser_readiness(
+        browser_event(fx, pending.readiness_check.correlation, "blocked"), ports
+      )
+    end)
+    local receipt = observed.receipts[first.result.environment_receipt_ref.ref]
+    t.eq(receipt.browser_readiness.stdout, nil)
+    t.eq(receipt.browser_readiness.sessions[1].commands, nil)
   end,
 
   test_browser_readiness_helpers_and_failure_paths = function()
     local fx = fixture({ operation_id = "browser-helper" })
     local ports, observed = fake_runtime(fx)
-    local ready = core.start(fx.request, ports)
-    local check = core.browser_readiness_check(ready, { operation_state_ref = fx.request.operation_state_ref })
+    local pending = core.start(fx.request, ports)
+    local state = observed.state()
+    local check = core.browser_readiness_check(state)
     t.eq(check.schema, "browser-readiness.check.v1")
-    t.raises(function()
-      core.browser_readiness_check(ready, {
-        operation_state_ref = { kind = "artifact", ref = ".testing/runs/foreign/operation-state.json" },
-      })
-    end)
-    local not_ready = copy(ready); not_ready.status = "blocked"; not_ready.environment_receipt_ref.ref = fx.request.artifact_root .. "/environment-receipt-blocked.json"; not_ready.base_url = nil; not_ready.sessions = nil
-    not_ready.readiness_correlation = nil
-    not_ready.cleanup_status = "complete"
-    not_ready.cleanup_receipt_ref = { kind = "artifact", ref = fx.request.artifact_root .. "/cleanup-receipt-complete.json" }
-    t.raises(function() core.browser_readiness_check(not_ready, { operation_state_ref = fx.request.operation_state_ref }) end)
-    t.raises(function() core.browser_readiness_check(not_ready, {}) end)
+    local foreign_state = copy(state)
+    foreign_state.readiness_correlation.operation_state_ref = {
+      kind = "artifact", ref = ".testing/runs/foreign/operation-state.json",
+    }
+    t.raises(function() core.browser_readiness_check(foreign_state) end)
+    local not_pending = copy(state); not_pending.status = "blocked"
+    t.raises(function() core.browser_readiness_check(not_pending) end)
+    t.raises(function() core.browser_readiness_check({}) end)
     t.raises(function() core.handle_browser_readiness({ schema = "other" }, ports) end)
 
-    local blocked_event = ready_browser_event(fx, ready); blocked_event.status = "blocked"
+    local blocked_event = browser_event(fx, pending.readiness_check.correlation, "blocked")
     local action = core.handle_browser_readiness(blocked_event, ports)
     t.eq(action.result.status, "blocked")
+    t.eq(observed.active_count(), 0)
+    t.eq(observed.receipts[action.result.environment_receipt_ref.ref].browser_readiness.status, "blocked")
 
     local foreign = fixture({ operation_id = "browser-foreign" })
     local foreign_ports, foreign_observed = fake_runtime(foreign)
-    local foreign_ready = core.start(foreign.request, foreign_ports)
-    local state = foreign_observed.state(); state.status = "blocked"; foreign_observed.set_state(state, true)
-    t.raises(function() core.handle_browser_readiness(ready_browser_event(foreign, foreign_ready), foreign_ports) end)
-  end,
-
-  test_outbox_and_testing_terminal_failure_matrix = function()
-    local fx = fixture({ operation_id = "terminal-failures" })
-    local ports, observed = fake_runtime(fx)
-    local ready = core.start(fx.request, ports)
-    local terminal = {
-      schema = "test-publication.publication-request.v1",
-      publication_kind = "testing-summary",
-      channel = "testing",
-      severity = "success",
-      subject = "Testing passed: " .. fx.request.testing.module,
-      source_ref = copy(ready.environment_receipt_ref),
-      trace_id = fx.request.trace_id,
-      dedup_key = fx.request.dedup_key,
-      status = "passed",
-      job = "module-test-loop",
-      artifact_root = fx.request.testing.artifact_root,
-      metadata_path = fx.request.testing.artifact_root .. "/metadata.json",
-    }
-
-    for _, mutate in ipairs({
-      function(v) v.extra = true end,
-      function(v) v.schema = "other" end,
-      function(v) v.publication_kind = nil end,
-      function(v) v.channel = "foreign" end,
-      function(v) v.severity = "unknown" end,
-      function(v) v.subject = string.rep("x", 1025) end,
-      function(v) v.status = "unknown" end,
-      function(v) v.job = "" end,
-      function(v) v.artifact_root = "unsafe"; v.metadata_path = "unsafe/metadata.json" end,
-      function(v) v.metadata_path = v.artifact_root .. "/other.json" end,
-      function(v) v.stage_report_path = v.artifact_root .. "/other.md" end,
-      function(v) v.issue_drafts_path = v.artifact_root .. "/other.json" end,
-      function(v) v.publication_dry_run = false end,
-    }) do
-      local malformed = copy(terminal); mutate(malformed)
-      t.raises(function() core.acknowledge_testing_terminal(malformed, ports) end)
-    end
-    t.raises(function() core.acknowledge_testing_terminal(nil, ports) end)
-    local foreign_source = copy(terminal); foreign_source.source_ref.ref = fx.request.artifact_root .. "/other.json"
-    t.raises(function() core.acknowledge_testing_terminal(foreign_source, ports) end)
-
-    local absent = core.acknowledge_testing_terminal(terminal, ports)
-    t.eq(absent.acknowledged, false)
-
-    local browser = ready_browser_event(fx, ready)
-    core.handle_browser_readiness(browser, ports)
-    local mismatched = copy(terminal); mismatched.job = "foreign-module"
-    t.raises(function() core.acknowledge_testing_terminal(mismatched, ports) end)
-
-    local state = observed.state()
-    state.testing_outbox.status = "unknown"
-    observed.set_state(state, true)
-    t.raises(function() core.handle_browser_readiness(browser, ports) end)
+    local foreign_pending = core.start(foreign.request, foreign_ports)
+    local foreign_state_value = foreign_observed.state()
+    foreign_state_value.status = "blocked"
+    foreign_observed.set_state(foreign_state_value, true)
+    t.raises(function()
+      core.handle_browser_readiness(
+        browser_event(foreign, foreign_pending.readiness_check.correlation), foreign_ports
+      )
+    end)
   end,
 
   test_state_pointer_and_termination_identity_mismatches_fail = function()
     local fx = fixture({ operation_id = "identity-mismatch" })
     local ports, observed = fake_runtime(fx)
-    local ready = core.start(fx.request, ports)
+    local ready = start_environment(fx, ports)
     local bad_finalize = finalize_request(fx, ready); bad_finalize.cleanup_ref.ref = "foreign"
     t.raises(function() core.finalize(bad_finalize, ports) end)
 
     local state = observed.state()
+    local accepted_browser_result = copy(state.browser_readiness)
     state.start_request.operation_state_ref.ref = ".testing/runs/other/operation-state.json"
     state.start_request.artifact_root = ".testing/runs/other"
-    state.start_request.testing.artifact_root = ".testing/runs/other/testing"
     state.request_binding = environment_contract.start_binding(state.start_request)
     state.operation_state_ref = copy(state.start_request.operation_state_ref)
     observed.set_state(state, true)
-    t.raises(function() core.handle_browser_readiness(ready_browser_event(fx, ready), ports) end)
+    t.raises(function() core.handle_browser_readiness(accepted_browser_result, ports) end)
   end,
 
   test_saga_conformance_contract_executes = function()

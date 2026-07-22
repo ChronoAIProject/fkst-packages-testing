@@ -17,14 +17,15 @@ local function done(_event)
 end
 
 local function act(event)
-  local result = core.start(event.payload or {})
-  log.info("environment-factory dept=start tag=" .. string.upper(result.status))
-  raise("environment_result", result)
-  if result.status == "ready" then
-    local state_ref = (event.payload or {}).operation_state_ref
-    raise("browser-readiness.browser_readiness_check", core.browser_readiness_check(result, {
-      operation_state_ref = state_ref,
-    }))
+  local action = core.start(event.payload or {})
+  if action.readiness_check ~= nil then
+    log.info("environment-factory dept=start tag=READINESS_PENDING")
+    raise("browser-readiness.browser_readiness_check", action.readiness_check)
+  elseif action.result ~= nil then
+    log.info("environment-factory dept=start tag=" .. string.upper(action.result.status))
+    raise("environment_result", action.result)
+  else
+    error("environment-factory: malformed-start-action: start produced no event")
   end
 end
 

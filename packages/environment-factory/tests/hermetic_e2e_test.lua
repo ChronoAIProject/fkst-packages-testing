@@ -370,11 +370,6 @@ local function request_fixture(ctx, ports, commit_sha)
       { name = "middleware", port = ports.middleware },
     },
     sessions = { { role = "browser", browser_harness_command = "node" } },
-    testing = {
-      module = "environment-runtime-module",
-      artifact_root = ctx.artifact_root .. "/testing",
-      mutation_policy = "read-only",
-    },
     trace_id = approval.trace_id,
     dedup_key = approval.dedup_key,
   }
@@ -389,7 +384,6 @@ local function initialize_repository(ctx)
     ctx.artifact_root .. "/runtime-io",
     ctx.artifact_root .. "/diagnostics",
     ctx.artifact_root .. "/readiness-attempts",
-    ctx.artifact_root .. "/testing",
     ctx.host_root,
     ctx.host_root .. "/authorization",
     ctx.host_root .. "/cleanup-evidence",
@@ -433,8 +427,33 @@ local function termination_request(request, interruption)
   }
 end
 
+local function complete_browser_gate(request, pending)
+  local check = copy(pending.readiness_check)
+  check.source_ref = {
+    kind = "artifact",
+    ref = request.artifact_root .. "/browser-readiness-input.json",
+  }
+  local readiness_trace = graph.run({
+    queue = "browser-readiness.browser_readiness_check",
+    source_ref = { kind = "external", reference = "environment-hermetic-readiness" },
+    payload = check,
+  }, { max_steps = 2 })
+  graph.assert_covers(readiness_trace, {
+    "browser-readiness.browser_readiness_check -> browser-readiness.check_readiness",
+  })
+  local browser_result = graph.require_raise(
+    readiness_trace,
+    "browser-readiness.browser_readiness_result"
+  ).payload
+  t.eq(browser_result.status, "ready")
+  browser_result.source_ref = copy(request.operation_state_ref)
+  return core.handle_browser_readiness(browser_result).result, browser_result
+end
+
 local function start_ready(request)
-  local ready = core.start(request)
+  local action = core.start(request)
+  local ready = action.result
+  if ready == nil then ready = complete_browser_gate(request, action) end
   if ready.status ~= "ready" then
     local diagnostics = {}
     for _, ref in ipairs(ready.diagnostic_refs or {}) do
@@ -590,13 +609,25 @@ end
 return {
   test_real_hermetic_runtime_keeps_all_processes_live_until_finalize = function()
     with_fixture("happy", function(ctx, request, ports, commit_sha, mark_finalized)
-      local ready = start_ready(request)
-      t.eq(ready.base_url, request.base_url)
+      local pending = core.start(request)
+      t.is_true(pending.readiness_check ~= nil)
+      t.eq(pending.result, nil)
+      t.eq(pending.readiness_check.base_url, request.base_url)
+      t.eq(pending.readiness_check.sessions[1].browser_harness_command, "node")
+      t.is_true(type(pending.readiness_check.correlation.attempt_id) == "string")
+      t.is_true(type(pending.readiness_check.correlation.readiness_attempt_ref.ref) == "string")
+      local pending_state = runtime.production().load_state(request.operation_state_ref)
+      t.eq(pending_state.state.status, "readiness-pending")
+      local ready_exists = pcall(file.read, request.artifact_root .. "/environment-receipt-ready.json")
+      t.eq(ready_exists, false)
+
+      local ready, browser_result = complete_browser_gate(request, pending)
+      t.eq(ready.status, "ready")
+      t.eq(ready.base_url, nil)
+      t.eq(ready.sessions, nil)
       t.eq(ready.cleanup_status, "pending")
       t.eq(ready.trace_id, request.trace_id)
       t.eq(ready.dedup_key, request.dedup_key)
-      t.eq(ready.sessions[1].browser_harness_command, "node")
-      t.is_true(type(ready.readiness_correlation.attempt_id) == "string")
 
       local database_state = http_json(ports.database, "/state")
       t.eq(database_state.status, 200)
@@ -614,8 +645,13 @@ return {
 
       local ready_receipt_body = file.read(ready.environment_receipt_ref.ref)
       local ready_receipt = json.decode(ready_receipt_body)
+      t.eq(ready_receipt.schema, "environment-factory.receipt.v2")
       t.eq(ready_receipt.status, "ready")
-      t.eq(ready_receipt.repository.resolved_commit, commit_sha)
+      t.eq(ready_receipt.repository.commit_sha, commit_sha)
+      t.eq(ready_receipt.repository.resolved_commit, nil)
+      t.eq(ready_receipt.browser_readiness.status, "ready")
+      t.eq(ready_receipt.browser_readiness.correlation.attempt_id,
+        pending.readiness_check.correlation.attempt_id)
       t.eq(ready_receipt.cleanup_status, "pending")
       t.is_true(#ready_receipt.diagnostic_refs > 0)
       assert_frozen_dependency_proof(ready_receipt)
@@ -627,66 +663,11 @@ return {
         read_host_file(checkout_path .. "/vendor/protocol/index.js")
       )
 
-      local readiness_check = core.browser_readiness_check(ready, {
-        operation_state_ref = request.operation_state_ref,
-      })
-      readiness_check.source_ref = {
-        kind = "artifact",
-        ref = request.artifact_root .. "/browser-readiness-input.json",
-      }
-      local readiness_trace = graph.run({
-        queue = "browser-readiness.browser_readiness_check",
-        source_ref = { kind = "external", reference = "environment-hermetic-readiness" },
-        payload = readiness_check,
-      }, { max_steps = 2 })
-      graph.assert_covers(readiness_trace, {
-        "browser-readiness.browser_readiness_check -> browser-readiness.check_readiness",
-      })
-      local browser_result = graph.require_raise(
-        readiness_trace,
-        "browser-readiness.browser_readiness_result"
-      ).payload
-      t.eq(browser_result.status, "ready")
-      browser_result.source_ref = copy(request.operation_state_ref)
-
-      local handoff = core.handle_browser_readiness(browser_result)
-      t.eq(handoff.module_start.schema, "testing-pipeline.module-start.v1")
-      t.eq(handoff.module_start.module, request.testing.module)
-      t.eq(handoff.module_start.preflight_result.status, "ready")
-      t.eq(handoff.module_start.source_ref.ref, ready.environment_receipt_ref.ref)
-
-      local pipeline_input = copy(handoff.module_start)
-      pipeline_input.source_ref = {
-        kind = "artifact",
-        ref = request.artifact_root .. "/testing/pipeline-input.json",
-      }
-      local pipeline_trace = graph.run({
-        queue = "testing-pipeline.module_start",
-        source_ref = { kind = "external", reference = "environment-hermetic-pipeline" },
-        payload = pipeline_input,
-      }, { max_steps = 32 })
-      graph.assert_covers(pipeline_trace, {
-        "testing-pipeline.module_start -> testing-pipeline.start_module",
-      })
-      local module_loop = graph.require_raise(
-        pipeline_trace,
-        "module-test-loop.module_loop_request"
-      ).payload
-      t.eq(module_loop.module, request.testing.module)
-      t.eq(module_loop.preflight_result.status, "ready")
-
-      local publication = graph.require_raise(
-        pipeline_trace,
-        "test-publication.publication_request"
-      ).payload
-      t.eq(publication.schema, "test-publication.publication-request.v1")
-      t.eq(publication.source_ref.ref, pipeline_input.source_ref.ref)
-      publication.source_ref = copy(ready.environment_receipt_ref)
-      local terminal_ack = core.acknowledge_testing_terminal(publication)
-      t.eq(terminal_ack.acknowledged, true)
-      local acknowledged_replay = core.handle_browser_readiness(browser_result)
-      t.eq(acknowledged_replay.acknowledged, true)
-      t.eq(acknowledged_replay.module_start, nil)
+      local readiness_replay = core.handle_browser_readiness(browser_result)
+      t.eq(readiness_replay.replay, true)
+      t.eq(readiness_replay.result.environment_receipt_ref.ref,
+        ready.environment_receipt_ref.ref)
+      t.eq(file.read(ready.environment_receipt_ref.ref), ready_receipt_body)
 
       local state_before = runtime.production().load_state(request.operation_state_ref)
       t.eq(state_before.authenticated, true)

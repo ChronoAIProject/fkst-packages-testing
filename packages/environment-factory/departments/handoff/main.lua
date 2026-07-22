@@ -3,10 +3,7 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "browser-readiness.browser_readiness_result" },
-  produces = {
-    "environment_result",
-    "testing-pipeline.module_start",
-  },
+  produces = { "environment_result" },
   fanout = { "browser-readiness.browser_readiness_result" },
   stall_window = "5m",
   retry = false,
@@ -25,15 +22,11 @@ end
 
 local function act(event)
   local action = core.handle_browser_readiness(event.payload or {})
-  if action.module_start ~= nil then
-    log.info("environment-factory dept=handoff tag=TESTING_READY")
-    raise("testing-pipeline.module_start", action.module_start)
-  elseif action.result ~= nil then
-    log.info("environment-factory dept=handoff tag=BROWSER_BLOCKED")
-    raise("environment_result", action.result)
-  else
-    log.info("environment-factory dept=handoff tag=DEDUP")
+  if action.result == nil then
+    error("environment-factory: malformed-readiness-action: browser readiness produced no result")
   end
+  log.info("environment-factory dept=handoff tag=" .. string.upper(action.result.status))
+  raise("environment_result", action.result)
 end
 
 local M = saga.department(spec, { accept = accept, done = done, act = act, name = "handoff" })

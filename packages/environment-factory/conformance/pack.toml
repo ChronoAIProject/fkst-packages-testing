@@ -28,3 +28,12 @@ include = ["departments/**/*.lua", "packages/environment-factory/departments/**/
 exclude = ["tests/**", "packages/environment-factory/tests/**"]
 pattern = "stdout|stderr|process_id|raw_env|cookie|localStorage|sessionStorage|secret_value"
 message = "environment factory events must contain pointers and bounded control metadata only"
+
+[[rules]]
+id = "environment-factory-does-not-own-testing"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["core.lua", "departments/**/*.lua", "fkst.toml", "packages/environment-factory/core.lua", "packages/environment-factory/departments/**/*.lua", "packages/environment-factory/fkst.toml"]
+exclude = ["tests/**", "packages/environment-factory/tests/**"]
+pattern = "module-testing-pipeline|module_start|testing_outbox|acknowledge_testing|test-publication"
+message = "environment factory must stop at a browser-gated environment result"

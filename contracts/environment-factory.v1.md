@@ -10,29 +10,34 @@ endpoints, argv, authority identities, and secret locations remain host-owned.
 - Finalize request: `environment-factory.finalize.v1`
 - Cancellation/interruption request: `environment-factory.interrupt.v1`
 - Result: `environment-factory.result.v1`
-- Environment receipt artifact: `environment-factory.receipt.v1`
+- Environment receipt artifact: `environment-factory.receipt.v2`
 - Cleanup receipt artifact: `environment-factory.cleanup-receipt.v1`
 
 Start requests contain exact repository identity, profile/approval/validation-receipt pointers,
 durable state pointer, artifact root, exact loopback ports, base URL, browser session bootstrap,
-testing handoff metadata, trace ID, and dedup key. Source pointers contain exactly `{ kind, ref }`;
-extra nested metadata and credential-bearing values are invalid.
+trace ID, and dedup key. Environment Factory owns no testing module, mutation policy, test artifact,
+or publication metadata. Source pointers contain exactly `{ kind, ref }`; extra nested metadata and
+credential-bearing values are invalid.
 
 Browser sessions reuse the existing browser-readiness forms: `browser_harness_command`,
 `browser_harness_command_env`, `cdp_endpoint_env`, and local `cdp_url`. Unknown fields and inline
 credentials, cookies, storage, environments, or output bodies are rejected.
 
-Results contain status, base URL when ready, sessions, one immutable environment receipt pointer,
-an opaque cleanup reference, at most 32 deduplicated diagnostic artifact pointers, trace ID, and
-dedup key. Ready, blocked, finalized, cancelled, and interrupted receipts use distinct immutable
-paths. Later transitions never overwrite a receipt referenced by an earlier result.
+Results are pointer-only terminal control payloads: status, one immutable environment receipt pointer,
+an opaque cleanup reference, at most 32 deduplicated diagnostic artifact pointers, cleanup state,
+trace ID, and dedup key. Ready, blocked, finalized, cancelled, and interrupted receipts use distinct
+immutable paths. Later transitions never overwrite a receipt referenced by an earlier result. The
+`environment-factory.receipt.v2` ready artifact carries the canonical repository shape
+`{ url, commit_sha }` and the sanitized successful `browser-readiness.result.v1` under
+`browser_readiness`; it never uses `resolved_commit` as public repository identity. For agentic
+browser execution, the readiness correlation additionally binds the immutable readiness-attempt digest
+and exact CDP target ID/digest used by the downstream single-use browser grant.
 
 ## Authorization and state integrity
 
 The complete validated start request is stored as a closed binding. Every replay compares all
 immutable fields, including repository, all authorization pointers, artifact root, base URL, ports,
-sessions, and testing configuration. Changed replay inputs fail closed and cannot return an old
-result.
+and sessions. Changed replay inputs fail closed and cannot return an old result.
 
 Plain operation-state artifacts are not authorization capabilities. The production adapter requires
 a host-provided runtime-config artifact capability outside the operation artifact root. That host-
@@ -41,8 +46,10 @@ attestations, authorization-source materializations, repository mirrors, and bou
 environment. State MACs bind the state pointer, state body, and host key revision; replacing a run
 artifact or moving an authenticated envelope to another pointer fails authentication.
 
-On every resume the factory reloads the referenced authorization bundle and re-enters the same
-durable `authorize_claim_ports` effect. A cached invocation returns the original authenticated
+On every active provisioning or readiness-pending resume the factory reloads the referenced
+authorization bundle and re-enters the same durable `authorize_claim_ports` effect. Replay of a
+non-ready public result returns authenticated request-bound state without reacquiring already cleaned
+resources. A cached invocation returns the original authenticated
 profile snapshot and request binding without invoking `authorize_execution` or reclaiming the
 single-use approval. Each trusted-authority callback may return `authenticated=true` only when its
 host-configured approval digest, authority, policy revision, and evidence pointer exactly match the
@@ -73,9 +80,9 @@ The v1 order is:
 4. Start declared dependent services and run their readiness checks.
 5. Run optional migrate and seed direct argv phases.
 6. Start the application and run all application readiness checks.
-7. Persist the immutable ready receipt and hand off through `browser-readiness.check.v1`.
-8. Persist one browser-handoff outbox payload and redeliver that identical idempotent event until terminal acknowledgement.
-9. Finalize, cancel, or interrupt through the same idempotent reverse cleanup path.
+7. Persist authenticated operation state as `readiness-pending`, persist one immutable readiness-attempt artifact, and emit `browser-readiness.check.v1`.
+8. On a correlated authenticated browser success, bind the sanitized result into the immutable ready receipt and publish the pointer-only ready result. On browser failure, clean up and publish only a blocked result backed by immutable cleanup and environment receipts.
+9. Finalize, cancel, or interrupt through the same idempotent reverse cleanup path. Environment Factory does not start, acknowledge, or supervise testing.
 
 The install runtime receives `requires_frozen_dependencies = true` and must return explicit proof
 that frozen dependency resolution was enforced. The host runtime config selects the frozen policy;
@@ -127,7 +134,7 @@ The host adapter provides:
 
 - authenticated `load_state` and integrity-preserving `save_state`;
 - `load_authorization_bundle`;
-- durably deduplicated `authorize_claim_ports` and `checkout`;
+- durably deduplicated `authorize_claim_ports`, `checkout`, and `create_readiness_attempt`;
 - trusted `remaining_budget`;
 - shell-free `run_argv` and typed `wait_readiness`;
 - idempotent `cleanup`;
@@ -153,9 +160,9 @@ idempotent cleanup effects.
 The hermetic package test drives the Lua core and departments through this real adapter. It creates
 a local Git repository and exact commit, runs a real frozen npm install, starts a neutral stateful
 loopback service, and requires migrate/seed commands to update that service before the HTTP
-application can become ready. It passes the actual `browser-readiness` result into the
-`testing-pipeline.module_start` handoff, continues through `test-publication.publication_request`,
-acknowledges the terminal outbox, verifies replay emits no second module start, then finalizes
-explicitly. It also proves foreign listener takeover, zero/cumulative probe accounting, resource
-budget failures, clean source state, and released checkout/listeners without an external network or
-service.
+application can become ready. It proves no ready receipt exists while state is `readiness-pending`,
+passes the actual `browser-readiness` result back into Environment Factory, verifies the immutable
+ready receipt binds that sanitized proof, verifies replay returns the same pointer-only result, then
+finalizes explicitly. It also proves foreign listener takeover, zero/cumulative probe accounting,
+resource budget failures, clean source state, and released
+checkout/listeners without an external network or service.

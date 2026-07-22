@@ -4,7 +4,6 @@ local contract = require("contract.environment_factory")
 local project_profile = require("contract.project_profile")
 local ports_module = require("ports")
 local runtime_outcomes = require("runtime_outcomes")
-local testing_terminal = require("testing_terminal")
 
 local function copy(value)
   if type(value) ~= "table" then return value end
@@ -171,7 +170,6 @@ local function initial_state(request, bundle, claim)
     base_url = request.base_url,
     runtime_ports = copy_list(request.runtime_ports),
     sessions = copy_list(request.sessions),
-    testing = copy(request.testing),
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
     deadline_epoch_seconds = claim.deadline_epoch_seconds,
@@ -585,18 +583,19 @@ local function failure_class(value)
 end
 
 local function receipt(state, status, classification)
-  return {
+  return contract.validate_receipt({
     schema = contract.schemas.receipt,
     operation_id = state.operation_id,
     status = status,
     failure_class = classification,
     profile_revision = state.profile_revision,
     profile_sha256 = state.profile_sha256,
-    repository = { url = state.repository.url, resolved_commit = state.resolved_commit },
+    repository = { url = state.repository.url, commit_sha = state.repository.commit_sha },
     workspace_ref = copy(state.workspace_ref),
     base_url = state.base_url,
     runtime_ports = copy_list(state.runtime_ports),
     sessions = copy_list(state.sessions),
+    browser_readiness = copy(state.browser_readiness),
     artifact_root = state.artifact_root,
     diagnostic_refs = copy_list(state.diagnostic_refs),
     cleanup_ref = copy(state.cleanup_ref),
@@ -604,7 +603,7 @@ local function receipt(state, status, classification)
     cleanup_status = state.cleanup_status,
     trace_id = state.trace_id,
     dedup_key = state.dedup_key,
-  }
+  })
 end
 
 local function result(state, status, classification, persisted_ref)
@@ -618,15 +617,11 @@ local function result(state, status, classification, persisted_ref)
     cleanup_ref = copy(state.cleanup_ref),
     diagnostic_refs = copy_list(state.diagnostic_refs),
     cleanup_status = state.cleanup_status,
+    source_ref = copy(state.operation_state_ref),
     trace_id = state.trace_id,
     dedup_key = state.dedup_key,
   }
   if status ~= "ready" then value.cleanup_receipt_ref = copy(state.cleanup_receipt_ref) end
-  if status == "ready" then
-    value.base_url = state.base_url
-    value.sessions = copy_list(state.sessions)
-    value.readiness_correlation = copy(state.readiness_correlation)
-  end
   return contract.validate_result(value)
 end
 
@@ -677,24 +672,38 @@ local function create_readiness_correlation(state, ports)
     effect_id = effect_id(state, "browser-readiness/attempt"),
     operation_id = state.operation_id,
     artifact_root = state.artifact_root,
-    environment_receipt_ref = copy(state.receipt_refs.ready),
     operation_state_ref = copy(state.operation_state_ref),
+    base_url = state.base_url,
+    sessions = copy_list(state.sessions),
+    trace_id = state.trace_id,
+    dedup_key = state.dedup_key,
   }, effect_budget(state, ports, state.profile_snapshot.timeouts.readiness_seconds, false)))
   runtime_outcomes.validate_effect(outcome, "create-readiness-attempt", {
     status = true,
     attempt_id = true,
+    attempt_ref = true,
+    attempt_sha256 = true,
+    target_id = true,
+    target_sha256 = true,
     diagnostic_ref = true,
   })
   add_diagnostic(state, outcome.diagnostic_ref)
-  if outcome.status ~= "passed" or type(outcome.attempt_id) ~= "string" then
-    error("environment-factory: readiness-attempt-failed: runtime did not persist an attempt")
+  if outcome.status ~= "passed" or type(outcome.attempt_id) ~= "string"
+    or type(outcome.attempt_ref) ~= "table" or type(outcome.attempt_sha256) ~= "string"
+    or #outcome.attempt_sha256 ~= 64 or outcome.attempt_sha256:match("^[0-9a-f]+$") == nil
+    or ((outcome.target_id == nil) ~= (outcome.target_sha256 == nil)) then
+    error("environment-factory: readiness-attempt-failed: runtime did not persist an exact attempt")
   end
+  contract.validate_artifact_ref(outcome.attempt_ref, "readiness-attempt.attempt_ref")
   local correlation = {
     schema = contract.schemas.readiness_correlation,
     attempt_id = outcome.attempt_id,
     operation_id = state.operation_id,
     operation_state_ref = copy(state.operation_state_ref),
-    environment_receipt_ref = copy(state.receipt_refs.ready),
+    readiness_attempt_ref = copy(outcome.attempt_ref),
+    readiness_attempt_sha256 = outcome.attempt_sha256,
+    target_id = outcome.target_id,
+    target_sha256 = outcome.target_sha256,
     base_url = state.base_url,
     sessions = copy_list(state.sessions),
     trace_id = state.trace_id,
@@ -720,13 +729,11 @@ local function provision(state, ports)
   local application_cleanup_ref = start_application(state, ports, assignments.application)
   wait_checks(state, ports, state.profile_snapshot.readiness_checks, "application",
     assignments.application, application_cleanup_ref)
-  state.status = "ready"
+  state.status = "readiness-pending"
   state.cleanup_status = "pending"
-  local persisted = write_receipt(state, ports, "ready")
   create_readiness_correlation(state, ports)
-  state.public_result = result(state, "ready", nil, persisted)
   save_state(ports, state)
-  return state.public_result
+  return state
 end
 
 local function load_existing(request, ports)
@@ -735,15 +742,40 @@ local function load_existing(request, ports)
   return validate_loaded_state(request, authenticated_state(envelope))
 end
 
+function M.browser_readiness_check(state)
+  if type(state) ~= "table" or state.status ~= "readiness-pending" then
+    error("environment-factory: environment-not-pending: browser readiness requires readiness-pending state")
+  end
+  contract.validate_readiness_correlation(state.readiness_correlation)
+  if not same_ref(state.readiness_correlation.operation_state_ref, state.operation_state_ref) then
+    error("environment-factory: readiness-correlation-mismatch: state pointer differs")
+  end
+  return {
+    schema = "browser-readiness.check.v1",
+    base_url = state.base_url,
+    sessions = copy_list(state.sessions),
+    request_context = { dry_run = false },
+    source_ref = copy(state.operation_state_ref),
+    correlation = copy(state.readiness_correlation),
+  }
+end
+
 function M.start(request, supplied_ports)
   request = contract.validate_start(request)
   local ports = ports_module.resolve(supplied_ports)
   local state
   local ok, value = pcall(function()
     local existing = load_existing(request, ports)
+    if existing ~= nil and existing.public_result ~= nil and existing.status ~= "ready" then
+      state = existing
+      return { result = contract.validate_result(state.public_result), replay = true }
+    end
     state = recover_authorized_state(request, ports, existing, function(current) state = current end)
-    if state.public_result ~= nil then return contract.validate_result(state.public_result) end
-    return provision(state, ports)
+    if state.public_result ~= nil then
+      return { result = contract.validate_result(state.public_result), replay = true }
+    end
+    if state.status ~= "readiness-pending" then provision(state, ports) end
+    return { readiness_check = M.browser_readiness_check(state), replay = existing ~= nil }
   end)
   if ok then return value end
   local classification = failure_class(value)
@@ -751,48 +783,10 @@ function M.start(request, supplied_ports)
     or classification == "resource-identity-mismatch" then
     error(value, 0)
   end
-  if state ~= nil and #state.resources > 0 then return mark_blocked(state, ports, value) end
+  if state ~= nil and #state.resources > 0 then
+    return { result = mark_blocked(state, ports, value), replay = false }
+  end
   error(value, 0)
-end
-
-function M.browser_readiness_check(ready_result, state)
-  contract.validate_result(ready_result)
-  if ready_result.status ~= "ready" then
-    error("environment-factory: environment-not-ready: readiness handoff requires ready status")
-  end
-  contract.validate_readiness_correlation(ready_result.readiness_correlation)
-  if not same_ref(ready_result.readiness_correlation.operation_state_ref, state.operation_state_ref) then
-    error("environment-factory: readiness-correlation-mismatch: state pointer differs")
-  end
-  return {
-    schema = "browser-readiness.check.v1",
-    base_url = ready_result.base_url,
-    sessions = copy_list(ready_result.sessions),
-    request_context = { dry_run = false },
-    source_ref = copy(state.operation_state_ref),
-    correlation = copy(ready_result.readiness_correlation),
-  }
-end
-
-local function module_start(state, readiness_result)
-  return {
-    schema = "testing-pipeline.module-start.v1",
-    module = state.testing.module,
-    backend = "fkst-native",
-    dry_run = false,
-    preflight_result = readiness_result,
-    ui_loop = {
-      base_url = state.base_url,
-      allowed_origins = copy_list(state.profile_snapshot.allowed_origins),
-      browser_readiness_ref = state.receipt_refs.ready.ref,
-      cdp_readiness_ref = state.receipt_refs.ready.ref,
-      mutation_policy = state.testing.mutation_policy,
-    },
-    artifact_root = state.testing.artifact_root,
-    source_ref = copy(state.receipt_refs.ready),
-    trace_id = state.trace_id,
-    dedup_key = state.dedup_key,
-  }
 end
 
 local function recover_from_state_ref(state_ref, ports)
@@ -803,8 +797,10 @@ local function recover_from_state_ref(state_ref, ports)
   if not same_ref(request.operation_state_ref, state_ref) then
     error("environment-factory: foreign-state: state pointer differs from bound request")
   end
+  stored = validate_loaded_state(request, stored)
+  if stored.public_result ~= nil and stored.status ~= "ready" then return stored end
   local recovered
-  recovered = recover_authorized_state(request, ports, validate_loaded_state(request, stored), function(value) recovered = value end)
+  recovered = recover_authorized_state(request, ports, stored, function(value) recovered = value end)
   return recovered
 end
 
@@ -812,56 +808,42 @@ function M.handle_browser_readiness(readiness_result, supplied_ports)
   local sanitized = contract.sanitize_browser_readiness_result(readiness_result)
   local ports = ports_module.resolve(supplied_ports)
   local state = recover_from_state_ref(sanitized.source_ref, ports)
-  if state.status ~= "ready" or state.receipt_refs.ready == nil or state.readiness_correlation == nil then
-    error("environment-factory: foreign-browser-readiness-result: no matching ready environment state")
-  end
-  if not contract.same_value(sanitized.correlation, state.readiness_correlation)
+  if state.readiness_correlation == nil
+    or not contract.same_value(sanitized.correlation, state.readiness_correlation)
     or not same_ref(sanitized.source_ref, state.operation_state_ref) then
     error("environment-factory: readiness-correlation-mismatch: stale or forged browser readiness attempt")
   end
-  if sanitized.status ~= "ready" then
-    return { result = mark_blocked(state, ports, "environment-factory: browser-readiness-failed: browser gate blocked") }
-  end
-  if state.testing_outbox ~= nil then
-    if state.testing_outbox.status == "acknowledged" then return { acknowledged = true } end
-    if state.testing_outbox.status == "pending" then
-      return { module_start = copy(state.testing_outbox.payload), redelivery = true }
+  if state.browser_readiness ~= nil then
+    if not contract.same_value(sanitized, state.browser_readiness) or state.public_result == nil then
+      error("environment-factory: foreign-browser-readiness-result: browser result differs from durable state")
     end
-    error("environment-factory: malformed-outbox: unknown testing outbox status")
+    return { result = contract.validate_result(state.public_result), replay = true }
   end
-  local payload = module_start(state, sanitized)
-  state.testing_outbox = { status = "pending", payload = copy(payload) }
-  save_state(ports, state)
-  return { module_start = copy(payload), redelivery = false }
-end
+  if state.status ~= "readiness-pending" then
+    error("environment-factory: foreign-browser-readiness-result: no matching readiness-pending environment state")
+  end
 
-function M.acknowledge_testing_terminal(payload, supplied_ports)
-  payload = testing_terminal.validate(payload)
-  local suffix = "/environment-receipt-ready.json"
-  if payload.source_ref.ref:sub(-#suffix) ~= suffix then
-    error("environment-factory: foreign-testing-terminal: source is not an environment ready receipt")
+  state.browser_readiness = copy(sanitized)
+  local browser_saved, browser_failure = pcall(save_state, ports, state)
+  if not browser_saved then
+    return { result = mark_blocked(state, ports, browser_failure), replay = false }
   end
-  local state_ref = {
-    kind = "artifact",
-    ref = payload.source_ref.ref:sub(1, #payload.source_ref.ref - #suffix) .. "/operation-state.json",
-  }
-  local ports = ports_module.resolve(supplied_ports)
-  local state = recover_from_state_ref(state_ref, ports)
-  if state.testing_outbox == nil or state.testing_outbox.status ~= "pending" then
-    return { acknowledged = state.testing_outbox ~= nil and state.testing_outbox.status == "acknowledged" }
+  if sanitized.status ~= "ready" then
+    return { result = mark_blocked(state, ports,
+      "environment-factory: browser-readiness-failed: browser gate blocked"), replay = false }
   end
-  local pending = state.testing_outbox.payload
-  if not same_ref(payload.source_ref, pending.source_ref)
-    or payload.trace_id ~= pending.trace_id
-    or payload.dedup_key ~= pending.dedup_key
-    or payload.job ~= "module-test-loop"
-    or payload.artifact_root ~= pending.artifact_root then
-    error("environment-factory: foreign-testing-terminal: terminal identity differs from pending outbox")
+
+  local ok, persisted = pcall(write_receipt, state, ports, "ready")
+  if not ok then
+    return { result = mark_blocked(state, ports, persisted), replay = false }
   end
-  state.testing_outbox.status = "acknowledged"
-  state.testing_outbox.terminal_status = payload.status
-  save_state(ports, state)
-  return { acknowledged = true }
+  state.status = "ready"
+  state.public_result = result(state, "ready", nil, persisted)
+  local saved, failure = pcall(save_state, ports, state)
+  if not saved then
+    return { result = mark_blocked(state, ports, failure), replay = false }
+  end
+  return { result = state.public_result, replay = false }
 end
 
 local function validate_termination_identity(request, state)

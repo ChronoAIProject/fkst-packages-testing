@@ -10,7 +10,7 @@ E.schemas = {
   finalize = "environment-factory.finalize.v1",
   interrupt = "environment-factory.interrupt.v1",
   result = "environment-factory.result.v1",
-  receipt = "environment-factory.receipt.v1",
+  receipt = "environment-factory.receipt.v2",
   cleanup_receipt = "environment-factory.cleanup-receipt.v1",
   state = "environment-factory.operation-state.v1",
   start_binding = "environment-factory.start-binding.v1",
@@ -42,6 +42,13 @@ end
 local function require_id(value, field)
   require_bounded(value, field, max_id)
   if value:find("%s") ~= nil then fail("malformed-field", field .. " must not contain whitespace") end
+  return value
+end
+
+local function require_digest(value, field)
+  if type(value) ~= "string" or #value ~= 64 or value:match("^[0-9a-f]+$") == nil then
+    fail("malformed-field", field .. " must be a lowercase SHA-256 digest")
+  end
   return value
 end
 
@@ -293,19 +300,6 @@ local function validate_sessions(value)
   return value
 end
 
-local function validate_testing(value, artifact_root)
-  only_fields(value, { module = true, artifact_root = true, mutation_policy = true }, "testing")
-  require_id(value.module, "testing.module")
-  if not strings.is_artifact_root(value.artifact_root)
-    or value.artifact_root:sub(1, #artifact_root + 1) ~= artifact_root .. "/" then
-    fail("malformed-artifact-root", "testing.artifact_root must be below artifact_root")
-  end
-  if value.mutation_policy ~= "read-only" and value.mutation_policy ~= "host-approved" then
-    fail("malformed-testing", "testing.mutation_policy must be read-only or host-approved")
-  end
-  return value
-end
-
 local start_fields = {
   schema = true,
   operation_id = true,
@@ -318,7 +312,6 @@ local start_fields = {
   base_url = true,
   runtime_ports = true,
   sessions = true,
-  testing = true,
   trace_id = true,
   dedup_key = true,
 }
@@ -341,7 +334,6 @@ function E.validate_start(value)
   url_parts(value.base_url, "base_url")
   port_set_from_list(value.runtime_ports)
   validate_sessions(value.sessions)
-  validate_testing(value.testing, value.artifact_root)
   require_id(value.trace_id, "trace_id")
   require_id(value.dedup_key, "dedup_key")
   return value
@@ -381,7 +373,10 @@ function E.validate_readiness_correlation(value)
     attempt_id = true,
     operation_id = true,
     operation_state_ref = true,
-    environment_receipt_ref = true,
+    readiness_attempt_ref = true,
+    readiness_attempt_sha256 = true,
+    target_id = true,
+    target_sha256 = true,
     base_url = true,
     sessions = true,
     trace_id = true,
@@ -393,7 +388,13 @@ function E.validate_readiness_correlation(value)
   require_id(value.attempt_id, "attempt_id")
   require_id(value.operation_id, "operation_id")
   validate_artifact_ref(value.operation_state_ref, "operation_state_ref")
-  validate_artifact_ref(value.environment_receipt_ref, "environment_receipt_ref")
+  validate_artifact_ref(value.readiness_attempt_ref, "readiness_attempt_ref")
+  require_digest(value.readiness_attempt_sha256, "readiness_attempt_sha256")
+  local has_target_binding = value.target_id ~= nil or value.target_sha256 ~= nil
+  if has_target_binding then
+    require_id(value.target_id, "target_id")
+    require_digest(value.target_sha256, "target_sha256")
+  end
   url_parts(value.base_url, "base_url")
   validate_sessions(value.sessions)
   require_id(value.trace_id, "trace_id")
@@ -475,9 +476,6 @@ function E.validate_profile_binding(request, profile)
   if not same_repository(request.repository, profile.repository) then
     fail("source-mismatch", "request repository does not match the approved profile")
   end
-  if request.testing.mutation_policy == "host-approved" and profile.mutation_policy.mode ~= "fixture-scoped" then
-    fail("mutation-policy-escalation", "host-approved testing requires a fixture-scoped approved profile")
-  end
   E.require_exact_runtime_ports(profile, request.runtime_ports)
   local found_base = false
   for _, check in ipairs(profile.readiness_checks or {}) do
@@ -543,14 +541,12 @@ local result_fields = {
   operation_id = true,
   status = true,
   failure_class = true,
-  base_url = true,
-  sessions = true,
-  readiness_correlation = true,
   environment_receipt_ref = true,
   cleanup_receipt_ref = true,
   cleanup_ref = true,
   diagnostic_refs = true,
   cleanup_status = true,
+  source_ref = true,
   trace_id = true,
   dedup_key = true,
 }
@@ -563,6 +559,28 @@ local cleanup_receipt_fields = {
   verified_removals = true,
   remaining_resources = true,
   artifact_root = true,
+  trace_id = true,
+  dedup_key = true,
+}
+
+local receipt_fields = {
+  schema = true,
+  operation_id = true,
+  status = true,
+  failure_class = true,
+  profile_revision = true,
+  profile_sha256 = true,
+  repository = true,
+  workspace_ref = true,
+  base_url = true,
+  runtime_ports = true,
+  sessions = true,
+  browser_readiness = true,
+  artifact_root = true,
+  diagnostic_refs = true,
+  cleanup_ref = true,
+  cleanup_receipt_ref = true,
+  cleanup_status = true,
   trace_id = true,
   dedup_key = true,
 }
@@ -650,18 +668,76 @@ function E.validate_cleanup_receipt(value)
   return value
 end
 
+function E.validate_receipt(value)
+  only_fields(value, receipt_fields, "receipt")
+  if value.schema ~= E.schemas.receipt then fail("unknown-schema", "expected " .. E.schemas.receipt) end
+  require_id(value.operation_id, "operation_id")
+  if result_statuses[value.status] ~= true then fail("malformed-status", tostring(value.status)) end
+  if value.failure_class ~= nil then require_id(value.failure_class, "failure_class") end
+  require_bounded(value.profile_revision, "profile_revision", max_id)
+  if type(value.profile_sha256) ~= "string" or #value.profile_sha256 ~= 64
+    or value.profile_sha256:match("^[0-9a-f]+$") == nil then
+    fail("malformed-profile-digest", "profile_sha256 must be exact lowercase 64-hex")
+  end
+  validate_repository(value.repository)
+  if value.workspace_ref ~= nil then validate_ref(value.workspace_ref, "workspace_ref") end
+  url_parts(value.base_url, "base_url")
+  port_set_from_list(value.runtime_ports)
+  validate_sessions(value.sessions)
+  if value.browser_readiness ~= nil then
+    local readiness = E.sanitize_browser_readiness_result(value.browser_readiness)
+    if readiness.correlation.operation_id ~= value.operation_id
+      or readiness.correlation.base_url ~= value.base_url
+      or readiness.correlation.trace_id ~= value.trace_id
+      or readiness.correlation.dedup_key ~= value.dedup_key
+      or readiness.source_ref.kind ~= readiness.correlation.operation_state_ref.kind
+      or readiness.source_ref.ref ~= readiness.correlation.operation_state_ref.ref then
+      fail("browser-readiness-mismatch", "browser readiness proof differs from receipt identity")
+    end
+  end
+  if value.status == "ready" then
+    if value.browser_readiness == nil or value.browser_readiness.status ~= "ready" then
+      fail("missing-browser-readiness", "ready receipt requires a successful browser readiness proof")
+    end
+    if value.failure_class ~= nil then fail("ready-failure-class", "ready receipt must not have failure_class") end
+  end
+  if not strings.is_artifact_root(value.artifact_root) then
+    fail("malformed-artifact-root", "artifact_root must be a safe .testing/runs/... path")
+  end
+  if not dense_list(value.diagnostic_refs or {}, E.max_diagnostic_refs, false) then
+    fail("malformed-diagnostics", "diagnostic_refs must be a bounded dense list")
+  end
+  for index, ref in ipairs(value.diagnostic_refs or {}) do
+    validate_artifact_ref(ref, "diagnostic_refs[" .. index .. "]")
+  end
+  validate_ref(value.cleanup_ref, "cleanup_ref")
+  if value.cleanup_status ~= "pending" and value.cleanup_status ~= "complete"
+    and value.cleanup_status ~= "incomplete" then
+    fail("malformed-cleanup-status", tostring(value.cleanup_status))
+  end
+  if value.status == "ready" then
+    if value.cleanup_status ~= "pending" or value.cleanup_receipt_ref ~= nil then
+      fail("premature-cleanup-receipt", "ready receipt must retain pending cleanup without a cleanup receipt")
+    end
+  else
+    validate_artifact_ref(value.cleanup_receipt_ref, "cleanup_receipt_ref")
+    local cleanup_suffix = "/cleanup-receipt-" .. value.cleanup_status .. ".json"
+    if value.cleanup_receipt_ref.ref:sub(-#cleanup_suffix) ~= cleanup_suffix then
+      fail("mutable-cleanup-receipt-pointer", "cleanup receipt pointer must match cleanup status")
+    end
+  end
+  require_id(value.trace_id, "trace_id")
+  require_id(value.dedup_key, "dedup_key")
+  return value
+end
+
 function E.validate_result(value)
   only_fields(value, result_fields, "result")
   if value.schema ~= E.schemas.result then fail("unknown-schema", "expected " .. E.schemas.result) end
   require_id(value.operation_id, "operation_id")
   if result_statuses[value.status] ~= true then fail("malformed-status", tostring(value.status)) end
   if value.failure_class ~= nil then require_id(value.failure_class, "failure_class") end
-  if value.base_url ~= nil then url_parts(value.base_url, "base_url") end
-  if value.sessions ~= nil then validate_sessions(value.sessions) end
-  if value.readiness_correlation ~= nil then E.validate_readiness_correlation(value.readiness_correlation) end
-  if value.status == "ready" and value.readiness_correlation == nil then
-    fail("missing-readiness-correlation", "ready result requires readiness correlation")
-  end
+  validate_artifact_ref(value.source_ref, "source_ref")
   validate_artifact_ref(value.environment_receipt_ref, "environment_receipt_ref")
   local suffix = "/environment-receipt-" .. value.status .. ".json"
   if value.environment_receipt_ref.ref:sub(-#suffix) ~= suffix then
