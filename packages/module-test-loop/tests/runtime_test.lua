@@ -82,6 +82,11 @@ return {
 
   test_testing_runtime_persists_cas_index_and_terminal_filter = function()
     local files = {}
+    local old_getenv = os.getenv
+    os.getenv = function(name)
+      if name == "FKST_RUNTIME_ROOT" then return "/tmp/module-test-loop-runtime-test" end
+      return old_getenv(name)
+    end
     with_globals({
       file = {
         read = function(path)
@@ -103,7 +108,9 @@ return {
       t.eq(ports.load_state(ref), nil)
       t.eq(#ports.list_pending_states(8), 0)
       t.eq(ports.save_state(ref, { version = 1, phase = "runner-pending" }, 0), true)
+      t.is_true(files["/tmp/module-test-loop-runtime-test/module-test-loop-test-state-store.json"] ~= nil)
     end)
+    os.getenv = old_getenv
   end,
 
   test_testing_runtime_falls_back_to_io_files = function()

@@ -73,38 +73,40 @@ local function test_decode(path)
 end
 
 function R.testing()
-  local index_ref = ".testing/runs/module-test-loop-state-index.json"
+  local runtime_root = type(os) == "table" and type(os.getenv) == "function" and os.getenv("FKST_RUNTIME_ROOT") or nil
+  local store_ref = type(runtime_root) == "string" and runtime_root ~= ""
+    and runtime_root .. "/module-test-loop-test-state-store.json"
+    or "module-test-loop-test-state-store.json"
   local function write_json(path, value)
     test_file_write(path, json_codec.encode(value) .. "\n")
   end
+  local function load_store()
+    return test_decode(store_ref) or {}
+  end
   return {
     load_state = function(state_ref)
-      local state = test_decode(state_ref)
+      local state = load_store()[state_ref]
       if type(state) == "table" and state.phase == "terminal" then return nil end
       return state
     end,
     save_state = function(state_ref, state, expected)
-      local current = test_decode(state_ref)
+      local store = load_store()
+      local current = store[state_ref]
       local revision = type(current) == "table" and current.version or 0
       if type(current) == "table" and current.phase == "terminal" and expected == 0 then revision = 0 end
       if revision ~= expected or state.version ~= expected + 1 then return false end
-      write_json(state_ref, state)
-      local index = test_decode(index_ref) or {}
-      local found = false
-      for _, value in ipairs(index) do if value == state_ref then found = true end end
-      if not found then table.insert(index, state_ref) end
-      table.sort(index)
-      write_json(index_ref, index)
+      store[state_ref] = state
+      write_json(store_ref, store)
       return true
     end,
     list_pending_states = function(limit)
       local result = {}
-      for _, state_ref in ipairs(test_decode(index_ref) or {}) do
-        local state = test_decode(state_ref)
+      for state_ref, state in pairs(load_store()) do
         if type(state) == "table" and state.phase ~= "terminal" and #result < limit then
           table.insert(result, state_ref)
         end
       end
+      table.sort(result)
       return result
     end,
     artifact_digest = function(pointer)
