@@ -1,3 +1,5 @@
+local structured_contract = require("contract.structured_execution")
+
 local M = {}
 
 local function bounded(value, maximum)
@@ -24,6 +26,18 @@ local function copy(value)
   local cloned = {}
   for field, item in pairs(value) do cloned[field] = copy(item) end
   return cloned
+end
+
+local function equal(left, right)
+  if left == right then return true end
+  if type(left) ~= "table" or type(right) ~= "table" then return false end
+  local left_count, right_count = 0, 0
+  for key, value in pairs(left) do
+    left_count = left_count + 1
+    if not equal(value, right[key]) then return false end
+  end
+  for _, _ in pairs(right) do right_count = right_count + 1 end
+  return left_count == right_count
 end
 
 local function dense_list(value, maximum)
@@ -73,14 +87,16 @@ function M.validate_request(request)
   local publication = request.publication
   only_fields(publication, publication_fields, "publication")
   only_fields(publication.source_ref, { kind = true, ref = true }, "publication source_ref")
+  local execution_path = publication.job == "structured-execution" and "/execution.json"
+    or publication.job == "ai-browser-control" and "/browser-agent-execution.json" or nil
   if publication.schema ~= "test-publication.publication-request.v1"
     or publication.publication_kind ~= "testing-summary" or publication.channel ~= "testing"
-    or publication.job ~= "structured-execution" or publication.status ~= "failed"
+    or execution_path == nil or publication.status ~= "failed"
     or not bounded(publication.severity, 40) or not bounded(publication.subject, 240)
     or not safe_pointer(publication.artifact_root)
     or publication.metadata_path ~= publication.artifact_root .. "/metadata.json"
     or publication.test_plan_path ~= publication.artifact_root .. "/test-plan.json"
-    or publication.execution_path ~= publication.artifact_root .. "/execution.json"
+    or publication.execution_path ~= publication.artifact_root .. execution_path
     or publication.case_results_path ~= publication.artifact_root .. "/case-results.json"
     or not bounded(publication.trace_id, 180) or not bounded(publication.dedup_key, 180)
     or not bounded(publication.source_ref.kind, 80) or not bounded(publication.source_ref.ref, 200)
@@ -117,30 +133,10 @@ local classifications = {
 
 local statuses = { passed = true, failed = true, skipped = true, error = true }
 
-local function validate_artifacts(request, ports)
-  local root = request.publication.artifact_root
-  local results = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
-  local drafts = load_bound(ports, request.issue_drafts_ref, request.issue_drafts_sha256, "issue drafts")
-  if results.schema ~= "testing-structured-case-results.v1" or results.plan_sha256 ~= request.plan_sha256
+local function validate_case_results(results, plan_sha256, root)
+  if results.schema ~= "testing-structured-case-results.v1" or results.plan_sha256 ~= plan_sha256
     or not dense_list(results.cases, 1000) then
     error("test-publication: defect: malformed case results")
-  end
-  if drafts.schema ~= "test-publication.defect-issue-drafts.v1" or drafts.plan_sha256 ~= request.plan_sha256
-    or not dense_list(drafts.cases, 1000) then
-    error("test-publication: defect: malformed issue drafts")
-  end
-  local indexed_drafts = {}
-  for _, draft in ipairs(drafts.cases) do
-    only_fields(draft, {
-      case_id = true, title = true, expected_summary = true, actual_summary = true, evidence_ref = true,
-    }, "issue draft")
-    if not bounded(draft.case_id, 180) or draft.case_id:match("^[%w._%-]+$") == nil
-      or indexed_drafts[draft.case_id] ~= nil or not bounded(draft.title, 180)
-      or not bounded(draft.expected_summary, 1000) or not bounded(draft.actual_summary, 1000)
-      or not under_root(draft.evidence_ref, root) then
-      error("test-publication: defect: unsafe issue draft")
-    end
-    indexed_drafts[draft.case_id] = draft
   end
   local seen = {}
   for _, result in ipairs(results.cases) do
@@ -165,7 +161,179 @@ local function validate_artifacts(request, ports)
     end
     seen[result.case_id] = true
   end
+  return results
+end
+
+local function validate_artifacts(request, ports)
+  local root = request.publication.artifact_root
+  local bound_results = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+  local results = validate_case_results(bound_results, request.plan_sha256, root)
+  local drafts = load_bound(ports, request.issue_drafts_ref, request.issue_drafts_sha256, "issue drafts")
+  if drafts.schema ~= "test-publication.defect-issue-drafts.v1" or drafts.plan_sha256 ~= request.plan_sha256
+    or not dense_list(drafts.cases, 1000) then
+    error("test-publication: defect: malformed issue drafts")
+  end
+  local indexed_drafts = {}
+  for _, draft in ipairs(drafts.cases) do
+    only_fields(draft, {
+      case_id = true, title = true, expected_summary = true, actual_summary = true, evidence_ref = true,
+    }, "issue draft")
+    if not bounded(draft.case_id, 180) or draft.case_id:match("^[%w._%-]+$") == nil
+      or indexed_drafts[draft.case_id] ~= nil or not bounded(draft.title, 180)
+      or not bounded(draft.expected_summary, 1000) or not bounded(draft.actual_summary, 1000)
+      or not under_root(draft.evidence_ref, root) then
+      error("test-publication: defect: unsafe issue draft")
+    end
+    indexed_drafts[draft.case_id] = draft
+  end
   return results, indexed_drafts
+end
+
+local preparation_fields = {
+  schema = true, publication = true, repository = true, run_id = true,
+  plan_ref = true, plan_sha256 = true, case_results_ref = true,
+  case_results_sha256 = true, issue_drafts_ref = true, ledger_ref = true,
+  receipt_ref = true, trace_id = true, dedup_key = true,
+}
+
+local function validate_preparation_request(request)
+  only_fields(request, preparation_fields, "preparation request")
+  if request.schema ~= "test-publication.defect-preparation.request.v1" then
+    error("test-publication: defect: unknown preparation schema")
+  end
+  only_fields(request.repository, { slug = true, commit_sha = true }, "repository")
+  if not bounded(request.repository.slug, 180)
+    or request.repository.slug:match("^[%w_.%-]+/[%w_.%-]+$") == nil
+    or type(request.repository.commit_sha) ~= "string" or #request.repository.commit_sha ~= 40
+    or request.repository.commit_sha:match("^[0-9a-f]+$") == nil
+    or not bounded(request.run_id, 180) or not digest(request.plan_sha256)
+    or not digest(request.case_results_sha256) or not bounded(request.trace_id, 180)
+    or not bounded(request.dedup_key, 180) then
+    error("test-publication: defect: malformed preparation identity")
+  end
+  local publication = request.publication
+  only_fields(publication, publication_fields, "publication")
+  only_fields(publication.source_ref, { kind = true, ref = true }, "publication source_ref")
+  local execution_path = publication.job == "structured-execution" and "/execution.json"
+    or publication.job == "ai-browser-control" and "/browser-agent-execution.json" or nil
+  if publication.schema ~= "test-publication.publication-request.v1"
+    or publication.publication_kind ~= "testing-summary" or publication.channel ~= "testing"
+    or execution_path == nil or publication.status ~= "failed"
+    or not bounded(publication.severity, 40) or not bounded(publication.subject, 240)
+    or not safe_pointer(publication.artifact_root)
+    or publication.metadata_path ~= publication.artifact_root .. "/metadata.json"
+    or publication.test_plan_path ~= request.plan_ref
+    or publication.case_results_path ~= request.case_results_ref
+    or publication.execution_path ~= publication.artifact_root .. execution_path
+    or publication.issue_drafts_path ~= nil
+    or publication.trace_id ~= request.trace_id or publication.dedup_key ~= request.dedup_key
+    or publication.source_ref.kind ~= "workflow-qa" or publication.source_ref.ref ~= request.run_id
+    or publication.publication_dry_run ~= true
+    or not under_root(request.plan_ref, publication.artifact_root)
+    or not under_root(request.case_results_ref, publication.artifact_root)
+    or not under_root(request.issue_drafts_ref, publication.artifact_root)
+    or not under_root(request.ledger_ref, publication.artifact_root)
+    or not under_root(request.receipt_ref, publication.artifact_root) then
+    error("test-publication: defect: malformed preparation binding")
+  end
+  return request
+end
+
+M.validate_preparation_request = validate_preparation_request
+
+local function repository_matches_slug(repository, requested)
+  local base = "https://github.com/" .. requested.slug
+  return type(repository) == "table" and repository.commit_sha == requested.commit_sha
+    and (repository.url == base or repository.url == base .. ".git")
+end
+
+local function assertion_names(assertions, failed_only)
+  local names = {}
+  for _, assertion in ipairs(assertions or {}) do
+    if not failed_only or assertion.passed == false then table.insert(names, assertion.type) end
+  end
+  if #names == 0 then return "verified assertions" end
+  return table.concat(names, ", ")
+end
+
+local function materialize_drafts(request, plan, results)
+  local indexed = {}
+  for _, result in ipairs(results.cases) do indexed[result.case_id] = result end
+  local drafts = {
+    schema = "test-publication.defect-issue-drafts.v1",
+    plan_sha256 = request.plan_sha256,
+    cases = {},
+  }
+  for _, case in ipairs(plan.cases) do
+    local result = indexed[case.case_id]
+    if result == nil or result.kind ~= case.kind then
+      error("test-publication: defect: case results differ from the verified plan")
+    end
+    if result.classification == "product-defect" then
+      local actual_summary = "Observed failed product-defect result; failed assertions: " .. assertion_names(result.assertions, true)
+      table.insert(drafts.cases, {
+        case_id = result.case_id,
+        title = (result.case_id:sub(1, 130) .. ": verified " .. result.kind .. " behavior differs"),
+        expected_summary = "Expected configured assertions to pass: " .. assertion_names(case.assertions, false),
+        actual_summary = actual_summary,
+        evidence_ref = result.evidence_ref,
+      })
+    end
+    indexed[case.case_id] = nil
+  end
+  if next(indexed) ~= nil then error("test-publication: defect: case results contain foreign cases") end
+  return drafts
+end
+
+function M.prepare_defects(request, ports)
+  validate_preparation_request(request)
+  local plan = load_bound(ports, request.plan_ref, request.plan_sha256, "test plan")
+  local plan_ok = pcall(structured_contract.validate_plan, plan)
+  if not plan_ok or not repository_matches_slug(plan.repository, request.repository)
+    or plan.trace_id ~= request.trace_id or plan.dedup_key ~= request.dedup_key then
+    error("test-publication: defect: verified plan does not belong to the run")
+  end
+  local results = validate_case_results(
+    load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results"),
+    request.plan_sha256,
+    request.publication.artifact_root
+  )
+  local drafts = materialize_drafts(request, plan, results)
+  local existing = ports.load_artifact(request.issue_drafts_ref)
+  local replayed = existing ~= nil
+  if existing == nil then
+    if ports.write_artifact(request.issue_drafts_ref, drafts) ~= true then
+      error("test-publication: defect: issue draft write failed")
+    end
+    existing = ports.load_artifact(request.issue_drafts_ref)
+  end
+  if type(existing) ~= "table" or not digest(existing.digest)
+    or type(existing.value) ~= "table" or not equal(existing.value, drafts) then
+    error("test-publication: defect: persisted issue drafts differ from deterministic materialization")
+  end
+  local publication = copy(request.publication)
+  publication.issue_drafts_path = request.issue_drafts_ref
+  local defect_request = {
+    schema = "test-publication.defect-publication.request.v1",
+    publication = publication,
+    repository = copy(request.repository),
+    plan_sha256 = request.plan_sha256,
+    case_results_ref = request.case_results_ref,
+    case_results_sha256 = request.case_results_sha256,
+    issue_drafts_ref = request.issue_drafts_ref,
+    issue_drafts_sha256 = existing.digest,
+    ledger_ref = request.ledger_ref,
+    receipt_ref = request.receipt_ref,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }
+  M.validate_request(defect_request)
+  return {
+    replayed = replayed,
+    issue_drafts_ref = request.issue_drafts_ref,
+    issue_drafts_sha256 = existing.digest,
+    defect_request = defect_request,
+  }
 end
 
 local function issue_dedup_key(request, case_id)

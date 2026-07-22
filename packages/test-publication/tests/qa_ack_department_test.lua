@@ -33,12 +33,17 @@ return {
         handoff = {
           kind = "test-publication.qa-checkpoint", ledger_ref = ledger.ledger_ref,
           run_id = ledger.run_id, stage = "intake", attempt = 1,
+          request_dedup_key = ledger.checkpoints["intake/1"].comment_request.dedup_key,
         },
       },
     })
 
     t.eq(trace.raises[1].queue, "qa_publication_receipt")
+    t.eq(trace.raises[1].payload.schema, "test-publication.qa-publication-receipt.v2")
     t.eq(trace.raises[1].payload.status, "published")
     t.eq(trace.raises[1].payload.comment_id, "501")
+    t.eq(trace.raises[1].payload.dedup_key, ledger.dedup_key)
+    t.eq(trace.raises[1].payload.request_dedup_key,
+      ledger.checkpoints["intake/1"].comment_request.dedup_key)
   end,
 }

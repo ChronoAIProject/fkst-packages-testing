@@ -9,6 +9,11 @@ local spec = {
   retry = false,
 }
 
+local function accept(event)
+  local source = ((event or {}).payload or {}).source_ref
+  return type(source) ~= "table" or source.kind ~= "workflow-qa"
+end
+
 local function done(_event)
   return false
 end
@@ -19,6 +24,6 @@ local function act(event)
   raise("publication_request", request)
 end
 
-local M = saga.department(spec, { done = done, act = act, name = "prepare_publication" })
+local M = saga.department(spec, { accept = accept, done = done, act = act, name = "prepare_publication" })
 M.pipeline = _G.pipeline
 return M

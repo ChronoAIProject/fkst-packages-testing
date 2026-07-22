@@ -1,4 +1,5 @@
 local acknowledge = require("departments.acknowledge_product_defect.main")
+local prepare = require("departments.prepare_product_defects.main")
 local publish = require("departments.publish_product_defects.main")
 local testing = require("testkit.testing")
 local t = fkst.test
@@ -31,10 +32,55 @@ local function request()
   }
 end
 
+local function preparation_request()
+  local value = request()
+  value.publication.dedup_key = value.dedup_key
+  value.publication.publication_dry_run = true
+  return {
+    schema = "test-publication.defect-preparation.request.v1",
+    publication = value.publication,
+    repository = value.repository,
+    run_id = "run-99",
+    plan_ref = value.publication.test_plan_path,
+    plan_sha256 = value.plan_sha256,
+    case_results_ref = value.case_results_ref,
+    case_results_sha256 = value.case_results_sha256,
+    issue_drafts_ref = value.issue_drafts_ref,
+    ledger_ref = value.ledger_ref,
+    receipt_ref = value.receipt_ref,
+    trace_id = value.trace_id,
+    dedup_key = value.dedup_key,
+  }
+end
+
 local function runtime(case_results, issue_drafts)
   local value = request()
   local ledger
+  local plan_cases = {}
+  for _, result in ipairs(case_results) do
+    if result.kind == "cli" then
+      table.insert(plan_cases, {
+        case_id = result.case_id, kind = "cli", argv = { "fixture", result.case_id }, timeout_seconds = 10,
+        assertions = { { type = "exit-code", expected = 0 } },
+      })
+    else
+      table.insert(plan_cases, {
+        case_id = result.case_id, kind = "http", timeout_seconds = 10,
+        request = { method = "GET", url = "http://127.0.0.1:4173/" .. result.case_id, headers = {} },
+        assertions = { { type = "status-code", expected = 200 } },
+      })
+    end
+  end
   local artifacts = {
+    [value.publication.test_plan_path] = { digest = plan_sha, value = {
+      schema = "testing-structured-plan.v2",
+      execution_mode = "structured-api-cli",
+      repository = { url = "https://github.com/owner/repo.git", commit_sha = commit_sha },
+      environment_receipt_sha256 = string.rep("d", 64), browser_readiness_sha256 = string.rep("b", 64),
+      case_catalog_sha256 = string.rep("e", 64),
+      module_plan_sha256 = string.rep("f", 64), cases = plan_cases, residual_risk_case_ids = {},
+      trace_id = value.trace_id, dedup_key = value.dedup_key,
+    } },
     [value.case_results_ref] = { digest = results_sha, value = {
       schema = "testing-structured-case-results.v1", plan_sha256 = plan_sha, cases = case_results,
     } },
@@ -51,8 +97,12 @@ local function runtime(case_results, issue_drafts)
       return true
     end,
     load_artifact = function(path) return artifacts[path] end,
-    write_artifact = function() return true end,
+    write_artifact = function(path, artifact)
+      artifacts[path] = { digest = drafts_sha, value = artifact }
+      return true
+    end,
     ledger = function() return ledger end,
+    artifacts = artifacts,
   }
 end
 
@@ -80,6 +130,18 @@ local function run(department, queue, payload, ports)
 end
 
 return {
+  test_prepare_department_materializes_drafts_and_feeds_publication_request = function()
+    local ports = runtime({ defect("version") }, {})
+    ports.artifacts[request().issue_drafts_ref] = nil
+    local trace = run(prepare, "defect_preparation_request", preparation_request(), ports)
+
+    t.eq(#trace.raises, 1)
+    t.eq(trace.raises[1].queue, "defect_publication_request")
+    t.eq(trace.raises[1].payload.issue_drafts_ref, request().issue_drafts_ref)
+    t.eq(trace.raises[1].payload.issue_drafts_sha256, drafts_sha)
+    t.eq(ports.artifacts[request().issue_drafts_ref].value.cases[1].case_id, "version")
+  end,
+
   test_publish_department_emits_one_issue_intent_for_verified_product_defect = function()
     local ports = runtime({
       defect("version"),

@@ -5,76 +5,209 @@ local commit_sha = string.rep("1", 40)
 local plan_sha = string.rep("b", 64)
 local results_sha = string.rep("c", 64)
 local environment_sha = string.rep("d", 64)
+local readiness_sha = string.rep("5", 64)
 local cleanup_sha = string.rep("e", 64)
 local report_sha = string.rep("f", 64)
+local terminal_sha = string.rep("6", 64)
+local catalog_sha = string.rep("7", 64)
+local module_plan_sha = string.rep("8", 64)
 
 local function request()
-  return {
-    schema = "test-publication.qa-finalize.request.v1",
+  local root = ".testing/runs/qa-run-final"
+  local value = {
+    schema = "test-publication.qa-finalize.request.v2",
     repository = { slug = "owner/repo", commit_sha = commit_sha },
     run_id = "qa-run-final", issue_number = 107,
-    artifact_root = ".testing/runs/qa-run-final",
-    ledger_ref = ".testing/runs/qa-run-final/run-ledger.json",
-    test_plan_ref = ".testing/runs/qa-run-final/test-plan.json", test_plan_sha256 = plan_sha,
-    case_results_ref = ".testing/runs/qa-run-final/case-results.json", case_results_sha256 = results_sha,
-    environment_receipt_ref = ".testing/runs/qa-run-final/environment-receipt-ready.json",
+    artifact_root = root,
+    ledger_ref = root .. "/run-ledger.json",
+    terminal_summary_ref = root .. "/terminal-summary.json", terminal_summary_sha256 = terminal_sha,
+    case_results_ref = root .. "/case-results.json", case_results_sha256 = results_sha,
+    environment_receipt_ref = root .. "/environment-receipt-ready.json",
     environment_receipt_sha256 = environment_sha,
-    cleanup_receipt_ref = ".testing/runs/qa-run-final/environment-receipt-finalized.json",
+    browser_readiness_ref = root .. "/browser-readiness.json",
+    browser_readiness_sha256 = readiness_sha,
+    cleanup_receipt_ref = root .. "/cleanup-receipt-complete.json",
     cleanup_receipt_sha256 = cleanup_sha,
-    aggregate_report_ref = ".testing/runs/qa-run-final/aggregate-report.json",
+    aggregate_report_ref = root .. "/aggregate-report.json",
     trace_id = "trace-qa-run-final", dedup_key = "dedup-qa-run-final",
+  }
+  value["test_" .. "plan_ref"] = root .. "/test-plan.json"
+  value["test_" .. "plan_sha256"] = plan_sha
+  return value
+end
+
+local function repository()
+  return { slug = "owner/repo", url = "https://github.com/owner/repo.git", commit_sha = commit_sha }
+end
+
+local function readiness(root, run_id, trace_id, dedup_key)
+  local operation_state_ref = { kind = "artifact", ref = root .. "/operation-state.json" }
+  local correlation = {
+    schema = "environment-factory.browser-readiness-correlation.v1",
+    attempt_id = "readiness-attempt-1",
+    operation_id = run_id,
+    operation_state_ref = operation_state_ref,
+    readiness_attempt_ref = { kind = "artifact", ref = root .. "/browser-readiness-attempt.json" },
+    readiness_attempt_sha256 = string.rep("a", 64),
+    base_url = "http://127.0.0.1:4173/health",
+    sessions = { { role = "browser", cdp_url = "http://127.0.0.1:9222" } },
+    trace_id = trace_id,
+    dedup_key = dedup_key,
+  }
+  return {
+    schema = "browser-readiness.result.v1",
+    status = "ready",
+    sessions = {
+      { role = "base_url", status = "ready", checks = { { name = "local_http", status = "ready" } } },
+      { role = "browser", status = "ready", checks = { { name = "cdp_url", status = "ready" } }, cdp_url = "http://127.0.0.1:9222" },
+    },
+    source_ref = operation_state_ref,
+    request_context = { dry_run = false },
+    correlation = correlation,
   }
 end
 
-local function runtime(mutate)
+local function environment_receipt(value, status)
+  local root = value.artifact_root
+  local receipt = {
+    schema = "environment-factory.receipt.v2",
+    operation_id = value.run_id,
+    status = status or "ready",
+    profile_revision = "qa-profile-v1",
+    profile_sha256 = string.rep("9", 64),
+    repository = { url = repository().url, commit_sha = commit_sha },
+    workspace_ref = { kind = "workspace", ref = "qa-run-final-workspace" },
+    base_url = "http://127.0.0.1:4173/health",
+    runtime_ports = { { name = "application", port = 4173 } },
+    sessions = { { role = "browser", cdp_url = "http://127.0.0.1:9222" } },
+    artifact_root = root,
+    diagnostic_refs = {},
+    cleanup_ref = { kind = "runtime-cleanup", ref = "qa-run-final-cleanup" },
+    cleanup_status = "pending",
+    trace_id = value.trace_id,
+    dedup_key = value.dedup_key,
+  }
+  if receipt.status == "ready" then
+    receipt.browser_readiness = readiness(root, value.run_id, value.trace_id, value.dedup_key)
+  else
+    receipt.failure_class = "provisioning-failed"
+    receipt.cleanup_status = "complete"
+    receipt.cleanup_receipt_ref = { kind = "artifact", ref = value.cleanup_receipt_ref }
+  end
+  return receipt
+end
+
+local function cleanup_receipt(value)
+  return {
+    schema = "environment-factory.cleanup-receipt.v1",
+    operation_id = value.run_id,
+    status = "complete",
+    attempted_resources = {
+      { resource_id = "workspace", resource_kind = "workspace", status = "cleaned",
+        diagnostic_ref = { kind = "artifact", ref = value.artifact_root .. "/diagnostics/cleanup-workspace.json" } },
+    },
+    verified_removals = { "workspace" },
+    remaining_resources = {},
+    artifact_root = value.artifact_root,
+    trace_id = value.trace_id,
+    dedup_key = value.dedup_key,
+  }
+end
+
+local function workflow_readiness(value)
+  local result = readiness(value.artifact_root, value.run_id, value.trace_id, value.dedup_key)
+  result.source_ref = { kind = "workflow-qa", ref = value.run_id }
+  return result
+end
+
+local function plan(value)
+  return {
+    schema = "testing-structured-plan.v2",
+    execution_mode = "structured-api-cli",
+    repository = { url = repository().url, commit_sha = commit_sha },
+    environment_receipt_sha256 = environment_sha,
+    browser_readiness_sha256 = readiness_sha,
+    case_catalog_sha256 = catalog_sha,
+    module_plan_sha256 = module_plan_sha,
+    cases = {
+      { case_id = "health", kind = "http", request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} }, timeout_seconds = 10, assertions = { { type = "status-code", expected = 200 } } },
+      { case_id = "version", kind = "cli", argv = { "fixture", "--version" }, timeout_seconds = 10, assertions = { { type = "exit-code", expected = 0 } } },
+    },
+    residual_risk_case_ids = {},
+    trace_id = value.trace_id,
+    dedup_key = value.dedup_key,
+  }
+end
+
+local function counts()
+  return { planned = 2, executed = 2, passed = 1, failed = 1, skipped = 0, error = 0, blocked = 0 }
+end
+
+local function terminal_summary(value, status, terminal_counts)
+  return {
+    schema = "workflow-qa.terminal-summary.v2",
+    status = status or "failed",
+    repository = repository(),
+    run_id = value.run_id,
+    phase = "cleanup-pending",
+    counts = terminal_counts or counts(),
+    environment_receipt_ref = value.environment_receipt_ref,
+    cleanup_receipt_ref = value.cleanup_receipt_ref,
+    browser_readiness_ref = value.browser_readiness_ref,
+    browser_readiness_sha256 = value.browser_readiness_sha256,
+    structured_plan_ref = value.test_plan_ref,
+    case_results_ref = value.case_results_ref,
+    trace_id = value.trace_id,
+    dedup_key = value.dedup_key,
+  }
+end
+
+local function runtime(mutate, supplied)
+  local value = supplied or request()
   local state
   local artifacts = {
-    [request().test_plan_ref] = { digest = plan_sha, value = {
-      schema = "testing-structured-plan.v1",
-      repository = { url = "https://github.com/owner/repo.git", commit_sha = commit_sha },
-      environment_receipt_sha256 = environment_sha,
-      cases = {
-        { case_id = "health", kind = "http" },
-        { case_id = "version", kind = "cli" },
-      },
-    } },
-    [request().case_results_ref] = { digest = results_sha, value = {
+    [value.terminal_summary_ref] = { digest = terminal_sha, value = terminal_summary(value) },
+    [value.environment_receipt_ref] = { digest = environment_sha, value = environment_receipt(value) },
+    [value.cleanup_receipt_ref] = { digest = cleanup_sha, value = cleanup_receipt(value) },
+  }
+  if value.browser_readiness_ref ~= nil then
+    artifacts[value.browser_readiness_ref] = { digest = readiness_sha, value = workflow_readiness(value) }
+  end
+  if value.test_plan_ref ~= nil then
+    artifacts[value.test_plan_ref] = { digest = plan_sha, value = plan(value) }
+  end
+  if value.case_results_ref ~= nil then
+    artifacts[value.case_results_ref] = { digest = results_sha, value = {
       schema = "testing-structured-case-results.v1", plan_sha256 = plan_sha,
       cases = {
-        { case_id = "health", kind = "http", status = "passed", classification = "passed", evidence_ref = ".testing/runs/qa-run-final/evidence/health.json" },
-        { case_id = "version", kind = "cli", status = "failed", classification = "product-defect", evidence_ref = ".testing/runs/qa-run-final/evidence/version.json" },
+        { case_id = "health", kind = "http", status = "passed", classification = "passed", evidence_ref = value.artifact_root .. "/evidence/health.json" },
+        { case_id = "version", kind = "cli", status = "failed", classification = "product-defect", evidence_ref = value.artifact_root .. "/evidence/version.json" },
       },
-    } },
-    [request().environment_receipt_ref] = { digest = environment_sha, value = {
-      schema = "environment-factory.environment-result.v1", status = "ready",
-    } },
-    [request().cleanup_receipt_ref] = { digest = cleanup_sha, value = {
-      schema = "environment-factory.result.v1", status = "finalized",
-    } },
-  }
-  if mutate then mutate(artifacts) end
+    } }
+  end
+  if mutate then mutate(artifacts, value) end
   local reports = {}
   local report_writes = 0
   return {
     load_ledger = function() return state end,
-    save_ledger = function(_, value, expected)
+    save_ledger = function(_, next_state, expected)
       if state ~= nil and state.version ~= expected then return false end
       if state == nil and expected ~= 0 then return false end
-      state = value return true
+      state = next_state return true
     end,
     load_artifact = function(path) return artifacts[path] end,
-    write_artifact = function(path, value) reports[path] = value return true end,
-    write_report = function(path, value)
+    write_artifact = function(path, artifact) reports[path] = artifact return true end,
+    write_report = function(path, report)
       report_writes = report_writes + 1
-      reports[path] = value
-      artifacts[path] = { digest = report_sha, value = value }
+      reports[path] = report
+      artifacts[path] = { digest = report_sha, value = report }
       return { status = "written", digest = report_sha }
     end,
-    publish_artifact = function(value)
+    publish_artifact = function(publication)
       return {
-        status = "published", digest = value.digest, source_commit = commit_sha,
-        remote_url = "https://github.com/owner/repo/blob/" .. commit_sha .. "/qa/aggregate-report.json",
-        receipt_ref = ".testing/runs/qa-run-final/publication/" .. value.stage .. "-" .. tostring(value.attempt) .. ".json",
+        status = "published", digest = publication.digest, source_commit = commit_sha,
+        remote_url = "https://github.com/owner/repo/blob/" .. commit_sha .. "/qa/" .. publication.stage .. ".json",
+        receipt_ref = value.artifact_root .. "/publication/" .. publication.stage .. "-" .. tostring(publication.attempt) .. ".json",
       }
     end,
     reports = reports,
@@ -84,52 +217,58 @@ local function runtime(mutate)
   }
 end
 
+local function terminal_request()
+  local value = request()
+  rawset(value, "test" .. "_plan_ref", nil)
+  rawset(value, "test" .. "_plan_sha256", nil)
+  value.case_results_ref = nil
+  value.case_results_sha256 = nil
+  value.browser_readiness_ref = nil
+  value.browser_readiness_sha256 = nil
+  value.environment_receipt_ref = value.artifact_root .. "/environment-receipt-blocked.json"
+  return value
+end
+
 return {
   test_finalize_validation_and_bound_artifacts_fail_closed = function()
     local invalid_schema = request()
     invalid_schema.schema = "unknown"
     t.raises(function() qa_publication.prepare_final_report(invalid_schema, runtime()) end)
 
+    local partial = request()
+    partial.case_results_sha256 = nil
+    t.raises(function() qa_publication.prepare_final_report(partial, runtime()) end)
+
     local unsafe_pointer = request()
-    rawset(unsafe_pointer, "test" .. "_plan_ref", ".testing/runs/foreign/test-plan.json")
+    unsafe_pointer.terminal_summary_ref = ".testing/runs/foreign/terminal-summary.json"
     t.raises(function() qa_publication.prepare_final_report(unsafe_pointer, runtime()) end)
 
-    local malformed_optional = request()
-    malformed_optional.defect_publication_receipt_ref = malformed_optional.artifact_root .. "/defects.json"
-    t.raises(function() qa_publication.prepare_final_report(malformed_optional, runtime()) end)
-
-    local digest_mismatch = runtime(function(artifacts)
-      artifacts[request().test_plan_ref].digest = string.rep("8", 64)
+    local digest_mismatch = runtime(function(artifacts, value)
+      artifacts[value.terminal_summary_ref].digest = string.rep("0", 64)
     end)
     t.raises(function() qa_publication.prepare_final_report(request(), digest_mismatch) end)
   end,
 
   test_malformed_plan_result_and_environment_fail_closed = function()
-    local malformed_plan = runtime(function(artifacts)
-      artifacts[request().test_plan_ref].value.schema = "unknown"
+    local malformed_plan = runtime(function(artifacts, value)
+      artifacts[value.test_plan_ref].value.schema = "unknown"
     end)
     t.raises(function() qa_publication.prepare_final_report(request(), malformed_plan) end)
 
-    local foreign_result = runtime(function(artifacts)
-      artifacts[request().case_results_ref].value.cases[1].case_id = "foreign"
+    local foreign_result = runtime(function(artifacts, value)
+      artifacts[value.case_results_ref].value.cases[1].case_id = "foreign"
     end)
     t.raises(function() qa_publication.prepare_final_report(request(), foreign_result) end)
 
-    local foreign_plan = runtime(function(artifacts)
-      artifacts[request().case_results_ref].value.plan_sha256 = string.rep("7", 64)
+    local missing_browser_gate = runtime(function(artifacts, value)
+      artifacts[value.environment_receipt_ref].value.browser_readiness = nil
     end)
-    t.raises(function() qa_publication.prepare_final_report(request(), foreign_plan) end)
+    t.raises(function() qa_publication.prepare_final_report(request(), missing_browser_gate) end)
 
-    local unsafe_result = runtime(function(artifacts)
-      artifacts[request().case_results_ref].value.cases[1].classification = "raw-response-body"
-      artifacts[request().case_results_ref].value.cases[1].evidence_ref = "inline secret"
+    local foreign_environment = runtime(function(artifacts, value)
+      artifacts[value.environment_receipt_ref].value.repository.commit_sha = string.rep("2", 40)
     end)
-    t.raises(function() qa_publication.prepare_final_report(request(), unsafe_result) end)
-
-    local environment = runtime(function(artifacts)
-      artifacts[request().environment_receipt_ref].value.status = "blocked"
-    end)
-    t.raises(function() qa_publication.prepare_final_report(request(), environment) end)
+    t.raises(function() qa_publication.prepare_final_report(request(), foreign_environment) end)
   end,
 
   test_final_report_reconciles_terminal_cases_and_verified_cleanup = function()
@@ -138,6 +277,7 @@ return {
 
     t.eq(prepared.status, "pending")
     t.eq(prepared.report.schema, "test-publication.qa-aggregate-report.v1")
+    t.eq(prepared.report.finalization_kind, "full")
     t.eq(prepared.report.status, "failed")
     t.eq(prepared.report.counts.planned, 2)
     t.eq(prepared.report.counts.executed, 2)
@@ -145,6 +285,26 @@ return {
     t.eq(prepared.report.counts.failed, 1)
     t.eq(prepared.report.cleanup_receipt_ref, request().cleanup_receipt_ref)
     t.eq(prepared.comment_request.handoff.stage, "aggregate-report")
+  end,
+
+  test_terminal_summary_variant_writes_and_publishes_real_aggregate_report = function()
+    local value = terminal_request()
+    local blocked_counts = { planned = 0, executed = 0, passed = 0, failed = 0, skipped = 0, error = 0, blocked = 1 }
+    local ports = runtime(function(artifacts)
+      artifacts[value.terminal_summary_ref].value = terminal_summary(value, "blocked", blocked_counts)
+      artifacts[value.terminal_summary_ref].value.structured_plan_ref = value.artifact_root .. "/partial-plan.json"
+      artifacts[value.environment_receipt_ref].value = environment_receipt(value, "blocked")
+    end, value)
+    local prepared = qa_publication.prepare_final_report(value, ports)
+
+    t.eq(prepared.status, "pending")
+    t.eq(prepared.report.finalization_kind, "terminal-summary")
+    t.eq(prepared.report.status, "blocked")
+    t.eq(prepared.report.counts.blocked, 1)
+    t.eq(prepared.report.artifact_links.test_plan, nil)
+    t.is_true(prepared.report.artifact_links.terminal_summary ~= nil)
+    t.eq(prepared.comment_request.handoff.stage, "aggregate-report")
+    t.eq(ports.report_writes(), 1)
   end,
 
   test_final_report_replay_reuses_existing_report_without_second_write = function()
@@ -182,8 +342,8 @@ return {
   end,
 
   test_final_report_rejects_planned_case_without_terminal_disposition = function()
-    local ports = runtime(function(artifacts)
-      table.remove(artifacts[request().case_results_ref].value.cases, 2)
+    local ports = runtime(function(artifacts, value)
+      table.remove(artifacts[value.case_results_ref].value.cases, 2)
     end)
     t.raises(function() qa_publication.prepare_final_report(request(), ports) end)
   end,
@@ -200,7 +360,7 @@ return {
           { case_id = "health", status = "summary-only" },
         },
       } }
-    end)
+    end, value)
     local prepared = qa_publication.prepare_final_report(value, ports)
     t.eq(prepared.report.defect_issue_links[1], "https://github.com/owner/repo/issues/501")
   end,
@@ -214,7 +374,7 @@ return {
         digest = value.defect_publication_receipt_sha256,
         value = { schema = "unknown", cases = {} },
       }
-    end)
+    end, value)
     t.raises(function() qa_publication.prepare_final_report(value, malformed) end)
 
     local write_failure = runtime()
@@ -223,9 +383,60 @@ return {
   end,
 
   test_final_report_rejects_unverified_cleanup = function()
-    local ports = runtime(function(artifacts)
-      artifacts[request().cleanup_receipt_ref].value.status = "blocked"
+    local ports = runtime(function(artifacts, value)
+      artifacts[value.cleanup_receipt_ref].value.status = "incomplete"
+      artifacts[value.cleanup_receipt_ref].value.attempted_resources[1].status = "remaining"
+      artifacts[value.cleanup_receipt_ref].value.verified_removals = {}
+      artifacts[value.cleanup_receipt_ref].value.remaining_resources = {
+        { resource_id = "workspace", resource_kind = "workspace", cleanup_ref = { kind = "runtime-cleanup", ref = "remaining-workspace" } },
+      }
     end)
     t.raises(function() qa_publication.prepare_final_report(request(), ports) end)
+  end,
+
+  test_finalize_request_and_terminal_artifacts_reject_mutation_matrix = function()
+    local request_mutations = {
+      function(value) value.browser_readiness_ref = "foreign" end,
+      function(value) value.browser_readiness_sha256 = nil end,
+      function(value) value.test_plan_ref = ".testing/runs/foreign/test-plan.json" end,
+      function(value) value.case_results_ref = nil end,
+      function(value) value.browser_readiness_ref = nil value.browser_readiness_sha256 = nil end,
+      function(value)
+        value.defect_publication_receipt_ref = value.artifact_root .. "/defect-receipt.json"
+      end,
+    }
+    for _, mutate in ipairs(request_mutations) do
+      local value = request()
+      local ports = runtime(nil, value)
+      mutate(value)
+      t.raises(function() qa_publication.prepare_final_report(value, ports) end)
+    end
+
+    local artifact_mutations = {
+      function(artifacts, value) artifacts[value.terminal_summary_ref].value.counts.failed = -1 end,
+      function(artifacts, value) artifacts[value.terminal_summary_ref].value.run_id = "foreign" end,
+      function(artifacts, value) artifacts[value.terminal_summary_ref].value.structured_plan_ref = "foreign" end,
+      function(artifacts, value) artifacts[value.terminal_summary_ref].value.browser_readiness_sha256 = nil end,
+      function(artifacts, value) artifacts[value.terminal_summary_ref].value.case_results_ref = value.artifact_root .. "/other.json" end,
+      function(artifacts, value) artifacts[value.terminal_summary_ref].value.interruption = "stopped" end,
+      function(artifacts, value) artifacts[value.environment_receipt_ref].value.schema = "foreign" end,
+      function(artifacts, value) artifacts[value.environment_receipt_ref].value.status = "blocked" end,
+      function(artifacts, value) artifacts[value.browser_readiness_ref].value.source_ref.ref = "foreign" end,
+      function(artifacts, value) artifacts[value.test_plan_ref].value.cases[2].case_id = "health" end,
+      function(artifacts, value) artifacts[value.case_results_ref].value.plan_sha256 = string.rep("0", 64) end,
+      function(artifacts, value) artifacts[value.case_results_ref].value.cases[1].evidence_ref = "foreign" end,
+      function(artifacts, value) artifacts[value.terminal_summary_ref].value.counts.failed = 0 end,
+    }
+    for _, mutate in ipairs(artifact_mutations) do
+      local ports = runtime(mutate)
+      t.raises(function() qa_publication.prepare_final_report(request(), ports) end)
+    end
+
+    local terminal = terminal_request()
+    local terminal_ports = runtime(function(artifacts, value)
+      artifacts[value.environment_receipt_ref].value = environment_receipt(value, "blocked")
+      artifacts[value.environment_receipt_ref].value.cleanup_receipt_ref = nil
+    end, terminal)
+    t.raises(function() qa_publication.prepare_final_report(terminal, terminal_ports) end)
   end,
 }

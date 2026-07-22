@@ -29,6 +29,49 @@ local function request()
   }
 end
 
+local function preparation_request()
+  local value = request()
+  value.publication.dedup_key = value.dedup_key
+  value.publication.publication_dry_run = true
+  return {
+    schema = "test-publication.defect-preparation.request.v1",
+    publication = value.publication,
+    repository = value.repository,
+    run_id = "run-99",
+    plan_ref = value.publication.test_plan_path,
+    plan_sha256 = value.plan_sha256,
+    case_results_ref = value.case_results_ref,
+    case_results_sha256 = value.case_results_sha256,
+    issue_drafts_ref = value.issue_drafts_ref,
+    ledger_ref = value.ledger_ref,
+    receipt_ref = value.receipt_ref,
+    trace_id = value.trace_id,
+    dedup_key = value.dedup_key,
+  }
+end
+
+local function structured_plan(value)
+  return {
+    schema = "testing-structured-plan.v2",
+    execution_mode = "structured-api-cli",
+    repository = { url = "https://github.com/owner/repo.git", commit_sha = commit_sha },
+    environment_receipt_sha256 = string.rep("d", 64),
+    browser_readiness_sha256 = string.rep("b", 64),
+    case_catalog_sha256 = string.rep("e", 64),
+    module_plan_sha256 = string.rep("f", 64),
+    cases = {
+      { case_id = "version", kind = "cli", argv = { "fixture", "--version" }, timeout_seconds = 10,
+        assertions = { { type = "exit-code", expected = 0 } } },
+      { case_id = "health", kind = "http", timeout_seconds = 10,
+        request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+        assertions = { { type = "status-code", expected = 200 } } },
+    },
+    residual_risk_case_ids = {},
+    trace_id = value.trace_id,
+    dedup_key = value.dedup_key,
+  }
+end
+
 local function runtime(options)
   options = options or {}
   local state
@@ -37,6 +80,7 @@ local function runtime(options)
   local artifacts_enabled = true
   local value = request()
   local artifacts = {
+    [value.publication.test_plan_path] = { digest = plan_sha, value = structured_plan(value) },
     [value.case_results_ref] = { digest = results_sha, value = {
       schema = "testing-structured-case-results.v1", plan_sha256 = plan_sha,
       cases = {
@@ -69,6 +113,7 @@ local function runtime(options)
       if options.write_failure then return false end
       write_count = write_count + 1
       writes[path] = artifact
+      artifacts[path] = { digest = drafts_sha, value = artifact }
       return true
     end,
     state = function() return state end,
@@ -79,6 +124,80 @@ local function runtime(options)
 end
 
 return {
+  test_defect_preparation_precise_fail_closed_matrix = function()
+    do
+      local value = preparation_request()
+      value.schema = "other"
+      t.raises(function() defect_publication.prepare_defects(value, runtime()) end)
+    end
+    do
+      local ports = runtime({ mutate = function(artifacts)
+        artifacts[request().case_results_ref].value.cases[1].assertions[1].passed = "false"
+      end })
+      t.raises(function() defect_publication.prepare_defects(preparation_request(), ports) end)
+    end
+    do
+      local value = preparation_request()
+      value.run_id = ""
+      t.raises(function() defect_publication.prepare_defects(value, runtime()) end)
+    end
+    do
+      local value = preparation_request()
+      value.publication.source_ref.ref = "foreign"
+      t.raises(function() defect_publication.prepare_defects(value, runtime()) end)
+    end
+    do
+      local ports = runtime({ mutate = function(artifacts)
+        artifacts[request().case_results_ref].value.cases[2].kind = "cli"
+      end })
+      t.raises(function() defect_publication.prepare_defects(preparation_request(), ports) end)
+    end
+    do
+      local ports = runtime({ mutate = function(artifacts)
+        artifacts[request().publication.test_plan_path].value.trace_id = "foreign"
+      end })
+      t.raises(function() defect_publication.prepare_defects(preparation_request(), ports) end)
+    end
+    do
+      local ports = runtime({
+        write_failure = true,
+        mutate = function(artifacts) artifacts[request().issue_drafts_ref] = nil end,
+      })
+      t.raises(function() defect_publication.prepare_defects(preparation_request(), ports) end)
+    end
+  end,
+
+  test_publication_owned_preparation_materializes_bounded_drafts_and_replays = function()
+    local ports = runtime({ mutate = function(artifacts)
+      artifacts[request().issue_drafts_ref] = nil
+    end })
+    local prepared = defect_publication.prepare_defects(preparation_request(), ports)
+
+    t.eq(prepared.replayed, false)
+    t.eq(prepared.defect_request.schema, "test-publication.defect-publication.request.v1")
+    t.eq(prepared.defect_request.issue_drafts_sha256, drafts_sha)
+    t.eq(ports.writes[request().issue_drafts_ref].schema, "test-publication.defect-issue-drafts.v1")
+    t.eq(#ports.writes[request().issue_drafts_ref].cases, 1)
+    t.eq(ports.writes[request().issue_drafts_ref].cases[1].case_id, "version")
+    t.is_true(ports.writes[request().issue_drafts_ref].cases[1].actual_summary:find("exit-code", 1, true) ~= nil)
+    t.eq(ports.write_count(), 1)
+
+    local replay = defect_publication.prepare_defects(preparation_request(), ports)
+    t.eq(replay.replayed, true)
+    t.eq(replay.issue_drafts_sha256, drafts_sha)
+    t.eq(ports.write_count(), 1)
+
+    local publication = defect_publication.prepare(prepared.defect_request, ports)
+    t.eq(#publication.issue_requests, 1)
+  end,
+
+  test_defect_preparation_rejects_changed_deterministic_pointer = function()
+    local ports = runtime({ mutate = function(artifacts)
+      artifacts[request().issue_drafts_ref].value.cases[1].title = "foreign draft"
+    end })
+    t.raises(function() defect_publication.prepare_defects(preparation_request(), ports) end)
+  end,
+
   test_product_defect_creates_one_github_intent_and_other_outcomes_stay_summary_only = function()
     local ports = runtime()
     local prepared = defect_publication.prepare(request(), ports)

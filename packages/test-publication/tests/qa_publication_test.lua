@@ -83,10 +83,12 @@ return {
       source_ref = prepared.comment_request.source_ref,
     }, runtime)
 
-    t.eq(receipt.schema, "test-publication.qa-publication-receipt.v1")
+    t.eq(receipt.schema, "test-publication.qa-publication-receipt.v2")
     t.eq(receipt.status, "published")
     t.eq(receipt.comment_id, "501")
     t.eq(receipt.stage, "environment-ready")
+    t.eq(receipt.dedup_key, request().dedup_key)
+    t.eq(receipt.request_dedup_key, prepared.comment_request.dedup_key)
     t.eq(runtime.state().version, 2)
     t.is_true(type(runtime.writes[receipt.receipt_ref]) == "table")
   end,

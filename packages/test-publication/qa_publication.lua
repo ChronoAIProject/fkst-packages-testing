@@ -1,3 +1,7 @@
+local browser_readiness_contract = require("contract.browser_readiness")
+local environment_contract = require("contract.environment_factory")
+local structured_contract = require("contract.structured_execution")
+
 local M = {}
 
 local stages = {
@@ -5,11 +9,12 @@ local stages = {
   ["sandbox-ready"] = 20,
   ["environment-ready"] = 30,
   ["design-round"] = 40,
-  ["design-closure"] = 50,
-  ["execution-batch"] = 60,
-  ["defect-publication"] = 70,
-  cleanup = 80,
-  ["aggregate-report"] = 90,
+  ["browser-readiness"] = 50,
+  ["design-closure"] = 60,
+  ["execution-batch"] = 70,
+  ["defect-publication"] = 80,
+  cleanup = 90,
+  ["aggregate-report"] = 100,
 }
 
 local statuses = {
@@ -36,18 +41,6 @@ local function copy(value)
   local result = {}
   for key, item in pairs(value) do result[key] = copy(item) end
   return result
-end
-
-local function equal(left, right)
-  if type(left) ~= type(right) then return false end
-  if type(left) ~= "table" then return left == right end
-  for key, value in pairs(left) do
-    if not equal(value, right[key]) then return false end
-  end
-  for key, _ in pairs(right) do
-    if left[key] == nil then return false end
-  end
-  return true
 end
 
 local function only_fields(value, allowed, label)
@@ -213,7 +206,7 @@ function M.prepare_checkpoint(request, ports)
   local existing = state.checkpoints[key]
   if existing ~= nil then
     if existing.artifact_ref ~= request.artifact_ref or existing.artifact_sha256 ~= request.artifact_sha256
-      or existing.status ~= request.status or not equal(existing.counts, request.counts) then
+      or existing.status ~= request.status or not structured_contract.equal(existing.counts, request.counts) then
       error("test-publication: qa: immutable checkpoint changed on replay")
     end
     local outbound = existing.receipt and nil or copy(existing.comment_request)
@@ -256,14 +249,16 @@ local finalize_fields = {
   schema = true, repository = true, run_id = true, issue_number = true, artifact_root = true,
   ledger_ref = true, test_plan_ref = true, test_plan_sha256 = true, case_results_ref = true,
   case_results_sha256 = true, environment_receipt_ref = true, environment_receipt_sha256 = true,
+  browser_readiness_ref = true, browser_readiness_sha256 = true,
   cleanup_receipt_ref = true, cleanup_receipt_sha256 = true, aggregate_report_ref = true,
+  terminal_summary_ref = true, terminal_summary_sha256 = true,
   defect_publication_receipt_ref = true, defect_publication_receipt_sha256 = true,
   trace_id = true, dedup_key = true,
 }
 
 local function validate_finalize_request(request)
   only_fields(request, finalize_fields, "finalize request")
-  if request.schema ~= "test-publication.qa-finalize.request.v1" then
+  if request.schema ~= "test-publication.qa-finalize.request.v2" then
     error("test-publication: qa: unknown finalize schema")
   end
   local checkpoint = {
@@ -282,20 +277,49 @@ local function validate_finalize_request(request)
     dedup_key = request.dedup_key,
   }
   M.validate_checkpoint_request(checkpoint)
-  for _, field in ipairs({ "test_plan_ref", "case_results_ref", "environment_receipt_ref", "cleanup_receipt_ref", "aggregate_report_ref" }) do
+  for _, field in ipairs({ "terminal_summary_ref", "environment_receipt_ref", "cleanup_receipt_ref", "aggregate_report_ref" }) do
     if not safe_pointer(request[field]) or request[field]:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/" then
       error("test-publication: qa: unsafe finalize pointer " .. field)
     end
   end
-  for _, field in ipairs({ "test_plan_sha256", "case_results_sha256", "environment_receipt_sha256", "cleanup_receipt_sha256" }) do
+  for _, field in ipairs({ "terminal_summary_sha256", "environment_receipt_sha256", "cleanup_receipt_sha256" }) do
     if not digest(request[field]) then error("test-publication: qa: invalid finalize digest " .. field) end
+  end
+  local has_readiness = request.browser_readiness_ref ~= nil or request.browser_readiness_sha256 ~= nil
+  if has_readiness ~= (request.browser_readiness_ref ~= nil and request.browser_readiness_sha256 ~= nil) then
+    error("test-publication: qa: browser readiness pointer and digest must be paired")
+  end
+  if has_readiness and (not safe_pointer(request.browser_readiness_ref)
+    or request.browser_readiness_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/"
+    or not digest(request.browser_readiness_sha256)) then
+    error("test-publication: qa: malformed browser readiness pointer")
+  end
+  local full = request.test_plan_ref ~= nil or request.test_plan_sha256 ~= nil
+    or request.case_results_ref ~= nil or request.case_results_sha256 ~= nil
+  if full ~= (request.test_plan_ref ~= nil and request.test_plan_sha256 ~= nil
+    and request.case_results_ref ~= nil and request.case_results_sha256 ~= nil) then
+    error("test-publication: qa: full finalization requires bound plan and case results")
+  end
+  if full then
+    for _, field in ipairs({ "test_plan_ref", "case_results_ref" }) do
+      if not safe_pointer(request[field]) or request[field]:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/" then
+        error("test-publication: qa: unsafe finalize pointer " .. field)
+      end
+    end
+    for _, field in ipairs({ "test_plan_sha256", "case_results_sha256" }) do
+      if not digest(request[field]) then error("test-publication: qa: invalid finalize digest " .. field) end
+    end
+  end
+  if full and not has_readiness then
+    error("test-publication: qa: full finalization requires post-design browser readiness")
   end
   local optional_ref = request.defect_publication_receipt_ref
   local optional_sha = request.defect_publication_receipt_sha256
-  if (optional_ref == nil) ~= (optional_sha == nil) or (optional_ref ~= nil and (not safe_pointer(optional_ref) or not digest(optional_sha))) then
+  if (optional_ref == nil) ~= (optional_sha == nil)
+    or (optional_ref ~= nil and (not safe_pointer(optional_ref) or not digest(optional_sha))) then
     error("test-publication: qa: malformed defect publication receipt pointer")
   end
-  return request
+  return request, full
 end
 
 local function load_bound(ports, ref, expected_digest, label)
@@ -317,6 +341,102 @@ local function dense_list(value)
   return count == highest and count <= 100000
 end
 
+local function same_repository(left, right)
+  return type(left) == "table" and type(right) == "table"
+    and left.url == right.url and left.commit_sha == right.commit_sha
+end
+
+local function validate_counts(value)
+  only_fields(value, {
+    planned = true, executed = true, passed = true, failed = true,
+    skipped = true, error = true, blocked = true,
+  }, "terminal summary counts")
+  local counts = {}
+  for _, field in ipairs({ "planned", "executed", "passed", "failed", "skipped", "error", "blocked" }) do
+    local count = value[field]
+    if type(count) ~= "number" or count < 0 or count > 100000 or count ~= math.floor(count) then
+      error("test-publication: qa: invalid terminal summary count")
+    end
+    counts[field] = count
+  end
+  return counts
+end
+
+local function validate_terminal_summary(summary, request, full)
+  only_fields(summary, {
+    schema = true, status = true, repository = true, run_id = true, phase = true,
+    counts = true, environment_receipt_ref = true, cleanup_receipt_ref = true,
+    browser_readiness_ref = true, browser_readiness_sha256 = true,
+    module_plan_ref = true, structured_plan_ref = true, case_results_ref = true,
+    interruption = true, trace_id = true, dedup_key = true,
+  }, "terminal summary")
+  only_fields(summary.repository, { slug = true, url = true, commit_sha = true }, "terminal summary repository")
+  local terminal_statuses = {
+    passed = true, failed = true, blocked = true, degraded = true, error = true,
+    cancelled = true, interrupted = true, ["timed-out"] = true,
+  }
+  if (summary.browser_readiness_ref == nil) ~= (summary.browser_readiness_sha256 == nil)
+    or (summary.browser_readiness_ref ~= nil and (not safe_pointer(summary.browser_readiness_ref)
+      or not digest(summary.browser_readiness_sha256))) then
+    error("test-publication: qa: unsafe terminal browser readiness binding")
+  end
+  if summary.schema ~= "workflow-qa.terminal-summary.v2" or not terminal_statuses[summary.status]
+    or summary.repository.slug ~= request.repository.slug
+    or summary.repository.commit_sha ~= request.repository.commit_sha
+    or not bounded(summary.repository.url, 2048) or summary.repository.url:match("^https://") == nil
+    or summary.run_id ~= request.run_id or not bounded(summary.phase, 180)
+    or summary.environment_receipt_ref ~= request.environment_receipt_ref
+    or summary.cleanup_receipt_ref ~= request.cleanup_receipt_ref
+    or summary.browser_readiness_ref ~= request.browser_readiness_ref
+    or summary.browser_readiness_sha256 ~= request.browser_readiness_sha256
+    or summary.trace_id ~= request.trace_id or summary.dedup_key ~= request.dedup_key then
+    error("test-publication: qa: terminal summary binding is invalid")
+  end
+  for _, field in ipairs({ "module_plan_ref", "structured_plan_ref", "case_results_ref" }) do
+    if summary[field] ~= nil and (not safe_pointer(summary[field])
+      or summary[field]:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/") then
+      error("test-publication: qa: unsafe terminal summary pointer " .. field)
+    end
+  end
+  if full and (summary.structured_plan_ref ~= request.test_plan_ref
+    or summary.case_results_ref ~= request.case_results_ref) then
+    error("test-publication: qa: terminal summary differs from full finalization inputs")
+  end
+  if summary.interruption ~= nil and summary.interruption ~= "cancelled"
+    and summary.interruption ~= "interrupted" and summary.interruption ~= "timed-out" then
+    error("test-publication: qa: invalid terminal interruption")
+  end
+  return validate_counts(summary.counts), summary.repository
+end
+
+local function validate_environment_receipts(environment, cleanup, request, repository, full)
+  local environment_ok = pcall(environment_contract.validate_receipt, environment)
+  local cleanup_ok = pcall(environment_contract.validate_cleanup_receipt, cleanup)
+  if not environment_ok or not cleanup_ok then
+    error("test-publication: qa: environment or cleanup receipt is malformed")
+  end
+  if environment.operation_id ~= request.run_id or not same_repository(environment.repository, repository)
+    or environment.trace_id ~= request.trace_id or environment.dedup_key ~= request.dedup_key
+    or request.environment_receipt_ref:sub(1, #environment.artifact_root + 1) ~= environment.artifact_root .. "/" then
+    error("test-publication: qa: environment receipt does not belong to the run")
+  end
+  if full and environment.status ~= "ready" then
+    error("test-publication: qa: full finalization requires a ready browser-verified environment")
+  end
+  if cleanup.status ~= "complete" or cleanup.operation_id ~= request.run_id
+    or cleanup.artifact_root ~= environment.artifact_root
+    or cleanup.trace_id ~= request.trace_id or cleanup.dedup_key ~= request.dedup_key
+    or request.cleanup_receipt_ref:sub(1, #cleanup.artifact_root + 1) ~= cleanup.artifact_root .. "/" then
+    error("test-publication: qa: cleanup is not verified")
+  end
+  if environment.status ~= "ready" then
+    if environment.cleanup_status ~= "complete" or type(environment.cleanup_receipt_ref) ~= "table"
+      or environment.cleanup_receipt_ref.ref ~= request.cleanup_receipt_ref then
+      error("test-publication: qa: terminal environment receipt is not bound to complete cleanup")
+    end
+  end
+end
+
 local terminal_case_statuses = { passed = true, failed = true, skipped = true, error = true }
 local case_classifications = {
   passed = { passed = true },
@@ -325,17 +445,19 @@ local case_classifications = {
   error = { ["environment-session-issue"] = true, ["harness-tooling-issue"] = true },
 }
 
-local function reconcile(plan, results, request)
-  if plan.schema ~= "testing-structured-plan.v1" or results.schema ~= "testing-structured-case-results.v1"
-    or not dense_list(plan.cases) or not dense_list(results.cases) then
-    error("test-publication: qa: malformed plan or case results")
-  end
-  if results.plan_sha256 ~= request.test_plan_sha256 then
+local function reconcile(plan, results, request, repository)
+  local plan_ok = pcall(structured_contract.validate_plan, plan)
+  local malformed = not plan_ok or results.schema ~= "testing-structured-case-results.v1" or not dense_list(results.cases)
+  if malformed then error("test-publication: qa: malformed plan or case results") end
+  if not same_repository(plan.repository, repository)
+    or plan.environment_receipt_sha256 ~= request.environment_receipt_sha256
+    or plan.browser_readiness_sha256 ~= request.browser_readiness_sha256
+    or plan.trace_id ~= request.trace_id or plan.dedup_key ~= request.dedup_key
+    or results.plan_sha256 ~= request.test_plan_sha256 then
     error("test-publication: qa: case results do not belong to the immutable plan")
   end
   local planned = {}
   for _, case in ipairs(plan.cases) do
-    if not bounded(case.case_id, 180) or planned[case.case_id] then error("test-publication: qa: duplicate planned case") end
     planned[case.case_id] = case.kind
   end
   local counts = { planned = #plan.cases, executed = 0, passed = 0, failed = 0, skipped = 0, error = 0, blocked = 0 }
@@ -413,36 +535,74 @@ local function replayed_final_report(request, ports)
 end
 
 function M.prepare_final_report(request, ports)
-  validate_finalize_request(request)
+  local _, full = validate_finalize_request(request)
   local replay = replayed_final_report(request, ports)
   if replay ~= nil then return replay end
-  local plan = load_bound(ports, request.test_plan_ref, request.test_plan_sha256, "test plan")
-  local results = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+  local terminal_summary = load_bound(ports, request.terminal_summary_ref, request.terminal_summary_sha256, "terminal summary")
   local environment = load_bound(ports, request.environment_receipt_ref, request.environment_receipt_sha256, "environment receipt")
   local cleanup = load_bound(ports, request.cleanup_receipt_ref, request.cleanup_receipt_sha256, "cleanup receipt")
-  if environment.schema ~= "environment-factory.environment-result.v1" or environment.status ~= "ready" then
-    error("test-publication: qa: environment readiness is not verified")
+  local readiness = request.browser_readiness_ref and load_bound(ports, request.browser_readiness_ref,
+    request.browser_readiness_sha256, "browser readiness") or nil
+  local summary_counts, repository = validate_terminal_summary(terminal_summary, request, full)
+  validate_environment_receipts(environment, cleanup, request, repository, full)
+  if readiness ~= nil then
+    local readiness_ok = pcall(browser_readiness_contract.validate_result, readiness)
+    if not readiness_ok or readiness.status ~= "ready"
+      or type(readiness.source_ref) ~= "table" or readiness.source_ref.kind ~= "workflow-qa"
+      or readiness.source_ref.ref ~= request.run_id
+      or type(readiness.correlation) ~= "table"
+      or readiness.correlation.trace_id ~= request.trace_id
+      or readiness.correlation.dedup_key ~= request.dedup_key then
+      error("test-publication: qa: post-design browser readiness does not belong to the run")
+    end
   end
-  if cleanup.schema ~= "environment-factory.result.v1" or cleanup.status ~= "finalized" then
-    error("test-publication: qa: cleanup is not verified")
+  local counts, classifications, evidence_refs = summary_counts, {}, {}
+  local execution_mode
+  if full then
+    local plan = load_bound(ports, request.test_plan_ref, request.test_plan_sha256, "test plan")
+    local results = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+    execution_mode = plan.execution_mode
+    counts, classifications, evidence_refs = reconcile(plan, results, request, repository)
+    if not structured_contract.equal(counts, summary_counts) then
+      error("test-publication: qa: terminal summary counts differ from reconciled results")
+    end
   end
-  local counts, classifications, evidence_refs = reconcile(plan, results, request)
   local links = {
-    test_plan = publish_source(request, ports, request.test_plan_ref, request.test_plan_sha256, "aggregate-source-plan").remote_url,
-    case_results = publish_source(request, ports, request.case_results_ref, request.case_results_sha256, "aggregate-source-results").remote_url,
-    environment = publish_source(request, ports, request.environment_receipt_ref, request.environment_receipt_sha256, "aggregate-source-environment").remote_url,
-    cleanup = publish_source(request, ports, request.cleanup_receipt_ref, request.cleanup_receipt_sha256, "aggregate-source-cleanup").remote_url,
+    terminal_summary = publish_source(request, ports, request.terminal_summary_ref,
+      request.terminal_summary_sha256, "aggregate-source-terminal").remote_url,
+    environment = publish_source(request, ports, request.environment_receipt_ref,
+      request.environment_receipt_sha256, "aggregate-source-environment").remote_url,
+    cleanup = publish_source(request, ports, request.cleanup_receipt_ref,
+      request.cleanup_receipt_sha256, "aggregate-source-cleanup").remote_url,
   }
-  local status = counts.failed > 0 and "failed"
-    or (counts.error > 0 and "blocked")
-    or (counts.skipped > 0 and "degraded")
-    or "passed"
+  if readiness ~= nil then
+    links.browser_readiness = publish_source(request, ports, request.browser_readiness_ref,
+      request.browser_readiness_sha256, "aggregate-source-browser-readiness").remote_url
+  end
+  if full then
+    links.test_plan = publish_source(request, ports, request.test_plan_ref,
+      request.test_plan_sha256, "aggregate-source-plan").remote_url
+    links.case_results = publish_source(request, ports, request.case_results_ref,
+      request.case_results_sha256, "aggregate-source-results").remote_url
+  end
+  local status
+  if full then
+    status = counts.failed > 0 and "failed"
+      or (counts.error > 0 and "blocked")
+      or (counts.skipped > 0 and "degraded")
+      or "passed"
+  else
+    status = ({ passed = "passed", failed = "failed", degraded = "degraded" })[terminal_summary.status]
+      or "blocked"
+  end
   local report = {
     schema = "test-publication.qa-aggregate-report.v1",
     status = status,
     repository = copy(request.repository),
     run_id = request.run_id,
-    tested_modules = { "structured-api-cli" },
+    finalization_kind = full and "full" or "terminal-summary",
+    terminal_status = terminal_summary.status,
+    tested_modules = full and { execution_mode } or {},
     counts = counts,
     classifications = classifications,
     defect_issue_links = defect_links(request, ports),
@@ -450,7 +610,9 @@ function M.prepare_final_report(request, ports)
     artifact_links = links,
     residual_risks = counts.skipped + counts.error + counts.blocked,
     environment_receipt_ref = request.environment_receipt_ref,
+    browser_readiness_ref = request.browser_readiness_ref,
     cleanup_receipt_ref = request.cleanup_receipt_ref,
+    terminal_summary_ref = request.terminal_summary_ref,
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
@@ -472,7 +634,7 @@ end
 function M.acknowledge_comment(written, ports)
   if type(written) ~= "table" or written.schema ~= "github-proxy.comment-written.v1"
     or type(written.handoff) ~= "table" or written.handoff.kind ~= "test-publication.qa-checkpoint"
-    or not bounded(written.comment_id, 180) then
+    or not bounded(written.comment_id, 180) or not bounded(written.request_dedup_key, 512) then
     error("test-publication: qa: malformed comment acknowledgement")
   end
   local handoff = written.handoff
@@ -480,13 +642,14 @@ function M.acknowledge_comment(written, ports)
   if type(state) ~= "table" or state.run_id ~= handoff.run_id then error("test-publication: qa: checkpoint ledger unavailable") end
   local key = checkpoint_key(handoff.stage, handoff.attempt)
   local checkpoint = state.checkpoints[key]
-  if type(checkpoint) ~= "table" or checkpoint.comment_request.dedup_key ~= written.request_dedup_key then
+  if type(checkpoint) ~= "table" or checkpoint.comment_request.dedup_key ~= written.request_dedup_key
+    or handoff.request_dedup_key ~= written.request_dedup_key then
     error("test-publication: qa: comment acknowledgement does not match checkpoint")
   end
   if checkpoint.receipt ~= nil then return copy(checkpoint.receipt) end
   local receipt_ref = state.artifact_root .. "/publication-receipts/" .. handoff.stage .. "-" .. tostring(handoff.attempt) .. ".json"
   local receipt = {
-    schema = "test-publication.qa-publication-receipt.v1",
+    schema = "test-publication.qa-publication-receipt.v2",
     status = "published",
     repository = copy(state.repository),
     run_id = state.run_id,
@@ -498,7 +661,8 @@ function M.acknowledge_comment(written, ports)
     source_commit = state.repository.commit_sha,
     receipt_ref = receipt_ref,
     trace_id = state.trace_id,
-    dedup_key = written.request_dedup_key,
+    dedup_key = state.dedup_key,
+    request_dedup_key = written.request_dedup_key,
   }
   if ports.write_artifact(receipt_ref, receipt) ~= true then error("test-publication: qa: publication receipt write failed") end
   checkpoint.receipt = copy(receipt)
