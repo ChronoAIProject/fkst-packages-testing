@@ -12,11 +12,13 @@ runtime adapter 默认走 `fkst-native`。旧 `agentic-testing` Python CLI 和 h
 
 | Package | 形态 | 作用 | 状态 |
 | --- | --- | --- | --- |
-| `testing-runner` | flat adapter | 通过 FKST-native runtime boundary 运行普通测试任务和 approval-bound 的结构化 API/CLI 计划，并输出标准 testing result payload；legacy `agentic-testing` 请求会被 blocked。 | migrating |
+| `testing-runner` | flat adapter | 通过 FKST-native runtime boundary 运行普通测试任务、approval-bound 结构化 API/CLI 计划和 exact-target agentic browser turn，并输出标准 testing result payload；legacy `agentic-testing` 请求会被 blocked。 | migrating |
 | `browser-readiness` | flat adapter | 检查本地 browser-harness/CDP/base URL readiness，并可透传 bounded execution context。 | migrating |
+| `browser-observation` | flat adapter | 将 bounded browser observation 写成 pointer-only artifact，供 discovery 和 design 使用。 | experimental |
+| `testing-design` | composed analysis | 生成 digest-bound repository、requirements 和 traceability context。 | experimental |
 | `test-artifacts` | flat library package | 定义标准 `.testing` artifact summary contract。 | skeleton |
 | `test-publication` | durable adapter | 将 testing handoff 转换为 pointer-only publication request，把已验证的产品缺陷发布为幂等 development Issue，并通过 host-routed `github-proxy` seam 提供 replay-safe QA checkpoint、immutable GitHub artifact receipt 和对账后的 aggregate report。 | migrating |
-| `testing-pipeline` | composed lifecycle | 组合 module loop、runner、artifact summary 和 publication handoff，用于 graph-level testing flows。 | skeleton |
+| `module-testing-pipeline` | composed lifecycle | 组合 module loop、runner、artifact summary 和 publication handoff，用于 graph-level testing flows。 | skeleton |
 | `testing-discovery` | composed lifecycle | 将本地 app scope 的 bounded observations 转成 FKST-native module starts，不需要手写产品 module catalog。 | experimental |
 | `module-test-loop` | composed lifecycle | 模块级测试生命周期编排，并委托 `testing-runner` 执行 runner path。 | migrating |
 | `platform-test-loop` | composed lifecycle | 平台级多模块测试生命周期编排；初始委托给 `module-test-loop` / `testing-runner`。 | skeleton |
@@ -28,14 +30,18 @@ runtime adapter 默认走 `fkst-native`。旧 `agentic-testing` Python CLI 和 h
 
 Host 仓负责组合这些 packages，并提供自己的应用默认值。本仓不应编码产品模块名、固定 base URL、浏览器角色或环境变量名。
 
-典型 host flow：
+正式的 full-FKST Host flow：
 
-1. 产生 `browser-readiness.check.v1` 请求，包含 host 提供的 sessions、本地 base URL，以及可选的 bounded `request_context`。
-2. 将 `browser-readiness.result.v1` 传给 `module-test-loop.start.v1`。
-3. 由 `module-test-loop` 发出 `testing-runner.module-test-loop.request.v1`。
-4. 由 `testing-runner` 执行；省略 `backend` 时默认解析为唯一可执行 backend `fkst-native`。
+1. 下游 Host 创建产品特定的 `testing-project-profile.v1`，认证单次 approval/preauthorization，并持久化 sanitized validation receipt。
+2. Host 通过 `workflow-qa.qa_run_request` 提交 `workflow-qa.run-request.v2`；产品名、命令、URL 和凭据位置继续属于 Host。
+3. `environment-factory` checkout/build/start，并写 immutable ready environment receipt。
+4. `testing-design` 生成 repository 与 traceability context；随后由 `workflow-qa` 通过 `browser-readiness` 重新验证精确 browser session。
+5. `module-testing-pipeline` 分发 reviewed module，`module-test-loop` 驱动 durable module attempt，`testing-runner` 执行选定的 CLI/HTTP 或 agentic-browser 模式。
+6. `test-artifacts` 生成 pointer-only summary，`test-publication` 写 checkpoints 与已验证的 defect draft/receipt。
+7. `environment-factory` 完成 owner-bound cleanup 并写 cleanup receipt，之后 `test-publication` 才生成 aggregate report。
+8. 最终 `workflow_qa_terminal_request` 交还 Host terminal policy；本仓不硬编码产品 label 或 Issue 状态变更。
 
-产品特定 profile 应放在 downstream host 仓。本仓只提供可复用的 testing/QA building blocks 和中性 contract。
+产品特定 profile 应放在 downstream host 仓。本仓只提供可复用的 testing/QA building blocks 和中性 contract。`examples/generic-host/host_workflow_qa_adapter.lua` 展示了 Host-owned `qa_run_request` 和单次 grant 派生/回传 seam。
 
 对于 sandbox 托管的 QA，`examples/opensandbox-host/` 提供 provider-specific downstream adapter：绑定固定 OpenSandbox image/snapshot、获批 capability 指针、受限资源和网络策略、单一幂等 sandbox receipt、artifact 哈希/发布及 teardown。OpenSandbox 细节仍位于可复用 packages 之外，也不会改变 `environment-factory.v1`。
 
@@ -43,10 +49,10 @@ Environment Factory 的终态结果包含 immutable typed cleanup-receipt 指针
 已验证删除项和仍存在的 owner-bound cleanup handle；跨 run 的 workspace/cleanup 引用会 fail closed，
 未完成 cleanup 验证与 receipt 持久化的 run 不得报告完成。
 
-对于无人手写 module catalog 的覆盖，host 可以提交 `testing-discovery.app-scope.v1`，只包含本地 scope、sessions、安全策略，以及 bounded AI/browser/navigation/accessibility observations。`testing-discovery` 会自动推导 module starts，把 sanitized discovery plan 写到 `.testing/runs/...`，并复用现有 `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication 路径。host 只提供 bootstrap scope 和 safety policy；产品模块目录不属于本 package set。
+对于无人手写 module catalog 的覆盖，host 可以提交 `testing-discovery.app-scope.v1`，只包含本地 scope、sessions、安全策略，以及 bounded AI/browser/navigation/accessibility observations。`testing-discovery` 会自动推导 module starts，把 sanitized discovery plan 写到 `.testing/runs/...`，并复用现有 `browser-readiness` -> `module-testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication 路径。host 只提供 bootstrap scope 和 safety policy；产品模块目录不属于本 package set。
 
-对于 headless API/CLI 计划，host 使用 `contracts/structured-execution.v1.md` 定义的
-`testing-runner.structured-execution.request.v1` pointer-only seam。独立、已认证、单次使用的 approval
+对于 headless API/CLI 计划，host 使用 `contracts/structured-execution.v2.md` 定义的
+`testing-runner.structured-execution.request.v2` pointer-only seam。独立、已认证、单次使用的 approval
 把精确 plan digest 绑定到正向 argv 与 HTTP capability；runner 只有在 point-of-use 验证和原子 replay
 claim 后才执行 direct argv/HTTP effect，并继续复用现有 artifact/publication packages。
 
@@ -80,7 +86,7 @@ Host 仓可以把应用特定选择留在自己仓内，只向本 package set �
 
 -- 2. 将 ready result 转成 generic pipeline start event。
 {
-  schema = "testing-pipeline.module-start.v1",
+  schema = "module-testing-pipeline.module-start.v1",
   module = host_module_name,
   backend = "fkst-native",
   preflight_result = readiness_result,

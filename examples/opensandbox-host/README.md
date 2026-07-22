@@ -16,6 +16,13 @@ runner. The launcher resolves the approved Project Profile and runs Environment 
 services, the target application, and browser/CDP in the same sandbox using local argv and loopback
 contracts.
 
+For agentic browser execution, the host must preserve one exact readiness attempt and CDP target,
+provide the target-bound browser grant, and expose host-only secret refs through the runtime's secret
+stdin capability. Identity and primary-secret values never enter the run config, FKST events, Lua,
+model prompts, argv, environment variables, stdout, stderr, logs, receipts, or published artifacts.
+The host also owns deterministic completion probes for the exact callback, supervised process exit,
+identity CLI result, and authenticated status result. AI finish text is not a completion signal.
+
 Required `.testing/runs/...` files are downloaded with configured byte limits, SHA-256 hashed,
 published durably, and recorded in the host receipt before teardown. Lifecycle ledger entries contain
 only bounded status fields; raw process output stays inside sandbox artifacts. Passed, failed,
@@ -48,5 +55,8 @@ npm run live-smoke --prefix examples/opensandbox-host
 If the endpoint requires authentication, inject `OPEN_SANDBOX_API_KEY` into the host process through
 the approved credential broker. Never put its value in the run configuration, FKST events, receipts,
 or artifacts. The live image/snapshot must
-already contain frozen dependencies, the FKST runner, target runtime, browser tooling, and trusted
-launcher; the adapter does not install mutable packages during execution.
+already contain frozen dependencies, the FKST runner, target runtime, browser tooling, trusted
+launcher, and the exact pinned product CLI version and digest required by the acceptance profile; the
+adapter does not install mutable packages during execution. Missing secret refs, launcher/image,
+existing-account state, MFA/CAPTCHA-free account state, or a matching CLI version is a live-run blocker,
+not a reason to request, fabricate, or persist credentials.

@@ -12,13 +12,16 @@ This repository contains no engine Rust and no host application state.
 
 | Package | Shape | What it does | Status |
 | --- | --- | --- | --- |
-| `testing-runner` | flat adapter | Runs configured jobs plus approval-bound structured API/CLI plans through the FKST-native runtime boundary and emits normalized testing result payloads; legacy `agentic-testing` requests are blocked. | migrating |
+| `testing-runner` | flat adapter | Runs configured jobs, grant-bound fixed API/CLI plans, and exact-target agentic browser turns through separate FKST-native runtime boundaries; legacy `agentic-testing` requests are blocked. | migrating |
 | `browser-readiness` | flat adapter | Checks local browser-harness/CDP/base URL readiness and can carry bounded execution context through the readiness gate. | migrating |
+| `browser-observation` | flat adapter | Captures bounded browser observations as pointer-only artifacts for downstream discovery and design. | experimental |
+| `testing-design` | composed analysis | Produces digest-bound repository, requirements, and traceability context for reviewed test design. | experimental |
 | `test-artifacts` | flat library package | Defines the normalized `.testing` artifact summary contract. | skeleton |
 | `test-publication` | durable adapter | Converts testing handoffs into pointer-only publication requests, publishes verified product defects as deduplicated development Issues, and provides replay-safe QA checkpoints, immutable GitHub artifact receipts, and reconciled aggregate reports through host-routed `github-proxy` seams. | migrating |
-| `testing-pipeline` | composed lifecycle | Composes module loop, runner, artifact summary, and publication handoff for graph-level testing flows. | skeleton |
+| `module-testing-pipeline` | composed lifecycle | Composes module loop, runner, artifact summary, and publication handoff for graph-level testing flows. | skeleton |
 | `testing-discovery` | composed lifecycle | Converts bounded local app-scope observations into FKST-native module starts without a hand-authored product module catalog. | experimental |
-| `environment-factory` | composed lifecycle | Uses an approved project-profile snapshot to prepare an exact disposable loopback environment, hand it to browser readiness and the testing pipeline, and finalize it through an opaque cleanup reference. | experimental |
+| `environment-factory` | composed lifecycle | Uses an approved project-profile snapshot to prepare an exact disposable loopback environment, publishes an immutable ready receipt, and finalizes through an opaque cleanup reference. | experimental |
+| `workflow-qa` | composed lifecycle | Coordinates the formal host-approved QA run from environment receipt through design, browser gate, module execution, artifacts, defects, cleanup, and aggregate publication. | experimental |
 | `module-test-loop` | composed lifecycle | Module-level testing lifecycle orchestration that delegates runner execution to `testing-runner`. | migrating |
 | `platform-test-loop` | composed lifecycle | Platform-level multi-module testing lifecycle orchestration. Initially delegates to `module-test-loop` / `testing-runner`. | skeleton |
 | `online-regression` | flat adapter | Online regression / heartbeat entry point with a first native no-browser heartbeat path. | migrating |
@@ -32,13 +35,16 @@ packages/<name>/
   departments/<department>/main.lua
   tests/*_test.lua
 contracts/
+  agentic-browser-execution.v1.md
   defect-publication.v1.md
   environment-factory.v1.md
   project-profile.v1.md
   qa-publication.v1.md
-  structured-execution.v1.md
+  structured-execution.v2.md
+  testing-design.v1.md
   testing-runner.v1.md
   testing-discovery.v1.md
+  workflow-qa.v2.md
 libraries/
   contract/ workflow/ testkit/
 ```
@@ -47,21 +53,28 @@ libraries/
 
 Host repositories compose these packages and provide their own app-specific defaults. This repository should not encode product modules, fixed base URLs, browser roles, or environment variable names.
 
-A typical host flow is:
+The formal full-FKST host flow is:
 
-1. Produce a `browser-readiness.check.v1` request with host-provided sessions, local base URL, and optional bounded `request_context`.
-2. Feed the `browser-readiness.result.v1` into a `module-test-loop.start.v1` request.
-3. Let `module-test-loop` emit `testing-runner.module-test-loop.request.v1`.
-4. Run it through `testing-runner`; omitted `backend` resolves to `fkst-native`, the only executable backend.
+1. The downstream Host creates a product-specific `testing-project-profile.v1`, authenticates one-use approval/preauthorization artifacts, and persists sanitized validation receipts.
+2. The Host submits `workflow-qa.run-request.v2` on `workflow-qa.qa_run_request`; product names, commands, URLs, and credential locations remain Host-owned.
+3. `environment-factory` checks out, builds, starts, and publishes the immutable ready environment receipt.
+4. `testing-design` produces repository and traceability context; `workflow-qa` then revalidates the exact browser session through `browser-readiness`.
+5. `module-testing-pipeline` dispatches the reviewed modules, `module-test-loop` owns each durable module attempt, and `testing-runner` executes the selected CLI/HTTP or agentic-browser mode.
+6. `test-artifacts` emits pointer-only summaries and `test-publication` records checkpoints and verified defect drafts/receipts.
+7. `environment-factory` performs owner-bound cleanup and writes the cleanup receipt before `test-publication` publishes the aggregate report.
+8. The final `workflow_qa_terminal_request` is handed back to the Host terminal policy; this repository does not hard-code product labels or issue-state transitions.
 
-Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixtures under `examples/generic-host/` show how host-owned native module, browser-driver, and UI-loop profiles can translate into these existing events without adding product facts to this repo.
+Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixtures under `examples/generic-host/` show how host-owned native module, browser-driver, and UI-loop profiles can translate into these existing events without adding product facts to this repo. `examples/generic-host/host_workflow_qa_adapter.lua` additionally shows the Host-owned `qa_run_request` and single-use grant derivation/result seams.
 
-For headless API/CLI plans, hosts publish the pointer-only
-`testing-runner.structured-execution.request.v1` seam documented in
-`contracts/structured-execution.v1.md`. A separate authenticated single-use approval binds the exact
-plan digest to positive argv and HTTP capabilities. The runner performs direct argv/HTTP effects only
-after point-of-use verification and an atomic replay claim, then forwards aggregate pointers through
-the existing artifact and publication packages.
+Reviewed execution plans use `testing-structured-plan.v2` and one closed execution mode. Fixed
+`structured-api-cli` plans route to `testing-runner.structured_execution_request`; a separate
+authenticated single-use grant binds the exact plan digest to positive argv and HTTP capabilities.
+`agentic-browser` plans contain exactly one browser case and route to
+`testing-runner.ai_browser_control_request`; their grant binds one exact readiness attempt and target,
+HTTPS auth origins, one loopback callback, typed actions, secret-ref names, and budgets. Deterministic
+mode executes an AI-authored fixed plan. Agentic mode lets AI choose each typed browser action while
+the runner retains effect and success authority. See `contracts/structured-execution.v2.md` and
+`contracts/agentic-browser-execution.v1.md`.
 
 Durable GitHub-visible QA reporting uses the checkpoint and finalization seams in
 `contracts/qa-publication.v1.md`. `test-publication` maintains a compare-and-swap run ledger,
@@ -92,12 +105,14 @@ lease; the lease is the immediate first target effect, preflights OS availabilit
 trusted deep-copied snapshot used by checkout and direct argv phases. Post-start readiness proves the
 exact loopback listener set belongs to the supervised process group. Authenticated durable state,
 immutable per-status receipts, provisioning/resource budgets, frozen dependency enforcement, reverse
-cleanup, cancellation, and interruption are part of the contract. The package reuses the existing
-`browser-readiness` -> `testing-pipeline` interfaces and redelivers one idempotent handoff payload
-until terminal acknowledgement. Its production adapter is
+cleanup, cancellation, and interruption are part of the contract. Provisioning persists
+`readiness-pending` and emits `browser-readiness.check.v1`; only a correlated authenticated browser
+success can publish the pointer-only ready result. The immutable `environment-factory.receipt.v2`
+binds `{ url, commit_sha }` repository identity and the sanitized browser readiness proof. Environment
+Factory does not start or acknowledge testing. Its production adapter is
 `packages/environment-factory/runtime.lua`, backed by the shell-free Node effect runner at
 `packages/environment-factory/bin/environment-factory-runtime.js`; the hermetic package test drives
-that adapter through real Git, process, readiness, receipt, handoff, and cleanup effects.
+that adapter through real Git, process, readiness, receipt, replay, and cleanup effects.
 
 Terminal Environment Factory results include an immutable typed cleanup-receipt pointer. The receipt
 lists attempted resources, verified removals, and remaining owner-bound cleanup handles; cross-run
@@ -105,11 +120,13 @@ workspace and cleanup references fail closed, and a run cannot report completion
 cleanup publication.
 
 `workflow-qa` is the composed `fkst-qa` entry point. It binds one open labelled request to an
-immutable repository run, preserves bounded user seed cases, orchestrates environment, design,
-structured execution, defect publication, verified cleanup, and the final GitHub-visible aggregate
-receipt without consuming the development intake seam.
+immutable repository run, preserves bounded user seed cases, and orchestrates the ready environment
+receipt, repository design, post-design browser session gate, module pipeline and loop, structured
+planning, Host-derived single-use grants, selected fixed or agentic execution, pointer-only artifacts,
+defect publication, verified cleanup, and the final aggregate receipt without consuming the development
+intake seam.
 
-For autonomous coverage, a host can submit `testing-discovery.app-scope.v1` with local scope, sessions, policy, and bounded AI/browser/navigation/accessibility observations. `testing-discovery` derives module starts automatically, writes a sanitized discovery plan under `.testing/runs/...`, and reuses the existing `browser-readiness` -> `testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication path. Hosts provide only bootstrap scope and safety policy; product-specific module catalogs are not required in this package set.
+For autonomous coverage, a host can submit `testing-discovery.app-scope.v1` with local scope, sessions, policy, and bounded AI/browser/navigation/accessibility observations. `testing-discovery` derives module starts automatically, writes a sanitized discovery plan under `.testing/runs/...`, and reuses the existing `browser-readiness` -> `module-testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication path. Hosts provide only bootstrap scope and safety policy; product-specific module catalogs are not required in this package set.
 
 ### Generic downstream integration example
 
@@ -130,7 +147,7 @@ A host repository can keep its app-specific choices outside this package set and
 
 -- 2. Convert a ready result into a generic pipeline start event.
 {
-  schema = "testing-pipeline.module-start.v1",
+  schema = "module-testing-pipeline.module-start.v1",
   module = host_module_name,
   backend = "fkst-native",
   preflight_result = readiness_result,

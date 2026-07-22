@@ -36,6 +36,9 @@
   },
   "required_artifacts": [
     { "path": ".testing/runs/nyxid/metadata.json", "max_bytes": 1048576 },
+    { "path": ".testing/runs/nyxid/structured-plan.json", "max_bytes": 1048576 },
+    { "path": ".testing/runs/nyxid/case-results.json", "max_bytes": 1048576 },
+    { "path": ".testing/runs/nyxid/browser-agent-execution.json", "max_bytes": 1048576 },
     { "path": ".testing/runs/nyxid/final-receipt.json", "max_bytes": 1048576 }
   ],
   "trace_id": "trace-nyxid-opensandbox",
