@@ -13,7 +13,7 @@ local function module_ai_consensus_start_event()
   return {
     queue = "module_start",
     payload = {
-      schema = "testing-pipeline.module-start.v1",
+      schema = "module-testing-pipeline.module-start.v1",
       module = "module-a",
       backend = "fkst-native",
       dry_run = false,
@@ -70,7 +70,7 @@ local function checkout_settings_dogfood_start_event()
   return {
     queue = "module_start",
     payload = {
-      schema = "testing-pipeline.module-start.v1",
+      schema = "module-testing-pipeline.module-start.v1",
       module = "checkout-settings",
       backend = "fkst-native",
       dry_run = false,

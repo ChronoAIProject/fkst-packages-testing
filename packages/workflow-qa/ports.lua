@@ -1,7 +1,8 @@
 local M = {}
 
 local required = {
-  "load_state", "load_run", "save_state", "write_artifact", "artifact_digest", "materialize_issue_drafts",
+  "load_state", "load_run", "load_run_by_id", "list_pending_runs", "save_state",
+  "load_artifact", "write_artifact", "artifact_digest",
 }
 
 function M.production()

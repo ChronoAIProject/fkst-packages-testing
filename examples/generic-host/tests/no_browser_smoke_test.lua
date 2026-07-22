@@ -44,8 +44,8 @@ local function assert_module(module_profile)
 
   local pipeline_trace = graph.require_quiescent(graph.run(profile.module_start(module_profile, readiness), { max_steps = 12 }))
   graph.require_delivery(pipeline_trace, {
-    queue = "testing-pipeline.module_start",
-    consumer = "testing-pipeline.start_module",
+    queue = "module-testing-pipeline.module_start",
+    consumer = "module-testing-pipeline.start_module",
   })
   graph.require_delivery(pipeline_trace, {
     queue = "module-test-loop.module_loop_request",
@@ -68,7 +68,7 @@ local function assert_module(module_profile)
   t.eq(result.status, "passed")
   t.eq(result.adapter.name, "fkst-native")
   t.eq(result.adapter.mode, "module-no-browser")
-  t.eq(result.dedup_key, module_profile.dedup_key)
+  t.eq(result.dedup_key, module_profile.dedup_key .. "/attempt/1")
   t.eq(result.trace_id, module_profile.trace_id)
   t.eq(result.artifact_root, module_profile.artifact_root)
   t.eq(result.native_summary.schema, "testing-runner.module-no-browser-summary.v1")
@@ -79,7 +79,7 @@ local function assert_module(module_profile)
   t.eq(publication.schema, "test-publication.publication-request.v1")
   t.eq(publication.status, "passed")
   t.eq(publication.severity, "success")
-  t.eq(publication.dedup_key, module_profile.dedup_key)
+  t.eq(publication.dedup_key, module_profile.dedup_key .. "/attempt/1")
   t.eq(publication.artifact_root, module_profile.artifact_root)
   t.eq(publication.metadata_path, module_profile.artifact_root .. "/metadata.json")
 

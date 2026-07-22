@@ -39,6 +39,9 @@ RULE_FIXTURES = {
     "environment-factory-pointer-only-events": RuleFixture(
         "departments/contract_fixture/main.lua", joined("std", "out")
     ),
+    "environment-factory-does-not-own-testing": RuleFixture(
+        "departments/contract_fixture/main.lua", joined("module-testing", "-pipeline")
+    ),
     "browser-observation-no-legacy-runner": RuleFixture(
         "departments/contract_fixture/main.lua", joined("agentic", "_testing")
     ),
@@ -70,7 +73,7 @@ RULE_FIXTURES = {
     "testing-discovery-pointer-only": RuleFixture(
         "departments/contract_fixture/main.lua", joined("raw_", "dom")
     ),
-    "testing-pipeline-pointer-only": RuleFixture(
+    "module-testing-pipeline-pointer-only": RuleFixture(
         "departments/contract_fixture/main.lua", joined("attachment_", "body")
     ),
     "testing-design-pointer-only-events": RuleFixture(

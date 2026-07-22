@@ -543,7 +543,7 @@ function M.module_starts(plan, readiness_result)
   local starts = {}
   for _, module in ipairs(plan.modules or {}) do
     table.insert(starts, {
-      schema = "testing-pipeline.module-start.v1",
+      schema = "module-testing-pipeline.module-start.v1",
       module = module.id,
       backend = "fkst-native",
       dry_run = false,
@@ -787,7 +787,7 @@ function M.saga_conformance_errors()
   if readiness.schema ~= "browser-readiness.check.v1" then add_error(errors, "testing-discovery.saga.readiness-schema", "invalid readiness schema") end
   local starts = M.module_starts(plan_or_err, { schema = "browser-readiness.result.v1", status = "ready", sessions = { { role = "base", status = "ready" } } })
   if #starts ~= 1 then add_error(errors, "testing-discovery.saga.module-count", "expected one module start") end
-  if starts[1] ~= nil and starts[1].schema ~= "testing-pipeline.module-start.v1" then add_error(errors, "testing-discovery.saga.module-schema", "invalid module start schema") end
+  if starts[1] ~= nil and starts[1].schema ~= "module-testing-pipeline.module-start.v1" then add_error(errors, "testing-discovery.saga.module-schema", "invalid module start schema") end
   return errors
 end
 

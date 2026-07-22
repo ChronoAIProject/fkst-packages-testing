@@ -3,7 +3,7 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "browser-readiness.browser_readiness_result" },
-  produces = { "testing-pipeline.module_start" },
+  produces = { "module-testing-pipeline.module_start" },
   fanout = { "browser-readiness.browser_readiness_result" },
   stall_window = "5m",
   retry = false,
@@ -24,7 +24,7 @@ local function act(event)
   local starts = core.module_starts(plan, payload)
   log.info("testing-discovery dept=emit_modules tag=EMIT modules=" .. tostring(#starts))
   for _, start in ipairs(starts) do
-    raise("testing-pipeline.module_start", start)
+    raise("module-testing-pipeline.module_start", start)
   end
 end
 

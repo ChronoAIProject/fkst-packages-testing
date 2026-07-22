@@ -267,9 +267,9 @@ end
 function M.module_start(profile, readiness)
   profile = validate_profile(profile)
   return {
-    queue = "testing-pipeline.module_start",
+    queue = "module-testing-pipeline.module_start",
     payload = {
-      schema = "testing-pipeline.module-start.v1",
+      schema = "module-testing-pipeline.module-start.v1",
       module = profile.module,
       backend = "fkst-native",
       dry_run = false,

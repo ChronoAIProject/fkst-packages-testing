@@ -113,8 +113,8 @@ return {
       consumer = "testing-discovery.emit_modules",
     })
     graph.require_delivery(trace, {
-      queue = "testing-pipeline.module_start",
-      consumer = "testing-pipeline.start_module",
+      queue = "module-testing-pipeline.module_start",
+      consumer = "module-testing-pipeline.start_module",
     })
     graph.require_delivery(trace, {
       queue = "module-test-loop.module_loop_request",
@@ -133,7 +133,7 @@ return {
       consumer = "test-publication.prepare_publication",
     })
 
-    local start = graph.require_raise(trace, "testing-pipeline.module_start").payload
+    local start = graph.require_raise(trace, "module-testing-pipeline.module_start").payload
     t.eq(start.module, "dashboard")
     t.eq(start.module_discovery.observations[1].discovery_source, "browser-visible")
     local result = graph.require_raise(trace, "testing-runner.testing_result").payload
@@ -169,7 +169,7 @@ return {
     core.write_plan(core.plan(app_scope_event({}).payload))
 
     local trace = graph.require_quiescent(graph.run(ready_result_event(), { max_steps = 14 }))
-    local start = graph.require_raise(trace, "testing-pipeline.module_start").payload
+    local start = graph.require_raise(trace, "module-testing-pipeline.module_start").payload
     t.eq(start.module, "app-discovery")
     t.eq(#start.module_discovery.observations, 0)
     local result = graph.require_raise(trace, "testing-runner.testing_result").payload

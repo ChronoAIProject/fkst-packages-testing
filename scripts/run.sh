@@ -567,6 +567,22 @@ run_browser_observation_self_test() {
   fi
 }
 
+run_node_runtime_tests() {
+  local target="${1:-}"
+  if [ -z "$target" ] || [ "$target" = "environment-factory" ]; then
+    node --test "$ROOT/packages/environment-factory/tests/node_runtime_test.js"
+  fi
+  if [ -z "$target" ] || [ "$target" = "testing-design" ]; then
+    node --test "$ROOT/packages/testing-design/tests/node_runtime_test.js"
+  fi
+  if [ -z "$target" ] || [ "$target" = "module-test-loop" ]; then
+    node --test "$ROOT/packages/module-test-loop/tests/node_runtime_test.js"
+  fi
+  if [ -z "$target" ] || [ "$target" = "testing-runner" ]; then
+    node --test "$ROOT/libraries/testing_runtime/tests/browser_control_test.js"
+  fi
+}
+
 package_has_tests() {
   [ -n "$(find "$1/tests" -maxdepth 1 -type f -name '*_test.lua' -print -quit 2>/dev/null)" ]
 }
@@ -643,6 +659,7 @@ cmd_test() {
   TEST_DURABLE="$(mktemp -d "${TMPDIR:-/tmp}/fkst-testing-durable.XXXXXX")"
   trap 'rm -rf "${TEST_RT:-}" "${TEST_DURABLE:-}"' EXIT
   export FKST_RUNTIME_ROOT="$TEST_RT" FKST_DURABLE_ROOT="$TEST_DURABLE"
+  export FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1
   unset FKST_GITHUB_WRITE FKST_SUPERVISOR_PID 2>/dev/null || true
   echo "test hermetic: FKST_RUNTIME_ROOT=$TEST_RT FKST_DURABLE_ROOT=$TEST_DURABLE"
   COVERAGE_ARTIFACTS=()
@@ -653,6 +670,8 @@ cmd_test() {
   echo "=== self-test ==="
   "$BIN" --self-test >/dev/null
   run_browser_observation_self_test "$target"
+  echo "=== Node runtime tests ==="
+  run_node_runtime_tests "$target"
 
   echo "=== package tests (single-root, hermetic) ==="
   while IFS= read -r pkg; do
@@ -720,12 +739,12 @@ cmd_ai_pipeline_smoke() {
   local roots work args t rc=0 source_root
   resolve_testing_bin
 
-  roots="$(composed_roots_for testing-pipeline)"
-  [ -n "$roots" ] || { echo "error: testing-pipeline composed roots are not declared" >&2; return 1; }
-  work="$(composed_test_workspace "testing-pipeline" "$roots")" || return 1
-  rm -f "$work/packages/testing-pipeline/tests/"*_test.lua
-  cp "$ROOT/scripts/ai_pipeline_author_review_smoke_test.lua" "$work/packages/testing-pipeline/tests/ai_pipeline_author_review_smoke_test.lua"
-  args=(--project-root "$work" --package-root "$work/packages/testing-pipeline")
+  roots="$(composed_roots_for module-testing-pipeline)"
+  [ -n "$roots" ] || { echo "error: module-testing-pipeline composed roots are not declared" >&2; return 1; }
+  work="$(composed_test_workspace "module-testing-pipeline" "$roots")" || return 1
+  rm -f "$work/packages/module-testing-pipeline/tests/"*_test.lua
+  cp "$ROOT/scripts/ai_pipeline_author_review_smoke_test.lua" "$work/packages/module-testing-pipeline/tests/ai_pipeline_author_review_smoke_test.lua"
+  args=(--project-root "$work" --package-root "$work/packages/module-testing-pipeline")
   for t in $roots; do
     args+=(--package-root "$work/packages/${t#@platform/}")
   done
@@ -794,14 +813,14 @@ cmd_example() {
   example="$ROOT/examples/$name"
   [ -d "$example" ] || { echo "error: no example named '$name' under examples/" >&2; exit 1; }
   resolve_testing_bin
-  roots="browser-readiness testing-pipeline module-test-loop testing-runner test-artifacts test-publication"
+  roots="environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/consensus @platform/github-proxy"
   work="$(composed_test_workspace "$name" "$roots" "$example")" || return 1
   args=(--project-root "$work" --package-root "$work/packages/$name")
   for t in $roots; do
     args+=(--package-root "$work/packages/${t#@platform/}")
   done
   echo "example $name (closed-world: $roots)"
-  run_engine "$BIN" test "${args[@]}"
+  FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 run_engine "$BIN" test "${args[@]}"
 }
 
 cmd_supervise() {

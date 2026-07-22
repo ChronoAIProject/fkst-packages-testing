@@ -6,7 +6,8 @@ local spec = {
   consumes = { "environment-factory.environment_result" },
   produces = {
     "test-publication.qa_checkpoint_request", "testing-design.analysis_request",
-    "test-publication.qa_finalize_request", "workflow_qa_terminal_request",
+    "test-publication.qa_finalize_request", "environment-factory.environment_finalize",
+    "environment-factory.environment_interrupt", "workflow_qa_terminal_request",
   },
   fanout = { "environment-factory.environment_result" }, stall_window = "10m", retry = false,
 }

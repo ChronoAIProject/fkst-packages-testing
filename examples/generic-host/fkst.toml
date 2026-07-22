@@ -6,7 +6,10 @@ persistence_class = "saga"
 root = "."
 
 [lib_deps]
-libraries = ["workflow", "testkit"]
+libraries = ["contract", "workflow", "testkit", "testing_ai", "testing_runtime"]
 
 [event_deps]
-packages = ["browser-readiness", "testing-pipeline", "module-test-loop", "testing-runner", "test-artifacts", "test-publication"]
+packages = [
+  "environment-factory", "testing-design", "browser-readiness", "module-testing-pipeline",
+  "module-test-loop", "testing-runner", "test-artifacts", "test-publication", "workflow-qa",
+]

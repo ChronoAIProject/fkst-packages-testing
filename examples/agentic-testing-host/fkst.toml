@@ -9,4 +9,4 @@ root = "."
 libraries = ["workflow", "testkit"]
 
 [event_deps]
-packages = ["browser-readiness", "testing-pipeline", "module-test-loop", "testing-runner", "test-artifacts", "test-publication"]
+packages = ["browser-readiness", "module-testing-pipeline", "module-test-loop", "testing-runner", "test-artifacts", "test-publication"]

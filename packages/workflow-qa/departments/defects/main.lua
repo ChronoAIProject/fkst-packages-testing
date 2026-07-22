@@ -4,7 +4,7 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "test-publication.defect_publication_terminal" },
-  produces = { "environment-factory.environment_finalize" },
+  produces = { "environment-factory.environment_finalize", "environment-factory.environment_interrupt" },
   stall_window = "10m", retry = false,
 }
 

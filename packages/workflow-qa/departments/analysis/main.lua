@@ -4,7 +4,10 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "testing-design.analysis_result" },
-  produces = { "test-publication.qa_checkpoint_request", "testing-pipeline.module_start" },
+  produces = {
+    "test-publication.qa_checkpoint_request", "browser-readiness.browser_readiness_check",
+    "environment-factory.environment_finalize", "environment-factory.environment_interrupt",
+  },
   fanout = { "testing-design.analysis_result" }, stall_window = "10m", retry = false,
 }
 

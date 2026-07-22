@@ -159,7 +159,7 @@ return {
     local plan = core.plan(scope())
     local starts = core.module_starts(plan, ready_result())
     t.eq(#starts, 2)
-    t.eq(starts[1].schema, "testing-pipeline.module-start.v1")
+    t.eq(starts[1].schema, "module-testing-pipeline.module-start.v1")
     t.eq(starts[1].backend, "fkst-native")
     t.eq(starts[1].ui_loop.base_url, "http://localhost:8080/app")
     t.eq(starts[1].ui_loop.allowed_origins[1], "http://localhost:8080")

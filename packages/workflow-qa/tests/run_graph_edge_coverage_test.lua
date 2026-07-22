@@ -22,6 +22,12 @@ return {
     graph.assert_covers(trace("environment-factory.environment_start"), {
       "environment-factory.environment_start -> environment-factory.start",
     })
+    graph.assert_covers(trace("test-artifacts.artifact_summary"), {
+      "test-artifacts.artifact_summary -> workflow-qa.artifacts",
+    })
+    graph.assert_covers(trace("test-publication.defect_preparation_request"), {
+      "test-publication.defect_preparation_request -> test-publication.prepare_product_defects",
+    })
     graph.assert_covers(trace("test-publication.defect_publication_request"), {
       "test-publication.defect_publication_request -> test-publication.publish_product_defects",
     })
@@ -43,11 +49,30 @@ return {
     graph.assert_covers(trace("testing-design.analysis_result"), {
       "testing-design.analysis_result -> workflow-qa.analysis",
     })
+    graph.assert_covers(trace("browser-readiness.browser_readiness_check"), {
+      "browser-readiness.browser_readiness_check -> browser-readiness.check_readiness",
+    })
+    graph.assert_covers(trace("browser-readiness.browser_readiness_result"), {
+      "browser-readiness.browser_readiness_result -> workflow-qa.browser_readiness",
+    })
     graph.assert_covers(trace("testing-runner.testing_result"), {
-      "testing-runner.testing_result -> workflow-qa.design",
+      "testing-runner.testing_result -> module-test-loop.result",
+    })
+    graph.assert_covers(trace("module-test-loop.module_loop_terminal"), {
+      "module-test-loop.module_loop_terminal -> module-testing-pipeline.summarize_terminal",
+      "module-test-loop.module_loop_terminal -> workflow-qa.module_terminal",
+    })
+    graph.assert_covers(trace("testing-runner.structured_plan_request"), {
+      "testing-runner.structured_plan_request -> testing-runner.compile_structured_plan",
+    })
+    graph.assert_covers(trace("testing-runner.structured_plan_result"), {
+      "testing-runner.structured_plan_result -> workflow-qa.plan",
     })
     graph.assert_covers(trace("testing-runner.structured_execution_request"), {
       "testing-runner.structured_execution_request -> testing-runner.run_structured_execution",
+    })
+    graph.assert_covers(trace("testing-runner.ai_browser_control_request"), {
+      "testing-runner.ai_browser_control_request -> testing-runner.run_ai_browser_control",
     })
     graph.assert_covers(trace("testing-runner.testing_result"), {
       "testing-runner.testing_result -> workflow-qa.execution",

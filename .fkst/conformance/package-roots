@@ -3,6 +3,6 @@
 
 packages/testing-runner
 packages/browser-readiness
+packages/browser-observation
 packages/test-artifacts
 packages/test-publication
-packages/testing-pipeline

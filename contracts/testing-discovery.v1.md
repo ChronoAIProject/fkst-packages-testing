@@ -48,8 +48,8 @@ The readiness `request_context` remains limited to fields accepted by `browser-r
 
 `testing-discovery.emit_modules` consumes `browser-readiness.browser_readiness_result` only when its source reference points to a discovery plan, reads the plan artifact, and emits one event per discovered module:
 
-- queue: `testing-pipeline.module_start`
-- payload schema: `testing-pipeline.module-start.v1`
+- queue: `module-testing-pipeline.module_start`
+- payload schema: `module-testing-pipeline.module-start.v1`
 - `backend = "fkst-native"`
 - `preflight_result` copied from readiness
 - `ui_loop` with base scope, allowed origins, readiness pointers, and mutation policy

@@ -10,7 +10,7 @@ libraries = ["contract", "workflow", "testkit", "testing_ai"]
 
 [event_deps]
 packages = [
-  "environment-factory", "testing-design", "testing-pipeline", "testing-runner",
+  "environment-factory", "testing-design", "module-testing-pipeline", "testing-runner",
   "test-artifacts", "test-publication", "browser-readiness", "module-test-loop",
   "consensus", "github-proxy",
 ]

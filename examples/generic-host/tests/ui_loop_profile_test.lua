@@ -30,7 +30,7 @@ local function assert_no_legacy_cli(trace)
 end
 
 return {
-  test_native_ui_loop_profile_reaches_dry_run_publication_handoff = function()
+  test_native_ui_loop_profile_blocks_without_host_cdp_runtime_and_reaches_publication = function()
     local module_profile = profile.modules[1]
     local request = profile.readiness_check(module_profile)
     t.eq(request.payload.base_url, "http://localhost:4173/catalog")
@@ -42,8 +42,8 @@ return {
     local trace = graph.require_quiescent(graph.run(profile.module_start(module_profile, readiness), { max_steps = 12 }))
 
     graph.require_delivery(trace, {
-      queue = "testing-pipeline.module_start",
-      consumer = "testing-pipeline.start_module",
+      queue = "module-testing-pipeline.module_start",
+      consumer = "module-testing-pipeline.start_module",
     })
     graph.require_delivery(trace, {
       queue = "module-test-loop.module_loop_request",
@@ -64,9 +64,9 @@ return {
     assert_no_legacy_cli(trace)
 
     local result = graph.require_raise(trace, "testing-runner.testing_result").payload
-    t.eq(result.status, "passed")
+    t.eq(result.status, "blocked")
     t.eq(result.adapter.name, "fkst-native")
-    t.eq(result.adapter.mode, "module-cdp-execution")
+    t.eq(result.adapter.mode, "module-cdp-execution-blocked")
     t.eq(result.artifact_root, module_profile.artifact_root)
     t.eq(result.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
     t.eq(result.native_summary.execution_path, module_profile.artifact_root .. "/cdp-execution.json")
@@ -75,7 +75,7 @@ return {
     t.eq(result.native_summary.publication_dry_run, true)
 
     local summary = graph.require_raise(trace, "test-artifacts.artifact_summary").payload
-    t.eq(summary.status, "passed")
+    t.eq(summary.status, "blocked")
     t.eq(summary.native_summary.stage_report_path, module_profile.artifact_root .. "/stage-report.md")
     t.eq(summary.native_summary.issue_drafts_path, module_profile.artifact_root .. "/issue-drafts.json")
     t.eq(summary.native_summary.publication_dry_run, true)
@@ -94,8 +94,8 @@ return {
 
     local publication = graph.require_raise(trace, "test-publication.publication_request").payload
     t.eq(publication.schema, "test-publication.publication-request.v1")
-    t.eq(publication.status, "passed")
-    t.eq(publication.severity, "success")
+    t.eq(publication.status, "blocked")
+    t.eq(publication.severity, "warning")
     t.eq(publication.artifact_root, module_profile.artifact_root)
     t.eq(publication.stage_report_path, module_profile.artifact_root .. "/stage-report.md")
     t.eq(publication.issue_drafts_path, module_profile.artifact_root .. "/issue-drafts.json")
@@ -115,7 +115,7 @@ return {
   end,
 
   test_native_ui_loop_profile_rejects_legacy_cli_argv_and_product_names = function()
-    local module_profile = profile.modules[1]
+    local module_profile = copy(profile.modules[1])
     t.eq(module_profile.module:find("ornn", 1, true), nil)
     t.eq(module_profile.base_url:find("ornn", 1, true), nil)
 

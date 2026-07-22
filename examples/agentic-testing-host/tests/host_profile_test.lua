@@ -34,8 +34,8 @@ local function assert_module_pipeline(module_profile)
   local readiness = profile.ready_result(module_profile)
   local pipeline_trace = graph.require_quiescent(graph.run(profile.module_start(module_profile, readiness), { max_steps = 12 }))
   graph.require_delivery(pipeline_trace, {
-    queue = "testing-pipeline.module_start",
-    consumer = "testing-pipeline.start_module",
+    queue = "module-testing-pipeline.module_start",
+    consumer = "module-testing-pipeline.start_module",
   })
   graph.require_delivery(pipeline_trace, {
     queue = "module-test-loop.module_loop_request",
@@ -56,15 +56,15 @@ local function assert_module_pipeline(module_profile)
 
   local result = graph.require_raise(pipeline_trace, "testing-runner.testing_result").payload
   t.eq(result.schema, "testing-runner.result.v1")
-  t.eq(result.status, "passed")
+  t.eq(result.status, "blocked")
   t.eq(result.adapter.name, "fkst-native")
-  t.eq(result.adapter.mode, "module-cdp-execution")
+  t.eq(result.adapter.mode, "module-cdp-execution-blocked")
   t.eq(result.artifact_root, ".testing/runs/sample-project-project_public_navigation")
   t.eq(result.trace_id, "trace-sample-project-project_public_navigation")
-  t.eq(result.dedup_key, "sample-project-project_public_navigation")
+  t.eq(result.dedup_key, "sample-project-project_public_navigation/attempt/1")
   t.eq(result.native_summary.schema, "testing-runner.module-cdp-execution-summary.v1")
   t.eq(result.native_summary.module, "project_public_navigation")
-  t.eq(result.native_summary.status, "passed")
+  t.eq(result.native_summary.status, "blocked")
   t.eq(result.native_summary.execution_path, ".testing/runs/sample-project-project_public_navigation/cdp-execution.json")
   t.eq(result.native_summary.evidence_bundle_path, ".testing/runs/sample-project-project_public_navigation/evidence-bundle.json")
   t.eq(result.native_summary.stage_report_path, ".testing/runs/sample-project-project_public_navigation/stage-report.md")
@@ -73,8 +73,8 @@ local function assert_module_pipeline(module_profile)
 
   local publication = graph.require_raise(pipeline_trace, "test-publication.publication_request").payload
   t.eq(publication.schema, "test-publication.publication-request.v1")
-  t.eq(publication.status, "passed")
-  t.eq(publication.severity, "success")
+  t.eq(publication.status, "blocked")
+  t.eq(publication.severity, "warning")
   t.eq(publication.dedup_key, result.dedup_key)
   t.eq(publication.artifact_root, result.artifact_root)
   t.eq(publication.stage_report_path, result.native_summary.stage_report_path)
@@ -92,8 +92,8 @@ return {
     assert_readiness_request(module_profile)
 
     local start = profile.module_start(module_profile, profile.ready_result(module_profile))
-    t.eq(start.queue, "testing-pipeline.module_start")
-    t.eq(start.payload.schema, "testing-pipeline.module-start.v1")
+    t.eq(start.queue, "module-testing-pipeline.module_start")
+    t.eq(start.payload.schema, "module-testing-pipeline.module-start.v1")
     t.eq(start.payload.module, "project_public_navigation")
     t.eq(start.payload.backend, "fkst-native")
     t.eq(start.payload.e2e_driver, nil)
@@ -105,9 +105,9 @@ return {
     t.eq(start.payload.cdp_execution.schema, "testing-runner.module-cdp-execution.v1")
   end,
 
-  test_agentic_testing_host_profile_reaches_publication_handoff_without_legacy_runner = function()
+  test_agentic_testing_host_blocks_without_cdp_runtime_and_reaches_publication = function()
     local result = assert_module_pipeline(profile.modules()[1])
-    t.eq(result.status, "passed")
+    t.eq(result.status, "blocked")
   end,
 
   test_agentic_testing_host_builds_platform_aggregate_payload = function()
