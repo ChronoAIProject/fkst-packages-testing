@@ -22,6 +22,15 @@ local statuses = {
   degraded = true, skipped = true, error = true, completed = true,
 }
 
+local channels = {
+  ["github-comment-v1"] = true,
+  ["filesystem-dry-run-v1"] = true,
+}
+
+local function request_channel(request)
+  return request.channel or "github-comment-v1"
+end
+
 local function bounded(value, maximum)
   return type(value) == "string" and value ~= "" and #value <= maximum
     and value:find("[%z\1-\31]") == nil
@@ -33,7 +42,13 @@ end
 
 local function safe_pointer(value)
   return bounded(value, 4096) and value:sub(1, 14) == ".testing/runs/"
-    and value:find("..", 1, true) == nil
+    and value:find("..", 1, true) == nil and value:find("/./", 1, true) == nil
+    and value:sub(-2) ~= "/." and value:find("//", 1, true) == nil
+    and value:find("\\", 1, true) == nil
+end
+
+local function run_root(run_id)
+  return ".testing/runs/" .. run_id
 end
 
 local function copy(value)
@@ -54,6 +69,7 @@ local request_fields = {
   schema = true, repository = true, run_id = true, issue_number = true, stage = true,
   attempt = true, status = true, artifact_root = true, artifact_ref = true,
   artifact_sha256 = true, ledger_ref = true, trace_id = true, dedup_key = true, counts = true,
+  channel = true,
 }
 
 function M.validate_checkpoint_request(request)
@@ -67,7 +83,10 @@ function M.validate_checkpoint_request(request)
     or request.repository.commit_sha:match("^[0-9a-f]+$") == nil then
     error("test-publication: qa: immutable repository identity is required")
   end
-  if not bounded(request.run_id, 180) or type(request.issue_number) ~= "number"
+  if not bounded(request.run_id, 180) or request.run_id:match("^[%w_.%-]+$") == nil
+    or request.run_id == "." or request.run_id:find("..", 1, true) ~= nil
+    or not channels[request_channel(request)]
+    or type(request.issue_number) ~= "number"
     or request.issue_number < 1 or request.issue_number ~= math.floor(request.issue_number)
     or stages[request.stage] == nil or not statuses[request.status]
     or type(request.attempt) ~= "number" or request.attempt < 1 or request.attempt > 1000
@@ -77,7 +96,8 @@ function M.validate_checkpoint_request(request)
   for _, field in ipairs({ "artifact_root", "artifact_ref", "ledger_ref" }) do
     if not safe_pointer(request[field]) then error("test-publication: qa: unsafe pointer " .. field) end
   end
-  if request.artifact_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/"
+  if request.artifact_root ~= run_root(request.run_id)
+    or request.artifact_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/"
     or request.ledger_ref ~= request.artifact_root .. "/run-ledger.json"
     or not digest(request.artifact_sha256) or not bounded(request.trace_id, 180)
     or not bounded(request.dedup_key, 180) then
@@ -105,6 +125,7 @@ local function same_identity(state, request)
     and state.artifact_root == request.artifact_root
     and state.trace_id == request.trace_id
     and state.dedup_key == request.dedup_key
+    and (state.channel or "github-comment-v1") == request_channel(request)
 end
 
 local function initial_state(request)
@@ -118,6 +139,7 @@ local function initial_state(request)
     ledger_ref = request.ledger_ref,
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
+    channel = request_channel(request),
     latest_stage_rank = 0,
     checkpoints = {},
   }
@@ -127,13 +149,44 @@ local function checkpoint_key(stage, attempt)
   return stage .. "/" .. tostring(attempt)
 end
 
-local function validate_publication(publication, request)
-  if type(publication) ~= "table" or publication.status ~= "published"
-    or not bounded(publication.remote_url, 2048) or publication.remote_url:match("^https://github%.com/") == nil
-    or publication.digest ~= request.artifact_sha256
+local function validate_publication(publication, request, ports)
+  if type(publication) ~= "table" or publication.digest ~= request.artifact_sha256
     or publication.source_commit ~= request.repository.commit_sha
-    or not safe_pointer(publication.receipt_ref) then
+    or not safe_pointer(publication.receipt_ref)
+    or publication.receipt_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/" then
     error("test-publication: qa: immutable artifact publication failed")
+  end
+  if request_channel(request) == "github-comment-v1" then
+    if publication.status ~= "published" or not bounded(publication.remote_url, 2048)
+      or publication.remote_url:match("^https://github%.com/") == nil then
+      error("test-publication: qa: immutable artifact publication failed")
+    end
+  else
+    if publication.status ~= "materialized" or publication.artifact_ref ~= request.artifact_ref
+      or publication.remote_url ~= nil or not digest(publication.receipt_sha256) then
+      error("test-publication: qa: immutable filesystem materialization failed")
+    end
+    local persisted = ports.load_artifact(publication.receipt_ref)
+    if type(persisted) ~= "table" or persisted.digest ~= publication.receipt_sha256
+      or type(persisted.value) ~= "table" then
+      error("test-publication: qa: materialization receipt digest mismatch")
+    end
+    local receipt = persisted.value
+    only_fields(receipt, {
+      schema = true, status = true, channel = true, run_id = true, stage = true, attempt = true,
+      artifact_ref = true, digest = true, source_commit = true, receipt_ref = true,
+      trace_id = true, dedup_key = true,
+    }, "materialization receipt")
+    if receipt.schema ~= "test-publication.qa-materialization-receipt.v1"
+      or receipt.status ~= "materialized" or receipt.channel ~= "filesystem-dry-run-v1"
+      or receipt.run_id ~= request.run_id or receipt.stage ~= request.stage
+      or receipt.attempt ~= request.attempt or receipt.artifact_ref ~= request.artifact_ref
+      or receipt.digest ~= request.artifact_sha256
+      or receipt.source_commit ~= request.repository.commit_sha
+      or receipt.receipt_ref ~= publication.receipt_ref
+      or receipt.trace_id ~= request.trace_id or receipt.dedup_key ~= request.dedup_key then
+      error("test-publication: qa: materialization receipt binding differs")
+    end
   end
   return publication
 end
@@ -190,6 +243,50 @@ local function comment_request(request, publication)
   }
 end
 
+local function checkpoint_dedup_key(request, publication)
+  return table.concat({
+    request.dedup_key, "checkpoint", request.stage, tostring(request.attempt), publication.digest,
+  }, "/")
+end
+
+local function publication_request(request)
+  local value = {
+    repository = copy(request.repository),
+    artifact_ref = request.artifact_ref,
+    digest = request.artifact_sha256,
+    run_id = request.run_id,
+    stage = request.stage,
+    attempt = request.attempt,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }
+  if request.channel ~= nil then value.channel = request_channel(request) end
+  return value
+end
+
+local function filesystem_receipt(request, publication, request_dedup_key)
+  return {
+    schema = "test-publication.qa-publication-receipt.v2",
+    status = "published",
+    channel = "filesystem-dry-run-v1",
+    github_publication_occurred = false,
+    repository = copy(request.repository),
+    run_id = request.run_id,
+    stage = request.stage,
+    attempt = request.attempt,
+    artifact_ref = request.artifact_ref,
+    artifact_sha256 = request.artifact_sha256,
+    materialization_receipt_ref = publication.receipt_ref,
+    materialization_receipt_sha256 = publication.receipt_sha256,
+    source_commit = request.repository.commit_sha,
+    receipt_ref = request.artifact_root .. "/publication-receipts/" .. request.stage .. "-"
+      .. tostring(request.attempt) .. ".json",
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+    request_dedup_key = request_dedup_key,
+  }
+end
+
 local function save(ports, state, expected_version)
   state.version = expected_version + 1
   if ports.save_ledger(state.ledger_ref, copy(state), expected_version) ~= true then
@@ -209,27 +306,29 @@ function M.prepare_checkpoint(request, ports)
       or existing.status ~= request.status or not structured_contract.equal(existing.counts, request.counts) then
       error("test-publication: qa: immutable checkpoint changed on replay")
     end
-    local outbound = existing.receipt and nil or copy(existing.comment_request)
-    if existing.receipt then outbound = nil end
+    local outbound = copy(existing.comment_request)
+    if existing.receipt ~= nil then outbound = nil end
+    local receipt = request_channel(request) == "filesystem-dry-run-v1" and copy(existing.receipt) or nil
     return {
       status = existing.receipt and "published" or "pending",
       replayed = true,
       comment_request = outbound,
+      receipt = receipt,
     }
   end
   local rank = stages[request.stage]
   if rank < state.latest_stage_rank then error("test-publication: qa: stale checkpoint transition") end
-  local publication = validate_publication(ports.publish_artifact({
-    repository = copy(request.repository),
-    artifact_ref = request.artifact_ref,
-    digest = request.artifact_sha256,
-    run_id = request.run_id,
-    stage = request.stage,
-    attempt = request.attempt,
-    trace_id = request.trace_id,
-    dedup_key = request.dedup_key,
-  }), request)
-  local outbound = comment_request(request, publication)
+  local publication = validate_publication(ports.publish_artifact(publication_request(request)), request, ports)
+  local outbound, receipt
+  local request_dedup_key = checkpoint_dedup_key(request, publication)
+  if request_channel(request) == "github-comment-v1" then
+    outbound = comment_request(request, publication)
+  else
+    receipt = filesystem_receipt(request, publication, request_dedup_key)
+    if ports.write_artifact(receipt.receipt_ref, receipt) ~= true then
+      error("test-publication: qa: publication receipt write failed")
+    end
+  end
   state.checkpoints[key] = {
     stage = request.stage,
     attempt = request.attempt,
@@ -239,10 +338,17 @@ function M.prepare_checkpoint(request, ports)
     counts = copy(request.counts),
     publication = copy(publication),
     comment_request = copy(outbound),
+    request_dedup_key = request_dedup_key,
+    receipt = copy(receipt),
   }
   if rank > state.latest_stage_rank then state.latest_stage_rank = rank end
   save(ports, state, state.version)
-  return { status = "pending", replayed = false, comment_request = outbound }
+  return {
+    status = receipt and "published" or "pending",
+    replayed = false,
+    comment_request = outbound,
+    receipt = receipt,
+  }
 end
 
 local finalize_fields = {
@@ -253,7 +359,7 @@ local finalize_fields = {
   cleanup_receipt_ref = true, cleanup_receipt_sha256 = true, aggregate_report_ref = true,
   terminal_summary_ref = true, terminal_summary_sha256 = true,
   defect_publication_receipt_ref = true, defect_publication_receipt_sha256 = true,
-  trace_id = true, dedup_key = true,
+  trace_id = true, dedup_key = true, channel = true,
 }
 
 local function validate_finalize_request(request)
@@ -275,6 +381,7 @@ local function validate_finalize_request(request)
     ledger_ref = request.ledger_ref,
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
+    channel = request.channel,
   }
   M.validate_checkpoint_request(checkpoint)
   for _, field in ipairs({ "terminal_summary_ref", "environment_receipt_ref", "cleanup_receipt_ref", "aggregate_report_ref" }) do
@@ -482,11 +589,29 @@ local function reconcile(plan, results, request, repository)
 end
 
 local function publish_source(request, ports, ref, source_digest, stage)
-  return validate_publication(ports.publish_artifact({
+  local value = {
     repository = copy(request.repository), artifact_ref = ref, digest = source_digest,
     run_id = request.run_id, stage = stage, attempt = 1,
     trace_id = request.trace_id, dedup_key = request.dedup_key,
-  }), { artifact_sha256 = source_digest, repository = request.repository })
+  }
+  if request.channel ~= nil then value.channel = request_channel(request) end
+  return validate_publication(ports.publish_artifact(value), {
+    artifact_sha256 = source_digest,
+    artifact_ref = ref,
+    artifact_root = request.artifact_root,
+    repository = request.repository,
+    run_id = request.run_id,
+    stage = stage,
+    attempt = 1,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+    channel = request.channel,
+  }, ports)
+end
+
+local function publication_location(publication, channel)
+  if channel == "filesystem-dry-run-v1" then return publication.artifact_ref end
+  return publication.remote_url
 end
 
 local function defect_links(request, ports)
@@ -524,12 +649,14 @@ local function replayed_final_report(request, ports)
     or report.trace_id ~= request.trace_id or report.dedup_key ~= request.dedup_key then
     error("test-publication: qa: aggregate report replay binding is invalid")
   end
-  local outbound = checkpoint.receipt and nil or copy(checkpoint.comment_request)
-  if checkpoint.receipt then outbound = nil end
+  local outbound = copy(checkpoint.comment_request)
+  if checkpoint.receipt ~= nil then outbound = nil end
+  local receipt = request_channel(request) == "filesystem-dry-run-v1" and copy(checkpoint.receipt) or nil
   return {
     status = checkpoint.receipt and "published" or "pending",
     replayed = true,
     comment_request = outbound,
+    receipt = receipt,
     report = report,
   }
 end
@@ -567,23 +694,29 @@ function M.prepare_final_report(request, ports)
       error("test-publication: qa: terminal summary counts differ from reconciled results")
     end
   end
-  local links = {
-    terminal_summary = publish_source(request, ports, request.terminal_summary_ref,
-      request.terminal_summary_sha256, "aggregate-source-terminal").remote_url,
-    environment = publish_source(request, ports, request.environment_receipt_ref,
-      request.environment_receipt_sha256, "aggregate-source-environment").remote_url,
-    cleanup = publish_source(request, ports, request.cleanup_receipt_ref,
-      request.cleanup_receipt_sha256, "aggregate-source-cleanup").remote_url,
-  }
+  local channel = request_channel(request)
+  local links = {}
+  local terminal_publication = publish_source(request, ports, request.terminal_summary_ref,
+    request.terminal_summary_sha256, "aggregate-source-terminal")
+  local environment_publication = publish_source(request, ports, request.environment_receipt_ref,
+    request.environment_receipt_sha256, "aggregate-source-environment")
+  local cleanup_publication = publish_source(request, ports, request.cleanup_receipt_ref,
+    request.cleanup_receipt_sha256, "aggregate-source-cleanup")
+  links.terminal_summary = publication_location(terminal_publication, channel)
+  links.environment = publication_location(environment_publication, channel)
+  links.cleanup = publication_location(cleanup_publication, channel)
   if readiness ~= nil then
-    links.browser_readiness = publish_source(request, ports, request.browser_readiness_ref,
-      request.browser_readiness_sha256, "aggregate-source-browser-readiness").remote_url
+    local readiness_publication = publish_source(request, ports, request.browser_readiness_ref,
+      request.browser_readiness_sha256, "aggregate-source-browser-readiness")
+    links.browser_readiness = publication_location(readiness_publication, channel)
   end
   if full then
-    links.test_plan = publish_source(request, ports, request.test_plan_ref,
-      request.test_plan_sha256, "aggregate-source-plan").remote_url
-    links.case_results = publish_source(request, ports, request.case_results_ref,
-      request.case_results_sha256, "aggregate-source-results").remote_url
+    local plan_publication = publish_source(request, ports, request.test_plan_ref,
+      request.test_plan_sha256, "aggregate-source-plan")
+    local results_publication = publish_source(request, ports, request.case_results_ref,
+      request.case_results_sha256, "aggregate-source-results")
+    links.test_plan = publication_location(plan_publication, channel)
+    links.case_results = publication_location(results_publication, channel)
   end
   local status
   if full then
@@ -616,6 +749,10 @@ function M.prepare_final_report(request, ports)
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
+  if channel == "filesystem-dry-run-v1" then
+    report.channel = channel
+    report.github_publication_occurred = false
+  end
   local written = ports.write_report(request.aggregate_report_ref, report)
   if type(written) ~= "table" or written.status ~= "written" or not digest(written.digest) then
     error("test-publication: qa: aggregate report write failed")
@@ -626,6 +763,7 @@ function M.prepare_final_report(request, ports)
     stage = "aggregate-report", attempt = 1, status = status, artifact_root = request.artifact_root,
     artifact_ref = request.aggregate_report_ref, artifact_sha256 = written.digest, ledger_ref = request.ledger_ref,
     trace_id = request.trace_id, dedup_key = request.dedup_key, counts = counts,
+    channel = request.channel,
   }, ports)
   prepared.report = report
   return prepared
@@ -642,7 +780,9 @@ function M.acknowledge_comment(written, ports)
   if type(state) ~= "table" or state.run_id ~= handoff.run_id then error("test-publication: qa: checkpoint ledger unavailable") end
   local key = checkpoint_key(handoff.stage, handoff.attempt)
   local checkpoint = state.checkpoints[key]
-  if type(checkpoint) ~= "table" or checkpoint.comment_request.dedup_key ~= written.request_dedup_key
+  if type(checkpoint) ~= "table" or (state.channel or "github-comment-v1") ~= "github-comment-v1"
+    or type(checkpoint.comment_request) ~= "table"
+    or checkpoint.comment_request.dedup_key ~= written.request_dedup_key
     or handoff.request_dedup_key ~= written.request_dedup_key then
     error("test-publication: qa: comment acknowledgement does not match checkpoint")
   end

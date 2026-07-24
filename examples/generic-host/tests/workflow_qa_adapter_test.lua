@@ -72,11 +72,56 @@ local function fixture()
     dedup_key = dedup_key,
     source_ref = { kind = "workflow-qa", ref = "controlled-run-1" },
   }
+  local operation_state_ref = {
+    kind = "artifact", ref = ".testing/runs/controlled/environment/operation-state.json",
+  }
+  local sessions = { { role = "browser", cdp_url = "http://127.0.0.1:9222" } }
+  local environment = {
+    schema = "environment-factory.receipt.v2",
+    operation_id = "controlled-run-1",
+    status = "ready",
+    profile_revision = "controlled-profile-v1",
+    profile_sha256 = digest("9"),
+    repository = repository,
+    workspace_ref = { kind = "workspace", ref = "controlled-run-1-workspace" },
+    base_url = "http://127.0.0.1:4173/health",
+    runtime_ports = { { name = "application", port = 4173 } },
+    sessions = sessions,
+    browser_readiness = {
+      schema = "browser-readiness.result.v1",
+      status = "ready",
+      sessions = {
+        { role = "base_url", status = "ready", checks = { { name = "local_http", status = "ready" } } },
+        { role = "browser", status = "ready", checks = { { name = "cdp_url", status = "ready" } }, cdp_url = "http://127.0.0.1:9222" },
+      },
+      source_ref = operation_state_ref,
+      request_context = { dry_run = false },
+      correlation = {
+        schema = "environment-factory.browser-readiness-correlation.v1",
+        attempt_id = "controlled-readiness-attempt",
+        operation_id = "controlled-run-1",
+        operation_state_ref = operation_state_ref,
+        readiness_attempt_ref = { kind = "artifact", ref = ".testing/runs/controlled/environment/readiness-attempts/controlled-readiness-attempt.json" },
+        readiness_attempt_sha256 = digest("8"),
+        base_url = "http://127.0.0.1:4173/health",
+        sessions = sessions,
+        trace_id = trace_id,
+        dedup_key = dedup_key,
+      },
+    },
+    artifact_root = ".testing/runs/controlled/environment",
+    diagnostic_refs = {},
+    cleanup_ref = { kind = "environment-cleanup", ref = "controlled-run-1" },
+    cleanup_status = "pending",
+    trace_id = trace_id,
+    dedup_key = dedup_key,
+  }
   return request, {
     preauthorization = preauthorization,
     preauthorization_sha256 = digest("1"),
     plan = plan,
     plan_sha256 = digest("a"),
+    environment = environment,
     environment_receipt_sha256 = digest("3"),
   }
 end
@@ -91,7 +136,7 @@ local function values()
   }
 end
 
-local function runtime(request, materials)
+local function runtime(request, materials, mutate_artifacts)
   local writes = 0
   local terminal
   local claim
@@ -103,7 +148,7 @@ local function runtime(request, materials)
     },
     [request.plan_ref] = { value = materials.plan, digest = materials.plan_sha256 },
     [request.environment_receipt_ref] = {
-      value = { schema = "environment-factory.receipt.v2", status = "ready" },
+      value = materials.environment,
       digest = request.environment_receipt_sha256,
     },
     [".testing/runs/controlled/aggregate-report.json"] = {
@@ -139,6 +184,7 @@ local function runtime(request, materials)
       digest = digest("6"),
     },
   }
+  if mutate_artifacts ~= nil then mutate_artifacts(artifacts) end
   local ports = {
     load_artifact = function(ref) return artifacts[ref] end,
     write_artifact = function(ref, value)
@@ -248,5 +294,13 @@ return {
     local malformed = terminal_payload()
     malformed.terminal_policy = "package"
     t.raises(function() adapter.handle_terminal(malformed, ports) end)
+  end,
+
+  test_terminal_rejects_aggregate_report_status_mismatch_through_generic_host_wrapper = function()
+    local request, materials = fixture()
+    local ports = runtime(request, materials, function(artifacts)
+      artifacts[".testing/runs/controlled/aggregate-report.json"].value.status = "failed"
+    end)
+    t.raises(function() adapter.handle_terminal(terminal_payload(), ports) end)
   end,
 }

@@ -1,3 +1,4 @@
+local contract = require("contract.structured_execution")
 local fixtures = require("tests.structured_execution_helpers")
 local structured_execution = require("structured_execution")
 local t = fkst.test
@@ -55,13 +56,13 @@ local function http_case(plan, grant)
   plan.cases[1] = {
     case_id = "http-edge",
     kind = "http",
-    request = { method = "GET", url = "http://127.0.0.1:43110/health", headers = {} },
+    request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
     timeout_seconds = 10,
     assertions = { { type = "status-code", expected = 200 } },
   }
   grant.cli_capabilities = {}
   grant.http_capabilities = { {
-    origin = "http://127.0.0.1:43110",
+    origin = "http://127.0.0.1:4173",
     methods = { "GET" },
     path_prefixes = { "/health" },
   } }
@@ -69,6 +70,7 @@ end
 
 return {
   test_request_and_runtime_port_fail_closed_edges = function()
+    t.eq(contract.local_http_origin("https://127.0.0.1:4173/health"), nil)
     for _, mutate in ipairs({
       function(value) value.schema = "unknown" end,
       function(value) value.repository.commit_sha = "main" end,
@@ -79,7 +81,9 @@ return {
     end
 
     _G.structured_execution_runtime = nil
-    t.raises(function() structured_execution.production_ports() end)
+    local defaults = structured_execution.production_ports()
+    t.is_true(type(defaults.exec_argv) == "function")
+    t.is_true(type(defaults.http_request) == "function")
     _G.structured_execution_runtime = {}
     t.raises(function() structured_execution.production_ports() end)
     local ports = {}
@@ -101,6 +105,7 @@ return {
       function(_, _, plan) plan.cases[1].skip_reason = "x" plan.cases[1].skip_classification = "bad" end,
       function(_, _, plan) plan.cases[1].skip_classification = "not-executed-risk" end,
       function(_, _, plan) plan.cases[1].kind = "browser" end,
+      function(_, _, plan) plan.cases[1].goal = "foreign browser field" end,
       function(_, _, plan) plan.cases[1].timeout_seconds = 0 end,
       function(_, _, plan) plan.cases[1].assertions = {} end,
       function(_, _, plan) plan.cases[1].argv = {} end,
@@ -136,6 +141,8 @@ return {
       function(value, bundle) bundle[value.test_plan_ref].digest = fixtures.digest_environment end,
       function(value, bundle) bundle[value.environment_receipt_ref].value.schema = "unknown" end,
       function(value, bundle) bundle[value.environment_receipt_ref].value.status = "blocked" end,
+      function(value, bundle) bundle[value.environment_receipt_ref].value.workspace_ref = nil end,
+      function(value, bundle) bundle[value.environment_receipt_ref].value.base_url = "https://example.invalid/health" end,
       function(value, bundle)
         bundle[value.environment_receipt_ref].value.repository.url = "https://github.com/other/repo.git"
         bundle[value.environment_receipt_ref].value.repository.commit_sha = string.rep("9", 40)
@@ -146,6 +153,10 @@ return {
       function(_, _, _, grant) grant.max_uses = 2 end,
       function(_, _, _, grant) grant.cli_capabilities[1].argv_prefix = { "other-cli" } end,
       function(_, _, plan, grant) http_case(plan, grant) grant.http_capabilities[1].path_prefixes = { "/other" } end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        grant.http_capabilities[1].origin = "http://127.0.0.1:43110"
+      end,
     }
     for _, mutate in ipairs(mutations) do t.eq(run_edge(mutate).status, "blocked") end
     local cli_error = run_edge(nil, { exec_error = true })

@@ -18,6 +18,19 @@ SOURCE_ENGINE_PROVENANCE = SOURCE_ROOT / "scripts" / "engine_provenance.sh"
 SOURCE_CI_CONTRACT = SOURCE_ROOT / "scripts" / "check_ci_contract.py"
 SOURCE_CI_WORKFLOW = SOURCE_ROOT / ".github" / "workflows" / "ci.yml"
 SUBSTRATE_PIN = "1" * 40
+GENERIC_HOST_CLOSED_WORLD_ROOTS = (
+    "environment-factory",
+    "testing-design",
+    "browser-readiness",
+    "module-testing-pipeline",
+    "module-test-loop",
+    "testing-runner",
+    "test-artifacts",
+    "test-publication",
+    "workflow-qa",
+    "consensus",
+    "github-proxy",
+)
 
 
 def dedent(value: str) -> str:
@@ -295,6 +308,55 @@ class RunnerWorkspace:
     def add_package_without_tests(self, name: str = "missing-tests") -> None:
         self._package(name, with_tests=False)
 
+    def add_generic_host_composition(self) -> None:
+        for name in GENERIC_HOST_CLOSED_WORLD_ROOTS[:-2]:
+            self._package(name)
+        for name in GENERIC_HOST_CLOSED_WORLD_ROOTS[-2:]:
+            self.write(
+                f".fkst/run/fkst-packages-conformance/packages/{name}/fkst.toml",
+                f'kind = "package"\nname = "{name}"\n[code]\nroot = "."\n',
+            )
+            self.write(
+                f".fkst/run/fkst-packages-conformance/packages/{name}/tests/{name.replace('-', '_')}_test.lua",
+                "return {}\n",
+            )
+        self.write(
+            "examples/generic-host/fkst.toml",
+            dedent(
+                """
+                kind = "package.composed"
+                name = "generic-host"
+                persistence_class = "saga"
+
+                [code]
+                root = "."
+                """
+            ),
+        )
+        self.write("examples/generic-host/tests/generic_host_test.lua", "return {}\n")
+
+    def create_external_host(self, name: str = "fixture-external-host", with_manifest: bool = True) -> Path:
+        host_root = Path(self.temporary.name) / name
+        host_root.mkdir()
+        if with_manifest:
+            (host_root / "fkst.toml").write_text(
+                dedent(
+                    f"""
+                    kind = "package.composed"
+                    name = "{name}"
+                    persistence_class = "saga"
+
+                    [code]
+                    root = "."
+                    """
+                ),
+                encoding="utf-8",
+            )
+        tests = host_root / "tests"
+        tests.mkdir()
+        (tests / "external_host_test.lua").write_text("return {}\n", encoding="utf-8")
+        return host_root
+
     def run(self, *arguments: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
         environment = os.environ.copy()
         environment.update(
@@ -490,6 +552,115 @@ class RunnerContractTest(unittest.TestCase):
         self.assert_failure(result)
         self.assertIn("failed to create hermetic host check root", result.stdout)
         self.assertEqual(fixture.records("conformance"), [])
+
+    def test_external_host_reuses_generic_composition_and_cleans_copied_workspace(self) -> None:
+        fixture = self.workspace()
+        fixture.add_generic_host_composition()
+        host_root = fixture.create_external_host()
+        logical_tmpdir = fixture.root / "logical-tmp"
+        logical_tmpdir.symlink_to(fixture.tmpdir, target_is_directory=True)
+
+        example_result = fixture.run("example", "generic-host")
+        self.assert_success(example_result)
+        external_result = fixture.run(
+            "external-host",
+            str(host_root),
+            extra_env={"TMPDIR": str(logical_tmpdir)},
+        )
+        self.assert_success(external_result)
+        self.assertIn(f"PASS engine-provenance expected_pin={SUBSTRATE_PIN}", external_result.stdout)
+
+        tests = fixture.records("test")
+        self.assertEqual(len(tests), 2)
+        example, external = tests
+        self.assertEqual(Path(example["package_roots"][0]).name, "generic-host")
+        self.assertEqual(Path(external["package_roots"][0]).name, "external-host")
+        example_roots = [Path(path).name for path in example["package_roots"][1:]]
+        external_roots = [Path(path).name for path in external["package_roots"][1:]]
+        self.assertEqual(example_roots, external_roots)
+        self.assertEqual(external_roots, list(GENERIC_HOST_CLOSED_WORLD_ROOTS))
+        self.assertEqual(external["test_files"], ["packages/external-host/tests/external_host_test.lua"])
+        self.assertNotEqual(Path(external["package_roots"][0]), host_root)
+        self.assertEqual(external["project_root"], str(Path(external["project_root"]).resolve()))
+        self.assertTrue(
+            all(path == str(Path(path).resolve()) for path in external["package_roots"])
+        )
+        self.assertFalse(Path(external["project_root"]).exists())
+        self.assertTrue(host_root.exists())
+
+    def test_external_host_rejects_invalid_or_repository_owned_roots(self) -> None:
+        fixture = self.workspace()
+        host_root = fixture.create_external_host()
+        missing_manifest = fixture.create_external_host("missing-manifest", with_manifest=False)
+        embedded_package = fixture.write(
+            "packages/embedded-host/fkst.toml",
+            'kind = "package.composed"\nname = "embedded-host"\n',
+        ).parent
+        embedded_library = fixture.write(
+            "libraries/embedded-host/fkst.toml",
+            'kind = "library"\nname = "embedded-host"\n',
+        ).parent
+        linked_package = Path(fixture.temporary.name) / "linked-package-host"
+        linked_package.symlink_to(embedded_package, target_is_directory=True)
+
+        cases = (
+            ((), "usage: scripts/run.sh external-host <absolute-host-root>"),
+            ((str(host_root), "unexpected"), "usage: scripts/run.sh external-host <absolute-host-root>"),
+            (("relative-host",), "must be an absolute path"),
+            (((Path(fixture.temporary.name) / "absent-host").as_posix(),), "does not exist"),
+            ((str(missing_manifest),), "must contain fkst.toml"),
+            ((str(embedded_package),), "may not be within this repository's packages/ or libraries/"),
+            ((str(embedded_library),), "may not be within this repository's packages/ or libraries/"),
+            ((str(linked_package),), "may not be within this repository's packages/ or libraries/"),
+        )
+        for arguments, message in cases:
+            with self.subTest(arguments=arguments):
+                result = fixture.run("external-host", *arguments)
+                self.assert_failure(result)
+                self.assertIn(message, result.stdout)
+        self.assertEqual(fixture.records("test"), [])
+
+    def test_external_host_test_failure_propagates_and_cleans_copied_workspace(self) -> None:
+        fixture = self.workspace()
+        fixture.add_generic_host_composition()
+        host_root = fixture.create_external_host()
+        result = fixture.run(
+            "external-host",
+            str(host_root),
+            extra_env={"FAKE_FAIL_SUBCOMMAND": "test"},
+        )
+        self.assertEqual(result.returncode, 23, result.stdout)
+        record = fixture.records("test")[0]
+        self.assertFalse(Path(record["project_root"]).exists())
+        self.assertTrue(host_root.exists())
+
+    def test_external_host_construction_failure_cleans_partial_composed_workspace(self) -> None:
+        fixture = self.workspace()
+        fixture.add_generic_host_composition()
+        host_root = fixture.create_external_host()
+        fixture.write(
+            "fixture-bin/tar",
+            dedent(
+                """
+                #!/usr/bin/env bash
+                if [ "${FAKE_TAR_FAIL_BASENAME:-}" = "$(basename "$PWD")" ]; then
+                  exit 19
+                fi
+                exec /usr/bin/tar "$@"
+                """
+            ),
+            executable=True,
+        )
+        before = set(fixture.tmpdir.glob("fkst-testing-composed.*"))
+        result = fixture.run(
+            "external-host",
+            str(host_root),
+            extra_env={"FAKE_TAR_FAIL_BASENAME": host_root.name},
+        )
+        self.assert_failure(result)
+        self.assertEqual(set(fixture.tmpdir.glob("fkst-testing-composed.*")), before)
+        self.assertEqual(fixture.records("test"), [])
+        self.assertTrue(host_root.exists())
 
     def test_missing_package_coverage_fails(self) -> None:
         fixture = self.workspace()

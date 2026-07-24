@@ -164,9 +164,22 @@ function artifactPath(pointer) {
   if (!pointer || pointer.kind !== 'artifact' || !isSafeArtifactPath(pointer.ref)) {
     throw new Error('safe artifact pointer is required');
   }
+  const testingRoot = path.resolve(process.cwd(), '.testing');
   const resolved = path.resolve(process.cwd(), pointer.ref);
-  const root = `${path.resolve(process.cwd(), '.testing')}${path.sep}`;
-  if (!resolved.startsWith(root)) throw new Error('artifact pointer escaped .testing');
+  if (resolved !== testingRoot && !resolved.startsWith(`${testingRoot}${path.sep}`)) {
+    throw new Error('artifact pointer escaped .testing');
+  }
+  if (fs.existsSync(testingRoot) && fs.lstatSync(testingRoot).isSymbolicLink()) {
+    throw new Error('artifact root is a symbolic link');
+  }
+  const relative = path.relative(testingRoot, resolved);
+  let current = testingRoot;
+  for (const segment of relative.split(path.sep).filter((item) => item !== '')) {
+    current = path.join(current, segment);
+    if (fs.existsSync(current) && fs.lstatSync(current).isSymbolicLink()) {
+      throw new Error('artifact pointer traverses a symbolic link');
+    }
+  }
   return resolved;
 }
 

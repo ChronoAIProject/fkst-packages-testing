@@ -3,7 +3,9 @@ local browser_readiness_contract = require("contract.browser_readiness")
 local environment_contract = require("contract.environment_factory")
 local execution_contract = require("contract.structured_execution")
 local testing_contract = require("contract.testing")
+local local_runtime = require("testing_runtime.structured_execution")
 
+local copy = execution_contract.copy
 local max_argv = 32
 
 local function dense_list(value, maximum)
@@ -106,7 +108,7 @@ local required_ports = {
 
 function M.production_ports()
   local ports = _G.structured_execution_runtime
-  if type(ports) ~= "table" then error("testing-runner: structured-execution: host runtime capability is unavailable") end
+  if type(ports) ~= "table" then ports = local_runtime.production() end
   for _, name in ipairs(required_ports) do
     if type(ports[name]) ~= "function" then error("testing-runner: structured-execution: missing runtime port " .. name) end
   end
@@ -134,30 +136,34 @@ local function argv_allowed(argv, capabilities)
   return false
 end
 
-local function split_http_url(url)
-  local origin, path = tostring(url or ""):match("^(https?://[^/]+)(/.*)$")
-  if origin == nil then origin = tostring(url or ""):match("^(https?://[^/]+)$") path = "/" end
-  if origin == nil or origin:find("@", 1, true) then return nil, nil end
-  return origin, path
-end
-
 local function contains(list, expected)
   local found = false
   for _, item in ipairs(list or {}) do if item == expected then found = true end end
   return found
 end
 
-local function http_allowed(request, capabilities)
-  local origin, path = split_http_url(request.url)
-  if origin == nil then return false end
+local function http_allowed(request, capabilities, base_url)
+  local origin, path = execution_contract.local_http_origin(request.url)
+  local base_origin = execution_contract.local_http_origin(base_url)
+  if origin == nil or base_origin == nil or origin ~= base_origin then return false end
   for _, capability in ipairs(capabilities or {}) do
-    if capability.origin == origin and contains(capability.methods, request.method) then
+    local capability_origin = execution_contract.local_http_origin(capability.origin)
+    if capability_origin == base_origin and contains(capability.methods, request.method) then
       for _, prefix in ipairs(capability.path_prefixes or {}) do
         if path:sub(1, #prefix) == prefix then return true end
       end
     end
   end
   return false
+end
+
+local function http_capabilities_bound(capabilities, base_url)
+  local base_origin = execution_contract.local_http_origin(base_url)
+  if base_origin == nil then return false end
+  for _, capability in ipairs(capabilities or {}) do
+    if execution_contract.local_http_origin(capability.origin) ~= base_origin then return false end
+  end
+  return true
 end
 
 local function assert_cli(assertion, response)
@@ -182,7 +188,7 @@ local function effect_error(case, value)
   }
 end
 
-local function execute_case(case, grant, ports)
+local function execute_case(case, grant, ports, context)
   if case.skip_reason ~= nil then
     return {
       case_id = case.case_id,
@@ -193,17 +199,31 @@ local function execute_case(case, grant, ports)
       evidence = { reason = case.skip_reason },
     }
   end
+  local effect = {
+    operation_id = context.environment.operation_id,
+    case_id = case.case_id,
+    repository = copy(context.request.repository),
+    environment_receipt_sha256 = context.environment_digest,
+    artifact_root = context.request.artifact_root,
+    trace_id = context.request.trace_id,
+    dedup_key = context.request.dedup_key,
+    timeout_seconds = case.timeout_seconds,
+  }
   local ok, response
   if case.kind == "cli" then
     if not argv_allowed(case.argv, grant.cli_capabilities) then
       error("testing-runner: structured-execution: unauthorized cli capability")
     end
-    ok, response = pcall(ports.exec_argv, copy_list(case.argv), case.timeout_seconds)
+    effect.workspace_ref = copy(context.environment.workspace_ref)
+    effect.argv = copy_list(case.argv)
+    ok, response = pcall(ports.exec_argv, effect)
   else
-    if not http_allowed(case.request, grant.http_capabilities) then
+    if not http_allowed(case.request, grant.http_capabilities, context.environment.base_url) then
       error("testing-runner: structured-execution: unauthorized http capability")
     end
-    ok, response = pcall(ports.http_request, case.request, case.timeout_seconds)
+    effect.base_url = context.environment.base_url
+    effect.request = copy(case.request)
+    ok, response = pcall(ports.http_request, effect)
   end
   local case_result = not ok and effect_error(case, response) or nil
   if case_result == nil then
@@ -274,6 +294,7 @@ function M.run(request, ports)
       or not same_repository(environment.value.repository, request.repository)
       or type(environment.value.browser_readiness) ~= "table"
       or environment.value.browser_readiness.status ~= "ready"
+      or execution_contract.local_http_origin(environment.value.base_url) == nil
       or environment.value.trace_id ~= request.trace_id
       or environment.value.dedup_key ~= request.dedup_key then
       return blocked("environment receipt does not prove readiness for this run")
@@ -296,11 +317,17 @@ function M.run(request, ports)
       return blocked("test plan does not belong to this environment")
     end
 
-    local now = ports.now()
+    local now = ports.now({
+      artifact_root = request.artifact_root,
+      operation_id = environment.value.operation_id,
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+    })
     local grant_ok = pcall(execution_contract.validate_grant, grant.value, now)
     if not grant_ok or grant.value.plan_sha256 ~= request.test_plan_sha256
       or grant.value.environment_receipt_sha256 ~= request.environment_receipt_sha256
       or not same_repository(grant.value.repository, request.repository)
+      or not http_capabilities_bound(grant.value.http_capabilities, environment.value.base_url)
       or grant.value.trace_id ~= request.trace_id
       or grant.value.dedup_key ~= request.dedup_key then
       return blocked("execution grant does not belong to this plan")
@@ -310,6 +337,10 @@ function M.run(request, ports)
       grant_raw = grant.raw,
       grant_sha256 = grant.digest,
       now = now,
+      artifact_root = request.artifact_root,
+      operation_id = environment.value.operation_id,
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
     })
     if not execution_contract.attestation_matches(verified, grant.value, grant.digest) then
       return blocked("execution grant authentication failed")
@@ -321,12 +352,23 @@ function M.run(request, ports)
       plan_sha256 = plan.digest,
       environment_receipt_sha256 = environment.digest,
       repository = request.repository,
+      artifact_root = request.artifact_root,
+      operation_id = environment.value.operation_id,
       trace_id = request.trace_id,
       dedup_key = request.dedup_key,
     })
     if type(claim) ~= "table" then return blocked("replay guard rejected execution") end
     if claim.status == "completed" then
-      local replayed = ports.load_result(claim.result_ref)
+      local replayed = ports.load_result({
+        artifact_root = request.artifact_root,
+        result_ref = claim.result_ref,
+        result_sha256 = claim.result_sha256,
+        operation_id = environment.value.operation_id,
+        repository = copy(request.repository),
+        environment_receipt_sha256 = environment.digest,
+        trace_id = request.trace_id,
+        dedup_key = request.dedup_key,
+      })
       if type(replayed) ~= "table" then return blocked("completed replay result is unavailable") end
       replayed.replayed = true
       return replayed
@@ -336,8 +378,13 @@ function M.run(request, ports)
     end
 
     local case_results = {}
+    local execution_context = {
+      request = request,
+      environment = environment.value,
+      environment_digest = environment.digest,
+    }
     for _, case in ipairs(plan.value.cases) do
-      local case_result = execute_case(case, grant.value, ports)
+      local case_result = execute_case(case, grant.value, ports, execution_context)
       local evidence_path = request.artifact_root .. "/evidence/" .. case.case_id .. ".json"
       if ports.write_artifact(evidence_path, case_result.evidence) ~= true then
         error("testing-runner: structured-execution: evidence write failed")
@@ -358,6 +405,7 @@ function M.run(request, ports)
     }) ~= true then error("testing-runner: structured-execution: case results write failed") end
     local execution = {
       schema = "testing-structured-execution.v1",
+      operation_id = environment.value.operation_id,
       status = status,
       classification = classification,
       repository = request.repository,
@@ -404,7 +452,16 @@ function M.run(request, ports)
       adapter = { name = "fkst-native", mode = "structured-api-cli" },
       native_summary = result,
     }) ~= true then error("testing-runner: structured-execution: metadata write failed") end
-    if ports.complete_replay(claim, execution_path) ~= true then
+    if ports.complete_replay({
+      artifact_root = request.artifact_root,
+      claim = claim,
+      result_ref = execution_path,
+      operation_id = environment.value.operation_id,
+      repository = copy(request.repository),
+      environment_receipt_sha256 = environment.digest,
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+    }) ~= true then
       error("testing-runner: structured-execution: replay completion failed")
     end
     return result

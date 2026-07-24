@@ -4,8 +4,8 @@ local t = fkst.test
 local commit_sha = string.rep("1", 40)
 local artifact_sha = string.rep("a", 64)
 
-local function request()
-  return {
+local function request(channel)
+  local value = {
     schema = "test-publication.qa-checkpoint.request.v1",
     repository = { slug = "owner/repo", commit_sha = commit_sha },
     run_id = "qa-run-107",
@@ -20,11 +20,13 @@ local function request()
     trace_id = "trace-qa-run-107",
     dedup_key = "dedup-qa-run-107",
   }
+  value.channel = channel
+  return value
 end
 
 local function ports()
   local state
-  local writes = {}
+  local writes, artifacts = {}, {}
   return {
     load_ledger = function() return state end,
     save_ledger = function(_, value, expected_version)
@@ -34,6 +36,26 @@ local function ports()
       return true
     end,
     publish_artifact = function(value)
+      if value.channel == "filesystem-dry-run-v1" then
+        local receipt_ref = ".testing/runs/qa-run-107/materializations/environment-ready-1.json"
+        local receipt_sha256 = string.rep("b", 64)
+        artifacts[receipt_ref] = { digest = receipt_sha256, value = {
+          schema = "test-publication.qa-materialization-receipt.v1",
+          status = "materialized", channel = "filesystem-dry-run-v1",
+          run_id = value.run_id, stage = value.stage, attempt = value.attempt,
+          artifact_ref = value.artifact_ref, digest = value.digest,
+          source_commit = commit_sha, receipt_ref = receipt_ref,
+          trace_id = value.trace_id, dedup_key = value.dedup_key,
+        } }
+        return {
+          status = "materialized",
+          artifact_ref = value.artifact_ref,
+          digest = value.digest,
+          source_commit = commit_sha,
+          receipt_ref = receipt_ref,
+          receipt_sha256 = receipt_sha256,
+        }
+      end
       return {
         status = "published",
         remote_url = "https://github.com/owner/repo/blob/" .. commit_sha .. "/qa/environment-receipt-ready.json",
@@ -42,6 +64,7 @@ local function ports()
         receipt_ref = ".testing/runs/qa-run-107/publication/environment-ready-1.json",
       }
     end,
+    load_artifact = function(path) return artifacts[path] end,
     write_artifact = function(path, value) writes[path] = value return true end,
     state = function() return state end,
     writes = writes,
@@ -66,6 +89,32 @@ return {
     local replay = qa_publication.prepare_checkpoint(request(), runtime)
     t.eq(replay.replayed, true)
     t.eq(replay.comment_request.dedup_key, prepared.comment_request.dedup_key)
+
+    local explicit = qa_publication.prepare_checkpoint(request("github-comment-v1"), ports())
+    t.eq(explicit.comment_request.schema, "github-proxy.v1")
+    t.is_true(explicit.comment_request.body:find("https://github.com/", 1, true) ~= nil)
+  end,
+
+  test_filesystem_checkpoint_materializes_and_acknowledges_without_github_intent = function()
+    local runtime = ports()
+    local prepared = qa_publication.prepare_checkpoint(request("filesystem-dry-run-v1"), runtime)
+
+    t.eq(prepared.status, "published")
+    t.eq(prepared.comment_request, nil)
+    t.eq(prepared.receipt.schema, "test-publication.qa-publication-receipt.v2")
+    t.eq(prepared.receipt.channel, "filesystem-dry-run-v1")
+    t.eq(prepared.receipt.github_publication_occurred, false)
+    t.eq(prepared.receipt.artifact_ref, request().artifact_ref)
+    t.eq(prepared.receipt.artifact_sha256, artifact_sha)
+    t.eq(prepared.receipt.materialization_receipt_sha256, string.rep("b", 64))
+    t.eq(prepared.receipt.remote_url, nil)
+    t.is_true(type(runtime.writes[prepared.receipt.receipt_ref]) == "table")
+
+    local replay = qa_publication.prepare_checkpoint(request("filesystem-dry-run-v1"), runtime)
+    t.eq(replay.replayed, true)
+    t.eq(replay.status, "published")
+    t.eq(replay.comment_request, nil)
+    t.eq(replay.receipt.receipt_ref, prepared.receipt.receipt_ref)
   end,
 
   test_comment_acknowledgement_writes_durable_checkpoint_receipt = function()

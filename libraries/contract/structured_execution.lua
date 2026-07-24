@@ -137,6 +137,19 @@ local function split_http_url(url)
 end
 M.split_http_url = split_http_url
 
+function M.local_http_origin(url)
+  local origin, path = split_http_url(url)
+  if origin == nil then return nil, nil end
+  local authority = origin:match("^http://(.+)$")
+  if authority == nil then return nil, nil end
+  local host = authority:match("^([^:]+):%d+$") or authority
+  local bracketed = authority:match("^(%[::1%]):%d+$") or authority:match("^(%[::1%])$")
+  if host ~= "127.0.0.1" and host:lower() ~= "localhost" and bracketed ~= "[::1]" then
+    return nil, nil
+  end
+  return origin:lower(), path
+end
+
 local function validate_case(value, seen, allow_skip)
   only_fields(value, {
     case_id = true, kind = true, argv = true, request = true, timeout_seconds = true,

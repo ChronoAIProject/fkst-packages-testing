@@ -4,7 +4,7 @@ local saga = require("workflow.saga")
 local spec = {
   consumes = { "qa_checkpoint_request" },
   published_seam = { "qa_checkpoint_request" },
-  produces = { "github_issue_comment_request" },
+  produces = { "github_issue_comment_request", "qa_publication_receipt" },
   stall_window = "10m",
   retry = false,
 }
@@ -18,6 +18,8 @@ local function act(event)
   log.info("test-publication dept=record_qa_checkpoint tag=" .. string.upper(prepared.status))
   if prepared.comment_request ~= nil then
     raise("github_issue_comment_request", prepared.comment_request)
+  elseif prepared.receipt ~= nil then
+    raise("qa_publication_receipt", prepared.receipt)
   end
 end
 

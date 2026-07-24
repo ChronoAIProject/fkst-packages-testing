@@ -1,6 +1,7 @@
 local contract = require("contract.structured_execution")
 local browser_readiness_contract = require("contract.browser_readiness")
 local environment_contract = require("contract.environment_factory")
+local local_runtime = require("testing_runtime.structured_execution")
 
 local M = {}
 
@@ -12,6 +13,21 @@ local function load_bound(ports, ref, expected_digest, label)
     error("testing-runner: structured-planning: " .. label .. " digest mismatch")
   end
   return artifact.value
+end
+
+local function validate_local_http_cases(cases, base_url)
+  local base_origin = contract.local_http_origin(base_url)
+  if base_origin == nil then
+    error("testing-runner: structured-planning: environment base_url must use loopback HTTP")
+  end
+  for _, case in ipairs(cases) do
+    if case.kind == "http" then
+      local origin = contract.local_http_origin(case.request.url)
+      if origin == nil or origin ~= base_origin then
+        error("testing-runner: structured-planning: HTTP case origin differs from ready environment")
+      end
+    end
+  end
 end
 
 local function selected_cases(module_plan)
@@ -78,6 +94,7 @@ local function compile_inner(request, ports)
   end
   table.sort(residual)
   if #cases == 0 then error("testing-runner: structured-planning: no designed case has a host-authorized execution mapping") end
+  validate_local_http_cases(cases, environment.base_url)
   local browser_count = 0
   for _, case in ipairs(cases) do if case.kind == "browser" then browser_count = browser_count + 1 end end
   if browser_count > 0 and (browser_count ~= 1 or #cases ~= 1) then
@@ -132,7 +149,7 @@ end
 
 function M.production_ports()
   local ports = _G.structured_execution_runtime
-  if type(ports) ~= "table" then error("testing-runner: structured-planning: host runtime capability is unavailable") end
+  if type(ports) ~= "table" then ports = local_runtime.production() end
   for _, name in ipairs({ "load_artifact", "write_artifact" }) do
     if type(ports[name]) ~= "function" then error("testing-runner: structured-planning: missing runtime port " .. name) end
   end

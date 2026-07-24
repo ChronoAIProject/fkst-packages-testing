@@ -507,7 +507,12 @@ function Context:_structured_runtime()
   local claims = {}
   return {
     load_artifact = function(path) return context.store:load(path) end,
-    now = function() return "2026-07-22T00:20:00Z" end,
+    now = function(request)
+      if request.artifact_root ~= context.request.structured_execution.artifact_root then
+        error("canonical structured runtime received a foreign artifact root")
+      end
+      return "2026-07-22T00:20:00Z"
+    end,
     verify_grant = function(request)
       local grant = request.grant
       return {
@@ -521,24 +526,36 @@ function Context:_structured_runtime()
       local claim = claims[request.grant_id]
       if claim ~= nil then
         if claim.completed then return { status = "completed", result_ref = claim.result_ref } end
-        return { status = "claimed", claim_id = claim.claim_id }
+        return { status = "in-progress" }
       end
       claim = { claim_id = context.run_id .. "-execution-claim" }
       claims[request.grant_id] = claim
       context.execution_claims = context.execution_claims + 1
       return { status = "claimed", claim_id = claim.claim_id }
     end,
-    exec_argv = function(argv)
-      table.insert(context.target_effects, { kind = "cli", argv = copy(argv) })
-      return direct_exec(argv, context.workspace_root)
+    exec_argv = function(request)
+      if request.operation_id ~= context.run_id
+        or type(request.workspace_ref) ~= "table"
+        or request.workspace_ref.ref ~= context.run_id .. "-workspace"
+        or request.repository.commit_sha ~= context.commit_sha then
+        error("canonical structured CLI request is not bound to the ready workspace")
+      end
+      table.insert(context.target_effects, { kind = "cli", argv = copy(request.argv) })
+      return direct_exec(request.argv, context.workspace_root)
     end,
-    http_request = function(request, timeout_seconds)
-      table.insert(context.target_effects, { kind = "http", method = request.method, url = request.url })
-      return http_request(request, timeout_seconds)
+    http_request = function(input)
+      if input.operation_id ~= context.run_id or input.base_url ~= context.base_url
+        or input.request.url ~= context.base_url then
+        error("canonical structured HTTP request is not bound to the ready environment")
+      end
+      table.insert(context.target_effects, {
+        kind = "http", method = input.request.method, url = input.request.url,
+      })
+      return http_request(input.request, input.timeout_seconds)
     end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
-    load_result = function(path)
-      local artifact = context.store:load(path)
+    load_result = function(request)
+      local artifact = context.store:load(request.result_ref)
       if artifact == nil then return nil end
       local value = artifact.value
       return {
@@ -558,11 +575,11 @@ function Context:_structured_runtime()
         replayed = true,
       }
     end,
-    complete_replay = function(claim, result_ref)
+    complete_replay = function(request)
       for _, stored in pairs(claims) do
-        if stored.claim_id == claim.claim_id then
+        if stored.claim_id == request.claim.claim_id then
           stored.completed = true
-          stored.result_ref = result_ref
+          stored.result_ref = request.result_ref
           return true
         end
       end
@@ -697,6 +714,7 @@ function M.new()
   require_exec({ "git", "config", "user.name", "Canonical QA Fixture" }, source_root)
   require_exec({ "git", "add", "." }, source_root)
   require_exec({ "git", "commit", "--quiet", "-m", "canonical qa fixture" }, source_root)
+  write_file(source_root .. "/source-only-uncommitted.txt", "must not enter the detached test checkout\n")
   local commit_sha = require_exec({ "git", "rev-parse", "HEAD" }, source_root):match("([0-9a-f]+)")
   local store = Store.new()
   local repository = {

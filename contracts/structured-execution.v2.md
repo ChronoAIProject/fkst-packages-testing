@@ -36,9 +36,9 @@ The fixed executor accepts only `execution_mode = "structured-api-cli"` and supp
 - `cli`: bounded direct argv, timeout, and `exit-code` assertions;
 - `http`: explicit method, credential-free query-free URL, empty inline headers, timeout, and `status-code` or `body-contains` assertions.
 
-Shell executables are unsupported. HTTP requests and CLI argv must match the positive capabilities in the authenticated grant.
+Shell executables are unsupported. HTTP requests and CLI argv must match the positive capabilities in the authenticated grant. Every CLI effect is a typed request derived from the ready receipt and binds the Environment Factory `operation_id`, opaque `workspace_ref`, immutable repository, environment digest, timeout, trace ID, and dedup key. Every HTTP effect binds the same operation and the exact loopback origin of the ready receipt `base_url`; redirects, proxy routing, non-loopback origins, and origins outside the grant are rejected.
 
-The host verifier returns an attestation bound to the grant digest, authority, policy revision, and evidence reference. An atomic replay guard claims the grant before the first target effect. Completed claims return the existing result and perform no effects or effective writes.
+The reference runtime executes direct argv in the approved working directory of the exact-commit disposable local checkout and rejects tracked-file changes before a test effect; untracked install/build outputs remain allowed. It never falls back to the Host process current directory. The host verifier returns an attestation bound to the grant digest, authority, policy revision, and evidence reference. An atomic replay guard grants execution to exactly one caller before the first target effect; concurrent redelivery observes `in-progress` and performs no effects. Completion validates the bound execution artifact and stores its digest. Completed claims return that exact result pointer and digest and perform no effects or effective writes.
 
 ## Results
 
@@ -54,4 +54,4 @@ The runner writes:
 
 FKST events carry only aggregate status, counts, and artifact pointers through `testing-runner.result.v1`, `test-artifacts.summary.v1`, and publication contracts.
 
-The host installs `structured_execution_runtime` with authenticated artifact loading, current time, grant verification, atomic replay claim/completion, direct argv and bounded HTTP effects, artifact writing, and completed-result loading. The package does not create sandboxes, resolve secrets, invoke shells, or weaken Environment Factory cleanup.
+The host installs `structured_execution_runtime` with authenticated artifact loading, current time, grant verification, atomic replay claim/completion, owner-bound local direct argv and bounded loopback HTTP effects, artifact writing, and completed-result loading. `testing_runtime.structured_execution.production()` and `libraries/testing_runtime/bin/fkst-structured-execution-runtime.js` provide the reference physical-host implementation. The package does not create sandboxes, resolve secrets, invoke shells, or weaken Environment Factory cleanup.

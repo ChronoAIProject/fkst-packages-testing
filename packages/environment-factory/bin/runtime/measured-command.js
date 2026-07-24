@@ -94,7 +94,7 @@ function runMeasuredCommand(argv, options = {}) {
       if (settled) return;
       settled = true;
       fs.rmSync(metricsPath, { force: true });
-      resolve({ exitCode: -1, metricsSupported: false, processMetricsSupported: false,
+      resolve({ exitCode: -1, pgid: child.pid, metricsSupported: false, processMetricsSupported: false,
         stdout: '', stderr: String(error.message || error), error });
     });
     child.once('close', (code, signal) => {
@@ -109,6 +109,7 @@ function runMeasuredCommand(argv, options = {}) {
       const metrics = parseMetrics(metricsText);
       resolve({
         exitCode: Number.isInteger(code) ? code : -1,
+        pgid: child.pid,
         signal,
         stdout: stdout.toString('utf8'),
         stderr: stderrText,

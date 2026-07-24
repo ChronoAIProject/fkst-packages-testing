@@ -502,6 +502,7 @@ end
 local tests = {
   test_run_traverses_plan_grant_execution_cleanup_and_terminal = function()
     local request = fixture()
+    request.publication.channel = "filesystem-dry-run-v1"
     local ports, state, put = runtime(request)
     local execution = drive_to_grant(request, ports, state, put)
     t.eq(execution[1].queue, "testing-runner.structured_execution_request")
@@ -513,7 +514,10 @@ local tests = {
     release_checkpoint(request, ports, state, "environment-factory.environment_finalize")
     local cleanup_checkpoint = core.handle_cleanup_result(finalized(request, put), request, ports)
     t.eq(cleanup_checkpoint[1].queue, "test-publication.qa_checkpoint_request")
-    release_checkpoint(request, ports, state, "test-publication.qa_finalize_request")
+    t.eq(cleanup_checkpoint[1].payload.channel, "filesystem-dry-run-v1")
+    local finalization = release_checkpoint(request, ports, state, "test-publication.qa_finalize_request")
+    t.eq(finalization[1].payload.channel, "filesystem-dry-run-v1")
+    t.eq(state().request.publication.channel, "filesystem-dry-run-v1")
     put(request.publication.aggregate_report_ref, {
       schema = "test-publication.qa-aggregate-report.v1", run_id = request.run_id,
       trace_id = request.trace_id, dedup_key = request.dedup_key,
@@ -604,6 +608,7 @@ local tests = {
       function(value) value.design_module_start.source_ref.ref = "foreign" end,
       function(value) value.structured_execution.grant_ref = ".testing/runs/foreign/grant.json" end,
       function(value) value.publication.aggregate_report_ref = ".testing/runs/foreign/report.json" end,
+      function(value) value.publication.channel = "email-v1" end,
       function(value) value.terminal_policy.mode = "package" end,
     }
     for _, mutate in ipairs(mutations) do

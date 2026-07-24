@@ -64,7 +64,7 @@ The formal full-FKST host flow is:
 7. `environment-factory` performs owner-bound cleanup and writes the cleanup receipt before `test-publication` publishes the aggregate report.
 8. The final `workflow_qa_terminal_request` is handed back to the Host terminal policy; this repository does not hard-code product labels or issue-state transitions.
 
-Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The neutral fixtures under `examples/generic-host/` show how host-owned native module, browser-driver, and UI-loop profiles can translate into these existing events without adding product facts to this repo. `examples/generic-host/host_workflow_qa_adapter.lua` additionally shows the Host-owned `qa_run_request` and single-use grant derivation/result seams.
+Product-specific profiles belong in the downstream host repository. This repository only provides reusable testing/QA building blocks and neutral contracts. The default reference composition under `examples/generic-host/` runs on the physical local host: Environment Factory creates an exact-commit disposable checkout, starts the approved services and application, and later removes the process groups, listeners, and workspace. Structured CLI execution resolves the opaque ready-receipt `workspace_ref`; it never runs in the caller's current working directory. The same fixture shows how host-owned native module, browser-driver, and UI-loop profiles translate into existing events without adding product facts to this repo. `examples/generic-host/host_workflow_qa_adapter.lua` additionally shows the Host-owned `qa_run_request` and single-use grant derivation/result seams. Run the complete local lifecycle with `scripts/run.sh example generic-host`.
 
 Reviewed execution plans use `testing-structured-plan.v2` and one closed execution mode. Fixed
 `structured-api-cli` plans route to `testing-runner.structured_execution_request`; a separate
@@ -89,7 +89,7 @@ GitHub Issue intent, acknowledgement, and per-case receipt protocol in
 fixture, harness, passed, and not-executed outcomes remain summary-only. The host maps the outbound
 Issue seam and durable issue-written acknowledgement to the pinned `github-proxy` package.
 
-For sandbox-hosted QA, `examples/opensandbox-host/` provides the provider-specific downstream adapter: it binds a pinned OpenSandbox image or snapshot, approved capability pointers, bounded resources and network policy, one idempotent sandbox receipt, artifact hashing/publication, and teardown. OpenSandbox details remain outside the reusable packages and do not change `environment-factory.v1`.
+`examples/opensandbox-host/` remains an optional, non-default provider adapter for downstream hosts that explicitly choose sandbox lifecycle ownership. It binds a pinned OpenSandbox image or snapshot, approved capability pointers, bounded resources and network policy, one idempotent sandbox receipt, artifact hashing/publication, and teardown. It is not used by the default local workflow or main CI path, and its details remain outside the reusable packages.
 
 Project startup configuration uses the separate `testing-project-profile.v1` and
 `testing-project-profile-approval.v1` contracts documented in `contracts/project-profile.v1.md`.

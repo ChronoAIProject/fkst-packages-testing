@@ -18,6 +18,7 @@ const { createListenerClaims } = require('./runtime/listener-claims');
 const { runMeasuredCommand } = require('./runtime/measured-command');
 const { listenersOwnedByProcessGroup, processGroupUsage } = require('./runtime/platform');
 const { loadState, saveState } = require('./runtime/state');
+const { resolveWorkspace } = require('./runtime/workspace');
 function durableRoot() {
   return path.resolve(process.env.FKST_DURABLE_ROOT || path.join('.testing', 'durable'));
 }
@@ -117,25 +118,8 @@ function writeDiagnostic(request, label, value) {
   return ref;
 }
 
-function workspaceRecord(workspaceRef, operationId) {
-  if (!workspaceRef || workspaceRef.kind !== 'workspace') throw new Error('workspace_ref is required');
-  const resource = readIfExists(resourcePath(workspaceRef.ref));
-  if (!resource || resource.kind !== 'workspace') throw new Error('workspace resource is unavailable');
-  if (resource.operation_id !== operationId) throw new Error('workspace ownership binding is invalid');
-  return resource;
-}
-
 function workspaceCwd(request) {
-  const workspace = workspaceRecord(request.workspace_ref, request.operation_id);
-  const working = typeof request.working_directory === 'string' ? request.working_directory : '.';
-  if (path.isAbsolute(working)) throw new Error('working_directory must be relative');
-  const workspaceRoot = fs.realpathSync(workspace.path);
-  const candidate = path.resolve(workspaceRoot, working);
-  const cwd = fs.realpathSync(candidate);
-  if (cwd !== workspaceRoot && !cwd.startsWith(`${workspaceRoot}${path.sep}`)) {
-    throw new Error('working_directory escaped workspace through a symbolic link');
-  }
-  return cwd;
+  return resolveWorkspace(request).cwd;
 }
 
 function relativeWorkspacePath(cwd, value, field) {
@@ -227,6 +211,11 @@ async function checkout(payload) {
       ref: resourceRef,
       path: workspacePath,
       workspace_ref: workspaceRef,
+      repository: {
+        url: repository.url,
+        commit_sha: repository.commit_sha,
+      },
+      working_directory: payload.working_directory,
       cleaned: false,
     });
     const commandEnvironment = minimalEnvironment(config.command_environment || {});
@@ -439,7 +428,7 @@ async function runArgvEffect(payload) {
         cwd,
         env: baseEnv,
         timeoutMs,
-        workspacePath: workspaceRecord(payload.workspace_ref, payload.operation_id).path,
+        workspacePath: resolveWorkspace(payload).workspaceRoot,
       });
       let frozenEnforced = false;
       if (frozen && result.reason === null) {
@@ -486,7 +475,7 @@ async function runArgvEffect(payload) {
     };
     const inheritedStdio = listenerNames.map((_name, index) => 3 + index);
     resourceBudgets(payload);
-    const workspacePath = workspaceRecord(payload.workspace_ref, payload.operation_id).path;
+    const workspacePath = resolveWorkspace(payload).workspaceRoot;
     const before = enforceCurrentBudgets(payload, workspacePath);
     if (!before.passed) {
       return {
@@ -633,12 +622,12 @@ async function readinessCheck(check, payload, deadline) {
   if (check.type === 'tcp') return checkTcp(check, Math.min(500, remaining));
   if (check.type === 'http') return checkHttp(check, Math.min(500, remaining));
   if (check.type === 'argv') {
-    const workspace = workspaceRecord(payload.workspace_ref, payload.operation_id);
+    const workspace = resolveWorkspace(payload);
     const result = await executeBudgetedCommand(payload, validateArgv(check.argv), {
-      cwd: workspaceCwd(payload),
+      cwd: workspace.cwd,
       env: minimalEnvironment(runtimeConfig(payload).command_environment || {}),
       timeoutMs: Math.min(2_000, remaining),
-      workspacePath: workspace.path,
+      workspacePath: workspace.workspaceRoot,
     });
     return result.reason === null && Date.now() <= deadline;
   }
@@ -665,7 +654,7 @@ async function waitReadiness(payload) {
       || !sameArray(processResource.runtime_ports, ports)) {
       throw new Error('readiness process ownership binding is invalid');
     }
-    const workspacePath = workspaceRecord(payload.workspace_ref, payload.operation_id).path;
+    const workspacePath = resolveWorkspace(payload).workspaceRoot;
     const deadline = Date.now() + Math.max(1, Number(payload.timeout_seconds) || 1) * 1000;
     let { attempts, probes, reason } = initialReadinessState(budgets, checks);
     let ready = false;

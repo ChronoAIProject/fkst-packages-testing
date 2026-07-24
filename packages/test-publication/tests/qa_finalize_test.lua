@@ -12,7 +12,7 @@ local terminal_sha = string.rep("6", 64)
 local catalog_sha = string.rep("7", 64)
 local module_plan_sha = string.rep("8", 64)
 
-local function request()
+local function request(channel)
   local root = ".testing/runs/qa-run-final"
   local value = {
     schema = "test-publication.qa-finalize.request.v2",
@@ -33,6 +33,7 @@ local function request()
   }
   value["test_" .. "plan_ref"] = root .. "/test-plan.json"
   value["test_" .. "plan_sha256"] = plan_sha
+  value.channel = channel
   return value
 end
 
@@ -162,8 +163,9 @@ local function terminal_summary(value, status, terminal_counts)
   }
 end
 
-local function runtime(mutate, supplied)
+local function runtime(mutate, supplied, options)
   local value = supplied or request()
+  options = options or {}
   local state
   local artifacts = {
     [value.terminal_summary_ref] = { digest = terminal_sha, value = terminal_summary(value) },
@@ -204,6 +206,28 @@ local function runtime(mutate, supplied)
       return { status = "written", digest = report_sha }
     end,
     publish_artifact = function(publication)
+      if publication.channel == "filesystem-dry-run-v1" then
+        local receipt_ref = value.artifact_root .. "/materializations/" .. publication.stage .. "-"
+          .. tostring(publication.attempt) .. ".json"
+        local receipt_sha256 = string.rep("4", 64)
+        if not options.missing_materialization_receipt then
+          artifacts[receipt_ref] = { digest = options.materialization_receipt_digest_mismatch
+            and string.rep("3", 64) or receipt_sha256, value = {
+            schema = "test-publication.qa-materialization-receipt.v1",
+            status = "materialized", channel = "filesystem-dry-run-v1",
+            run_id = publication.run_id,
+            stage = options.materialization_receipt_binding_mismatch and "foreign-stage" or publication.stage,
+            attempt = publication.attempt, artifact_ref = publication.artifact_ref,
+            digest = publication.digest, source_commit = commit_sha, receipt_ref = receipt_ref,
+            trace_id = publication.trace_id, dedup_key = publication.dedup_key,
+          } }
+        end
+        return {
+          status = "materialized", artifact_ref = publication.artifact_ref,
+          digest = publication.digest, source_commit = commit_sha,
+          receipt_ref = receipt_ref, receipt_sha256 = receipt_sha256,
+        }
+      end
       return {
         status = "published", digest = publication.digest, source_commit = commit_sha,
         remote_url = "https://github.com/owner/repo/blob/" .. commit_sha .. "/qa/" .. publication.stage .. ".json",
@@ -285,6 +309,51 @@ return {
     t.eq(prepared.report.counts.failed, 1)
     t.eq(prepared.report.cleanup_receipt_ref, request().cleanup_receipt_ref)
     t.eq(prepared.comment_request.handoff.stage, "aggregate-report")
+
+    local explicit_value = request("github-comment-v1")
+    local explicit = qa_publication.prepare_final_report(explicit_value, runtime(nil, explicit_value))
+    t.eq(explicit.status, "pending")
+    t.eq(explicit.report.channel, nil)
+    t.eq(explicit.report.github_publication_occurred, nil)
+    t.is_true(explicit.report.artifact_links.terminal_summary:find("https://github.com/", 1, true) ~= nil)
+  end,
+
+  test_filesystem_finalization_materializes_local_links_and_receipt_without_github = function()
+    local value = request("filesystem-dry-run-v1")
+    local ports = runtime(nil, value)
+    local prepared = qa_publication.prepare_final_report(value, ports)
+
+    t.eq(prepared.status, "published")
+    t.eq(prepared.comment_request, nil)
+    t.eq(prepared.receipt.channel, "filesystem-dry-run-v1")
+    t.eq(prepared.receipt.github_publication_occurred, false)
+    t.eq(prepared.report.channel, "filesystem-dry-run-v1")
+    t.eq(prepared.report.github_publication_occurred, false)
+    for _, link in pairs(prepared.report.artifact_links) do
+      t.is_true(link:sub(1, #value.artifact_root + 1) == value.artifact_root .. "/")
+      t.eq(link:find("github.com", 1, true), nil)
+    end
+    t.eq(ports.report_writes(), 1)
+
+    local replay = qa_publication.prepare_final_report(value, ports)
+    t.eq(replay.replayed, true)
+    t.eq(replay.status, "published")
+    t.eq(replay.comment_request, nil)
+    t.eq(replay.receipt.receipt_ref, prepared.receipt.receipt_ref)
+    t.eq(ports.report_writes(), 1)
+  end,
+
+  test_filesystem_finalization_rejects_missing_or_mismatched_materialization_receipt = function()
+    for _, options in ipairs({
+      { missing_materialization_receipt = true },
+      { materialization_receipt_digest_mismatch = true },
+      { materialization_receipt_binding_mismatch = true },
+    }) do
+      local value = request("filesystem-dry-run-v1")
+      local ports = runtime(nil, value, options)
+      t.raises(function() qa_publication.prepare_final_report(value, ports) end)
+      t.eq(ports.report_writes(), 0)
+    end
   end,
 
   test_terminal_summary_variant_writes_and_publishes_real_aggregate_report = function()

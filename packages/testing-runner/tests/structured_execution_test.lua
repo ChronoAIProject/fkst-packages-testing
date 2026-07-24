@@ -7,7 +7,10 @@ local function runtime(artifacts, options)
   local effects, writes = {}, {}
   local ports = {
     load_artifact = function(path) return artifacts[path] end,
-    now = function() return options.now or "2026-07-20T00:30:00Z" end,
+    now = function(input)
+      if options.now_request then options.now_request(input) end
+      return options.now or "2026-07-20T00:30:00Z"
+    end,
     verify_grant = function(input)
       if options.verify_grant then return options.verify_grant(input) end
       return fixtures.attestation()
@@ -16,13 +19,13 @@ local function runtime(artifacts, options)
       if options.replay_guard then return options.replay_guard(claim) end
       return { status = "claimed", claim_id = "claim-110" }
     end,
-    exec_argv = function(argv)
-      table.insert(effects, "cli:" .. table.concat(argv, " "))
+    exec_argv = function(input)
+      table.insert(effects, { kind = "cli", request = input })
       if options.exec_error then error("cli unavailable") end
       return options.exec_result or { exit_code = 0, stdout = "fixture 1.0\n", stderr = "" }
     end,
-    http_request = function(value)
-      table.insert(effects, "http:" .. value.method .. " " .. value.url)
+    http_request = function(input)
+      table.insert(effects, { kind = "http", request = input })
       if options.http_error then error("http unavailable") end
       return options.http_result or { status = 200, body = '{"status":"healthy"}', headers = {} }
     end,
@@ -31,11 +34,11 @@ local function runtime(artifacts, options)
       writes[path] = value
       return true
     end,
-    load_result = function(path)
-      if options.load_result then return options.load_result(path) end
+    load_result = function(input)
+      if options.load_result then return options.load_result(input) end
     end,
-    complete_replay = function(claim, result_ref)
-      if options.complete_replay then return options.complete_replay(claim, result_ref) end
+    complete_replay = function(input)
+      if options.complete_replay then return options.complete_replay(input) end
       return true
     end,
   }
@@ -88,7 +91,7 @@ return {
       {
         case_id = "health-api",
         kind = "http",
-        request = { method = "GET", url = "http://127.0.0.1:43110/health", headers = {} },
+        request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
         timeout_seconds = 10,
         assertions = {
           { type = "status-code", expected = 200 },
@@ -99,7 +102,7 @@ return {
     local grant = fixtures.grant(request, {
       cli = { { argv_prefix = { "fixture-cli" } } },
       http = { {
-        origin = "http://127.0.0.1:43110",
+        origin = "http://127.0.0.1:4173",
         methods = { "GET" },
         path_prefixes = { "/health" },
       } },
@@ -116,8 +119,8 @@ return {
         t.eq(claim.grant_id, "grant-110")
         return { status = "claimed", claim_id = "claim-110" }
       end,
-      complete_replay = function(claim, result_ref)
-        completed = { claim = claim, result_ref = result_ref }
+      complete_replay = function(input)
+        completed = input
         return true
       end,
     })
@@ -125,8 +128,14 @@ return {
     t.eq(result.status, "passed")
     t.eq(result.case_count, 2)
     t.eq(result.passed_count, 2)
-    t.eq(effects[1], "cli:fixture-cli --version")
-    t.eq(effects[2], "http:GET http://127.0.0.1:43110/health")
+    t.eq(effects[1].kind, "cli")
+    t.eq(effects[1].request.operation_id, request.source_ref.ref)
+    t.eq(effects[1].request.workspace_ref.kind, "workspace")
+    t.eq(effects[1].request.repository.commit_sha, request.repository.commit_sha)
+    t.eq(effects[1].request.argv[2], "--version")
+    t.eq(effects[2].kind, "http")
+    t.eq(effects[2].request.base_url, "http://127.0.0.1:4173/health")
+    t.eq(effects[2].request.request.url, "http://127.0.0.1:4173/health")
     t.is_true(type(writes[result.case_results_path]) == "table")
     t.is_true(type(writes[result.execution_path]) == "table")
     t.eq(completed.claim.claim_id, "claim-110")

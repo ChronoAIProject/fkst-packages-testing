@@ -10,4 +10,9 @@ if (process.argv[2] !== "--version") {
   process.exit(3);
 }
 
+if (fs.existsSync("source-only-uncommitted.txt")) {
+  process.stderr.write("test execution leaked the source working directory\n");
+  process.exit(4);
+}
+
 process.stdout.write("canonical-qa-fixture/1.0.0\n");

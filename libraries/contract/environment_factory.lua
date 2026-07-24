@@ -696,6 +696,9 @@ function E.validate_receipt(value)
     end
   end
   if value.status == "ready" then
+    if type(value.workspace_ref) ~= "table" or value.workspace_ref.kind ~= "workspace" then
+      fail("missing-workspace-ref", "ready receipt requires an owned workspace_ref")
+    end
     if value.browser_readiness == nil or value.browser_readiness.status ~= "ready" then
       fail("missing-browser-readiness", "ready receipt requires a successful browser readiness proof")
     end

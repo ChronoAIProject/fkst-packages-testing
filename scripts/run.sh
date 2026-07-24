@@ -75,7 +75,7 @@ PY
 
 usage() {
   cat <<'EOF'
-usage: scripts/run.sh <check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host> [args]
+usage: scripts/run.sh <check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|external-host|supervise|host> [args]
 
   check               single-platform-pin guard + shared source ratchets + per-package engine
                       conformance (flat -> single-root; composed -> closed-world over its graph)
@@ -86,6 +86,7 @@ usage: scripts/run.sh <check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke
   ai-pipeline-smoke   run the hermetic AI authoring/review/CDP handoff smoke across pipeline seams
   live-cdp-smoke      run the environment-gated testing_runtime smoke against local Chrome/CDP
   example <name>      run a downstream integration fixture from examples/<name>
+  external-host <root> copy an absolute external host into a temporary generic-host composition and test it
   supervise <pkg>     run one testing package's event machine (composed packages run closed-world
                       across their declared graph; flat packages dry-run until skills are pinned)
   host -- <command>   delegate repository-level check, test, or supervise to the pinned read-only
@@ -379,11 +380,12 @@ resolve_composed_root() {
 
 copy_tree() {
   local src="$1" dest="$2" exclude_tests="${3:-0}"
-  mkdir -p "$dest"
+  mkdir -p "$dest" || return 1
   if [ "$exclude_tests" = "1" ]; then
-    (cd "$src" && LC_ALL=C tar --exclude './tests/*_test.lua' --exclude 'tests/*_test.lua' -cf - .) | (cd "$dest" && LC_ALL=C tar xf -)
+    (cd "$src" && LC_ALL=C tar --exclude './tests/*_test.lua' --exclude 'tests/*_test.lua' -cf - .) \
+      | (cd "$dest" && LC_ALL=C tar xf -) || return 1
   else
-    (cd "$src" && LC_ALL=C tar -cf - .) | (cd "$dest" && LC_ALL=C tar xf -)
+    (cd "$src" && LC_ALL=C tar -cf - .) | (cd "$dest" && LC_ALL=C tar xf -) || return 1
   fi
 }
 
@@ -391,7 +393,7 @@ copy_repo_libraries() {
   local work="$1" lib
   for lib in "$ROOT"/libraries/*/ "$ROOT"/.fkst/local-libraries/*/; do
     [ -d "$lib" ] || continue
-    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0
+    copy_tree "${lib%/}" "$work/libraries/$(basename "$lib")" 0 || return 1
   done
 }
 
@@ -433,8 +435,10 @@ TOML
 composed_test_workspace() {
   local name="$1" roots="$2" work t src dep_name source_root
   source_root="${3:-$ROOT/packages/$name}"
-  work="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-composed.XXXXXX")"
-  mkdir -p "$work/packages" "$work/libraries"
+  work="$(mktemp -d "${TEST_RT:-${TMPDIR:-/tmp}}/fkst-testing-composed.XXXXXX")" || return 1
+  FKST_COMPOSED_WORKSPACE_CLEANUP="$work"; trap 'rm -rf "$FKST_COMPOSED_WORKSPACE_CLEANUP"' EXIT
+  work="$(cd "$work" && pwd -P)" || return 1; FKST_COMPOSED_WORKSPACE_CLEANUP="$work"
+  mkdir -p "$work/packages" "$work/libraries" || return 1
   cat > "$work/fkst.workspace.toml" <<'TOML'
 [workspace]
 units = ["packages/*", "libraries/*"]
@@ -444,30 +448,30 @@ libraries = ["libraries/*"]
 [registries]
 workspace = "workspace"
 TOML
-  copy_repo_libraries "$work"
+  copy_repo_libraries "$work" || return 1
   # Repo-owned library names win over source-scoped forge/devloop; copy missing platform libraries
   # so composed package tests close the same library graph as host conformance.
   for dep_name in forge devloop; do
     [ -d "$work/libraries/$dep_name" ] && continue
     [ -d "$shared/libraries/$dep_name" ] || {
       echo "error: pinned platform library missing: $dep_name" >&2
-      rm -rf "$work"
       return 1
     }
-    copy_tree "$shared/libraries/$dep_name" "$work/libraries/$dep_name" 0
+    copy_tree "$shared/libraries/$dep_name" "$work/libraries/$dep_name" 0 || return 1
   done
-  copy_tree "$source_root" "$work/packages/$name" 0
+  copy_tree "$source_root" "$work/packages/$name" 0 || return 1
   for t in $roots; do
     src="$(resolve_composed_root "$t")"
     dep_name="${t#@platform/}"
     [ -d "$src" ] || {
       echo "error: composed root '$t' -> $src not found (hydrate the pin / check packages/)" >&2
-      rm -rf "$work"
       return 1
     }
-    copy_tree "$src" "$work/packages/$dep_name" 1
+    copy_tree "$src" "$work/packages/$dep_name" 1 || return 1
   done
-  printf '%s\n' "$work"
+  printf '%s\n' "$work" || return 1
+  trap - EXIT
+  unset FKST_COMPOSED_WORKSPACE_CLEANUP
 }
 
 # Run an engine subcommand (conformance|supervise) for one package with the correct scope:
@@ -579,7 +583,7 @@ run_node_runtime_tests() {
     node --test "$ROOT/packages/module-test-loop/tests/node_runtime_test.js"
   fi
   if [ -z "$target" ] || [ "$target" = "testing-runner" ]; then
-    node --test "$ROOT/libraries/testing_runtime/tests/browser_control_test.js"
+    node --test "$ROOT/libraries/testing_runtime/tests/browser_control_test.js" "$ROOT/libraries/testing_runtime/tests/structured_execution_runtime_test.js"
   fi
 }
 
@@ -808,12 +812,16 @@ cmd_live_cdp_smoke() {
   return "$rc"
 }
 
+generic_host_closed_world_roots() {
+  printf '%s\n' "environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/consensus @platform/github-proxy"
+}
+
 cmd_example() {
   local name="${1:-generic-host}" example roots work args t
   example="$ROOT/examples/$name"
   [ -d "$example" ] || { echo "error: no example named '$name' under examples/" >&2; exit 1; }
   resolve_testing_bin
-  roots="environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/consensus @platform/github-proxy"
+  roots="$(generic_host_closed_world_roots)"
   work="$(composed_test_workspace "$name" "$roots" "$example")" || return 1
   args=(--project-root "$work" --package-root "$work/packages/$name")
   for t in $roots; do
@@ -821,6 +829,42 @@ cmd_example() {
   done
   echo "example $name (closed-world: $roots)"
   FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 run_engine "$BIN" test "${args[@]}"
+}
+
+cmd_external_host() {
+  local requested_host_root="${1:-}" host_root repo_root roots work args t
+  [ "$#" -eq 1 ] || { echo "usage: scripts/run.sh external-host <absolute-host-root>" >&2; return 2; }
+  case "$requested_host_root" in
+    /*) ;;
+    *) echo "error: external host root must be an absolute path: $requested_host_root" >&2; return 2 ;;
+  esac
+  [ -d "$requested_host_root" ] || { echo "error: external host root does not exist: $requested_host_root" >&2; return 1; }
+  host_root="$(cd "$requested_host_root" && pwd -P)" || return 1
+  repo_root="$(cd "$ROOT" && pwd -P)" || return 1
+  case "$host_root/" in
+    "$repo_root/packages/"*|"$repo_root/libraries/"*)
+      echo "error: external host root may not be within this repository's packages/ or libraries/: $host_root" >&2
+      return 1
+      ;;
+  esac
+  [ -f "$host_root/fkst.toml" ] || {
+    echo "error: external host root must contain fkst.toml: $host_root" >&2
+    return 1
+  }
+
+  resolve_testing_bin
+  roots="$(generic_host_closed_world_roots)"
+  work="$(composed_test_workspace "external-host" "$roots" "$host_root")" || return 1
+  args=(--project-root "$work" --package-root "$work/packages/external-host")
+  for t in $roots; do
+    args+=(--package-root "$work/packages/${t#@platform/}")
+  done
+  echo "external host $host_root (closed-world: $roots)"
+  (
+    trap 'rm -rf "$work"' EXIT
+    FKST_EXTERNAL_HOST_PROJECT_ROOT="$work" FKST_EXTERNAL_HOST_PACKAGE_ROOT="$work/packages/external-host" \
+      FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 run_engine "$BIN" test "${args[@]}"
+  )
 }
 
 cmd_supervise() {
@@ -923,7 +967,7 @@ if [ "${BASH_SOURCE[0]}" != "$0" ]; then
 fi
 
 case "${1:-}" in
-  check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|supervise|host) ;;
+  check|test|test-affected|ai-pipeline-smoke|live-cdp-smoke|example|external-host|supervise|host) ;;
   -h|--help|help|"") usage; exit 0 ;;
   *) echo "unknown subcommand: $1" >&2; usage >&2; exit 2 ;;
 esac
@@ -950,6 +994,7 @@ case "$sub" in
   ai-pipeline-smoke) cmd_ai_pipeline_smoke ;;
   live-cdp-smoke) cmd_live_cdp_smoke ;;
   example) cmd_example "$@" ;;
+  external-host) cmd_external_host "$@" ;;
   supervise) cmd_supervise "$@" ;;
   host) cmd_host "$@" ;;
 esac

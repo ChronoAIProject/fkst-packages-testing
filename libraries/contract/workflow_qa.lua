@@ -173,9 +173,13 @@ function M.validate_request(value)
   end
 
   only_fields(value.publication, {
-    ledger_ref = true, defect_ledger_ref = true, defect_receipt_ref = true,
+    channel = true, ledger_ref = true, defect_ledger_ref = true, defect_receipt_ref = true,
     issue_drafts_ref = true, aggregate_report_ref = true, terminal_summary_ref = true,
   }, "publication")
+  if value.publication.channel ~= nil and value.publication.channel ~= "github-comment-v1"
+    and value.publication.channel ~= "filesystem-dry-run-v1" then
+    fail("malformed-publication", "channel is unsupported")
+  end
   for _, field in ipairs({
     "ledger_ref", "defect_ledger_ref", "defect_receipt_ref", "issue_drafts_ref",
     "aggregate_report_ref", "terminal_summary_ref",

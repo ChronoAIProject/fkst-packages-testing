@@ -267,8 +267,8 @@ local function request_fixture(ctx, ports, commit_sha)
       start_seconds = 5,
       readiness_seconds = 10,
       cleanup_seconds = 5,
-      total_seconds = 120,
-      receipt_ttl_seconds = 120,
+      total_seconds = 300,
+      receipt_ttl_seconds = 300,
     },
     resource_budgets = {
       cpu_millis = 64000,

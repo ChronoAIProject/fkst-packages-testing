@@ -291,6 +291,7 @@ local function recover_authorized_state(request, ports, existing, remember)
     effect_id = effect_id(state, "checkout"),
     operation_id = state.operation_id,
     repository = copy(state.profile_snapshot.repository),
+    working_directory = state.profile_snapshot.working_directory,
     artifact_root = state.artifact_root,
   }, effect_budget(state, ports, state.profile_snapshot.timeouts.start_seconds, false)))
   local previous_workspace_ref = state.workspace_ref and copy(state.workspace_ref) or nil

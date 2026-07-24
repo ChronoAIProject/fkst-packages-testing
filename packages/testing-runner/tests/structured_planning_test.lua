@@ -126,6 +126,15 @@ return {
         artifacts[request.environment_receipt_ref].value.repository.url = "https://github.com/other/repo.git"
         artifacts[request.environment_receipt_ref].value.repository.commit_sha = string.rep("9", 40)
       end,
+      function(request, artifacts) artifacts[request.environment_receipt_ref].value.workspace_ref = nil end,
+      function(request, artifacts)
+        local environment = artifacts[request.environment_receipt_ref].value
+        environment.base_url = "https://127.0.0.1:4173/health"
+        environment.browser_readiness.correlation.base_url = environment.base_url
+      end,
+      function(request, artifacts)
+        artifacts[request.case_catalog_ref].value.cases[1].request.url = "http://127.0.0.1:43110/health"
+      end,
       function(request, artifacts) artifacts[request.browser_readiness_ref].value.source_ref.ref = "foreign" end,
     }
     for _, mutate in ipairs(mutations) do
@@ -162,7 +171,9 @@ return {
   test_production_ports_fail_closed_and_return_complete_runtime = function()
     local previous = _G.structured_execution_runtime
     _G.structured_execution_runtime = nil
-    t.raises(function() planning.production_ports() end)
+    local defaults = planning.production_ports()
+    t.is_true(type(defaults.load_artifact) == "function")
+    t.is_true(type(defaults.write_artifact) == "function")
     _G.structured_execution_runtime = { load_artifact = function() end }
     t.raises(function() planning.production_ports() end)
     local runtime = { load_artifact = function() end, write_artifact = function() end }

@@ -16,7 +16,7 @@ const config = JSON.parse(await readFile(configPath, 'utf8'));
 const sdk = await createOpenSandboxSdk({
   domain,
   apiKey: process.env.OPEN_SANDBOX_API_KEY,
-  useServerProxy: true,
+  useServerProxy: process.env.OPEN_SANDBOX_USE_SERVER_PROXY !== '0',
   requestTimeoutSeconds: 60,
 });
 const ledger = new FilesystemRunLedger(process.env.FKST_OPENSANDBOX_LEDGER_ROOT ?? '.testing/opensandbox-host-ledger');

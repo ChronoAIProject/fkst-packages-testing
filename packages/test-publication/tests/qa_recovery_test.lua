@@ -4,8 +4,8 @@ local t = fkst.test
 local commit_sha = string.rep("1", 40)
 local artifact_sha = string.rep("a", 64)
 
-local function request(stage)
-  return {
+local function request(stage, channel)
+  local value = {
     schema = "test-publication.qa-checkpoint.request.v1",
     repository = { slug = "owner/repo", commit_sha = commit_sha },
     run_id = "qa-recovery", issue_number = 107, stage = stage or "environment-ready",
@@ -14,11 +14,14 @@ local function request(stage)
     artifact_sha256 = artifact_sha, ledger_ref = ".testing/runs/qa-recovery/run-ledger.json",
     trace_id = "trace-recovery", dedup_key = "dedup-recovery",
   }
+  value.channel = channel
+  return value
 end
 
 local function runtime(options)
   options = options or {}
   local state
+  local artifacts = {}
   local saves, writes, publishes = 0, 0, 0
   return {
     load_ledger = function() return state end,
@@ -32,12 +35,37 @@ local function runtime(options)
     publish_artifact = function(value)
       publishes = publishes + 1
       if options.publish_failure then return { status = "blocked" } end
+      if value.channel == "filesystem-dry-run-v1" then
+        local receipt_ref = ".testing/runs/qa-recovery/materializations/" .. value.stage .. "-1.json"
+        local receipt_sha256 = string.rep("b", 64)
+        if not options.missing_receipt then
+          artifacts[receipt_ref] = { digest = options.receipt_digest_mismatch and string.rep("c", 64)
+            or receipt_sha256, value = {
+            schema = "test-publication.qa-materialization-receipt.v1",
+            status = "materialized", channel = "filesystem-dry-run-v1",
+            run_id = value.run_id, stage = options.receipt_binding_mismatch and "intake" or value.stage,
+            attempt = value.attempt, artifact_ref = value.artifact_ref, digest = value.digest,
+            source_commit = commit_sha, receipt_ref = receipt_ref,
+            trace_id = value.trace_id, dedup_key = value.dedup_key,
+          } }
+        end
+        return {
+          status = "materialized",
+          artifact_ref = options.foreign_artifact_ref or value.artifact_ref,
+          digest = options.digest_mismatch and string.rep("0", 64) or value.digest,
+          source_commit = commit_sha,
+          receipt_ref = receipt_ref,
+          receipt_sha256 = receipt_sha256,
+          remote_url = options.remote_url,
+        }
+      end
       return {
         status = "published", digest = value.digest, source_commit = commit_sha,
         remote_url = "https://github.com/owner/repo/blob/" .. commit_sha .. "/qa/" .. value.stage .. ".json",
         receipt_ref = ".testing/runs/qa-recovery/publication/" .. value.stage .. "-1.json",
       }
     end,
+    load_artifact = function(path) return artifacts[path] end,
     write_artifact = function()
       writes = writes + 1
       return options.write_failure ~= true
@@ -61,6 +89,57 @@ return {
       mutate(value)
       t.raises(function() qa_publication.validate_checkpoint_request(value) end)
     end
+  end,
+
+  test_filesystem_rejects_digest_mismatch_stale_checkpoint_and_cross_run_pointers = function()
+    local digest_mismatch = runtime({ digest_mismatch = true })
+    t.raises(function()
+      qa_publication.prepare_checkpoint(request("environment-ready", "filesystem-dry-run-v1"), digest_mismatch)
+    end)
+    local saves, writes = digest_mismatch.counts()
+    t.eq(saves, 0)
+    t.eq(writes, 0)
+
+    local stale = runtime()
+    qa_publication.prepare_checkpoint(request("environment-ready", "filesystem-dry-run-v1"), stale)
+    t.raises(function()
+      qa_publication.prepare_checkpoint(request("intake", "filesystem-dry-run-v1"), stale)
+    end)
+
+    local cross_run = request("environment-ready", "filesystem-dry-run-v1")
+    cross_run.artifact_root = ".testing/runs/foreign"
+    cross_run.artifact_ref = cross_run.artifact_root .. "/environment-ready.json"
+    cross_run.ledger_ref = cross_run.artifact_root .. "/run-ledger.json"
+    t.raises(function() qa_publication.prepare_checkpoint(cross_run, runtime()) end)
+  end,
+
+  test_filesystem_rejects_missing_or_mismatched_materialization_receipt = function()
+    for _, options in ipairs({
+      { missing_receipt = true },
+      { receipt_digest_mismatch = true },
+      { receipt_binding_mismatch = true },
+    }) do
+      local ports = runtime(options)
+      t.raises(function()
+        qa_publication.prepare_checkpoint(request("environment-ready", "filesystem-dry-run-v1"), ports)
+      end)
+      local saves, writes = ports.counts()
+      t.eq(saves, 0)
+      t.eq(writes, 0)
+    end
+  end,
+
+  test_filesystem_rejects_remote_url_and_changed_replay = function()
+    t.raises(function()
+      qa_publication.prepare_checkpoint(request("environment-ready", "filesystem-dry-run-v1"),
+        runtime({ remote_url = "https://github.com/owner/repo/blob/fabricated" }))
+    end)
+
+    local ports = runtime()
+    qa_publication.prepare_checkpoint(request("environment-ready", "filesystem-dry-run-v1"), ports)
+    local changed = request("environment-ready", "filesystem-dry-run-v1")
+    changed.artifact_sha256 = string.rep("b", 64)
+    t.raises(function() qa_publication.prepare_checkpoint(changed, ports) end)
   end,
 
   test_partial_publication_and_cas_failure_leave_no_effective_checkpoint = function()

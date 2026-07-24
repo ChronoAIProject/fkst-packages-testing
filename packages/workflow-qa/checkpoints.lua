@@ -28,7 +28,7 @@ local function action(queue, payload)
 end
 
 local function checkpoint_request(state, stage, attempt, status, artifact_ref, counts)
-  return {
+  local request = {
     schema = "test-publication.qa-checkpoint.request.v1",
     repository = {
       slug = state.request.repository.slug,
@@ -47,6 +47,10 @@ local function checkpoint_request(state, stage, attempt, status, artifact_ref, c
     dedup_key = state.request.dedup_key,
     counts = copy(counts),
   }
+  if state.request.publication.channel ~= nil then
+    request.channel = state.request.publication.channel
+  end
+  return request
 end
 
 local function receipt_ref(state, stage, attempt)

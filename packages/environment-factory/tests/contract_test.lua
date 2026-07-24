@@ -304,6 +304,8 @@ return {
     for _, mutate in ipairs({
       function(v) v.repository.resolved_commit = v.repository.commit_sha end,
       function(v) v.repository.commit_sha = nil end,
+      function(v) v.workspace_ref = nil end,
+      function(v) v.workspace_ref.kind = "artifact" end,
       function(v) v.browser_readiness = nil end,
       function(v) v.browser_readiness.correlation.operation_id = "foreign" end,
       function(v) v.cleanup_receipt_ref = { kind = "artifact", ref = ".testing/runs/op/cleanup-receipt-pending.json" } end,

@@ -730,6 +730,9 @@ prepare_finalization = function(state, ports)
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
+  if request.publication.channel ~= nil then
+    final.channel = request.publication.channel
+  end
   if state.artifacts.structured_plan_ref ~= nil and state.artifacts.case_results_ref ~= nil then
     final.test_plan_ref = state.artifacts.structured_plan_ref
     final.test_plan_sha256 = state.digests[state.artifacts.structured_plan_ref]

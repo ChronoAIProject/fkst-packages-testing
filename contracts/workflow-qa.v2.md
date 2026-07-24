@@ -6,11 +6,16 @@ The formal host-owned lifecycle is:
 
 `project profile + one-use approval -> qa_run_request -> environment ready receipt -> testing design -> browser session readiness -> module-testing-pipeline -> module-test-loop -> testing-runner -> pointer-only artifact summary -> defect/checkpoint publication -> verified environment cleanup -> aggregate report -> host terminal policy`
 
+The reference Host executes this lifecycle on the physical local machine in an exact-commit disposable
+checkout. Environment Factory, the target services, structured execution, and browser control share the
+same loopback namespace. Execution placement is a Host runtime choice and is not added to the durable
+workflow request or phase state.
+
 The durable workflow phases are:
 
 `intake checkpoint -> environment-pending -> environment-ready checkpoint -> analysis-pending -> design checkpoint -> browser-readiness-pending -> browser-readiness checkpoint -> module-pending -> design-closure checkpoint -> structured-plan-pending -> execution-grant-pending -> selected execution -> artifact-summary-pending -> execution/defect checkpoints -> cleanup-pending -> cleanup checkpoint -> publication-pending -> terminal`
 
-The run request binds the repository slug and credential-free URL, immutable commit, issue, run ID, artifact and state roots, user seed cases, Environment Factory start, design request, structured execution pointers, publication pointers, terminal policy, trace ID, and dedup key. Changed replay input fails closed. Product names, commands, endpoints, and credentials remain in the downstream Host project profile and approval material.
+The run request binds the repository slug and credential-free URL, immutable commit, issue, run ID, artifact and state roots, user seed cases, Environment Factory start, design request, structured execution pointers, publication pointers and optional closed publication channel, terminal policy, trace ID, and dedup key. Omitted `publication.channel` retains `github-comment-v1`; `filesystem-dry-run-v1` is the only alternate channel. The selected channel is retained in durable state and copied to every checkpoint and finalization request. Changed replay input fails closed. Product names, commands, endpoints, and credentials remain in the downstream Host project profile and approval material.
 
 ## Planning and grant
 

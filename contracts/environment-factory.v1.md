@@ -29,8 +29,9 @@ trace ID, and dedup key. Ready, blocked, finalized, cancelled, and interrupted r
 immutable paths. Later transitions never overwrite a receipt referenced by an earlier result. The
 `environment-factory.receipt.v2` ready artifact carries the canonical repository shape
 `{ url, commit_sha }` and the sanitized successful `browser-readiness.result.v1` under
-`browser_readiness`; it never uses `resolved_commit` as public repository identity. For agentic
-browser execution, the readiness correlation additionally binds the immutable readiness-attempt digest
+`browser_readiness`; it also carries an opaque owner-bound `workspace_ref` that is required for any
+local test effect and never exposes the physical checkout path. It never uses `resolved_commit` as
+public repository identity. For agentic browser execution, the readiness correlation additionally binds the immutable readiness-attempt digest
 and exact CDP target ID/digest used by the downstream single-use browser grant.
 
 ## Authorization and state integrity
@@ -68,7 +69,9 @@ resource, therefore the last released during reverse cleanup.
 
 Checkout is the next deduplicated effect and uses only the trusted returned profile snapshot. A
 failed checkout must report any partially acquired workspace and cleanup reference. The factory
-checkpoints that handle before returning a blocked result and unwinds it with the port claim.
+checkpoints that handle before returning a blocked result and unwinds it with the port claim. The
+workspace resource binds the exact repository commit and approved working directory; downstream local
+test runtimes must resolve that opaque capability and may not fall back to their current directory.
 
 ## Lifecycle
 

@@ -1,5 +1,9 @@
 # OpenSandbox FKST host adapter
 
+This is an optional, non-default provider example. The reference workflow runs on the physical local
+host through `examples/generic-host/`; use this adapter only when a downstream host explicitly opts
+into OpenSandbox lifecycle ownership.
+
 This downstream example owns OpenSandbox-specific lifecycle behavior without changing the reusable
 testing packages or `environment-factory.v1`.
 
