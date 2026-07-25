@@ -146,7 +146,15 @@ class RunnerWorkspace:
         checkout.mkdir(parents=True)
         self.write(
             ".fkst/run/fkst-packages-conformance/scripts/check_repo.py",
-            "raise SystemExit(1 if __import__('os').environ.get('FAKE_SOURCE_RATCHET_FAIL') == '1' else 0)\n",
+            dedent(
+                """
+                import os
+
+                if os.environ.get("FAKE_SOURCE_RATCHET_FAIL") == "1":
+                    print("fixture source ratchet failed")
+                    raise SystemExit(17)
+                """
+            ),
         )
         self.write(
             ".fkst/run/fkst-packages-conformance/scripts/bin_bootstrap.sh",
@@ -492,6 +500,21 @@ class RunnerContractTest(unittest.TestCase):
         self.assertIsNone(record["supervisor_pid"])
         self.assertFalse(Path(record["runtime_root"]).exists())
         self.assertFalse(Path(record["durable_root"]).exists())
+
+    def test_source_ratchet_failure_skips_package_tests_and_cleans_hermetic_roots(self) -> None:
+        fixture = self.workspace()
+        result = fixture.run("test", "flat-one", extra_env={"FAKE_SOURCE_RATCHET_FAIL": "1"})
+
+        self.assert_failure(result)
+        self.assertIn("fixture source ratchet failed", result.stdout)
+        self.assertIn("FAILED: check", result.stdout)
+        self.assertEqual(fixture.records("test"), [])
+        self.assertEqual(fixture.coverage_records(), [])
+        conformance = fixture.records("conformance")
+        self.assertGreater(len(conformance), 0)
+        for record in conformance:
+            self.assertFalse(Path(record["runtime_root"]).exists())
+            self.assertFalse(Path(record["durable_root"]).exists())
 
     def test_host_checks_use_hermetic_environment_and_cleanup_after_success(self) -> None:
         for arguments in (("host", "--", "check"), ("host", "--", "test")):

@@ -311,6 +311,34 @@ return {
     t.raises(function() adapter.handle_execution_grant(request, ports) end)
   end,
 
+  test_failed_grant_write_emits_no_result_and_is_not_replayed = function()
+    local request, materials = fixture()
+    local ports, artifacts, _, claims = runtime(request, materials)
+    local write_attempts = 0
+    ports.write_artifact = function()
+      write_attempts = write_attempts + 1
+      return false
+    end
+
+    local first_result
+    local first_ok = pcall(function()
+      first_result = adapter.handle_execution_grant(request, ports)
+    end)
+    t.eq(first_ok, false)
+    t.eq(first_result, nil)
+    t.eq(artifacts[request.grant_ref], nil)
+
+    local replay_result
+    local replay_ok = pcall(function()
+      replay_result = adapter.handle_execution_grant(request, ports)
+    end)
+    t.eq(replay_ok, false)
+    t.eq(replay_result, nil)
+    t.eq(artifacts[request.grant_ref], nil)
+    t.eq(write_attempts, 2)
+    t.eq(claims(), 2)
+  end,
+
   test_terminal_validates_publication_report_and_cleanup_before_recording = function()
     local request, materials = fixture()
     local ports, _, _, _, recorded = runtime(request, materials)
