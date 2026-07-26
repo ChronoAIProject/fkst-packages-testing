@@ -81,6 +81,26 @@ return {
     end)
   end,
 
+  test_rejects_absent_http_method_capability_and_non_loopback_origin = function()
+    local request = fixtures.request()
+    local authorization = preauthorization(request)
+    local plan = fixtures.plan(request, { {
+      case_id = "health-post", kind = "http", timeout_seconds = 10,
+      request = { method = "POST", url = "http://127.0.0.1:4173/health", headers = {} },
+      assertions = { { type = "status-code", expected = 200 } },
+    } })
+
+    local allowed, case_id = contract.plan_within_capabilities(plan, authorization.capabilities)
+    t.eq(allowed, false)
+    t.eq(case_id, "health-post")
+    t.raises(function()
+      contract.derive_grant(authorization, fixtures.digest_authorization,
+        plan, request.test_plan_sha256, request.environment_receipt_sha256,
+        grant_request(request), values())
+    end)
+    t.eq(contract.local_http_origin("http://192.0.2.1:4173/health"), nil)
+  end,
+
   test_rejects_foreign_catalog_or_environment_binding = function()
     local request = fixtures.request()
     local plan = fixtures.plan(request)

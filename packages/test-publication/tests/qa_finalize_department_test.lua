@@ -4,8 +4,7 @@ local t = fkst.test
 
 local commit_sha = string.rep("1", 40)
 
-return {
-  test_finalize_department_raises_reconciled_host_github_request = function()
+local function run_finalize(channel)
     local root = ".testing/runs/qa-finalize-department"
     local plan_sha, results_sha = string.rep("b", 64), string.rep("c", 64)
     local environment_sha, cleanup_sha = string.rep("d", 64), string.rep("e", 64)
@@ -33,6 +32,7 @@ return {
       },
     }
     local state
+    local writes = {}
     local artifacts = {
       [root .. "/terminal-summary.json"] = { digest = terminal_sha, value = {
         schema = "workflow-qa.terminal-summary.v2", status = "passed", repository = repository,
@@ -93,12 +93,30 @@ return {
         load_ledger = function() return state end,
         save_ledger = function(_, value) state = value return true end,
         load_artifact = function(path) return artifacts[path] end,
-        write_artifact = function() return true end,
+        write_artifact = function(path, value) writes[path] = value return true end,
         write_report = function(path, value)
           artifacts[path] = { digest = report_sha, value = value }
           return { status = "written", digest = report_sha }
         end,
         publish_artifact = function(value)
+          if value.channel == "filesystem-dry-run-v1" then
+            local receipt_ref = root .. "/materializations/" .. value.stage .. "-"
+              .. tostring(value.attempt) .. ".json"
+            local receipt_sha256 = string.rep("4", 64)
+            artifacts[receipt_ref] = { digest = receipt_sha256, value = {
+              schema = "test-publication.qa-materialization-receipt.v1",
+              status = "materialized", channel = "filesystem-dry-run-v1",
+              run_id = value.run_id, stage = value.stage, attempt = value.attempt,
+              artifact_ref = value.artifact_ref, digest = value.digest,
+              source_commit = commit_sha, receipt_ref = receipt_ref,
+              trace_id = value.trace_id, dedup_key = value.dedup_key,
+            } }
+            return {
+              status = "materialized", artifact_ref = value.artifact_ref,
+              digest = value.digest, source_commit = commit_sha,
+              receipt_ref = receipt_ref, receipt_sha256 = receipt_sha256,
+            }
+          end
           return {
             status = "published", digest = value.digest, source_commit = commit_sha,
             remote_url = "https://github.com/owner/repo/blob/" .. commit_sha .. "/qa/" .. value.stage .. ".json",
@@ -122,11 +140,30 @@ return {
         cleanup_receipt_sha256 = cleanup_sha,
         aggregate_report_ref = root .. "/aggregate-report.json",
         trace_id = trace_id, dedup_key = dedup_key,
+        channel = channel,
       },
     })
 
+    return trace, writes
+end
+
+return {
+  test_finalize_department_raises_only_reconciled_host_github_request = function()
+    local trace, writes = run_finalize()
+    t.eq(#trace.raises, 1)
     t.eq(trace.raises[1].queue, "github_issue_comment_request")
     t.eq(trace.raises[1].payload.schema, "github-proxy.v1")
     t.is_true(trace.raises[1].payload.body:find("planned=1 executed=1", 1, true) ~= nil)
+    t.eq(next(writes), nil)
+  end,
+
+  test_finalize_department_raises_only_durable_filesystem_receipt = function()
+    local trace, writes = run_finalize("filesystem-dry-run-v1")
+    t.eq(#trace.raises, 1)
+    t.eq(trace.raises[1].queue, "qa_publication_receipt")
+    t.eq(trace.raises[1].payload.schema, "test-publication.qa-publication-receipt.v2")
+    t.eq(trace.raises[1].payload.channel, "filesystem-dry-run-v1")
+    t.eq(trace.raises[1].payload.github_publication_occurred, false)
+    t.is_true(type(writes[trace.raises[1].payload.receipt_ref]) == "table")
   end,
 }

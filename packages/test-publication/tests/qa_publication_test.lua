@@ -117,6 +117,21 @@ return {
     t.eq(replay.receipt.receipt_ref, prepared.receipt.receipt_ref)
   end,
 
+  test_filesystem_checkpoint_receipt_write_failure_does_not_advance_ledger = function()
+    local runtime = ports()
+    runtime.write_artifact = function() return false end
+    local prepared
+
+    local ok = pcall(function()
+      prepared = qa_publication.prepare_checkpoint(request("filesystem-dry-run-v1"), runtime)
+    end)
+    t.eq(ok, false)
+    t.eq(prepared, nil)
+    t.eq(runtime.state(), nil)
+    t.eq(runtime.writes[request().artifact_root
+      .. "/publication-receipts/environment-ready-1.json"], nil)
+  end,
+
   test_comment_acknowledgement_writes_durable_checkpoint_receipt = function()
     local runtime = ports()
     local prepared = qa_publication.prepare_checkpoint(request(), runtime)

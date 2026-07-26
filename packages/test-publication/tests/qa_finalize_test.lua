@@ -295,6 +295,38 @@ return {
     t.raises(function() qa_publication.prepare_final_report(request(), foreign_environment) end)
   end,
 
+  test_final_report_rejects_malformed_environment_receipt = function()
+    local ports = runtime(function(artifacts, value)
+      artifacts[value.environment_receipt_ref].value.schema = "unknown"
+    end)
+    t.raises(function() qa_publication.prepare_final_report(request(), ports) end)
+  end,
+
+  test_final_report_rejects_malformed_cleanup_receipt = function()
+    local ports = runtime(function(artifacts, value)
+      artifacts[value.cleanup_receipt_ref].value.schema = "unknown"
+    end)
+    t.raises(function() qa_publication.prepare_final_report(request(), ports) end)
+  end,
+
+  test_full_finalization_rejects_valid_non_ready_environment = function()
+    local ports = runtime(function(artifacts, value)
+      artifacts[value.environment_receipt_ref].value = environment_receipt(value, "blocked")
+    end)
+    t.raises(function() qa_publication.prepare_final_report(request(), ports) end)
+  end,
+
+  test_terminal_finalization_rejects_inconsistent_cleanup_binding = function()
+    local value = terminal_request()
+    local ports = runtime(function(artifacts)
+      local environment = environment_receipt(value, "blocked")
+      environment.cleanup_receipt_ref.ref = value.artifact_root
+        .. "/foreign/cleanup-receipt-complete.json"
+      artifacts[value.environment_receipt_ref].value = environment
+    end, value)
+    t.raises(function() qa_publication.prepare_final_report(value, ports) end)
+  end,
+
   test_final_report_reconciles_terminal_cases_and_verified_cleanup = function()
     local ports = runtime()
     local prepared = qa_publication.prepare_final_report(request(), ports)
@@ -488,8 +520,6 @@ return {
       function(artifacts, value) artifacts[value.terminal_summary_ref].value.browser_readiness_sha256 = nil end,
       function(artifacts, value) artifacts[value.terminal_summary_ref].value.case_results_ref = value.artifact_root .. "/other.json" end,
       function(artifacts, value) artifacts[value.terminal_summary_ref].value.interruption = "stopped" end,
-      function(artifacts, value) artifacts[value.environment_receipt_ref].value.schema = "foreign" end,
-      function(artifacts, value) artifacts[value.environment_receipt_ref].value.status = "blocked" end,
       function(artifacts, value) artifacts[value.browser_readiness_ref].value.source_ref.ref = "foreign" end,
       function(artifacts, value) artifacts[value.test_plan_ref].value.cases[2].case_id = "health" end,
       function(artifacts, value) artifacts[value.case_results_ref].value.plan_sha256 = string.rep("0", 64) end,
@@ -500,12 +530,5 @@ return {
       local ports = runtime(mutate)
       t.raises(function() qa_publication.prepare_final_report(request(), ports) end)
     end
-
-    local terminal = terminal_request()
-    local terminal_ports = runtime(function(artifacts, value)
-      artifacts[value.environment_receipt_ref].value = environment_receipt(value, "blocked")
-      artifacts[value.environment_receipt_ref].value.cleanup_receipt_ref = nil
-    end, terminal)
-    t.raises(function() qa_publication.prepare_final_report(terminal, terminal_ports) end)
   end,
 }
