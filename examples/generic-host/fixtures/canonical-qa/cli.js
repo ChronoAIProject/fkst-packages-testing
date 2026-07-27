@@ -5,8 +5,24 @@ if (!fs.existsSync("dist/build.json")) {
   process.exit(2);
 }
 
-if (process.argv[2] !== "--version") {
-  process.stderr.write("usage: node cli.js --version\n");
+let versionIndex = 2;
+if (process.argv[2] === "--count-effect") {
+  const counterPath = process.argv[3];
+  if (!counterPath) {
+    process.stderr.write("effect counter path is required\n");
+    process.exit(3);
+  }
+  let count = 0;
+  try { count = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch (error) {
+    if (!error || error.code !== "ENOENT") throw error;
+  }
+  fs.mkdirSync(require("path").dirname(counterPath), { recursive: true });
+  fs.writeFileSync(counterPath, `${count + 1}\n`, { flag: "w" });
+  versionIndex = 4;
+}
+
+if (process.argv[versionIndex] !== "--version") {
+  process.stderr.write("usage: node cli.js [--count-effect path] --version\n");
   process.exit(3);
 }
 

@@ -44,4 +44,6 @@ Every path finalizes through Environment Factory. Completion requires a complete
 
 Durable state retains the current phase and at-least-once pending actions. Redelivery re-emits the same downstream request. Downstream digest bindings, compare-and-swap state, grant replay claims, publication ledgers, and cleanup ownership make repeated delivery idempotent.
 
+The generic reference Host persists the immutable request, workflow state, artifacts, approval and executor replay claims, terminal record, and a Host-wide run index behind the existing runtime ports. Supervisor startup scans that index, reconstructs every nonterminal run, and invokes `workflow-qa.redrive`; trigger files carry only Host coordinates and never identify one run. The process-recovery fixture terminates a real supervisor after the executor completion is durable but before workflow observation, then verifies that a fresh supervisor completes finalization without repeating the effect.
+
 Workflow-QA performs no target commands, browser effects, secret resolution, or GitHub effects. Those remain owned by Environment Factory, testing-runner, test-publication, and github-proxy.

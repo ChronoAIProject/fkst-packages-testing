@@ -2,7 +2,7 @@ local adapter = require("host_workflow_qa_adapter")
 local saga = require("workflow.saga")
 
 local spec = {
-  consumes = { "workflow_qa_execution_grant_request" },
+  consumes = { "workflow-qa.workflow_qa_execution_grant_request" },
   produces = { "workflow-qa.execution_grant_result" },
   stall_window = "5m",
   retry = false,
