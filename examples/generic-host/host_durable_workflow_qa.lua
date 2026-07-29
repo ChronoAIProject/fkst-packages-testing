@@ -44,16 +44,36 @@ local function write_file(path, body)
   handle:close()
 end
 
-local command_sequence = 0
+local nonce_sequence = 0
+
+local function next_nonce()
+  local temporary = assert(os.tmpname())
+  os.remove(temporary)
+  local basename = temporary:gsub("\\", "/"):match("([^/]+)$")
+  if type(basename) ~= "string" or basename == "" then
+    error("generic-host durable nonce basename is unavailable")
+  end
+  nonce_sequence = nonce_sequence + 1
+  return basename .. "-" .. tostring(nonce_sequence), temporary
+end
+
+local function bounded_text(value, limit)
+  local text = tostring(value or ""):gsub("[%z\1-\31\127]", " "):gsub("%s+", " ")
+  return text:sub(1, limit or 1024)
+end
+
+local function safe_label(value)
+  return tostring(value or "request"):gsub("[^A-Za-z0-9._-]", "-"):sub(1, 160)
+end
 
 local function direct_exec(argv, cwd)
   local rendered = {}
   for _, item in ipairs(argv) do table.insert(rendered, shell_quote(item)) end
   local command = table.concat(rendered, " ")
   if cwd ~= nil then command = "cd " .. shell_quote(cwd) .. " && " .. command end
-  command_sequence = command_sequence + 1
-  local stdout_path = os.tmpname() .. "-durable-host-stdout-" .. tostring(command_sequence)
-  local stderr_path = os.tmpname() .. "-durable-host-stderr-" .. tostring(command_sequence)
+  local nonce, temporary = next_nonce()
+  local stdout_path = temporary .. "-durable-host-stdout-" .. nonce
+  local stderr_path = temporary .. "-durable-host-stderr-" .. nonce
   local ok, _, code = os.execute(command .. " >" .. shell_quote(stdout_path) .. " 2>" .. shell_quote(stderr_path))
   local result = {
     exit_code = ok == true and 0 or tonumber(code) or (type(ok) == "number" and ok) or -1,
@@ -200,6 +220,53 @@ function Context:_resource(kind, identity)
   return kind .. "/resources/" .. self:_key(identity)
 end
 
+function Context:_fixture_effect(name, payload, timeout_seconds)
+  if type(self.project_root) ~= "string" or self.project_root:sub(1, 1) ~= "/"
+    or self.project_root:find("/../", 1, true) or self.project_root:sub(-3) == "/.." then
+    error("generic-host durable fixture runtime IO root is invalid", 0)
+  end
+  local io_root = self.project_root .. "/.testing/generic-host-fixture-runtime"
+  local request_id = next_nonce()
+  local stem = safe_label(name) .. "-" .. safe_label(self.run_id) .. "-" .. request_id
+  local request_path = io_root .. "/" .. stem .. "-request.json"
+  local response_path = io_root .. "/" .. stem .. "-response.json"
+  if read_file(request_path) ~= nil or read_file(response_path) ~= nil then
+    error("generic-host durable fixture effect found a stale runtime frame: " .. name, 0)
+  end
+  payload = copy(payload)
+  payload.request_id = request_id
+  payload.runtime_config_ref = { kind = "artifact", ref = ".testing/generic-host-runtime.json" }
+  write_file(request_path, json_codec.encode(payload) .. "\n")
+  local result = direct_exec({
+    "env", "FKST_DURABLE_ROOT=" .. self.durable_root,
+    "node", self.project_root .. "/packages/generic-host/bin/generic-host-runtime.js",
+    "effect", "--name", name, "--request", request_path, "--response", response_path,
+  }, self.project_root)
+  local response_body = read_file(response_path)
+  local decoded_ok, response = pcall(function() return json.decode(response_body) end)
+  if decoded_ok and type(response) == "table" then
+    if response.request_id == nil then
+      error("generic-host durable fixture effect response request_id is missing: " .. name, 0)
+    end
+    if response.request_id ~= request_id then
+      error("generic-host durable fixture effect response request_id differs: " .. name, 0)
+    end
+  end
+  if result.exit_code ~= 0 then
+    local message = "generic-host durable fixture effect failed: " .. name
+      .. " exit=" .. tostring(result.exit_code)
+      .. " stderr=" .. bounded_text(result.stderr, 1024)
+    if decoded_ok and type(response) == "table" and type(response.error) == "string" then
+      message = message .. " Host error=" .. bounded_text(response.error, 1024)
+    end
+    error(message, 0)
+  end
+  if not decoded_ok or type(response) ~= "table" or response.ok ~= true then
+    error("generic-host durable fixture effect returned an invalid response: " .. name, 0)
+  end
+  return response.result
+end
+
 function Context:_environment_runtime()
   local context = self
   return {
@@ -232,10 +299,22 @@ function Context:_environment_runtime()
       }
       return context:_effect("environment-factory", request.effect_id, binding, function()
         local snapshot = request.authorize()
+        local cleanup_ref = { kind = "port-lease", ref = context.run_id .. "-ports" }
+        local resource = context.records:immutable(context:_resource("environment-factory", cleanup_ref), {
+          schema = "generic-host.environment-resource.v1",
+          kind = "ports",
+          operation_id = context.run_id,
+          cleanup_ref = copy(cleanup_ref),
+          runtime_ports = copy(request.runtime_ports),
+          ownership_token = context.records:digest(context.run_id .. "\0ports\0" .. request.effect_id),
+        })
+        if resource.written ~= true and resource.replayed ~= true then
+          error("generic-host durable port resource binding differs")
+        end
         return {
           status = "passed",
           profile_snapshot = snapshot,
-          cleanup_ref = { kind = "port-lease", ref = context.run_id .. "-ports" },
+          cleanup_ref = cleanup_ref,
           runtime_ports = copy(request.runtime_ports),
           deadline_epoch_seconds = 1784685600,
           request_binding = copy(request.request_binding),
@@ -250,14 +329,23 @@ function Context:_environment_runtime()
         local resolved = require_exec({ "git", "rev-parse", "HEAD" }, context.workspace_root):match("([0-9a-f]+)")
         if resolved ~= context.commit_sha then error("generic-host durable checkout resolved the wrong commit") end
         local workspace_ref = { kind = "workspace", ref = context.run_id .. "-workspace" }
-        context.records:immutable(context:_resource("environment-factory", workspace_ref), {
-          binding = copy(workspace_ref), path = context.workspace_root,
+        local cleanup_ref = { kind = "workspace-cleanup", ref = context.run_id .. "-workspace" }
+        context:_fixture_effect("fixture-register-workspace", {
+          run_id = context.run_id,
+          operation_id = context.run_id,
+          workspace_ref = workspace_ref,
+          cleanup_ref = cleanup_ref,
+          path = context.workspace_root,
+          repository = copy(context.repository),
+          artifact_root = context.artifact_root,
+          trace_id = context.request.trace_id,
+          dedup_key = context.request.dedup_key,
         })
         return {
           status = "passed",
           resolved_commit = resolved,
           workspace_ref = workspace_ref,
-          cleanup_ref = { kind = "workspace-cleanup", ref = context.run_id .. "-workspace" },
+          cleanup_ref = cleanup_ref,
         }
       end)
     end,
@@ -285,15 +373,19 @@ function Context:_environment_runtime()
         local workspace_record = context.records:read(context:_resource("environment-factory", request.workspace_ref))
         if workspace_record == nil then error("generic-host durable workspace is unavailable") end
         if request.mode == "supervised" then
-          local pid = spawn_process(request.argv, workspace_record.path, context.host_root)
           local cleanup_ref = { kind = "process-cleanup", ref = context.run_id .. "-application" }
-          context.records:immutable(context:_resource("environment-factory", cleanup_ref), {
-            binding = copy(cleanup_ref), pid = pid,
-          })
-          return {
-            status = "running", cleanup_ref = cleanup_ref, early_exit = false,
+          return context:_fixture_effect("fixture-start-application", {
+            run_id = context.run_id,
+            operation_id = request.operation_id,
+            effect_id = request.effect_id,
+            argv = copy(request.argv),
+            workspace_ref = copy(request.workspace_ref),
+            cleanup_ref = cleanup_ref,
             runtime_ports = copy(request.runtime_ports),
-          }
+            artifact_root = request.artifact_root,
+            trace_id = request.trace_id,
+            dedup_key = request.dedup_key,
+          })
         end
         local result = direct_exec(request.argv, workspace_record.path)
         local outcome = { status = result.exit_code == 0 and "passed" or "blocked" }
@@ -320,14 +412,7 @@ function Context:_environment_runtime()
     end,
     cleanup = function(request)
       return context:_effect("environment-factory", request.effect_id, request, function()
-        local cleanup = request.cleanup_ref or {}
-        local resource = context.records:read(context:_resource("environment-factory", cleanup))
-        if cleanup.kind == "process-cleanup" and resource ~= nil and resource.pid ~= nil then
-          os.execute("kill " .. tostring(resource.pid) .. " >/dev/null 2>&1 || true")
-        elseif cleanup.kind == "workspace-cleanup" then
-          remove_tree(context.workspace_root, context.temp_root .. "/")
-        end
-        return { status = "cleaned" }
+        return context:_fixture_effect("cleanup", request, request.timeout_seconds)
       end)
     end,
     write_receipt = function(request)
@@ -360,7 +445,9 @@ function Context:_workflow_runtime()
       for _, entry in ipairs(context.records:list("workflow-qa/requests")) do
         local request = entry.value
         local state = request and context.records:read("workflow-qa/state/" .. tostring(request.run_id)) or nil
-        if type(request) == "table" and type(state) == "table" and state.phase ~= "terminal" then
+        local terminal = request and context.records:read("generic-host/terminal/" .. tostring(request.run_id)) or nil
+        if type(request) == "table" and type(state) == "table"
+          and (state.phase ~= "terminal" or terminal == nil) then
           table.insert(pending, copy(request))
           if #pending >= limit then break end
         end
@@ -559,15 +646,35 @@ function Context:_publication_runtime()
         if not equal(existing.binding, request) then error("generic-host durable publication binding differs") end
         return copy(existing.result)
       end
-      local value = {
-        status = "published",
-        remote_url = "https://github.com/" .. request.repository.slug .. "/blob/" .. request.repository.commit_sha
-          .. "/qa/" .. request.stage .. "-" .. tostring(request.attempt) .. ".json",
-        digest = request.digest,
-        source_commit = request.repository.commit_sha,
-        receipt_ref = context.artifact_root .. "/published/" .. request.stage .. "-" .. tostring(request.attempt) .. ".json",
-      }
-      if context.records:immutable(key, { binding = copy(request), result = copy(value) }).written ~= true then
+      local value
+      if request.channel == "filesystem-dry-run-v1" then
+        local receipt_ref = context.artifact_root .. "/published/" .. request.stage .. "-"
+          .. tostring(request.attempt) .. "-materialization.json"
+        local receipt = {
+          schema = "test-publication.qa-materialization-receipt.v1",
+          status = "materialized", channel = request.channel, run_id = request.run_id,
+          stage = request.stage, attempt = request.attempt, artifact_ref = request.artifact_ref,
+          digest = request.digest, source_commit = request.repository.commit_sha,
+          receipt_ref = receipt_ref, trace_id = request.trace_id, dedup_key = request.dedup_key,
+        }
+        assert(context.store:write(receipt_ref, receipt))
+        value = {
+          status = "materialized", artifact_ref = request.artifact_ref, digest = request.digest,
+          source_commit = request.repository.commit_sha, receipt_ref = receipt_ref,
+          receipt_sha256 = context.store:digest(receipt_ref),
+        }
+      else
+        value = {
+          status = "published",
+          remote_url = "https://github.com/" .. request.repository.slug .. "/blob/" .. request.repository.commit_sha
+            .. "/qa/" .. request.stage .. "-" .. tostring(request.attempt) .. ".json",
+          digest = request.digest,
+          source_commit = request.repository.commit_sha,
+          receipt_ref = context.artifact_root .. "/published/" .. request.stage .. "-" .. tostring(request.attempt) .. ".json",
+        }
+      end
+      local stored = context.records:immutable(key, { binding = copy(request), result = copy(value) })
+      if stored.written ~= true and stored.replayed ~= true then
         error("generic-host durable publication commit conflict")
       end
       return value
@@ -637,6 +744,7 @@ function Context:after_replay_complete(outcome, request)
     if result.written ~= true and result.replayed ~= true then error("generic-host recovery observation conflict") end
     return
   end
+  if self.completed_replay_failpoint == nil then return end
   if self.records:read("generic-host/barriers/post-replay-complete") ~= nil then return end
   local fifo = self.root .. "/post-replay-complete.fifo"
   os.remove(fifo)
@@ -729,6 +837,7 @@ function M.initialize(context, durable_root)
     validation_receipt = copy(context.validation_receipt),
     authorization_now = context.authorization_context.now,
     authorization_approval_ref = copy(context.authorization_context.approval_ref),
+    completed_replay_failpoint = copy(context.completed_replay_failpoint),
     request = copy(context.request),
   }
   local stored = records:immutable("generic-host/config", config)
@@ -786,7 +895,8 @@ function M.list_pending(project_root, durable_root, limit)
       and run.project_root == project_root and type(run.run_id) == "string" then
       local context = M.load(project_root, durable_root, run.run_id)
       local state = context.workflow_runtime.load_state(context.request.state_ref)
-      if state == nil or (type(state) == "table" and state.phase ~= "terminal") then
+      if state == nil or (type(state) == "table"
+        and (state.phase ~= "terminal" or context:terminal_record() == nil)) then
         table.insert(pending, context)
       end
     end

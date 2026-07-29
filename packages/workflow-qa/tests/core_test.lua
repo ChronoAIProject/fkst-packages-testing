@@ -815,7 +815,32 @@ local tests = {
     expect_failure("redrive-unavailable", function() core.redrive({}, ports) end)
     ports.list_pending_runs = original_list
     state().phase = "terminal"
+    t.eq(core.redrive({}, ports)[1].queue, "environment-factory.environment_start")
+    state().pending_actions = {}
     t.eq(#core.redrive({}, ports), 0)
+  end,
+
+  test_redrive_starts_indexed_request_without_state = function()
+    local request = fixture()
+    local ports, state = runtime(request)
+    local replay = core.redrive({ limit = 1 }, ports)
+    t.eq(replay[1].queue, "test-publication.qa_checkpoint_request")
+    t.eq(state().phase, "checkpoint-pending")
+    t.eq(state().request.run_id, request.run_id)
+  end,
+
+  test_redrive_can_isolate_one_internal_run = function()
+    local request = fixture()
+    local ports = runtime(request)
+    core.start(request, ports)
+    ports.list_pending_runs = function() error("batch listing should not run") end
+    local replay = core.redrive({ run_id = request.run_id, limit = 1 }, ports)
+    t.eq(replay[1].queue, "test-publication.qa_checkpoint_request")
+    for _, run_id in ipairs({ "", "../foreign", string.rep("a", 181) }) do
+      expect_failure("malformed-redrive", function()
+        core.redrive({ run_id = run_id, limit = 1 }, ports)
+      end)
+    end
   end,
 
   test_production_ports_require_and_return_host_runtime = function()

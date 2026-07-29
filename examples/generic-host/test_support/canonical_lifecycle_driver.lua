@@ -1,1 +1,1 @@
-return require("host_workflow_qa_supervisor")
+return require("test_support.host_workflow_qa_supervisor")

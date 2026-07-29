@@ -382,14 +382,26 @@ return {
   end,
 
   test_production_ports_require_complete_runtime = function()
+    local previous_runtime = _G.defect_publication_runtime
+    local previous_cli = _G.qa_publication_runtime_cli
     _G.defect_publication_runtime = nil
+    _G.qa_publication_runtime_cli = nil
     t.raises(function() defect_publication.production_ports() end)
     local ports = {}
     for _, name in ipairs({ "load_ledger", "save_ledger", "load_artifact", "write_artifact" }) do
       ports[name] = function() return true end
     end
+    _G.qa_publication_runtime_cli = "configured-qa-publication-runtime.js"
     _G.defect_publication_runtime = ports
     t.eq(defect_publication.production_ports(), ports)
+
     _G.defect_publication_runtime = nil
+    local configured = defect_publication.production_ports()
+    for _, name in ipairs({ "load_ledger", "save_ledger", "load_artifact", "write_artifact" }) do
+      t.eq(type(configured[name]), "function")
+    end
+
+    _G.defect_publication_runtime = previous_runtime
+    _G.qa_publication_runtime_cli = previous_cli
   end,
 }

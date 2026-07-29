@@ -402,14 +402,33 @@ function Context:_publication_runtime()
       local id = table.concat({ "publish", request.run_id, request.stage, tostring(request.attempt), request.digest }, "/")
       local existing = context.publications[id]
       if existing ~= nil then return copy(existing) end
-      local value = {
-        status = "published",
-        remote_url = "https://github.com/" .. request.repository.slug .. "/blob/" .. request.repository.commit_sha
-          .. "/qa/" .. request.stage .. "-" .. tostring(request.attempt) .. ".json",
-        digest = request.digest,
-        source_commit = request.repository.commit_sha,
-        receipt_ref = context.artifact_root .. "/published/" .. request.stage .. "-" .. tostring(request.attempt) .. ".json",
-      }
+      local value
+      if request.channel == "filesystem-dry-run-v1" then
+        local receipt_ref = context.artifact_root .. "/published/" .. request.stage .. "-"
+          .. tostring(request.attempt) .. "-materialization.json"
+        local receipt = {
+          schema = "test-publication.qa-materialization-receipt.v1",
+          status = "materialized", channel = request.channel, run_id = request.run_id,
+          stage = request.stage, attempt = request.attempt, artifact_ref = request.artifact_ref,
+          digest = request.digest, source_commit = request.repository.commit_sha,
+          receipt_ref = receipt_ref, trace_id = request.trace_id, dedup_key = request.dedup_key,
+        }
+        assert(context.store:write(receipt_ref, receipt))
+        value = {
+          status = "materialized", artifact_ref = request.artifact_ref, digest = request.digest,
+          source_commit = request.repository.commit_sha, receipt_ref = receipt_ref,
+          receipt_sha256 = context.store:digest(receipt_ref),
+        }
+      else
+        value = {
+          status = "published",
+          remote_url = "https://github.com/" .. request.repository.slug .. "/blob/" .. request.repository.commit_sha
+            .. "/qa/" .. request.stage .. "-" .. tostring(request.attempt) .. ".json",
+          digest = request.digest,
+          source_commit = request.repository.commit_sha,
+          receipt_ref = context.artifact_root .. "/published/" .. request.stage .. "-" .. tostring(request.attempt) .. ".json",
+        }
+      end
       context.publications[id] = copy(value)
       context.publication_count = context.publication_count + 1
       return value
@@ -458,7 +477,34 @@ function Context:_generic_host_runtime()
 end
 
 function Context:run_lifecycle()
-  return require("host_workflow_qa_supervisor").run(self, project_root)
+  return require("test_support.host_workflow_qa_supervisor").run(self, project_root)
+end
+
+function Context:framework_environment(label, arm_failpoint)
+  if type(label) ~= "string" or label == "" or label:find("[^A-Za-z0-9._-]") then
+    error("canonical workflow supervisor label is invalid")
+  end
+  local runtime_cli = self.project_root .. "/packages/generic-host/bin/generic-host-runtime.js"
+  local environment = {
+    FKST_RUNTIME_ROOT = self.host_root .. "/framework-runtime-" .. label,
+    FKST_DURABLE_ROOT = self.host_root .. "/framework-durable-" .. label,
+    FKST_GENERIC_HOST_DURABLE_ROOT = self.durable_root,
+    FKST_GENERIC_HOST_PROJECT_ROOT = self.project_root,
+    FKST_ENVIRONMENT_FACTORY_RUNTIME_CLI = runtime_cli,
+    FKST_ENVIRONMENT_FACTORY_RUNTIME_CONFIG_REF = self.runtime_config_ref,
+    FKST_STRUCTURED_EXECUTION_RUNTIME_CLI = runtime_cli,
+    FKST_STRUCTURED_EXECUTION_RUNTIME_CONFIG_REF = self.runtime_config_ref,
+    FKST_WORKFLOW_QA_RUNTIME_CLI = runtime_cli,
+    FKST_WORKFLOW_QA_RUNTIME_CONFIG_REF = self.runtime_config_ref,
+    FKST_QA_PUBLICATION_RUNTIME_CLI = runtime_cli,
+    FKST_QA_PUBLICATION_RUNTIME_CONFIG_REF = self.runtime_config_ref,
+    FKST_WORKFLOW_QA_ADAPTER_RUNTIME_CLI = runtime_cli,
+    FKST_WORKFLOW_QA_ADAPTER_RUNTIME_CONFIG_REF = self.runtime_config_ref,
+  }
+  if arm_failpoint == true and type(self.completed_replay_failpoint) == "table" then
+    environment.FKST_DURABLE_COMPLETED_REPLAY_FAILPOINT = self.completed_replay_failpoint.token
+  end
+  return environment
 end
 
 function Context:with_globals(fn)
@@ -486,6 +532,33 @@ function Context:cleanup()
   local pid_body = read_file(self.host_root .. "/server.pid")
   local pid = pid_body and tonumber(pid_body:match("(%d+)")) or nil
   if pid ~= nil then os.execute("kill " .. tostring(pid) .. " >/dev/null 2>&1 || true") end
+  if self.durable_root ~= nil then
+    local ok, recovered = pcall(function()
+      return require("host_durable_workflow_qa").load(self.project_root, self.durable_root, self.run_id)
+    end)
+    if ok then
+      local common = {
+        run_id = self.run_id,
+        operation_id = self.run_id,
+        artifact_root = self.artifact_root .. "/environment",
+        trace_id = self.request.trace_id,
+        dedup_key = self.request.dedup_key,
+        timeout_seconds = 2,
+      }
+      for _, cleanup_ref in ipairs({
+        { kind = "process-cleanup", ref = self.run_id .. "-application" },
+        { kind = "workspace-cleanup", ref = self.run_id .. "-workspace" },
+        { kind = "port-lease", ref = self.run_id .. "-ports" },
+      }) do
+        pcall(function()
+          local request = copy(common)
+          request.cleanup_ref = cleanup_ref
+          request.effect_id = self.run_id .. "/test-teardown/" .. cleanup_ref.kind
+          recovered:_fixture_effect("cleanup", request, 2)
+        end)
+      end
+    end
+  end
   remove_tree(self.temp_root, "/tmp/fkst-generic-host-canonical-")
   remove_tree(absolute(self.artifact_root), project_root .. "/.testing/runs/canonical-workflow-qa-")
 end
@@ -613,11 +686,18 @@ function M.new(options)
   local catalog_ref = artifact_root .. "/execution/case-catalog.json"
   local effect_counter_path = options.effect_counter_path
   if effect_counter_path == nil and options.count_effect == true then
-    effect_counter_path = temp_root .. "/effect-count.txt"
+    effect_counter_path = temp_root .. "/effect-invocations"
   end
   local cli_argv = { "node", "cli.js", "--version" }
   if effect_counter_path ~= nil then
     cli_argv = { "node", "cli.js", "--count-effect", effect_counter_path, "--version" }
+  end
+  local completed_replay_failpoint
+  if options.arm_completed_replay_failpoint == true then
+    completed_replay_failpoint = {
+      name = "post-completed-replay",
+      token = sha256_bytes(run_id .. "\0post-completed-replay"),
+    }
   end
   local catalog_cases = {
     {
@@ -758,6 +838,7 @@ function M.new(options)
       grant_ref = artifact_root .. "/execution/execution-grant.json",
     },
     publication = {
+      channel = options.publication_channel or (durable_enabled and "filesystem-dry-run-v1" or nil),
       ledger_ref = artifact_root .. "/run-ledger.json",
       defect_ledger_ref = artifact_root .. "/execution/defect-ledger.json",
       defect_receipt_ref = artifact_root .. "/execution/defect-receipt.json",
@@ -800,6 +881,7 @@ function M.new(options)
     preauthorization_claims = 0,
     terminal_records = 0,
     effect_counter_path = effect_counter_path,
+    completed_replay_failpoint = completed_replay_failpoint,
   }, Context)
   context.environment_runtime = context:_environment_runtime()
   context.workflow_runtime = context:_workflow_runtime()
@@ -809,9 +891,19 @@ function M.new(options)
   context.publication_runtime = context:_publication_runtime()
   context.generic_host_runtime = context:_generic_host_runtime()
   local durable_root = options.durable_root
-  if durable_root == nil and options.durable == true then durable_root = temp_root .. "/durable" end
+  if durable_root == nil and options.durable == true then durable_root = temp_root .. "/framework-durable" end
   if durable_root ~= nil then
-    require("host_durable_workflow_qa").initialize(context, durable_root)
+    local durable = require("host_durable_workflow_qa")
+    durable.initialize(context, durable_root)
+    context.runtime_config_ref = ".testing/generic-host-runtime.json"
+    write_file(context.project_root .. "/" .. context.runtime_config_ref, json_codec.encode({
+      schema = "generic-host.runtime-config.v1",
+      project_root = context.project_root,
+    }) .. "\n")
+    if options.prepare_execution_grant_pending ~= false then
+      local prepared_context = durable.load(context.project_root, durable_root, context.run_id)
+      require("test_support.host_workflow_qa_supervisor").prepare(prepared_context, context.project_root)
+    end
   end
   return context
 end

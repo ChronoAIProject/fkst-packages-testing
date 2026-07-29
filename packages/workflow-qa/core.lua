@@ -868,14 +868,31 @@ function M.redrive(payload, supplied_ports)
   if type(limit) ~= "number" or limit < 1 or limit > 64 or limit ~= math.floor(limit) then
     error("workflow-qa: malformed-redrive: limit must be from 1 to 64")
   end
-  local runs = ports.list_pending_runs(limit)
+  local run_id = type(payload) == "table" and payload.run_id or nil
+  local runs
+  if run_id ~= nil then
+    if type(run_id) ~= "string" or run_id == "" or #run_id > 180
+      or run_id:match("^[A-Za-z0-9._-]+$") == nil then
+      error("workflow-qa: malformed-redrive: run_id is invalid")
+    end
+    local request = ports.load_run_by_id(run_id)
+    runs = request == nil and {} or { request }
+  else
+    runs = ports.list_pending_runs(limit)
+  end
   if type(runs) ~= "table" then error("workflow-qa: redrive-unavailable: pending run list is invalid") end
   local actions = {}
   for index, request in ipairs(runs) do
     if index > limit then break end
     request = contract.validate_request(request)
     local state = load_for(request, ports)
-    if state ~= nil and state.phase ~= "terminal" then
+    if state == nil then
+      for _, pending in ipairs(M.start(request, ports)) do table.insert(actions, copy(pending)) end
+    else
+      local authorization = validate_authorization_chain(request, ports)
+      if not contract.same_request(state.authorization, authorization) then
+        error("workflow-qa: authorization-binding-changed: durable authorization identity differs")
+      end
       for _, pending in ipairs(state.pending_actions or {}) do table.insert(actions, copy(pending)) end
     end
   end

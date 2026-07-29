@@ -12,12 +12,12 @@ if (process.argv[2] === "--count-effect") {
     process.stderr.write("effect counter path is required\n");
     process.exit(3);
   }
-  let count = 0;
-  try { count = Number(fs.readFileSync(counterPath, "utf8")) || 0; } catch (error) {
-    if (!error || error.code !== "ENOENT") throw error;
-  }
-  fs.mkdirSync(require("path").dirname(counterPath), { recursive: true });
-  fs.writeFileSync(counterPath, `${count + 1}\n`, { flag: "w" });
+  fs.mkdirSync(counterPath, { recursive: true });
+  const recordPath = require("path").join(counterPath,
+    `invocation-${process.pid}-${require("crypto").randomBytes(8).toString("hex")}.json`);
+  fs.writeFileSync(recordPath, `${JSON.stringify({ pid: process.pid, argv: process.argv.slice(2) })}\n`, {
+    flag: "wx",
+  });
   versionIndex = 4;
 }
 

@@ -1,4 +1,5 @@
 local structured_contract = require("contract.structured_execution")
+local local_runtime = require("testing_runtime.qa_publication")
 
 local M = {}
 
@@ -556,6 +557,7 @@ end
 
 function M.production_ports()
   local ports = _G.defect_publication_runtime
+  if ports == nil and local_runtime.configured() then ports = local_runtime.production() end
   for _, name in ipairs({ "load_ledger", "save_ledger", "load_artifact", "write_artifact" }) do
     if type(ports) ~= "table" or type(ports[name]) ~= "function" then
       error("test-publication: defect: missing runtime port " .. name)

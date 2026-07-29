@@ -1,16 +1,10 @@
-local json_codec = require("testing_runtime.json")
+local runtime_client = require("testing_runtime.runtime_client")
 
 local R = {}
 
 local default_runtime_cli = "packages/environment-factory/bin/environment-factory-runtime.js"
 local pending_claims = {}
 local active_listener_claims = {}
-
-local function runtime_port_unavailable(name)
-  return function()
-    error("environment-factory: runtime-port-unavailable: " .. name)
-  end
-end
 
 local function artifact_root_from_ref(ref)
   local path = type(ref) == "table" and ref.ref or nil
@@ -27,12 +21,6 @@ local function request_root(payload)
   if root ~= nil then return root end
   if type(payload.start) == "table" then return payload.start.artifact_root end
   return nil
-end
-
-local function safe_label(value)
-  local label = tostring(value or "request"):gsub("[^A-Za-z0-9._-]", "-")
-  if #label > 160 then label = label:sub(1, 160) end
-  return label
 end
 
 local function bounded_text(value, limit)
@@ -56,74 +44,83 @@ local function copy_ports(value)
   return result
 end
 
-local function configured_runtime_cli(options)
-  local global = rawget(_G, "environment_factory_runtime_cli")
-  local value
-  if global ~= nil then value = global
-  elseif type(options) == "table" and options.runtime_cli ~= nil then value = options.runtime_cli
-  elseif os.getenv("FKST_ENVIRONMENT_FACTORY_RUNTIME_CLI") ~= nil then
-    value = os.getenv("FKST_ENVIRONMENT_FACTORY_RUNTIME_CLI")
-  else value = default_runtime_cli end
-  if type(value) ~= "string" or value == "" or #value > 4096 or value:find("[%z\1-\31\127]") ~= nil then
-    error("environment-factory: runtime-cli-invalid: host runtime executable path is invalid")
+local function client(options)
+  local configured = {}
+  for key, value in pairs(options or {}) do configured[key] = value end
+  local global_cli = rawget(_G, "environment_factory_runtime_cli")
+  local global_config = rawget(_G, "environment_factory_runtime_config_ref")
+  if global_cli ~= nil then configured.runtime_cli = global_cli
+  elseif configured.runtime_cli == nil then
+    configured.runtime_cli = os.getenv("FKST_ENVIRONMENT_FACTORY_RUNTIME_CLI")
   end
-  return value
-end
-
-local function configured_runtime_ref(payload, root, options)
-  local configured = rawget(_G, "environment_factory_runtime_config_ref")
-  if configured == nil and type(options) == "table" then configured = options.runtime_config_ref end
-  if configured == nil then
-    local environment_ref = os.getenv("FKST_ENVIRONMENT_FACTORY_RUNTIME_CONFIG_REF")
-    if environment_ref ~= nil then configured = { kind = "artifact", ref = environment_ref } end
+  if global_config ~= nil then configured.runtime_config_ref = global_config
+  elseif configured.runtime_config_ref == nil then
+    configured.runtime_config_ref = os.getenv("FKST_ENVIRONMENT_FACTORY_RUNTIME_CONFIG_REF")
   end
-  if type(configured) == "function" then
-    configured = configured({
-      artifact_root = root,
-      operation_id = payload.operation_id or (type(payload.start) == "table" and payload.start.operation_id),
-    })
-  end
-  if type(configured) ~= "table" or configured.kind ~= "artifact" or type(configured.ref) ~= "string" then
-    error("environment-factory: runtime-config-unavailable: host runtime config artifact capability is required")
-  end
-  if configured.ref == root or configured.ref:sub(1, #root + 1) == root .. "/" then
-    error("environment-factory: runtime-config-inside-operation-root: host capability must be outside artifact_root")
-  end
-  return { kind = configured.kind, ref = configured.ref }
+  if configured.exec_argv == nil then configured.exec_argv = exec_argv end
+  if configured.file == nil then configured.file = file end
+  if configured.json == nil then configured.json = json end
+  return runtime_client.new({
+    cli_global = "environment_factory_runtime_cli",
+    cli_env = "FKST_ENVIRONMENT_FACTORY_RUNTIME_CLI",
+    default_runtime_cli = default_runtime_cli,
+    config_global = "environment_factory_runtime_config_ref",
+    config_env = "FKST_ENVIRONMENT_FACTORY_RUNTIME_CONFIG_REF",
+    error_prefix = "environment-factory",
+    runtime_config_required = true,
+    runtime_config_unavailable_error = "environment-factory: runtime-config-unavailable: host runtime config artifact capability is required",
+    runtime_config_invalid_error = "environment-factory: runtime-config-unavailable: host runtime config artifact capability is required",
+    runtime_config_context = function(request, root)
+      return {
+        artifact_root = root,
+        operation_id = request.operation_id
+          or (type(request.start) == "table" and request.start.operation_id),
+      }
+    end,
+    validate_runtime_config = function(value, context)
+      local root = context.artifact_root
+      if value.ref == root or value.ref:sub(1, #root + 1) == root .. "/" then
+        error("environment-factory: runtime-config-inside-operation-root: host capability must be outside artifact_root")
+      end
+    end,
+    io_root = function(root) return root .. "/runtime-io" end,
+    io_root_invalid_error = "environment-factory: runtime-io-root-invalid",
+    io_root_unavailable_error = "environment-factory: runtime-io-root-unavailable",
+    stale_response_error = "environment-factory: runtime-response-stale",
+    request_id_missing_error = "environment-factory: runtime-response-request-id-missing",
+    request_id_mismatch_error = "environment-factory: runtime-response-request-id-mismatch",
+    cli_invalid_error = "environment-factory: runtime-cli-invalid: host runtime executable path is invalid",
+    exec_port_error = "environment-factory: runtime-port-unavailable: exec_argv",
+    file_port_error = "environment-factory: runtime-port-unavailable: file",
+    json_port_error = "environment-factory: runtime-port-unavailable: json.decode",
+    allow_legacy_response = function(cli)
+      return cli == default_runtime_cli or cli:match("^fixtures/") ~= nil
+    end,
+    include_request_id = function(cli) return cli ~= default_runtime_cli end,
+    apply_listener_options = function(exec_request, listener_options)
+      exec_request.listener_mode = "fkst-inherited-listeners-v1"
+      exec_request.inherited_listeners = listener_options
+    end,
+    effect_failure_message = function(name, exit_code, result, response)
+      local message = "environment-factory: runtime-effect-failed: " .. name
+        .. " exit=" .. tostring(exit_code or -1)
+        .. " stderr=" .. bounded_text(type(result) == "table" and result.stderr or "", 1024)
+      if type(response) == "table" and type(response.error) == "string" then
+        message = message .. " Host error=" .. bounded_text(response.error, 1024)
+      end
+      return message
+    end,
+    effect_invalid_message = function(name)
+      return "environment-factory: runtime-effect-invalid: " .. name
+    end,
+  }, configured)
 end
 
 local function call_cli(name, payload, timeout, options, listener_options)
-  if type(exec_argv) ~= "function" then return runtime_port_unavailable("exec_argv")() end
-  if type(file) ~= "table" or type(file.write) ~= "function" or type(file.read) ~= "function" then
-    return runtime_port_unavailable("file")()
-  end
-  if type(json) ~= "table" or type(json.decode) ~= "function" then return runtime_port_unavailable("json.decode")() end
-
   local root = request_root(payload)
   if type(root) ~= "string" then error("environment-factory: runtime-request-root-missing: " .. name) end
-  local label = safe_label(payload.effect_id or payload.operation_id or name)
-  local io_root = root .. "/runtime-io"
-  local request_path = io_root .. "/" .. safe_label(name) .. "-" .. label .. "-request.json"
-  local response_path = io_root .. "/" .. safe_label(name) .. "-" .. label .. "-response.json"
-  payload.runtime_config_ref = configured_runtime_ref(payload, root, options)
-  file.write(request_path, json_codec.encode(payload) .. "\n")
-  local argv = { "node", configured_runtime_cli(options), "effect", "--name", name, "--request", request_path, "--response", response_path }
-  local exec_request = { argv = argv, timeout = timeout or 30 }
-  if listener_options ~= nil then
-    exec_request.listener_mode = "fkst-inherited-listeners-v1"
-    exec_request.inherited_listeners = listener_options
-  end
-  local result = exec_argv(exec_request)
-  local exit_code = type(result) == "table" and tonumber(result.exit_code) or nil
-  if exit_code ~= 0 then
-    local message = "environment-factory: runtime-effect-failed: " .. name .. " exit=" .. tostring(exit_code or -1) .. " stderr=" .. bounded_text(type(result) == "table" and result.stderr or "", 1024)
-    error(message)
-  end
-  local ok, response = pcall(function() return json.decode(file.read(response_path)) end)
-  if not ok or type(response) ~= "table" or response.ok ~= true then
-    error("environment-factory: runtime-effect-invalid: " .. name)
-  end
-  return response.result
+  local identity = payload.effect_id or payload.operation_id or name
+  return client(options).call(name, payload, root, identity, timeout, listener_options)
 end
 
 local function refs_match(left, right)

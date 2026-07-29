@@ -604,11 +604,17 @@ class RunnerContractTest(unittest.TestCase):
         self.assertEqual(external_roots, list(GENERIC_HOST_CLOSED_WORLD_ROOTS))
         self.assertEqual(external["test_files"], ["packages/external-host/tests/external_host_test.lua"])
         self.assertNotEqual(Path(external["package_roots"][0]), host_root)
+        self.assertEqual(example["project_root"], str(Path(example["project_root"]).resolve()))
         self.assertEqual(external["project_root"], str(Path(external["project_root"]).resolve()))
+        self.assertTrue(
+            all(path == str(Path(path).resolve()) for path in example["package_roots"])
+        )
         self.assertTrue(
             all(path == str(Path(path).resolve()) for path in external["package_roots"])
         )
+        self.assertFalse(Path(example["project_root"]).exists())
         self.assertFalse(Path(external["project_root"]).exists())
+        self.assertFalse((fixture.root / "module-test-loop-test-state-store.json").exists())
         self.assertTrue(host_root.exists())
 
     def test_external_host_rejects_invalid_or_repository_owned_roots(self) -> None:

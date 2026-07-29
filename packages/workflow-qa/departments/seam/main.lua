@@ -4,6 +4,7 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "workflow_qa_tick" },
+  published_seam = { "workflow_qa_tick" },
   produces = {
     "qa_run_request",
     "qa_interrupt_request",

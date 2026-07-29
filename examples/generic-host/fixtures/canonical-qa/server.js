@@ -22,7 +22,11 @@ const server = http.createServer((request, response) => {
   response.end("not found");
 });
 
-server.listen(port, "127.0.0.1");
+if (process.env.FKST_LISTEN_FDS === "1" && process.env.FKST_LISTEN_FDNAMES === "application") {
+  server.listen({ fd: 3 });
+} else {
+  server.listen(port, "127.0.0.1");
+}
 
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, () => server.close(() => process.exit(0)));
