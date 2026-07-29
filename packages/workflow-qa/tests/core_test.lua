@@ -423,6 +423,17 @@ local tests = {
     end
   end,
 
+  test_redrive_rejects_changed_durable_authorization_identity = function()
+    local request = fixture()
+    local ports, _, _, artifacts = runtime(request)
+    core.start(request, ports)
+    artifacts[request.structured_execution.preauthorization_ref].value.profile_sha256 = digest("8")
+    artifacts[request.environment_start.validation_receipt_ref.ref].value.profile_sha256 = digest("8")
+    expect_failure("authorization-binding-changed", function()
+      core.redrive({ run_id = request.run_id, limit = 1 }, ports)
+    end)
+  end,
+
   test_production_ports_require_and_return_host_runtime = function()
     local request = fixture()
     local ports = runtime(request)
