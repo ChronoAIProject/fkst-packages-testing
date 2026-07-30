@@ -83,7 +83,7 @@ return {
         "--request", request_path, "--response", response_path,
       })
       t.eq(result.exit_code, 0)
-      local response = json_codec.decode(assert(read_file(response_path)))
+      local response = json.decode(assert(read_file(response_path)))
       t.eq(response.ok, true)
       t.eq(response.request_id, request_id)
 
@@ -95,7 +95,7 @@ return {
         "--request", request_path, "--response", error_response_path,
       })
       t.is_true(result.exit_code ~= 0)
-      response = json_codec.decode(assert(read_file(error_response_path)))
+      response = json.decode(assert(read_file(error_response_path)))
       t.eq(response.ok, false)
       t.eq(response.request_id, error_request_id)
       t.is_true(type(response.error) == "string" and response.error:find("unknown effect", 1, true) ~= nil)
