@@ -41,8 +41,9 @@ local function valid_io_root(value)
     and value:find("\\", 1, true) == nil and value:find("..", 1, true) == nil
 end
 
-local function next_request_id(error_prefix)
-  local temporary = host_os.tmpname()
+local function next_request_id(error_prefix, options)
+  local tmpname = type(options) == "table" and options.tmpname or host_os.tmpname
+  local temporary = tmpname()
   if type(temporary) ~= "string" or temporary == "" then
     error(error_prefix .. "-runtime-request-id-unavailable")
   end
@@ -184,7 +185,7 @@ function M.new(spec, options)
     local cli = runtime_cli()
     local request = {}
     for key, value in pairs(payload or {}) do request[key] = value end
-    local request_id = next_request_id(spec.error_prefix)
+    local request_id = next_request_id(spec.error_prefix, options)
     local include_request_id = type(spec.include_request_id) ~= "function"
       or spec.include_request_id(cli, options, request, name) ~= false
     if include_request_id then request.request_id = request_id end

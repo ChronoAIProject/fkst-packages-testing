@@ -41,7 +41,12 @@ local function fake_host()
       exec_argv = function(request)
         local argv = request.argv
         local name, response_path = argv[5], argv[9]
-        table.insert(calls, { name = name, timeout = request.timeout, argv = argv })
+        table.insert(calls, {
+          name = name,
+          timeout = request.timeout,
+          argv = argv,
+          payload = host_json.decode(files[argv[7]]),
+        })
         files[response_path] = json_codec.encode({ ok = true, result = responses[name] }) .. "\n"
         return { exit_code = 0, stdout = "", stderr = "" }
       end,
@@ -90,6 +95,18 @@ return {
     }
     t.eq(runtime.production(configured).now({ artifact_root = ".testing/runs/default-runtime/execution" }),
       "2026-07-24T00:00:00Z")
+
+    local environment = options(host)
+    environment.runtime_config_ref = nil
+    environment.getenv = function(name)
+      if name == "FKST_STRUCTURED_EXECUTION_RUNTIME_CONFIG_REF" then
+        return ".testing/host/environment-structured-runtime.json"
+      end
+    end
+    t.eq(runtime.production(environment).now({ artifact_root = ".testing/runs/environment-runtime/execution" }),
+      "2026-07-24T00:00:00Z")
+    t.eq(host.calls[#host.calls].payload.runtime_config_ref.ref,
+      ".testing/host/environment-structured-runtime.json")
 
     configured.runtime_cli = "host-runtime.js"
     configured.runtime_config_ref = function(context)

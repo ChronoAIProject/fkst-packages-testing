@@ -467,34 +467,54 @@ return {
     end)
   end,
 
-  test_authorization_failure_before_replay_guard_acquires_nothing = function()
+  test_authorization_failure_before_and_after_replay_guard_releases_claims = function()
     local claim_calls, releases = {}, {}
     local port = { name = "application", port = 4174 }
-    local responses = {
-      { status = "planned", needs_claim = { port }, already_owned = {} },
-      { found = false },
-    }
     with_globals({
       environment_factory_runtime_config_ref = config_ref,
       network_listener = fake_listener_capability(claim_calls, releases),
       file = { write = function() end, read = function() return "response" end },
-      json = { decode = response_decoder(responses) },
+      json = { decode = response_decoder({
+        { status = "planned", needs_claim = { port }, already_owned = {} }, { found = false },
+      }) },
       exec_argv = function() return { exit_code = 0 } end,
     }, function()
       local ports = runtime.production()
-      t.raises(function()
-        ports.authorize_claim_ports({
-          artifact_root = ".testing/runs/runtime-auth-failure",
-          operation_id = "runtime-auth-failure",
-          effect_id = "runtime-auth-failure/claim",
-          runtime_ports = { port },
-          listener_groups = { { port } },
-          request_binding = { schema = "binding" },
-          authorize = function() error("authorization rejected") end,
-        })
-      end)
+      t.raises(function() ports.authorize_claim_ports({
+        artifact_root = ".testing/runs/runtime-auth-failure", operation_id = "runtime-auth-failure",
+        effect_id = "runtime-auth-failure/claim", runtime_ports = { port }, listener_groups = { { port } },
+        request_binding = { schema = "binding" }, authorize = function() error("authorization rejected") end,
+      }) end)
       t.eq(#claim_calls, 0)
       t.eq(#releases, 0)
+    end)
+
+    local bundle = { profile = {}, context = { trusted_authorities = {} } }
+    with_globals({
+      environment_factory_runtime_config_ref = config_ref,
+      network_listener = fake_listener_capability(claim_calls, releases),
+      file = { write = function() end, read = function() return "response" end },
+      json = { decode = response_decoder({ bundle,
+        { status = "planned", needs_claim = { port }, already_owned = {} }, { found = false },
+        { status = "passed", claim_id = "claim" },
+      }) },
+      exec_argv = function() return { exit_code = 0 } end,
+    }, function()
+      local ports = runtime.production()
+      local loaded = ports.load_authorization_bundle({ operation_id = "runtime-auth-after-claim",
+        artifact_root = ".testing/runs/runtime-auth-after-claim" })
+      local ok, failure = pcall(ports.authorize_claim_ports, {
+        artifact_root = ".testing/runs/runtime-auth-after-claim", operation_id = "runtime-auth-after-claim",
+        effect_id = "runtime-auth-after-claim/claim", runtime_ports = { port }, listener_groups = { { port } },
+        request_binding = { schema = "binding" }, authorize = function()
+          loaded.context.replay_guard({})
+          error("snapshot construction failed")
+        end,
+      })
+      t.eq(ok, false)
+      t.is_true(tostring(failure):find("snapshot construction failed", 1, true) ~= nil)
+      t.eq(#claim_calls, 1)
+      t.eq(#releases, #claim_calls)
     end)
   end,
 
@@ -718,6 +738,11 @@ return {
       { found = true, outcome = passed }, passed, { status = "blocked" },
     })
 
+    cached_failure("runtime-cached-verification-blocked", function() end, {
+      { status = "planned", needs_claim = { port }, already_owned = {} },
+      { found = true, outcome = passed }, { status = "blocked" },
+    })
+
     local acquired, released = {}, {}
     with_globals({
       environment_factory_runtime_config_ref = config_ref,
@@ -766,13 +791,16 @@ return {
       local ports = runtime.production()
       local loaded = ports.load_authorization_bundle({ operation_id = "runtime-uncached",
         artifact_root = ".testing/runs/runtime-uncached" })
-      t.raises(function() ports.authorize_claim_ports({
+      local ok, failure = pcall(ports.authorize_claim_ports, {
         artifact_root = ".testing/runs/runtime-uncached", operation_id = "runtime-uncached",
         effect_id = "runtime-uncached/claim", runtime_ports = { port }, listener_groups = { { port } },
         request_binding = { schema = "binding" }, authorize = function()
           loaded.context.replay_guard({ approval_id = "approval", approval_sha256 = string.rep("a", 64) })
         end,
-      }) end)
+      })
+      t.eq(ok, false)
+      t.is_true(tostring(failure):find("authorize-claim-ports exit=20", 1, true) ~= nil)
+      t.eq(#acquired, 1)
       t.eq(#released, #acquired)
     end)
 

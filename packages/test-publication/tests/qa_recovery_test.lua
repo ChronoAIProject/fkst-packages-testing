@@ -61,7 +61,8 @@ local function runtime(options)
       end
       return {
         status = "published", digest = value.digest, source_commit = commit_sha,
-        remote_url = "https://github.com/owner/repo/blob/" .. commit_sha .. "/qa/" .. value.stage .. ".json",
+        remote_url = options.remote_url
+          or "https://github.com/owner/repo/blob/" .. commit_sha .. "/qa/" .. value.stage .. ".json",
         receipt_ref = ".testing/runs/qa-recovery/publication/" .. value.stage .. "-1.json",
       }
     end,
@@ -147,6 +148,13 @@ return {
     t.raises(function() qa_publication.prepare_checkpoint(request(), publish_failure) end)
     local saves = publish_failure.counts()
     t.eq(saves, 0)
+
+    local invalid_url = runtime({ remote_url = "https://example.com/artifact" })
+    t.raises(function() qa_publication.prepare_checkpoint(request(), invalid_url) end)
+    local invalid_saves, invalid_writes, invalid_publishes = invalid_url.counts()
+    t.eq(invalid_saves, 0)
+    t.eq(invalid_writes, 0)
+    t.eq(invalid_publishes, 1)
 
     local cas_failure = runtime({ cas_failure = true })
     t.raises(function() qa_publication.prepare_checkpoint(request(), cas_failure) end)

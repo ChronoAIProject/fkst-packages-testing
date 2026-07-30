@@ -73,8 +73,7 @@ local function client(options)
     runtime_config_context = function(request, root)
       return {
         artifact_root = root,
-        operation_id = request.operation_id
-          or (type(request.start) == "table" and request.start.operation_id),
+        operation_id = request.operation_id or (type(request.start) == "table" and request.start.operation_id),
       }
     end,
     validate_runtime_config = function(value, context)
@@ -364,10 +363,7 @@ function R.production(options)
           listener_claimed_ports = copy_ports(pending.plan.needs_claim),
           listener_already_owned_ports = copy_ports(pending.plan.already_owned),
         }, 30)
-        if not ok then
-          release_listener_claims(request.operation_id)
-          error(outcome, 0)
-        end
+        if not ok then release_listener_claims(request.operation_id); error(outcome, 0) end
         local claim_id = type(outcome) == "table" and outcome.claim_id or nil
         if type(outcome) == "table" then outcome.claim_id = nil end
         pending.outcome = outcome
@@ -420,10 +416,7 @@ function R.production(options)
     pending_claims[request.operation_id] = pending
     local ok, snapshot = pcall(request.authorize)
     pending_claims[request.operation_id] = nil
-    if not ok then
-      release_listener_claims(request.operation_id)
-      error(snapshot, 0)
-    end
+    if not ok then release_listener_claims(request.operation_id); error(snapshot, 0) end
     if type(pending.outcome) ~= "table" then
       release_listener_claims(request.operation_id)
       error("environment-factory: runtime-claim-outcome-missing: replay guard did not produce a claim outcome")
@@ -462,10 +455,7 @@ function R.production(options)
       names = names,
     })
     release_listener_group(request.operation_id, key)
-    if not ok then
-      release_listener_claims(request.operation_id)
-      error(outcome, 0)
-    end
+    if not ok then release_listener_claims(request.operation_id); error(outcome, 0) end
     if type(outcome) ~= "table" or outcome.status ~= "running" then
       release_listener_claims(request.operation_id)
     end

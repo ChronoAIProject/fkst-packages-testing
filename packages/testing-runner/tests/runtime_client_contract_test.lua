@@ -23,6 +23,17 @@ local function call(value, root, listener_options)
 end
 
 return {
+  test_host_ports_fall_back_to_runtime_globals = function()
+    local fixture = fixture_factory.new({ effect = { value = "global" } })
+    local value = runtime_client.new(spec(), {
+      runtime_cli = "fixtures/fake-runtime.js",
+      exec_argv = fixture.options.exec_argv,
+      file = fixture.options.file,
+    })
+    t.eq(call(value).value, "global")
+    t.eq(#fixture.effect_calls(), 1)
+  end,
+
   test_configuration_and_runtime_config_contracts = function()
     local value = runtime_client.new(spec({ cli_global = "runtime_client_test_cli" }), {
       runtime_cli = "option-runtime.js",
@@ -60,6 +71,11 @@ return {
   end,
 
   test_io_root_stale_and_unavailable_fail_closed = function()
+    local request_id_unavailable = client({}, { tmpname = function() return nil end })
+    t.raises(function() call(request_id_unavailable) end)
+    local request_id_invalid = client({}, { tmpname = function() return "/" end })
+    t.raises(function() call(request_id_invalid) end)
+
     local invalid = client()
     t.raises(function() call(invalid, "outside") end)
 

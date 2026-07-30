@@ -19,15 +19,16 @@ local function client(options)
     and options.file ~= nil and options.json ~= nil
   local configured = {}
   for key, value in pairs(options or {}) do configured[key] = value end
+  local getenv = type(configured.getenv) == "function" and configured.getenv or os.getenv
   local global_cli = rawget(_G, "structured_execution_runtime_cli")
   local global_config = rawget(_G, "structured_execution_runtime_config_ref")
   if global_cli ~= nil then configured.runtime_cli = global_cli
   elseif configured.runtime_cli == nil then
-    configured.runtime_cli = os.getenv("FKST_STRUCTURED_EXECUTION_RUNTIME_CLI")
+    configured.runtime_cli = getenv("FKST_STRUCTURED_EXECUTION_RUNTIME_CLI")
   end
   if global_config ~= nil then configured.runtime_config_ref = global_config
   elseif configured.runtime_config_ref == nil then
-    configured.runtime_config_ref = os.getenv("FKST_STRUCTURED_EXECUTION_RUNTIME_CONFIG_REF")
+    configured.runtime_config_ref = getenv("FKST_STRUCTURED_EXECUTION_RUNTIME_CONFIG_REF")
   end
   if configured.exec_argv == nil then configured.exec_argv = exec_argv end
   if configured.file == nil then configured.file = file end
