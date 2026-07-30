@@ -34,7 +34,8 @@ local spec = {
 
 local function act(event)
   local raised = core.redrive(event.payload or {}, event.test_ports)
-  log.info("workflow-qa dept=seam tag=REDRIVE actions=" .. tostring(#raised))
+  local queue = #raised == 1 and raised[1].queue or "multiple"
+  log.info("workflow-qa dept=seam tag=REDRIVE actions=" .. tostring(#raised) .. " queue=" .. tostring(queue))
   actions.raise_all(raised)
 end
 

@@ -882,27 +882,40 @@ function M.load(project_root, durable_root, run_id)
   return build_context(config, durable_root)
 end
 
+function M.list_indexed_runs(project_root, durable_root, limit)
+  limit = tonumber(limit) or 100
+  if limit < 1 or limit > 1000 or limit % 1 ~= 0 then
+    error("generic-host durable indexed run limit is invalid")
+  end
+  local index = Store.new(host_root(durable_root), runtime_cli(project_root))
+  local indexed = {}
+  for _, entry in ipairs(index:list("runs")) do
+    local run = entry.value
+    if type(run) == "table" and run.schema == "generic-host.durable-workflow-qa-index.v1"
+      and run.project_root == project_root and type(run.run_id) == "string" then
+      table.insert(indexed, copy(run))
+    end
+  end
+  table.sort(indexed, function(left, right) return left.run_id < right.run_id end)
+  while #indexed > limit do table.remove(indexed) end
+  return indexed
+end
+
 function M.list_pending(project_root, durable_root, limit)
   limit = tonumber(limit) or 100
   if limit < 1 or limit > 1000 or limit % 1 ~= 0 then
     error("generic-host durable pending run limit is invalid")
   end
-  local index = Store.new(host_root(durable_root), runtime_cli(project_root))
   local pending = {}
-  for _, entry in ipairs(index:list("runs")) do
-    local run = entry.value
-    if type(run) == "table" and run.schema == "generic-host.durable-workflow-qa-index.v1"
-      and run.project_root == project_root and type(run.run_id) == "string" then
-      local context = M.load(project_root, durable_root, run.run_id)
-      local state = context.workflow_runtime.load_state(context.request.state_ref)
-      if state == nil or (type(state) == "table"
-        and (state.phase ~= "terminal" or context:terminal_record() == nil)) then
-        table.insert(pending, context)
-      end
+  for _, run in ipairs(M.list_indexed_runs(project_root, durable_root, 1000)) do
+    local context = M.load(project_root, durable_root, run.run_id)
+    local state = context.workflow_runtime.load_state(context.request.state_ref)
+    if state == nil or (type(state) == "table"
+      and (state.phase ~= "terminal" or context:terminal_record() == nil)) then
+      table.insert(pending, context)
+      if #pending >= limit then break end
     end
   end
-  table.sort(pending, function(left, right) return left.run_id < right.run_id end)
-  while #pending > limit do table.remove(pending) end
   return pending
 end
 
