@@ -104,6 +104,35 @@ function processAlive(pid) {
   try { process.kill(pid, 0); return true; } catch (error) { return error.code === 'EPERM'; }
 }
 
+function pathIdentity(target) {
+  const realpath = fs.realpathSync(target);
+  const stat = fs.statSync(realpath);
+  return {
+    realpath,
+    device: String(stat.dev),
+    inode: String(stat.ino),
+  };
+}
+
+function samePathIdentity(left, right) {
+  return Boolean(left && right && left.realpath === right.realpath
+    && left.device === right.device && left.inode === right.inode);
+}
+
+function removeOwnedDirectory(target, expectedIdentity, containmentRoot) {
+  if (typeof target !== 'string' || typeof containmentRoot !== 'string') {
+    throw new Error('owned directory paths are invalid');
+  }
+  const root = fs.realpathSync(containmentRoot);
+  const identity = pathIdentity(target);
+  if (!samePathIdentity(identity, expectedIdentity)) throw new Error('owned directory identity changed');
+  if (identity.realpath === root || !identity.realpath.startsWith(`${root}${path.sep}`)) {
+    throw new Error('owned directory escaped containment root');
+  }
+  fs.rmSync(identity.realpath, { recursive: true, force: false });
+  return !fs.existsSync(identity.realpath);
+}
+
 function readLockOwner(lockPath) {
   try { return readJson(path.join(lockPath, 'owner.json')); } catch (_error) { return null; }
 }
@@ -264,11 +293,17 @@ module.exports = {
   isSafeArtifactPath,
   minimalEnvironment,
   parseArgs,
+  pathIdentity,
+  processAlive,
+  processStartIdentity,
   readJson,
+  removeOwnedDirectory,
   runtimeConfig,
   sameArray,
+  samePathIdentity,
   samePointer,
   sha256,
+  sleep,
   stableStringify,
   validateArgv,
   writeJsonAtomic,

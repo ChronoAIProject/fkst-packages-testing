@@ -824,11 +824,10 @@ cmd_example() {
   roots="$(generic_host_closed_world_roots)"
   work="$(composed_test_workspace "$name" "$roots" "$example")" || return 1
   args=(--project-root "$work" --package-root "$work/packages/$name")
-  for t in $roots; do
-    args+=(--package-root "$work/packages/${t#@platform/}")
-  done
+  for t in $roots; do args+=(--package-root "$work/packages/${t#@platform/}"); done
   echo "example $name (closed-world: $roots)"
-  FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 run_engine "$BIN" test "${args[@]}"
+  ( trap 'rm -rf "$work"' EXIT; mkdir -p "$work/.fkst/run/runtime" "$work/.fkst/run/durable"; \
+    FKST_RUNTIME_ROOT="$work/.fkst/run/runtime" FKST_DURABLE_ROOT="$work/.fkst/run/durable" FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 run_engine "$BIN" test "${args[@]}" )
 }
 
 cmd_external_host() {

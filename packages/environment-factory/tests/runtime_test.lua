@@ -1,4 +1,6 @@
+local json_codec = require("testing_runtime.json")
 local runtime = require("runtime")
+local host_json = json
 local t = fkst.test
 
 local config_ref = {
@@ -107,12 +109,100 @@ return {
     t.is_true(request_body:find('"deadline_epoch_seconds":10', 1, true) ~= nil)
   end,
 
+  test_same_identity_calls_use_concurrency_safe_frames_and_reject_stale_or_missing_response_ids = function()
+    local files, request_paths, response_paths, response_mode = {}, {}, {}, "exact"
+    with_globals({
+      environment_factory_runtime_config_ref = config_ref,
+      environment_factory_runtime_cli = "custom-correlated-runtime.js",
+      file = {
+        write = function(path, body) files[path] = body end,
+        read = function(path) return assert(files[path], "missing fake runtime file " .. tostring(path)) end,
+      },
+      json = { decode = host_json.decode },
+      exec_argv = function(spec)
+        if spec.argv[2] == "-e" then return { exit_code = 0 } end
+        local request_path, response_path = spec.argv[7], spec.argv[9]
+        local request = host_json.decode(files[request_path])
+        table.insert(request_paths, request_path)
+        table.insert(response_paths, response_path)
+        local response = { ok = true, result = { remaining_seconds = 9 } }
+        if response_mode == "exact" then response.request_id = request.request_id
+        elseif response_mode == "stale" then response.request_id = host_json.decode(files[request_paths[1]]).request_id end
+        files[response_path] = json_codec.encode(response) .. "\n"
+        return { exit_code = 0 }
+      end,
+    }, function()
+      local request = {
+        artifact_root = ".testing/runs/runtime-correlation",
+        operation_id = "runtime-correlation",
+        deadline_epoch_seconds = 10,
+        total_seconds = 10,
+      }
+      t.eq(runtime.call_cli("remaining-budget", request, 7).remaining_seconds, 9)
+      t.eq(runtime.call_cli("remaining-budget", request, 7).remaining_seconds, 9)
+      local first = host_json.decode(files[request_paths[1]])
+      local second = host_json.decode(files[request_paths[2]])
+      t.is_true(type(first.request_id) == "string" and first.request_id ~= "")
+      t.is_true(type(second.request_id) == "string" and second.request_id ~= "")
+      t.is_true(first.request_id ~= second.request_id)
+      t.is_true(request_paths[1] ~= request_paths[2])
+      t.is_true(response_paths[1] ~= response_paths[2])
+      t.is_true(request_paths[1]:find(first.request_id, 1, true) ~= nil)
+      t.is_true(response_paths[2]:find(second.request_id, 1, true) ~= nil)
+
+      response_mode = "stale"
+      local stale_ok, stale_error = pcall(runtime.call_cli, "remaining-budget", request, 7)
+      t.eq(stale_ok, false)
+      t.is_true(tostring(stale_error):find("runtime-response-request-id-mismatch", 1, true) ~= nil)
+
+      response_mode = "missing"
+      local missing_ok, missing_error = pcall(runtime.call_cli, "remaining-budget", request, 7)
+      t.eq(missing_ok, false)
+      t.is_true(tostring(missing_error):find("runtime-response-request-id-missing", 1, true) ~= nil)
+    end)
+  end,
+
+  test_nonzero_runtime_exit_surfaces_correlated_bounded_host_error = function()
+    local files = {}
+    with_globals({
+      environment_factory_runtime_config_ref = config_ref,
+      environment_factory_runtime_cli = "custom-correlated-runtime.js",
+      file = {
+        write = function(path, body) files[path] = body end,
+        read = function(path) return assert(files[path], "missing fake runtime file " .. tostring(path)) end,
+      },
+      json = { decode = host_json.decode },
+      exec_argv = function(spec)
+        if spec.argv[2] == "-e" then return { exit_code = 0 } end
+        local request = host_json.decode(files[spec.argv[7]])
+        files[spec.argv[9]] = json_codec.encode({
+          ok = false,
+          request_id = request.request_id,
+          error = string.rep("h", 5000) .. "secret-host-tail",
+        }) .. "\n"
+        return { exit_code = 19, stderr = "transport failed" }
+      end,
+    }, function()
+      local ok, failure = pcall(runtime.call_cli, "sha256", {
+        artifact_root = ".testing/runs/runtime-host-error",
+        value = "fixture",
+      }, 3)
+      t.eq(ok, false)
+      local message = tostring(failure)
+      t.is_true(message:find("runtime-effect-failed: sha256 exit=19", 1, true) ~= nil)
+      t.is_true(message:find("Host error=", 1, true) ~= nil)
+      t.is_true(#message < 2300)
+      t.eq(message:find("secret-host-tail", 1, true), nil)
+    end)
+  end,
+
   test_runtime_effect_failure_is_classified_and_bounded = function()
     with_globals({
       environment_factory_runtime_config_ref = config_ref,
       file = { write = function() end, read = function() return "unused" end },
       json = { decode = function() return {} end },
-      exec_argv = function()
+      exec_argv = function(spec)
+        if spec.argv[2] == "-e" then return { exit_code = 0 } end
         return { exit_code = 17, stderr = string.rep("x", 5000) .. "\nsecret-tail" }
       end,
     }, function()
@@ -377,34 +467,54 @@ return {
     end)
   end,
 
-  test_authorization_failure_before_replay_guard_acquires_nothing = function()
+  test_authorization_failure_before_and_after_replay_guard_releases_claims = function()
     local claim_calls, releases = {}, {}
     local port = { name = "application", port = 4174 }
-    local responses = {
-      { status = "planned", needs_claim = { port }, already_owned = {} },
-      { found = false },
-    }
     with_globals({
       environment_factory_runtime_config_ref = config_ref,
       network_listener = fake_listener_capability(claim_calls, releases),
       file = { write = function() end, read = function() return "response" end },
-      json = { decode = response_decoder(responses) },
+      json = { decode = response_decoder({
+        { status = "planned", needs_claim = { port }, already_owned = {} }, { found = false },
+      }) },
       exec_argv = function() return { exit_code = 0 } end,
     }, function()
       local ports = runtime.production()
-      t.raises(function()
-        ports.authorize_claim_ports({
-          artifact_root = ".testing/runs/runtime-auth-failure",
-          operation_id = "runtime-auth-failure",
-          effect_id = "runtime-auth-failure/claim",
-          runtime_ports = { port },
-          listener_groups = { { port } },
-          request_binding = { schema = "binding" },
-          authorize = function() error("authorization rejected") end,
-        })
-      end)
+      t.raises(function() ports.authorize_claim_ports({
+        artifact_root = ".testing/runs/runtime-auth-failure", operation_id = "runtime-auth-failure",
+        effect_id = "runtime-auth-failure/claim", runtime_ports = { port }, listener_groups = { { port } },
+        request_binding = { schema = "binding" }, authorize = function() error("authorization rejected") end,
+      }) end)
       t.eq(#claim_calls, 0)
       t.eq(#releases, 0)
+    end)
+
+    local bundle = { profile = {}, context = { trusted_authorities = {} } }
+    with_globals({
+      environment_factory_runtime_config_ref = config_ref,
+      network_listener = fake_listener_capability(claim_calls, releases),
+      file = { write = function() end, read = function() return "response" end },
+      json = { decode = response_decoder({ bundle,
+        { status = "planned", needs_claim = { port }, already_owned = {} }, { found = false },
+        { status = "passed", claim_id = "claim" },
+      }) },
+      exec_argv = function() return { exit_code = 0 } end,
+    }, function()
+      local ports = runtime.production()
+      local loaded = ports.load_authorization_bundle({ operation_id = "runtime-auth-after-claim",
+        artifact_root = ".testing/runs/runtime-auth-after-claim" })
+      local ok, failure = pcall(ports.authorize_claim_ports, {
+        artifact_root = ".testing/runs/runtime-auth-after-claim", operation_id = "runtime-auth-after-claim",
+        effect_id = "runtime-auth-after-claim/claim", runtime_ports = { port }, listener_groups = { { port } },
+        request_binding = { schema = "binding" }, authorize = function()
+          loaded.context.replay_guard({})
+          error("snapshot construction failed")
+        end,
+      })
+      t.eq(ok, false)
+      t.is_true(tostring(failure):find("snapshot construction failed", 1, true) ~= nil)
+      t.eq(#claim_calls, 1)
+      t.eq(#releases, #claim_calls)
     end)
   end,
 
@@ -628,6 +738,11 @@ return {
       { found = true, outcome = passed }, passed, { status = "blocked" },
     })
 
+    cached_failure("runtime-cached-verification-blocked", function() end, {
+      { status = "planned", needs_claim = { port }, already_owned = {} },
+      { found = true, outcome = passed }, { status = "blocked" },
+    })
+
     local acquired, released = {}, {}
     with_globals({
       environment_factory_runtime_config_ref = config_ref,
@@ -676,13 +791,16 @@ return {
       local ports = runtime.production()
       local loaded = ports.load_authorization_bundle({ operation_id = "runtime-uncached",
         artifact_root = ".testing/runs/runtime-uncached" })
-      t.raises(function() ports.authorize_claim_ports({
+      local ok, failure = pcall(ports.authorize_claim_ports, {
         artifact_root = ".testing/runs/runtime-uncached", operation_id = "runtime-uncached",
         effect_id = "runtime-uncached/claim", runtime_ports = { port }, listener_groups = { { port } },
         request_binding = { schema = "binding" }, authorize = function()
           loaded.context.replay_guard({ approval_id = "approval", approval_sha256 = string.rep("a", 64) })
         end,
-      }) end)
+      })
+      t.eq(ok, false)
+      t.is_true(tostring(failure):find("authorize-claim-ports exit=20", 1, true) ~= nil)
+      t.eq(#acquired, 1)
       t.eq(#released, #acquired)
     end)
 
@@ -749,7 +867,7 @@ return {
         total_seconds = 10,
       }), 4)
     end)
-    t.eq(executed[1].argv[2], "fixtures/explicit-environment-runtime.js")
+    t.eq(executed[#executed].argv[2], "fixtures/explicit-environment-runtime.js")
 
     with_globals({
       os = { getenv = function(name)

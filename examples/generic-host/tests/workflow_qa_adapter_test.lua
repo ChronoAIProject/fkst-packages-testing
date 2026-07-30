@@ -255,12 +255,12 @@ return {
     local request, materials = fixture()
     local ports, writes, _, claim_calls = runtime(request, materials)
     local first = testing.run_fake(grant_department, {
-      queue = "workflow_qa_execution_grant_request",
+      queue = "workflow-qa.workflow_qa_execution_grant_request",
       payload = request,
       test_ports = ports,
     })
     local replay = testing.run_fake(grant_department, {
-      queue = "workflow_qa_execution_grant_request",
+      queue = "workflow-qa.workflow_qa_execution_grant_request",
       payload = request,
       test_ports = ports,
     })
@@ -285,7 +285,7 @@ return {
     local ports, _, recorded = runtime(request, materials)
     local payload = terminal_payload()
     local trace = testing.run_fake(terminal_department, {
-      queue = "workflow_qa_terminal_request",
+      queue = "workflow-qa.workflow_qa_terminal_request",
       payload = payload,
       test_ports = ports,
     })

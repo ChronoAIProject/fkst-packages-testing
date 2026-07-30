@@ -2,8 +2,8 @@ local adapter = require("host_workflow_qa_adapter")
 local saga = require("workflow.saga")
 
 local spec = {
-  consumes = { "workflow_qa_terminal_request" },
-  fanout = { "workflow_qa_terminal_request" },
+  consumes = { "workflow-qa.workflow_qa_terminal_request" },
+  fanout = { "workflow-qa.workflow_qa_terminal_request" },
   produces = {},
   stall_window = "2m",
   retry = false,

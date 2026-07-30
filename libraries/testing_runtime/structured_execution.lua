@@ -1,12 +1,7 @@
-local json_codec = require("testing_runtime.json")
+local runtime_client = require("testing_runtime.runtime_client")
 
 local M = {}
 local default_runtime_cli = "libraries/testing_runtime/bin/fkst-structured-execution-runtime.js"
-
-local function safe_label(value)
-  local label = tostring(value or "request"):gsub("[^A-Za-z0-9._-]", "-")
-  return label:sub(1, 160)
-end
 
 local function run_root(path)
   if type(path) ~= "string" then return nil end
@@ -19,76 +14,62 @@ local function request_root(payload)
     or run_root(type(payload.artifact_ref) == "table" and payload.artifact_ref.ref)
 end
 
-local function configured_runtime_cli(options)
-  local value = rawget(_G, "structured_execution_runtime_cli")
-  if value == nil and type(options) == "table" then value = options.runtime_cli end
-  if value == nil then value = os.getenv("FKST_STRUCTURED_EXECUTION_RUNTIME_CLI") end
-  if value == nil then value = default_runtime_cli end
-  if type(value) ~= "string" or value == "" or #value > 4096 or value:find("[%z\1-\31\127]") then
-    error("testing-runtime: structured-execution-runtime-cli-invalid")
+local function client(options)
+  local injected_transport = type(options) == "table" and options.exec_argv ~= nil
+    and options.file ~= nil and options.json ~= nil
+  local configured = {}
+  for key, value in pairs(options or {}) do configured[key] = value end
+  local getenv = type(configured.getenv) == "function" and configured.getenv or os.getenv
+  local global_cli = rawget(_G, "structured_execution_runtime_cli")
+  local global_config = rawget(_G, "structured_execution_runtime_config_ref")
+  if global_cli ~= nil then configured.runtime_cli = global_cli
+  elseif configured.runtime_cli == nil then
+    configured.runtime_cli = getenv("FKST_STRUCTURED_EXECUTION_RUNTIME_CLI")
   end
-  return value
-end
-
-local function configured_runtime_ref(root, options)
-  local value = rawget(_G, "structured_execution_runtime_config_ref")
-  if value == nil and type(options) == "table" then value = options.runtime_config_ref end
-  if type(value) == "function" then value = value({ artifact_root = root }) end
-  if type(value) ~= "table" or value.kind ~= "artifact" or type(value.ref) ~= "string" then
-    error("testing-runtime: structured-execution-runtime-config-unavailable")
+  if global_config ~= nil then configured.runtime_config_ref = global_config
+  elseif configured.runtime_config_ref == nil then
+    configured.runtime_config_ref = getenv("FKST_STRUCTURED_EXECUTION_RUNTIME_CONFIG_REF")
   end
-  if value.ref == root or value.ref:sub(1, #root + 1) == root .. "/" then
-    error("testing-runtime: structured-execution-runtime-config-inside-run-root")
-  end
-  return { kind = value.kind, ref = value.ref }
-end
-
-local function option_or(options, name, fallback)
-  if type(options) == "table" and options[name] ~= nil then return options[name] end
-  return fallback
-end
-
-local function host_ports(options)
-  local host = {
-    exec_argv = option_or(options, "exec_argv", exec_argv),
-    file = option_or(options, "file", file),
-    json = option_or(options, "json", json),
-  }
-  if type(host.exec_argv) ~= "function" then error("testing-runtime: structured-execution-exec-port-unavailable") end
-  if type(host.file) ~= "table" or type(host.file.write) ~= "function" or type(host.file.read) ~= "function" then
-    error("testing-runtime: structured-execution-file-port-unavailable")
-  end
-  if type(host.json) ~= "table" or type(host.json.decode) ~= "function" then
-    error("testing-runtime: structured-execution-json-port-unavailable")
-  end
-  return host
+  if configured.exec_argv == nil then configured.exec_argv = exec_argv end
+  if configured.file == nil then configured.file = file end
+  if configured.json == nil then configured.json = json end
+  return runtime_client.new({
+    cli_global = "structured_execution_runtime_cli",
+    cli_env = "FKST_STRUCTURED_EXECUTION_RUNTIME_CLI",
+    default_runtime_cli = default_runtime_cli,
+    config_global = "structured_execution_runtime_config_ref",
+    config_env = "FKST_STRUCTURED_EXECUTION_RUNTIME_CONFIG_REF",
+    error_prefix = "testing-runtime: structured-execution",
+    runtime_config_required = true,
+    runtime_config_unavailable_error = "testing-runtime: structured-execution-runtime-config-unavailable",
+    runtime_config_context = function(_request, root) return { artifact_root = root } end,
+    validate_runtime_config = function(value, context)
+      local root = context.artifact_root
+      if value.ref == root or value.ref:sub(1, #root + 1) == root .. "/" then
+        error("testing-runtime: structured-execution-runtime-config-inside-run-root")
+      end
+    end,
+    io_root = function(root) return root .. "/structured-runtime" end,
+    io_root_invalid_error = "testing-runtime: structured-execution-runtime-io-root-invalid",
+    io_root_unavailable_error = "testing-runtime: structured-execution-runtime-io-root-unavailable",
+    cli_invalid_error = "testing-runtime: structured-execution-runtime-cli-invalid",
+    exec_port_error = "testing-runtime: structured-execution-exec-port-unavailable",
+    file_port_error = "testing-runtime: structured-execution-file-port-unavailable",
+    json_port_error = "testing-runtime: structured-execution-json-port-unavailable",
+    allow_legacy_response = function(cli)
+      return cli == default_runtime_cli or cli:match("^fixtures/") ~= nil or injected_transport
+    end,
+    include_request_id = function(cli) return cli ~= default_runtime_cli end,
+    skip_io_prepare = function() return injected_transport end,
+  }, configured)
 end
 
 local function call_cli(name, payload, timeout, options)
-  local host = host_ports(options)
   local root = request_root(payload)
   if root == nil then error("testing-runtime: structured-execution-run-root-missing") end
-  payload.runtime_config_ref = configured_runtime_ref(root, options)
-  local io_root = root .. "/structured-runtime"
   local identity = payload.case_id or (type(payload.artifact_ref) == "table" and payload.artifact_ref.ref)
     or payload.result_ref or payload.grant_id or payload.operation_id or payload.trace_id or name
-  local label = safe_label(identity)
-  local request_path = io_root .. "/" .. safe_label(name) .. "-" .. label .. "-request.json"
-  local response_path = io_root .. "/" .. safe_label(name) .. "-" .. label .. "-response.json"
-  host.file.write(request_path, json_codec.encode(payload) .. "\n")
-  local result = host.exec_argv({
-    argv = { "node", configured_runtime_cli(options), "effect", "--name", name,
-      "--request", request_path, "--response", response_path },
-    timeout = timeout or 30,
-  })
-  if type(result) ~= "table" or tonumber(result.exit_code) ~= 0 then
-    error("testing-runtime: structured-execution-runtime-effect-failed: " .. name)
-  end
-  local decoded = host.json.decode(host.file.read(response_path))
-  if type(decoded) ~= "table" or decoded.ok ~= true then
-    error("testing-runtime: structured-execution-runtime-effect-invalid: " .. name)
-  end
-  return decoded.result
+  return client(options).call(name, payload, root, identity, timeout)
 end
 
 function M.production(options)

@@ -1,3 +1,5 @@
+local runtime = require("testing_runtime.workflow_qa")
+
 local M = {}
 
 local required = {
@@ -7,6 +9,7 @@ local required = {
 
 function M.production()
   local ports = _G.workflow_qa_runtime
+  if ports == nil and runtime.configured() then ports = runtime.production() end
   for _, name in ipairs(required) do
     if type(ports) ~= "table" or type(ports[name]) ~= "function" then
       error("workflow-qa: runtime-port-unavailable: " .. name)

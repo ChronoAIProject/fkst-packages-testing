@@ -3,6 +3,7 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { processStartIdentity, sleep } = require('./common');
 
 function directCommand(argv, options = {}) {
   return spawnSync(argv[0], argv.slice(1), {
@@ -238,6 +239,64 @@ function listenersOwnedByProcessGroup(ports, pgid) {
   return { supported: true, owned: true };
 }
 
+function processGroupState(resource) {
+  const pgid = Number(resource && (resource.pgid || resource.pid));
+  if (!Number.isInteger(pgid) || pgid < 1) return { supported: true, alive: false };
+  const usage = processGroupUsage([pgid]);
+  if (!usage.supported) return { supported: false, alive: true };
+  if (usage.processes === 0) return { supported: true, alive: false };
+  const leader = usage.members.find((item) => item.pid === resource.pid);
+  if (leader && typeof resource.process_start_identity === 'string'
+    && processStartIdentity(resource.pid) !== resource.process_start_identity) {
+    return { supported: true, alive: false, foreign: true };
+  }
+  return { supported: true, alive: true };
+}
+
+function terminateProcessGroup(resource, timeoutMs = 5_000) {
+  const pgid = Number(resource && (resource.pgid || resource.pid));
+  let state = processGroupState(resource);
+  if (!state.supported) return { released: false, reason: 'process-group-inspection-unavailable' };
+  if (state.foreign) return { released: false, reason: 'process-group-ownership-changed' };
+  if (!state.alive) return { released: true };
+  try { process.kill(-pgid, 'SIGTERM'); } catch (_error) {
+    try { process.kill(resource.pid, 'SIGTERM'); } catch (_ignored) {}
+  }
+  const deadline = Date.now() + Math.max(1, Number(timeoutMs) || 1);
+  while (Date.now() < deadline) {
+    state = processGroupState(resource);
+    if (!state.supported || !state.alive || state.foreign) break;
+    sleep(25);
+  }
+  state = processGroupState(resource);
+  if (!state.supported) return { released: false, reason: 'process-group-inspection-unavailable' };
+  if (state.foreign) return { released: false, reason: 'process-group-ownership-changed' };
+  if (state.alive) {
+    try { process.kill(-pgid, 'SIGKILL'); } catch (_error) {
+      try { process.kill(resource.pid, 'SIGKILL'); } catch (_ignored) {}
+    }
+    const killDeadline = Date.now() + 2_000;
+    while (Date.now() < killDeadline) {
+      state = processGroupState(resource);
+      if (!state.supported || !state.alive || state.foreign) break;
+      sleep(25);
+    }
+  }
+  state = processGroupState(resource);
+  if (!state.supported) return { released: false, reason: 'process-group-inspection-unavailable' };
+  if (state.foreign) return { released: false, reason: 'process-group-ownership-changed' };
+  return state.alive ? { released: false, reason: 'process-group-still-alive' } : { released: true };
+}
+
+function listenersReleased(ports) {
+  for (const item of ports || []) {
+    const owners = listenerOwners(item.port);
+    if (!owners.supported) return { supported: false, released: false };
+    if (owners.pids.length > 0) return { supported: true, released: false, port: item.port };
+  }
+  return { supported: true, released: true };
+}
+
 function directoryBytes(directory) {
   const result = directCommand(['du', '-sk', directory], { timeoutMs: 5_000, outputBytes: 64 * 1024 });
   if (result.error || result.status !== 0) return { supported: false };
@@ -250,7 +309,10 @@ module.exports = {
   directoryBytes,
   listenerOwners,
   listenersOwnedByProcessGroup,
+  listenersReleased,
   parsePsTime,
+  processGroupState,
   processGroupUsage,
   processTable,
+  terminateProcessGroup,
 };
