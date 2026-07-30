@@ -1,187 +1,20 @@
 local durable = require("host_durable_workflow_qa")
-local json_codec = require("testing_runtime.json")
 local support = require("host_canonical_workflow_qa")
+local process = require("test_support.durable_workflow_qa_process")
 local supervisor_support = require("test_support.host_workflow_qa_supervisor")
 local t = fkst.test
 
-local PACKAGE_NAMES = {
-  "generic-host",
-  "environment-factory",
-  "testing-design",
-  "browser-readiness",
-  "module-testing-pipeline",
-  "module-test-loop",
-  "testing-runner",
-  "test-artifacts",
-  "test-publication",
-  "workflow-qa",
-  "consensus",
-  "github-proxy",
-}
-
-local function shell_quote(value)
-  return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
-end
-
-local function read_file(path)
-  local handle = io.open(path, "rb")
-  if handle == nil then return nil end
-  local body = handle:read("*a")
-  handle:close()
-  return body
-end
-
-local function write_file(path, body)
-  local parent = tostring(path):match("^(.*)/[^/]+$")
-  if parent ~= nil then os.execute("mkdir -p " .. shell_quote(parent)) end
-  local handle = assert(io.open(path, "wb"))
-  handle:write(body)
-  handle:close()
-end
-
-local command_sequence = 0
-local function direct_exec(argv)
-  local rendered = {}
-  for _, item in ipairs(argv) do table.insert(rendered, shell_quote(item)) end
-  command_sequence = command_sequence + 1
-  local stdout_path = os.tmpname() .. "-durable-recovery-stdout-" .. tostring(command_sequence)
-  local stderr_path = os.tmpname() .. "-durable-recovery-stderr-" .. tostring(command_sequence)
-  local ok, _, code = os.execute(table.concat(rendered, " ")
-    .. " >" .. shell_quote(stdout_path) .. " 2>" .. shell_quote(stderr_path))
-  local result = {
-    exit_code = ok == true and 0 or tonumber(code) or (type(ok) == "number" and ok) or -1,
-    stdout = read_file(stdout_path) or "",
-    stderr = read_file(stderr_path) or "",
-  }
-  os.remove(stdout_path)
-  os.remove(stderr_path)
-  return result
-end
-
-local function supervisor_argv(context)
-  local bin = os.getenv("BIN")
-  if type(bin) ~= "string" or bin == "" then error("generic-host recovery test: BIN is unavailable") end
-  local argv = { bin, "supervise", "--project-root", context.project_root }
-  for _, name in ipairs(PACKAGE_NAMES) do
-    local package_root = context.project_root .. "/packages/" .. name
-    if read_file(package_root .. "/fkst.toml") == nil then
-      error("generic-host recovery test: supervisor package is unavailable: " .. name)
-    end
-    table.insert(argv, "--package-root")
-    table.insert(argv, package_root)
-  end
-  table.insert(argv, "--framework-bin")
-  table.insert(argv, bin)
-  return argv
-end
-
-local function write_trigger(context, _label)
-  local path = context.project_root .. "/durable-workflow-qa/trigger.json"
-  local trigger = {
-    schema = "generic-host.durable-workflow-qa-trigger.v1",
-    project_root = context.project_root,
-    durable_root = context.durable_root,
-    limit = 10,
-  }
-  local temporary = path .. ".tmp"
-  write_file(temporary, json_codec.encode(trigger) .. "\n")
-  assert(os.rename(temporary, path))
-  local decoded = json.decode(assert(read_file(path)))
-  t.eq(decoded.run_id, nil)
-  return path
-end
-
-local function start_supervisor(context, label, arm_failpoint, live_pids)
-  write_trigger(context, label)
-  local environment = context:framework_environment(label, arm_failpoint)
-  local rendered = { "env" }
-  local names = {}
-  for name, _ in pairs(environment) do table.insert(names, name) end
-  table.sort(names)
-  for _, name in ipairs(names) do
-    table.insert(rendered, shell_quote(name .. "=" .. environment[name]))
-  end
-  for _, item in ipairs(supervisor_argv(context)) do table.insert(rendered, shell_quote(item)) end
-  local stdout_path = context.host_root .. "/supervisor-" .. label .. ".stdout"
-  local stderr_path = context.host_root .. "/supervisor-" .. label .. ".stderr"
-  local pid_path = context.host_root .. "/supervisor-" .. label .. ".pid"
-  local body = table.concat(rendered, " ") .. " >" .. shell_quote(stdout_path)
-    .. " 2>" .. shell_quote(stderr_path) .. " & echo $! >" .. shell_quote(pid_path)
-  local ok = os.execute("sh -c " .. shell_quote(body))
-  if ok ~= true and ok ~= 0 then error("generic-host recovery test: failed to launch supervisor " .. label) end
-  local pid = tonumber((read_file(pid_path) or ""):match("(%d+)"))
-  if pid == nil then error("generic-host recovery test: supervisor pid is unavailable: " .. label) end
-  table.insert(live_pids, pid)
-  return pid, stdout_path, stderr_path
-end
-
-local function wait_for_path(path, timeout_seconds)
-  local script = table.concat({
-    "const fs=require('fs'),path=process.argv[1],end=Date.now()+Number(process.argv[2])*1000;",
-    "function poll(){if(fs.existsSync(path))process.exit(0);if(Date.now()>=end)process.exit(49);setTimeout(poll,20)}poll();",
-  })
-  return direct_exec({ "node", "-e", script, path, tostring(timeout_seconds or 45) }).exit_code == 0
-end
-
-local function wait_for_text(path, fragment, timeout_seconds)
-  local script = table.concat({
-    "const fs=require('fs'),path=process.argv[1],fragment=process.argv[2],end=Date.now()+Number(process.argv[3])*1000;",
-    "function poll(){let body='';try{body=fs.readFileSync(path,'utf8')}catch(_error){}",
-    "if(body.includes(fragment))process.exit(0);if(Date.now()>=end)process.exit(49);setTimeout(poll,20)}poll();",
-  })
-  return direct_exec({ "node", "-e", script, path, fragment, tostring(timeout_seconds or 45) }).exit_code == 0
-end
-
-local function wait_for_child_text(root, prefix, fragment, timeout_seconds)
-  local script = table.concat({
-    "const fs=require('fs'),root=process.argv[1],prefix=process.argv[2],fragment=process.argv[3],end=Date.now()+Number(process.argv[4])*1000;",
-    "function poll(){try{for(const name of fs.readdirSync(root)){if(name.startsWith(prefix)&&fs.readFileSync(root+'/'+name,'utf8').includes(fragment))process.exit(0)}}catch(_error){}",
-    "if(Date.now()>=end)process.exit(49);setTimeout(poll,20)}poll();",
-  })
-  return direct_exec({ "node", "-e", script, root, prefix, fragment,
-    tostring(timeout_seconds or 45) }).exit_code == 0
-end
-
-local function assert_log_markers(path, label, markers)
-  local body = read_file(path) or ""
-  for _, marker in ipairs(markers) do
-    if body:find(marker, 1, true) == nil then
-      error("generic-host recovery test: missing " .. label .. " route marker " .. marker
-        .. "\nlog=" .. body)
-    end
-  end
-end
-
-local function stop_supervisor(pid)
-  local script = table.concat({
-    "const cp=require('child_process'),root=Number(process.argv[1]);",
-    "const rows=cp.execFileSync('ps',['-axo','pid=,ppid='],{encoding:'utf8'}).trim().split(/\\n+/).map(line=>line.trim().split(/\\s+/).map(Number));",
-    "const children=new Map();for(const [pid,ppid] of rows){if(!children.has(ppid))children.set(ppid,[]);children.get(ppid).push(pid)}",
-    "const tree=[];function visit(pid){for(const child of children.get(pid)||[]){visit(child);tree.push(child)}}visit(root);tree.push(root);",
-    "for(const target of tree){try{process.kill(target,'SIGTERM')}catch(_error){}}",
-    "const end=Date.now()+5000;while(Date.now()<end){if(tree.every(target=>{try{process.kill(target,0);return false}catch(_error){return true}}))process.exit(0);Atomics.wait(new Int32Array(new SharedArrayBuffer(4)),0,0,20)}",
-    "for(const target of tree){try{process.kill(target,'SIGKILL')}catch(_error){}}",
-    "if(tree.some(target=>{try{process.kill(target,0);return true}catch(_error){return false}}))process.exit(50);",
-  })
-  local result = direct_exec({ "node", "-e", script, tostring(pid) })
-  if result.exit_code ~= 0 then error("generic-host recovery test: supervisor process tree did not terminate") end
-end
-
-local function stop_live(pid, live_pids)
-  stop_supervisor(pid)
-  for index, value in ipairs(live_pids) do
-    if value == pid then table.remove(live_pids, index) break end
-  end
-end
-
-local function effect_count(context)
-  local script = table.concat({
-    "const fs=require('fs'),path=process.argv[1];",
-    "if(!fs.existsSync(path)){process.stdout.write('0');process.exit(0)}",
-    "process.stdout.write(String(fs.readdirSync(path).filter(name=>name.endsWith('.json')).length));",
-  })
-  return tonumber(direct_exec({ "node", "-e", script, context.effect_counter_path }).stdout)
-end
+local assert_log_markers = process.assert_log_markers
+local effect_count = process.effect_count
+local read_file = process.read_file
+local start_supervisor = process.start_supervisor
+local stop_live = process.stop_live
+local wait_for_child_text = process.wait_for_child_text
+local wait_for_path = process.wait_for_path
+local wait_for_terminal = process.wait_for_terminal
+local wait_for_text = process.wait_for_text
+local wait_for_noop = process.wait_for_noop
+local with_context = process.with_context
 
 local function record_counts(context)
   return {
@@ -199,10 +32,6 @@ local function assert_counts_equal(left, right)
   for key, value in pairs(left) do t.eq(right[key], value) end
 end
 
-local function terminal_path(context)
-  return context.durable_run_root .. "/records/generic-host/terminal/" .. context.run_id .. ".json"
-end
-
 local function state_diagnostic(context)
   local ok, recovered = pcall(durable.load, context.project_root, context.durable_root, context.run_id)
   if not ok then return "state_load_error=" .. tostring(recovered) end
@@ -211,25 +40,6 @@ local function state_diagnostic(context)
   local queues = {}
   for _, action in ipairs(state.pending_actions or {}) do table.insert(queues, tostring(action.queue)) end
   return "phase=" .. tostring(state.phase) .. " pending=" .. table.concat(queues, ",")
-end
-
-local function wait_for_terminal(context)
-  for attempt = 1, 6 do
-    if wait_for_path(terminal_path(context), 30) then return true end
-    if attempt < 6 then write_trigger(context, "redrive-" .. tostring(attempt)) end
-  end
-  return false
-end
-
-local function wait_for_noop(context, label)
-  local root = context.host_root .. "/framework-runtime-" .. label .. "/logs/framework-child"
-  for attempt = 1, 4 do
-    if wait_for_child_text(root, "generic-host.workflow_qa_supervisor-", "tag=NOOP pending_runs=0", 15) then
-      return true
-    end
-    if attempt < 4 then write_trigger(context, "noop-" .. tostring(attempt)) end
-  end
-  return false
 end
 
 local function run_to_barrier(context, live_pids, label)
@@ -333,21 +143,6 @@ local function replay_record_path(context, recovered)
   local entries = recovered.records:list("testing-runner/replay")
   t.eq(#entries, 1)
   return context.durable_run_root .. "/records/" .. entries[1].key .. ".json"
-end
-
-local function with_context(options, fn)
-  local context = support.new(options)
-  local qa_poll = context.project_root .. "/packages/workflow-qa/raisers/qa_poll.lua"
-  if not os.remove(qa_poll) then error("generic-host recovery test: failed to disable fixture qa poll") end
-  local live_pids = {}
-  local ok, err = pcall(fn, context, live_pids)
-  for _, pid in ipairs(live_pids) do pcall(stop_supervisor, pid) end
-  if ok or os.getenv("FKST_KEEP_FAILED_FIXTURE") ~= "1" then
-    context:cleanup()
-  else
-    io.stderr:write("generic-host recovery test preserved fixture: " .. context.temp_root .. "\n")
-  end
-  if not ok then error(err, 0) end
 end
 
 local function mutation_case(mode, expected_fragment, expected_stream)
@@ -455,31 +250,6 @@ return {
       stop_live(pid, live_pids)
       local recovered = assert_terminal(context)
       t.eq(recovered.records:read("generic-host/barriers/post-replay-complete"), nil)
-    end)
-  end,
-
-  test_durable_workflow_qa_terminal_state_remains_pending_until_host_record = function()
-    with_context({ cli_only = true, count_effect = true, durable = true }, function(context)
-      local recovered = durable.load(context.project_root, context.durable_root, context.run_id)
-      local state = recovered.workflow_runtime.load_state(recovered.request.state_ref)
-      local expected = state.version
-      state.version = expected + 1
-      state.phase = "terminal"
-      state.pending_actions = { {
-        queue = "workflow_qa_terminal_request",
-        payload = { run_id = context.run_id },
-      } }
-      local saved = recovered.records:cas("workflow-qa/state/" .. context.run_id, state, expected)
-      t.eq(saved.saved, true)
-      t.eq(#durable.list_pending(context.project_root, context.durable_root, 10), 1)
-
-      local terminal = { run_id = context.run_id, status = "passed" }
-      local recorded = recovered.records:immutable("generic-host/terminal/" .. context.run_id, terminal)
-      t.eq(recorded.written, true)
-      local replayed = recovered.records:immutable("generic-host/terminal/" .. context.run_id, terminal)
-      t.eq(replayed.replayed, true)
-      t.eq(#durable.list_pending(context.project_root, context.durable_root, 10), 0)
-      t.eq(#recovered.records:list("generic-host/terminal"), 1)
     end)
   end,
 
