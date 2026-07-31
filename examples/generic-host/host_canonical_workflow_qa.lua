@@ -504,6 +504,9 @@ function Context:framework_environment(label, arm_failpoint)
   }
   if arm_failpoint == true and type(self.completed_replay_failpoint) == "table" then
     environment.FKST_DURABLE_COMPLETED_REPLAY_FAILPOINT = self.completed_replay_failpoint.token
+  elseif type(arm_failpoint) == "string" and type(self.crash_barrier) == "table"
+    and self.crash_barrier.name == arm_failpoint then
+    environment.FKST_DURABLE_CRASH_BARRIER = self.crash_barrier.token
   end
   return environment
 end
@@ -710,6 +713,22 @@ function M.new(options)
       token = sha256_bytes(run_id .. "\0post-completed-replay"),
     }
   end
+  local crash_barrier_names = {
+    ["workflow-before-state-save"] = true,
+    ["workflow-after-state-save"] = true,
+    ["cleanup-after-effect"] = true,
+    ["publication-after-effect"] = true,
+  }
+  local crash_barrier
+  if type(options.crash_barrier) == "string" then
+    if crash_barrier_names[options.crash_barrier] ~= true then
+      error("canonical workflow crash barrier is invalid")
+    end
+    crash_barrier = {
+      name = options.crash_barrier,
+      token = sha256_bytes(run_id .. "\0" .. options.crash_barrier),
+    }
+  end
   local catalog_cases = {
     {
       design_case_id = "service:reachability",
@@ -893,6 +912,7 @@ function M.new(options)
     terminal_records = 0,
     effect_counter_path = effect_counter_path,
     completed_replay_failpoint = completed_replay_failpoint,
+    crash_barrier = crash_barrier,
   }, Context)
   context.environment_runtime = context:_environment_runtime()
   context.workflow_runtime = context:_workflow_runtime()
