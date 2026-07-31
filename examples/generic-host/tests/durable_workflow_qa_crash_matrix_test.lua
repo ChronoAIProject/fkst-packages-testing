@@ -35,13 +35,15 @@ local function durable_file_counts(context)
     "const artifacts=path.join(root,'artifacts'),paths=[];try{for(const name of fs.readdirSync(artifacts)){",
     "if(name.endsWith('.json'))paths.push(JSON.parse(fs.readFileSync(path.join(artifacts,name),'utf8')).path)}}",
     "catch(error){if(error.code!==\"ENOENT\")throw error}",
-    "const artifactRoot=process.argv[2],cleanup=artifactRoot+'/cleanup-receipt-complete.json';",
+    "const artifactRoot=process.argv[2],environmentArtifactRoot=process.argv[3];",
+    "const cleanup=environmentArtifactRoot+'/cleanup-receipt-complete.json';",
     "const publication=artifactRoot+'/publication-receipts/aggregate-report-';",
     "process.stdout.write([count(path.join(root,'records')),count(artifacts),",
     "paths.filter(value=>value===cleanup).length,paths.filter(value=>value.startsWith(publication)).length].join(' '));",
   })
   local output = process.exec({
     "node", "-e", script, context.durable_run_root, context.artifact_root,
+    context.request.environment_start.artifact_root,
   }).stdout
   local records, artifacts, cleanup_receipts, aggregate_receipts =
     output:match("(%d+)%s+(%d+)%s+(%d+)%s+(%d+)")
@@ -115,7 +117,8 @@ local function assert_barrier(context, case)
     t.eq(barrier.details.attempt, 1)
   end
 
-  local cleanup_ref = context.artifact_root .. "/cleanup-receipt-complete.json"
+  local cleanup_ref = context.request.environment_start.artifact_root
+    .. "/cleanup-receipt-complete.json"
   local aggregate_receipt_ref = context.artifact_root .. "/publication-receipts/aggregate-report-1.json"
   if case.name == "cleanup-after-effect" then
     local effect = matching_effect(recovered, "environment-factory/effects", cleanup_effect)
@@ -228,7 +231,7 @@ local function run_case(case)
       t.eq(replayed.key, barrier_effect.key)
       t.is_true(support.equal(replayed.value, barrier_effect.value))
       t.eq(recovered:terminal_record().cleanup_receipt_ref,
-        context.artifact_root .. "/cleanup-receipt-complete.json")
+        context.request.environment_start.artifact_root .. "/cleanup-receipt-complete.json")
       t.eq(completed_files.cleanup_receipts, 1)
     elseif case.name == "publication-after-effect" then
       local replayed = matching_effect(recovered, "test-publication/effects", aggregate_effect)
