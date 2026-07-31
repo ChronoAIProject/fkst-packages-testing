@@ -53,10 +53,16 @@ local function validate_authorization_chain(request, ports)
     error("workflow-qa: validation-receipt-unavailable: profile validation receipt is missing")
   end
   project_profile.validate_validation_receipt(receipt)
+  local profile_pointer = request.environment_start.profile_ref.ref
+  local profile_sha256 = digest(ports, profile_pointer)
+  local profile = load_bound(ports, profile_pointer, profile_sha256, "project-profile")
+  project_profile.validate_profile(profile)
   if not execution_contract.same_repository(preauthorization.repository, request.repository)
     or not execution_contract.same_repository(catalog.repository, request.repository)
     or not execution_contract.same_repository(receipt.repository, request.repository)
     or preauthorization.profile_sha256 ~= receipt.profile_sha256
+    or receipt.profile_revision ~= profile.revision
+    or not execution_contract.same_repository(profile.repository, request.repository)
     or preauthorization.case_catalog_sha256 ~= execution.case_catalog_sha256
     or preauthorization.trace_id ~= request.trace_id or preauthorization.dedup_key ~= request.dedup_key
     or catalog.trace_id ~= request.trace_id or catalog.dedup_key ~= request.dedup_key
@@ -66,8 +72,13 @@ local function validate_authorization_chain(request, ports)
     error("workflow-qa: authorization-binding-mismatch: profile, catalog, repository, or run identity differs")
   end
   return {
+    profile_ref = profile_pointer,
+    profile_artifact_sha256 = profile_sha256,
+    profile_sha256 = receipt.profile_sha256,
+    validation_receipt_ref = request.environment_start.validation_receipt_ref.ref,
+    validation_receipt_sha256 = receipt_artifact.digest,
+    preauthorization_ref = execution.preauthorization_ref,
     preauthorization_sha256 = execution.preauthorization_sha256,
-    profile_sha256 = preauthorization.profile_sha256,
     case_catalog_sha256 = execution.case_catalog_sha256,
   }
 end
@@ -494,8 +505,15 @@ function M.handle_grant_result(payload, request, supplied_ports)
       job = "structured-execution",
       queue = "testing-runner.structured_execution_request",
       payload = {
-        schema = "testing-runner.structured-execution.request.v2",
+        schema = "testing-runner.structured-execution.request.v3",
         repository = { url = request.repository.url, commit_sha = request.repository.commit_sha },
+        project_profile_ref = state.authorization.profile_ref,
+        project_profile_artifact_sha256 = state.authorization.profile_artifact_sha256,
+        profile_sha256 = state.authorization.profile_sha256,
+        validation_receipt_ref = state.authorization.validation_receipt_ref,
+        validation_receipt_sha256 = state.authorization.validation_receipt_sha256,
+        preauthorization_ref = state.authorization.preauthorization_ref,
+        preauthorization_sha256 = state.authorization.preauthorization_sha256,
         environment_receipt_ref = state.environment_receipt_ref,
         environment_receipt_sha256 = state.digests[state.environment_receipt_ref],
         browser_readiness_ref = state.artifacts.browser_readiness_ref,

@@ -52,7 +52,7 @@ Environment Factory 的终态结果包含 immutable typed cleanup-receipt 指针
 对于无人手写 module catalog 的覆盖，host 可以提交 `testing-discovery.app-scope.v1`，只包含本地 scope、sessions、安全策略，以及 bounded AI/browser/navigation/accessibility observations。`testing-discovery` 会自动推导 module starts，把 sanitized discovery plan 写到 `.testing/runs/...`，并复用现有 `browser-readiness` -> `module-testing-pipeline` -> `module-test-loop` -> `testing-runner` -> artifact/publication 路径。host 只提供 bootstrap scope 和 safety policy；产品模块目录不属于本 package set。
 
 对于 headless API/CLI 计划，host 使用 `contracts/structured-execution.v2.md` 定义的
-`testing-runner.structured-execution.request.v2` pointer-only seam。独立、已认证、单次使用的 approval
+`testing-runner.structured-execution.request.v3` pointer-only seam。独立、已认证、单次使用的 approval
 把精确 plan digest 绑定到正向 argv 与 HTTP capability；runner 只有在 point-of-use 验证和原子 replay
 claim 后才执行 direct argv/HTTP effect，并继续复用现有 artifact/publication packages。
 

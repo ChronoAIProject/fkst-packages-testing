@@ -57,6 +57,43 @@ local function values()
 end
 
 return {
+  test_cli_action_envelope_and_receipt_are_closed_and_versioned = function()
+    local request = fixtures.request()
+    local case = fixtures.plan(request).cases[1]
+    local envelope = {
+      schema = contract.schemas.cli_action_envelope, effect_kind = "cli", capability = "direct-argv",
+      profile_ref = request.project_profile_ref, profile_artifact_sha256 = request.project_profile_artifact_sha256,
+      profile_sha256 = request.profile_sha256,
+      validation_receipt_ref = request.validation_receipt_ref,
+      validation_receipt_sha256 = request.validation_receipt_sha256,
+      preauthorization_ref = request.preauthorization_ref,
+      preauthorization_sha256 = request.preauthorization_sha256,
+      repository = fixtures.copy(request.repository), run_id = request.source_ref.ref,
+      operation_id = request.source_ref.ref, environment_receipt_ref = request.environment_receipt_ref,
+      environment_receipt_sha256 = request.environment_receipt_sha256,
+      workspace_ref = { kind = "workspace", ref = "run-110-workspace" },
+      plan_ref = request.test_plan_ref, plan_sha256 = request.test_plan_sha256,
+      grant_ref = request.execution_grant_ref, grant_sha256 = request.execution_grant_sha256,
+      case = case, resource_bounds = { output_bytes = 32768 }, attempt = 1,
+      trace_id = request.trace_id, dedup_key = request.dedup_key,
+      expires_at = "2026-07-20T01:00:00Z", fence_id = "claim-110",
+    }
+    t.eq(contract.validate_cli_action_envelope(envelope), envelope)
+    local receipt = fixtures.authorization_receipt(envelope)
+    t.eq(contract.validate_effect_authorization_receipt(receipt, envelope,
+      "2026-07-20T00:30:00Z"), receipt)
+    local unknown = fixtures.copy(envelope)
+    unknown.command = { "forbidden" }
+    t.raises(function() contract.validate_cli_action_envelope(unknown) end)
+    local malformed = fixtures.copy(receipt)
+    malformed.decision = "maybe"
+    t.raises(function() contract.validate_effect_authorization_receipt(malformed, envelope) end)
+    malformed = fixtures.copy(receipt)
+    malformed.unknown = true
+    t.raises(function() contract.validate_effect_authorization_receipt(malformed, envelope) end)
+  end,
+
+
   test_derives_exact_plan_and_environment_bound_single_use_grant = function()
     local request = fixtures.request()
     local plan = fixtures.plan(request)

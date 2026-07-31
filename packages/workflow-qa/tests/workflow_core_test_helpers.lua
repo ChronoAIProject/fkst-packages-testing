@@ -145,6 +145,21 @@ function M.build(deps)
       issued_at = "2026-07-20T00:00:00Z", expires_at = "2026-07-20T01:00:00Z", max_uses = 1,
       trace_id = request.trace_id, dedup_key = request.dedup_key,
     }, request.structured_execution.preauthorization_sha256)
+    put(request.environment_start.profile_ref.ref, {
+      schema = "testing-project-profile.v1", revision = "qa-profile-v1",
+      repository = { url = request.repository.url, commit_sha = request.repository.commit_sha },
+      working_directory = ".",
+      commands = { install = { "fixture", "install" }, build = { "fixture", "build" },
+        start = { "fixture", "start" }, cleanup = { "fixture", "cleanup" } },
+      application_listener_mode = "fkst-inherited-listeners-v1",
+      readiness_checks = { { type = "http", url = "http://127.0.0.1:4173/health", expected_status = 200 } },
+      allowed_origins = { "http://127.0.0.1:4173" }, mutation_policy = { mode = "read-only" },
+      timeouts = { install_seconds = 10, build_seconds = 10, migrate_seconds = 10,
+        seed_seconds = 10, start_seconds = 10, readiness_seconds = 10,
+        cleanup_seconds = 10, total_seconds = 60, receipt_ttl_seconds = 60 },
+      resource_budgets = { cpu_millis = 1000, memory_mb = 256, disk_mb = 128,
+        processes = 4, network_requests = 16, output_bytes = 32768 },
+    }, digest("9"))
     put(request.structured_execution.case_catalog_ref, {
       schema = execution_contract.schemas.case_catalog,
       repository = { url = request.repository.url, commit_sha = request.repository.commit_sha },

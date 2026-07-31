@@ -18,7 +18,7 @@
   - `schema`: `testing-runner.structured-plan.request.v1`
   - pointer-only compilation of reviewed cases against a host case catalog and ready receipt-v2
 - `testing-runner.structured_execution_request`
-  - `schema`: `testing-runner.structured-execution.request.v2`
+  - `schema`: `testing-runner.structured-execution.request.v3`
   - fixed API/CLI execution only
 - `testing-runner.ai_browser_control_request`
   - `schema`: `testing-runner.ai-browser-control.request.v1`

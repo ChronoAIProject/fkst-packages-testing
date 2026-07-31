@@ -89,6 +89,9 @@ function M.production(options)
     replay_guard = function(request)
       return call_cli("replay-guard", request, 15, options)
     end,
+    authorize_cli_effect = function(request)
+      return call_cli("authorize-cli-effect", request, 15, options)
+    end,
     exec_argv = function(request)
       return call_cli("exec-argv", request, (request.timeout_seconds or 30) + 3, options)
     end,
