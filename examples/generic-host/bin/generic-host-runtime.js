@@ -642,15 +642,16 @@ function dispatch(name, payload, projectRoot) {
       return { digest: sha256(payload.value) };
     case 'plan-listener-claim': {
       const runId = runIdFor(payload);
-      const root = runRoot(runId);
-      loadConfig(projectRoot, runId);
-      const owned = recordList(root, 'environment-factory/resources').some((entry) => entry.value
-        && entry.value.kind === 'ports' && entry.value.operation_id === runId
-        && stable(entry.value.runtime_ports) === stable(payload.runtime_ports));
+      const config = loadConfig(projectRoot, runId);
+      const runtimePorts = exactRuntimePorts(payload.runtime_ports);
+      if (!samePorts(runtimePorts, [{ name: 'application', port: config.port }])) {
+        fail('listener claim plan binding differs');
+      }
       return {
         status: 'planned',
-        needs_claim: owned ? [] : payload.runtime_ports,
-        already_owned: owned ? payload.runtime_ports : [],
+        needs_claim: [],
+        already_owned: runtimePorts,
+        runtime_owned: true,
       };
     }
     case 'lookup-effect': {
@@ -693,6 +694,10 @@ function dispatch(name, payload, projectRoot) {
         fail('environment authorization approval claim was not acquired');
       }
       const runtimePorts = exactRuntimePorts(payload.runtime_ports);
+      if (!Array.isArray(payload.listener_claimed_ports) || payload.listener_claimed_ports.length !== 0
+        || !samePorts(exactRuntimePorts(payload.listener_already_owned_ports), runtimePorts)) {
+        fail('environment authorization listener ownership differs');
+      }
       const cleanupRef = { kind: 'port-lease', ref: `${runId}-ports` };
       const resource = recordImmutable(root, environmentResourceKey(cleanupRef), {
         schema: 'generic-host.environment-resource.v1', kind: 'ports', operation_id: runId,
@@ -719,7 +724,7 @@ function dispatch(name, payload, projectRoot) {
       const root = runRoot(runId);
       const config = loadConfig(projectRoot, runId);
       return environmentEffect(projectRoot, payload, () => {
-        if (payload.operation_id !== runId || stable(payload.repository) !== stable(config.repository)
+        if (payload.operation_id !== runId || stable(payload.repository) !== stable(config.profile.repository)
           || payload.working_directory !== config.profile.working_directory) {
           fail('environment checkout binding differs');
         }

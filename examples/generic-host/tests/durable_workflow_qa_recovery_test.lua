@@ -135,7 +135,7 @@ local function mutate_record(path, mode)
     "else process.exit(51);",
     "const next=path+'.mutation-'+process.pid;fs.writeFileSync(next,JSON.stringify(value)+'\\n',{flag:'wx'});fs.renameSync(next,path);",
   })
-  local result = direct_exec({ "node", "-e", script, path, mode })
+  local result = process.exec({ "node", "-e", script, path, mode })
   if result.exit_code ~= 0 then error("generic-host recovery test: durable mutation failed: " .. mode) end
 end
 

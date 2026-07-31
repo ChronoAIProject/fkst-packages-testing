@@ -193,7 +193,8 @@ local function plan_listener_claim(invoke, request)
     runtime_ports = copy_ports(request.runtime_ports),
   }, 15)
   if type(plan) ~= "table" or plan.status ~= "planned"
-    or type(plan.needs_claim) ~= "table" or type(plan.already_owned) ~= "table" then
+    or type(plan.needs_claim) ~= "table" or type(plan.already_owned) ~= "table"
+    or (plan.runtime_owned ~= nil and type(plan.runtime_owned) ~= "boolean") then
     error("environment-factory: listener-claim-plan-invalid: runtime did not return a claim partition")
   end
   local expected, actual = {}, {}
@@ -226,6 +227,9 @@ local function plan_listener_claim(invoke, request)
   for key, _ in pairs(expected) do
     if grouped[key] ~= true then error("environment-factory: listener-group-invalid: groups are incomplete") end
   end
+  if plan.runtime_owned == true and #plan.needs_claim ~= 0 then
+    error("environment-factory: listener-claim-plan-invalid: runtime-owned ports cannot require engine claims")
+  end
   return plan
 end
 
@@ -255,10 +259,12 @@ local function release_listener_group(operation_id, key)
   end
 end
 
-local function required_group_keys(request, needed, owned)
+local function required_group_keys(request, needed, owned, runtime_owned)
   local keys = {}
   for _, group in ipairs(request.listener_groups or {}) do
-    if group_partition(group, needed, owned) then keys[listener_group_key(group)] = true end
+    if group_partition(group, needed, owned) or runtime_owned == true then
+      keys[listener_group_key(group)] = true
+    end
   end
   return keys
 end
@@ -267,7 +273,7 @@ local function acquire_listener_claims(request, plan)
   local needed, owned = {}, {}
   for _, item in ipairs(plan.needs_claim) do needed[listener_key(item)] = true end
   for _, item in ipairs(plan.already_owned) do owned[listener_key(item)] = true end
-  local required = required_group_keys(request, needed, owned)
+  local required = required_group_keys(request, needed, owned, plan.runtime_owned)
   local existing = active_listener_claims[request.operation_id]
   if type(existing) == "table" then
     for key, _ in pairs(required) do
@@ -292,14 +298,18 @@ local function acquire_listener_claims(request, plan)
       if required[key] then
         local names = {}
         for _, item in ipairs(group) do names[item.name] = true end
-        local claim = listener_capability().claim_loopback({
-          owner_key = request.operation_id,
-          listeners = copy_ports(group),
-        })
-        if type(claim) ~= "table" or type(claim.release) ~= "function" then
-          error("environment-factory: listener-claim-invalid: claim must support deterministic release")
+        if plan.runtime_owned == true then
+          active.groups[key] = { runtime_owned = true, names = names }
+        else
+          local claim = listener_capability().claim_loopback({
+            owner_key = request.operation_id,
+            listeners = copy_ports(group),
+          })
+          if type(claim) ~= "table" or type(claim.release) ~= "function" then
+            error("environment-factory: listener-claim-invalid: claim must support deterministic release")
+          end
+          active.groups[key] = { claim = claim, names = names }
         end
-        active.groups[key] = { claim = claim, names = names }
       end
     end
   end)
@@ -444,16 +454,17 @@ function R.production(options)
     local key = listener_group_key(request.runtime_ports)
     local active = active_listener_claims[request.operation_id]
     local group = type(active) == "table" and active.groups[key] or nil
-    if type(group) ~= "table" or type(group.claim) ~= "table" then
+    if type(group) ~= "table" or (group.runtime_owned ~= true and type(group.claim) ~= "table") then
       release_listener_claims(request.operation_id)
       error("environment-factory: listener-claim-missing: supervised argv has no exact active listener group")
     end
-    local names = {}
-    for _, item in ipairs(request.runtime_ports or {}) do table.insert(names, item.name) end
-    local ok, outcome = pcall(invoke, "run-argv", request, cli_timeout(request.timeout_seconds), {
-      claim = group.claim,
-      names = names,
-    })
+    local listener_options
+    if group.runtime_owned ~= true then
+      local names = {}
+      for _, item in ipairs(request.runtime_ports or {}) do table.insert(names, item.name) end
+      listener_options = { claim = group.claim, names = names }
+    end
+    local ok, outcome = pcall(invoke, "run-argv", request, cli_timeout(request.timeout_seconds), listener_options)
     release_listener_group(request.operation_id, key)
     if not ok then release_listener_claims(request.operation_id); error(outcome, 0) end
     if type(outcome) ~= "table" or outcome.status ~= "running" then

@@ -846,14 +846,20 @@ function M.initialize(context, durable_root)
     context.request.environment_start.profile_ref.ref,
     context.request.environment_start.approval_ref.ref,
     context.request.environment_start.validation_receipt_ref.ref,
+    context.request.analysis_request.repository.approval_ref.ref,
     context.request.structured_execution.case_catalog_ref,
     context.request.structured_execution.preauthorization_ref,
   }
   for _, path in ipairs(initial_paths) do
+    if type(path) ~= "string" or path:sub(1, 14) ~= ".testing/runs/"
+      or path:find("..", 1, true) or path:find("\\", 1, true) then
+      error("generic-host durable initial artifact path is invalid: " .. tostring(path))
+    end
     local artifact = context.store:load(path)
     if artifact == nil or records:write_artifact(path, artifact.raw).written ~= true then
       error("generic-host durable initial artifact write failed: " .. tostring(path))
     end
+    write_file(context.project_root .. "/" .. path, artifact.raw)
   end
   local request = records:immutable("workflow-qa/requests/" .. context.run_id, copy(context.request))
   if request.written ~= true and request.replayed ~= true then error("generic-host durable run request binding differs") end

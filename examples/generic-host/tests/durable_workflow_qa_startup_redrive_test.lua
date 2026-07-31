@@ -79,13 +79,10 @@ local function assert_bindings_preserved(context, expected)
   for key, value in pairs(expected) do t.is_true(support.equal(context.records:read(key), value)) end
 end
 
-local function occurrences(body, fragment)
-  local count, offset = 0, 1
-  while true do
-    local found = body:find(fragment, offset, true)
-    if found == nil then return count end
-    count = count + 1
-    offset = found + #fragment
+local function assert_child_marker(root, prefix, fragment, case_name)
+  if not process.wait_for_child_text(root, prefix, fragment, 5) then
+    error("generic-host startup redrive test: " .. case_name
+      .. " missing child route marker " .. fragment)
   end
 end
 
@@ -149,13 +146,15 @@ local function run_case(case)
         .. tostring(process.read_file(stdout_path)) .. "\nstderr=" .. tostring(process.read_file(stderr_path)))
     end
     process.stop_live(pid, live_pids)
-    process.assert_log_markers(stdout_path, case.name, {
-      "dept=generic-host.workflow_qa_supervisor tag=REDRIVE_RUN run_id=" .. context.run_id,
-      "dept=workflow-qa.seam tag=REDRIVE actions=1 queue=" .. case.queue,
-      case.marker,
-    })
-    local body = process.read_file(stdout_path) or ""
-    t.eq(occurrences(body, "dept=generic-host.workflow_qa_terminal tag=RECORDED run_id=" .. context.run_id), 1)
+    local child_root = context.host_root .. "/framework-runtime-startup-" .. case.name
+      .. "/logs/framework-child"
+    assert_child_marker(child_root, "generic-host.workflow_qa_supervisor-",
+      "generic-host dept=workflow_qa_supervisor tag=REDRIVE_RUN run_id=" .. context.run_id, case.name)
+    assert_child_marker(child_root, "workflow-qa.seam-",
+      "workflow-qa dept=seam tag=REDRIVE actions=1 queue=" .. case.queue, case.name)
+    assert_child_marker(child_root, "", case.marker, case.name)
+    assert_child_marker(child_root, "generic-host.workflow_qa_terminal-",
+      "generic-host dept=workflow_qa_terminal tag=RECORDED run_id=" .. context.run_id, case.name)
 
     local recovered, terminal_state = assert_terminal(context)
     t.is_true(support.equal(recovered.request, request_binding))
