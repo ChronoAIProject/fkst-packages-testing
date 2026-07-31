@@ -216,6 +216,20 @@ function pendingRequests(projectRoot, limit) {
   return pending;
 }
 
+function crashBarrier(projectRoot, runId, name, details) {
+  const config = loadConfig(projectRoot, runId);
+  const barrier = config.crash_barrier;
+  if (!barrier || barrier.name !== name || typeof barrier.token !== 'string'
+    || process.env.FKST_DURABLE_CRASH_BARRIER !== barrier.token) return;
+  const root = runRoot(runId);
+  const witness = recordImmutable(root, `generic-host/barriers/${name}`, {
+    schema: 'generic-host.crash-barrier.v1', run_id: runId, name,
+    token_sha256: sha256(barrier.token), details,
+  });
+  if (!witness.written && !witness.replayed) fail('crash barrier witness differs');
+  while (true) sleep(1000);
+}
+
 function publicationResult(projectRoot, payload) {
   const runId = runIdFor(payload);
   const root = runRoot(runId);
@@ -558,7 +572,20 @@ function dispatch(name, payload, projectRoot) {
       const runId = runIdFor(payload);
       const config = loadConfig(projectRoot, runId);
       if (payload.path !== config.request.state_ref) return { saved: false };
-      return recordCas(runRoot(runId), `workflow-qa/state/${runId}`, payload.value, payload.expected_version);
+      if (payload.value && payload.value.phase === 'structured-execution-pending') {
+        crashBarrier(projectRoot, runId, 'workflow-before-state-save', {
+          command: 'workflow-save-state', expected_version: payload.expected_version,
+          next_version: payload.value.version, next_phase: payload.value.phase,
+        });
+      }
+      const saved = recordCas(runRoot(runId), `workflow-qa/state/${runId}`, payload.value, payload.expected_version);
+      if (saved.saved === true && payload.value && payload.value.phase === 'structured-execution-pending') {
+        crashBarrier(projectRoot, runId, 'workflow-after-state-save', {
+          command: 'workflow-save-state', expected_version: payload.expected_version,
+          saved_version: payload.value.version, saved_phase: payload.value.phase,
+        });
+      }
+      return saved;
     }
     case 'artifact-load':
       return artifactRead(projectRoot, payload.path);
@@ -577,8 +604,16 @@ function dispatch(name, payload, projectRoot) {
       return recordCas(runRoot(runId), `test-publication/ledgers/${sha256(stable(payload.path))}`,
         payload.value, payload.expected_version);
     }
-    case 'publication-publish-artifact':
-      return publicationResult(projectRoot, payload);
+    case 'publication-publish-artifact': {
+      const result = publicationResult(projectRoot, payload);
+      if (payload.stage === 'aggregate-report') {
+        crashBarrier(projectRoot, runIdFor(payload), 'publication-after-effect', {
+          command: 'publication-publish-artifact', stage: payload.stage,
+          attempt: payload.attempt, receipt_ref: result.receipt_ref,
+        });
+      }
+      return result;
+    }
     case 'publication-write-report': {
       const written = artifactWrite(projectRoot, payload.path, payload.value);
       return { status: 'written', digest: written.digest };
@@ -811,8 +846,16 @@ function dispatch(name, payload, projectRoot) {
         }
         return { status: 'ready' };
       });
-    case 'cleanup':
-      return environmentEffect(projectRoot, payload, () => cleanupResource(projectRoot, payload));
+    case 'cleanup': {
+      const result = environmentEffect(projectRoot, payload, () => cleanupResource(projectRoot, payload));
+      if (payload.cleanup_ref && payload.cleanup_ref.kind === 'port-lease') {
+        crashBarrier(projectRoot, runIdFor(payload), 'cleanup-after-effect', {
+          command: 'cleanup', effect_id: payload.effect_id,
+          cleanup_ref: payload.cleanup_ref, status: result.status,
+        });
+      }
+      return result;
+    }
     case 'write-receipt':
       return environmentEffect(projectRoot, payload, () => {
         const written = artifactWrite(projectRoot, payload.receipt_ref.ref, payload.receipt);
