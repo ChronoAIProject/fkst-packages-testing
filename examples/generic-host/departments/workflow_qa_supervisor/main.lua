@@ -57,6 +57,7 @@ local function act(event)
   end
   log.info("generic-host dept=workflow_qa_supervisor tag=REDRIVE pending_runs=" .. tostring(#pending))
   for _, context in ipairs(pending) do
+    log.info("generic-host dept=workflow_qa_supervisor tag=REDRIVE_RUN run_id=" .. context.run_id)
     raise("workflow-qa.workflow_qa_tick", { run_id = context.run_id, limit = 1 })
   end
 end

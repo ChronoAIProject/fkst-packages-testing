@@ -92,6 +92,21 @@ function M.run(context, project_root, options)
   local artifacts = artifact_modules("core")
   local publication = publication_modules("qa_publication")
 
+  local function prepared(label, actions)
+    if options.stop_at ~= label then return nil end
+    local state = context.workflow_runtime.load_state(context.request.state_ref)
+    return {
+      workflow = workflow,
+      planning = planning,
+      structured = structured,
+      publication = publication,
+      prepared = true,
+      stop_at = label,
+      state = copy(state),
+      pending_action = copy(type(actions) == "table" and actions[1] or nil),
+    }
+  end
+
   local comment_id = 10000
   local function next_comment_id()
     if type(context.next_comment_id) == "function" then return context:next_comment_id() end
@@ -153,19 +168,37 @@ function M.run(context, project_root, options)
 
   local actions
   if context.workflow_runtime.load_state(context.request.state_ref) == nil then
-    actions = release_checkpoint("intake", workflow.start(context.request, context.workflow_runtime))
+    actions = workflow.start(context.request, context.workflow_runtime)
+    local stopped = prepared("intake-checkpoint", actions)
+    if stopped ~= nil then return stopped end
+    actions = release_checkpoint("intake", actions)
+    stopped = prepared("environment-pending", actions)
+    if stopped ~= nil then return stopped end
     local environment_pending = environment.start(actions[1].payload, context.environment_runtime)
     local environment_ready = environment.handle_browser_readiness(
       readiness.result(environment_pending.readiness_check), context.environment_runtime).result
-    actions = release_checkpoint("environment-ready", workflow.handle_environment_result(
-      environment_ready, context.request, context.workflow_runtime))
+    actions = workflow.handle_environment_result(environment_ready, context.request, context.workflow_runtime)
+    stopped = prepared("environment-ready-checkpoint", actions)
+    if stopped ~= nil then return stopped end
+    actions = release_checkpoint("environment-ready", actions)
+    stopped = prepared("analysis-pending", actions)
+    if stopped ~= nil then return stopped end
 
     local analysis = design.analyze(actions[1].payload, context.testing_design_runtime)
-    actions = release_checkpoint("design-round", workflow.handle_analysis_result(
-      analysis, context.request, context.workflow_runtime))
+    actions = workflow.handle_analysis_result(analysis, context.request, context.workflow_runtime)
+    stopped = prepared("design-round-checkpoint", actions)
+    if stopped ~= nil then return stopped end
+    actions = release_checkpoint("design-round", actions)
+    stopped = prepared("browser-readiness-pending", actions)
+    if stopped ~= nil then return stopped end
     local post_design_readiness = readiness.result(actions[1].payload)
-    actions = release_checkpoint("browser-readiness", workflow.handle_browser_readiness_result(
-      post_design_readiness, context.request, context.workflow_runtime))
+    actions = workflow.handle_browser_readiness_result(
+      post_design_readiness, context.request, context.workflow_runtime)
+    stopped = prepared("browser-readiness-checkpoint", actions)
+    if stopped ~= nil then return stopped end
+    actions = release_checkpoint("browser-readiness", actions)
+    stopped = prepared("module-pending", actions)
+    if stopped ~= nil then return stopped end
 
     local module_request = module_pipeline.module_loop_request(actions[1].payload)
     local runner_action = module_loop.start(module_request, context.module_loop_runtime)
@@ -175,8 +208,13 @@ function M.run(context, project_root, options)
     end
     local module_result = runner.run("module", runner_request)
     local module_terminal_action = module_loop.handle_result(module_result, context.module_loop_runtime)
-    actions = release_checkpoint("design-closure", workflow.handle_module_terminal(
-      module_terminal_action[1].payload, context.request, context.workflow_runtime))
+    actions = workflow.handle_module_terminal(
+      module_terminal_action[1].payload, context.request, context.workflow_runtime)
+    stopped = prepared("design-closure-checkpoint", actions)
+    if stopped ~= nil then return stopped end
+    actions = release_checkpoint("design-closure", actions)
+    stopped = prepared("structured-plan-pending", actions)
+    if stopped ~= nil then return stopped end
 
     local module_plan_artifact = context.store:load(actions[1].payload.module_plan_ref)
     if type(module_plan_artifact) ~= "table" then error("canonical lifecycle module plan is unavailable") end
@@ -193,6 +231,8 @@ function M.run(context, project_root, options)
     if plan_result.status ~= "compiled" then
       error("canonical lifecycle structured planning blocked: " .. tostring(plan_result.failure_class))
     end
+    stopped = prepared("execution-grant-pending", actions)
+    if stopped ~= nil then return stopped end
   else
     actions = workflow.redrive({ limit = 1 }, context.workflow_runtime)
     if #actions == 0 then
@@ -218,6 +258,8 @@ function M.run(context, project_root, options)
     local grant_event = adapter.handle_execution_grant(actions[1].payload, context.generic_host_runtime)
     actions = workflow.handle_grant_result(grant_event.payload, context.request, context.workflow_runtime)
   end
+  local stopped = prepared("structured-execution-pending", actions)
+  if stopped ~= nil then return stopped end
 
   if type(actions[1]) ~= "table" or actions[1].queue ~= "testing-runner.structured_execution_request" then
     error("canonical lifecycle recovery expected the persisted structured execution request, got "
@@ -246,22 +288,34 @@ function M.run(context, project_root, options)
     error("canonical lifecycle structured execution blocked: " .. tostring(execution_result.stderr_excerpt))
   end
   actions = workflow.handle_execution_result(execution_result, context.request, context.workflow_runtime)
+  stopped = prepared("artifact-summary-pending", actions)
+  if stopped ~= nil then return stopped end
   local summary = artifacts.from_testing_result(actions[1].payload)
-  actions = release_checkpoint("execution-batch", workflow.handle_artifact_summary(
-    summary, context.request, context.workflow_runtime))
+  actions = workflow.handle_artifact_summary(summary, context.request, context.workflow_runtime)
+  stopped = prepared("execution-batch-checkpoint", actions)
+  if stopped ~= nil then return stopped end
+  actions = release_checkpoint("execution-batch", actions)
+  stopped = prepared("cleanup-pending", actions)
+  if stopped ~= nil then return stopped end
 
   local cleanup_result = environment.finalize(actions[1].payload, context.environment_runtime)
-  actions = release_checkpoint("cleanup", workflow.handle_cleanup_result(
-    cleanup_result, context.request, context.workflow_runtime))
+  actions = workflow.handle_cleanup_result(cleanup_result, context.request, context.workflow_runtime)
+  stopped = prepared("cleanup-checkpoint", actions)
+  if stopped ~= nil then return stopped end
+  actions = release_checkpoint("cleanup", actions)
+  stopped = prepared("publication-pending", actions)
+  if stopped ~= nil then return stopped end
 
-  local prepared = publication.prepare_final_report(actions[1].payload, context.publication_runtime)
-  local aggregate_receipt = prepared.receipt
+  local final_report = publication.prepare_final_report(actions[1].payload, context.publication_runtime)
+  local aggregate_receipt = final_report.receipt
   if aggregate_receipt == nil then
     aggregate_receipt = publication.acknowledge_comment(
-      checkpoint_written(prepared, next_comment_id()), context.publication_runtime)
+      checkpoint_written(final_report, next_comment_id()), context.publication_runtime)
   end
   actions = workflow.handle_publication_receipt(
     aggregate_receipt, context.request, context.workflow_runtime)
+  stopped = prepared("terminal-without-host-record", actions)
+  if stopped ~= nil then return stopped end
   adapter.handle_terminal(actions[1].payload, context.generic_host_runtime)
 
   return {
@@ -275,6 +329,17 @@ end
 
 function M.prepare(context, project_root)
   return M.run(context, project_root, { stop_after_plan = true })
+end
+
+function M.prepare_phase(context, project_root, stop_at)
+  if type(stop_at) ~= "string" or stop_at == "" then
+    error("canonical lifecycle preparation phase is required")
+  end
+  local result = M.run(context, project_root, { stop_at = stop_at })
+  if result.prepared ~= true or result.stop_at ~= stop_at then
+    error("canonical lifecycle did not reach preparation phase " .. stop_at)
+  end
+  return result
 end
 
 function M.load_package(project_root, package_name, module_name)
