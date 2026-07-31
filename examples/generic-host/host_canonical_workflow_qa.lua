@@ -500,6 +500,7 @@ function Context:framework_environment(label, arm_failpoint)
     FKST_QA_PUBLICATION_RUNTIME_CONFIG_REF = self.runtime_config_ref,
     FKST_WORKFLOW_QA_ADAPTER_RUNTIME_CLI = runtime_cli,
     FKST_WORKFLOW_QA_ADAPTER_RUNTIME_CONFIG_REF = self.runtime_config_ref,
+    FKST_MODULE_TEST_LOOP_TEST_RUNTIME = "0",
   }
   if arm_failpoint == true and type(self.completed_replay_failpoint) == "table" then
     environment.FKST_DURABLE_COMPLETED_REPLAY_FAILPOINT = self.completed_replay_failpoint.token
@@ -682,6 +683,16 @@ function M.new(options)
   assert(store:write(profile_ref.ref, profile))
   assert(store:write(approval_ref.ref, approval))
   assert(store:write(validation_ref.ref, validation_receipt))
+  local analysis_approval_ref = ref(artifact_root .. "/authorization/testing-design-repository.json")
+  local analysis_approval = {
+    schema = "testing-design.approval.v1",
+    subject_kind = "repository",
+    repository_url = repository.url,
+    workspace_ref = { kind = "workspace", ref = workspace_root },
+    target_commit_sha = commit_sha,
+    baseline_commit_sha = commit_sha,
+  }
+  assert(store:write(analysis_approval_ref.ref, analysis_approval))
 
   local catalog_ref = artifact_root .. "/execution/case-catalog.json"
   local effect_counter_path = options.effect_counter_path
@@ -790,10 +801,10 @@ function M.new(options)
       repository = {
         url = repository.url,
         commit_sha = repository.commit_sha,
-        baseline_commit_sha = string.rep("0", 40),
-        workspace_ref = { kind = "workspace", ref = run_id .. "-workspace" },
-        approval_ref = validation_ref,
-        approval_sha256 = store:digest(validation_ref.ref),
+        baseline_commit_sha = repository.commit_sha,
+        workspace_ref = { kind = "workspace", ref = workspace_root },
+        approval_ref = analysis_approval_ref,
+        approval_sha256 = store:digest(analysis_approval_ref.ref),
       },
       inputs = {},
       artifact_root = artifact_root .. "/analysis",

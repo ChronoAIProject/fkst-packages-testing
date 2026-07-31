@@ -509,15 +509,26 @@ function environmentEffect(projectRoot, payload, produce) {
   loadConfig(projectRoot, runId);
   if (typeof payload.effect_id !== 'string' || payload.effect_id === '') fail('environment effect_id is required');
   const key = `environment-factory/effects/${sha256(stable(payload.effect_id))}`;
+  const binding = { ...payload };
+  delete binding.runtime_config_ref;
   const existing = recordRead(root, key);
   if (existing) {
-    if (stable(existing.binding) !== stable(payload)) fail('environment effect binding differs');
+    if (stable(existing.binding) !== stable(binding)) fail('environment effect binding differs');
     return existing.result;
   }
   const result = produce(runId, root);
-  const stored = recordImmutable(root, key, { binding: payload, result });
+  const stored = recordImmutable(root, key, { binding, result });
   if (!stored.written && !stored.replayed) fail('environment effect commit conflict');
   return result;
+}
+
+function waitForHttp(url, timeoutSeconds) {
+  const script = [
+    "const http=require('http'),https=require('https'),url=process.argv[1],end=Date.now()+Number(process.argv[2])*1000;",
+    "function poll(){const client=url.startsWith('https:')?https:http;const req=client.get(url,res=>{res.resume();process.exit(res.statusCode>=200&&res.statusCode<500?0:1)});",
+    "req.on('error',()=>{if(Date.now()>=end)process.exit(1);setTimeout(poll,20)});req.setTimeout(500,()=>req.destroy())}poll();",
+  ].join('');
+  return directExec([process.execPath, '-e', script, url, String(timeoutSeconds || 30)], process.cwd(), timeoutSeconds).exit_code === 0;
 }
 
 function structuredReplayKey(grantId) {
@@ -625,17 +636,22 @@ function dispatch(name, payload, projectRoot) {
         },
       };
     }
+    case 'sha256':
+      loadConfig(projectRoot, runIdFor(payload));
+      if (typeof payload.value !== 'string') fail('sha256 value must be a string');
+      return { digest: sha256(payload.value) };
     case 'plan-listener-claim': {
       const runId = runIdFor(payload);
-      const root = runRoot(runId);
-      loadConfig(projectRoot, runId);
-      const owned = recordList(root, 'environment-factory/resources').some((entry) => entry.value
-        && entry.value.kind === 'ports' && entry.value.operation_id === runId
-        && stable(entry.value.runtime_ports) === stable(payload.runtime_ports));
+      const config = loadConfig(projectRoot, runId);
+      const runtimePorts = exactRuntimePorts(payload.runtime_ports);
+      if (!samePorts(runtimePorts, [{ name: 'application', port: config.port }])) {
+        fail('listener claim plan binding differs');
+      }
       return {
         status: 'planned',
-        needs_claim: owned ? [] : payload.runtime_ports,
-        already_owned: owned ? payload.runtime_ports : [],
+        needs_claim: [],
+        already_owned: runtimePorts,
+        runtime_owned: true,
       };
     }
     case 'lookup-effect': {
@@ -656,15 +672,49 @@ function dispatch(name, payload, projectRoot) {
       const runId = runIdFor(payload);
       const root = runRoot(runId);
       loadConfig(projectRoot, runId);
-      const existing = recordRead(root, `environment-factory/effects/${sha256(stable(payload.effect_id))}`);
+      const key = `environment-factory/effects/${sha256(stable(payload.effect_id))}`;
+      const existing = recordRead(root, key);
       const binding = payload.lookup_binding || {};
-      if (!existing || !existing.binding || existing.binding.effect_id !== payload.effect_id
-        || stable(existing.binding.request_binding) !== stable(binding.request_binding)
-        || stable(existing.binding.runtime_ports) !== stable(payload.runtime_ports)
-        || stable(existing.result.profile_snapshot) !== stable(payload.profile_snapshot)) {
+      if (existing) {
+        if (!existing.binding || existing.binding.effect_id !== payload.effect_id
+          || stable(existing.binding.request_binding) !== stable(binding.request_binding)
+          || stable(existing.binding.runtime_ports) !== stable(payload.runtime_ports)
+          || stable(existing.result.profile_snapshot) !== stable(payload.profile_snapshot)) {
+          fail('environment authorization claim replay differs');
+        }
+        return existing.result;
+      }
+      if (!payload.replay_claim || stable(payload.profile_snapshot) !== stable(loadConfig(projectRoot, runId).profile)) {
         fail('environment authorization claim replay differs');
       }
-      return existing.result;
+      const approvalClaim = recordClaim(root, `generic-host/profile-approval/${runId}`, {
+        binding: payload.replay_claim, claim_id: `${runId}-profile-claim`,
+      });
+      if (!approvalClaim.claimed || !approvalClaim.value || approvalClaim.value.claim_id !== `${runId}-profile-claim`) {
+        fail('environment authorization approval claim was not acquired');
+      }
+      const runtimePorts = exactRuntimePorts(payload.runtime_ports);
+      if (!Array.isArray(payload.listener_claimed_ports) || payload.listener_claimed_ports.length !== 0
+        || !samePorts(exactRuntimePorts(payload.listener_already_owned_ports), runtimePorts)) {
+        fail('environment authorization listener ownership differs');
+      }
+      const cleanupRef = { kind: 'port-lease', ref: `${runId}-ports` };
+      const resource = recordImmutable(root, environmentResourceKey(cleanupRef), {
+        schema: 'generic-host.environment-resource.v1', kind: 'ports', operation_id: runId,
+        cleanup_ref: cleanupRef, runtime_ports: runtimePorts,
+        ownership_token: sha256(`${runId}\0ports\0${payload.effect_id}`),
+      });
+      if (!resource.written && !resource.replayed) fail('port resource binding differs');
+      const result = {
+        status: 'passed', profile_snapshot: payload.profile_snapshot, cleanup_ref: cleanupRef,
+        runtime_ports: runtimePorts, deadline_epoch_seconds: 1784685600,
+        request_binding: binding.request_binding,
+      };
+      const stored = recordImmutable(root, key, { binding: {
+        effect_id: payload.effect_id, request_binding: binding.request_binding, runtime_ports: runtimePorts,
+      }, result });
+      if (!stored.written && !stored.replayed) fail('environment authorization effect commit conflict');
+      return { ...result, claim_id: approvalClaim.value.claim_id };
     }
     case 'remaining-budget':
       loadConfig(projectRoot, runIdFor(payload));
@@ -672,14 +722,35 @@ function dispatch(name, payload, projectRoot) {
     case 'checkout': {
       const runId = runIdFor(payload);
       const root = runRoot(runId);
-      loadConfig(projectRoot, runId);
-      const existing = recordRead(root, `environment-factory/effects/${sha256(stable(payload.effect_id))}`);
-      const binding = { ...payload };
-      delete binding.runtime_config_ref;
-      if (!existing || stable(existing.binding) !== stable(binding)) {
-        fail('environment checkout replay binding differs');
-      }
-      return existing.result;
+      const config = loadConfig(projectRoot, runId);
+      return environmentEffect(projectRoot, payload, () => {
+        if (payload.operation_id !== runId || stable(payload.repository) !== stable(config.profile.repository)
+          || payload.working_directory !== config.profile.working_directory) {
+          fail('environment checkout binding differs');
+        }
+        const workspaceRoot = path.resolve(config.workspace_root);
+        const tempRoot = path.resolve(config.temp_root);
+        if (workspaceRoot === tempRoot || !workspaceRoot.startsWith(`${tempRoot}${path.sep}`)) {
+          fail('environment checkout workspace escaped the durable temp root');
+        }
+        fs.rmSync(config.workspace_root, { recursive: true, force: true });
+        const cloned = directExec(['git', 'clone', '--quiet', config.source_root, config.workspace_root], config.temp_root,
+          payload.timeout_seconds);
+        if (cloned.exit_code !== 0) fail('environment checkout clone failed');
+        const checkedOut = directExec(['git', 'checkout', '--quiet', config.commit_sha], config.workspace_root,
+          payload.timeout_seconds);
+        if (checkedOut.exit_code !== 0) fail('environment checkout revision failed');
+        const resolved = directExec(['git', 'rev-parse', 'HEAD'], config.workspace_root, payload.timeout_seconds);
+        const commit = String(resolved.stdout || '').trim();
+        if (resolved.exit_code !== 0 || commit !== config.commit_sha) fail('environment checkout resolved commit differs');
+        const workspaceRef = { kind: 'workspace', ref: `${runId}-workspace` };
+        const cleanupRef = { kind: 'workspace-cleanup', ref: `${runId}-workspace` };
+        registerWorkspace(projectRoot, {
+          run_id: runId, operation_id: runId, workspace_ref: workspaceRef, cleanup_ref: cleanupRef,
+          path: config.workspace_root, repository: config.repository,
+        });
+        return { status: 'passed', resolved_commit: commit, workspace_ref: workspaceRef, cleanup_ref: cleanupRef };
+      });
     }
     case 'load-state': {
       const runId = runIdFor(payload);
@@ -697,6 +768,49 @@ function dispatch(name, payload, projectRoot) {
       }, payload.expected_revision);
       return { saved: saved.saved === true, stale: saved.stale === true, revision: saved.version };
     }
+    case 'create-readiness-attempt':
+      return environmentEffect(projectRoot, payload, (runId) => {
+        const attemptRef = `${payload.artifact_root}/readiness-attempts/attempt-1.json`;
+        const written = artifactWrite(projectRoot, attemptRef, {
+          schema: 'canonical-qa.readiness-attempt.v1', operation_id: payload.operation_id,
+          base_url: payload.base_url, sessions: payload.sessions,
+          trace_id: payload.trace_id, dedup_key: payload.dedup_key,
+        });
+        return {
+          status: 'passed', attempt_id: 'attempt-1', attempt_ref: { kind: 'artifact', ref: attemptRef },
+          attempt_sha256: written.digest,
+        };
+      });
+    case 'run-argv':
+      return environmentEffect(projectRoot, payload, (runId, root) => {
+        const workspace = workspaceResource(root, payload.workspace_ref);
+        if (payload.mode === 'supervised') {
+          return startApplication(projectRoot, {
+            ...payload, run_id: runId,
+            cleanup_ref: { kind: 'process-cleanup', ref: `${runId}-application` },
+          });
+        }
+        const executed = directExec(payload.argv, workspace.path, payload.timeout_seconds);
+        const result = { status: executed.exit_code === 0 ? 'passed' : 'blocked' };
+        if (payload.requires_frozen_dependencies) result.frozen_dependencies_enforced = true;
+        return result;
+      });
+    case 'wait-readiness':
+      return environmentEffect(projectRoot, payload, (_runId, root) => {
+        for (const check of payload.checks || []) {
+          if (check.type === 'http') {
+            if (!waitForHttp(check.url, payload.timeout_seconds)) return { status: 'blocked' };
+          } else if (check.type === 'argv') {
+            const workspace = workspaceResource(root, payload.workspace_ref);
+            if (directExec(check.argv, workspace.path, payload.timeout_seconds).exit_code !== 0) {
+              return { status: 'blocked' };
+            }
+          } else {
+            return { status: 'blocked' };
+          }
+        }
+        return { status: 'ready' };
+      });
     case 'cleanup':
       return environmentEffect(projectRoot, payload, () => cleanupResource(projectRoot, payload));
     case 'write-receipt':
