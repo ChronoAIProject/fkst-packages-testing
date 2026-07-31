@@ -32,11 +32,24 @@ local function durable_file_counts(context)
     "function count(dir){let total=0;try{for(const item of fs.readdirSync(dir,{withFileTypes:true})){",
     "const target=path.join(dir,item.name);total+=item.isDirectory()?count(target):",
     "(item.name.endsWith(\".json\")?1:0)}}catch(error){if(error.code!==\"ENOENT\")throw error}return total}",
-    "process.stdout.write(count(path.join(root,'records'))+' '+count(path.join(root,'artifacts')));",
+    "const artifacts=path.join(root,'artifacts'),paths=[];try{for(const name of fs.readdirSync(artifacts)){",
+    "if(name.endsWith('.json'))paths.push(JSON.parse(fs.readFileSync(path.join(artifacts,name),'utf8')).path)}}",
+    "catch(error){if(error.code!==\"ENOENT\")throw error}",
+    "const artifactRoot=process.argv[2],cleanup=artifactRoot+'/cleanup-receipt-complete.json';",
+    "const publication=artifactRoot+'/publication-receipts/aggregate-report-';",
+    "process.stdout.write([count(path.join(root,'records')),count(artifacts),",
+    "paths.filter(value=>value===cleanup).length,paths.filter(value=>value.startsWith(publication)).length].join(' '));",
   })
-  local output = process.exec({ "node", "-e", script, context.durable_run_root }).stdout
-  local records, artifacts = output:match("(%d+)%s+(%d+)")
-  return { records = tonumber(records), artifacts = tonumber(artifacts) }
+  local output = process.exec({
+    "node", "-e", script, context.durable_run_root, context.artifact_root,
+  }).stdout
+  local records, artifacts, cleanup_receipts, aggregate_receipts =
+    output:match("(%d+)%s+(%d+)%s+(%d+)%s+(%d+)")
+  return {
+    records = tonumber(records), artifacts = tonumber(artifacts),
+    cleanup_receipts = tonumber(cleanup_receipts),
+    aggregate_receipts = tonumber(aggregate_receipts),
+  }
 end
 
 local function assert_equal_counts(expected, actual)
@@ -48,11 +61,20 @@ local function matching_effect(context, prefix, predicate)
   for _, entry in ipairs(context.records:list(prefix)) do
     if predicate(entry.value) then
       t.eq(matched, nil)
-      matched = entry.value
+      matched = entry
     end
   end
   t.is_true(matched ~= nil)
   return matched
+end
+
+local function cleanup_effect(value)
+  return type(value.binding) == "table" and type(value.binding.cleanup_ref) == "table"
+    and value.binding.cleanup_ref.kind == "port-lease"
+end
+
+local function aggregate_effect(value)
+  return type(value.binding) == "table" and value.binding.stage == "aggregate-report"
 end
 
 local function assert_barrier(context, case)
@@ -96,11 +118,8 @@ local function assert_barrier(context, case)
   local cleanup_ref = context.artifact_root .. "/cleanup-receipt-complete.json"
   local aggregate_receipt_ref = context.artifact_root .. "/publication-receipts/aggregate-report-1.json"
   if case.name == "cleanup-after-effect" then
-    local effect = matching_effect(recovered, "environment-factory/effects", function(value)
-      return type(value.binding) == "table" and type(value.binding.cleanup_ref) == "table"
-        and value.binding.cleanup_ref.kind == "port-lease"
-    end)
-    t.eq(effect.result.status, "cleaned")
+    local effect = matching_effect(recovered, "environment-factory/effects", cleanup_effect)
+    t.eq(effect.value.result.status, "cleaned")
     t.eq(recovered.store:load(cleanup_ref), nil)
     local released = recovered:_fixture_effect("fixture-release-status", {
       run_id = context.run_id, artifact_root = context.artifact_root,
@@ -109,10 +128,8 @@ local function assert_barrier(context, case)
     t.eq(released.listeners_closed, true)
     t.eq(released.workspace_absent, true)
   elseif case.name == "publication-after-effect" then
-    local effect = matching_effect(recovered, "test-publication/effects", function(value)
-      return type(value.binding) == "table" and value.binding.stage == "aggregate-report"
-    end)
-    t.eq(effect.result.status, "materialized")
+    local effect = matching_effect(recovered, "test-publication/effects", aggregate_effect)
+    t.eq(effect.value.result.status, "materialized")
     t.is_true(recovered.store:load(context.artifact_root
       .. "/published/aggregate-report-1-materialization.json") ~= nil)
     t.eq(recovered.store:load(aggregate_receipt_ref), nil)
@@ -123,7 +140,13 @@ local function assert_barrier(context, case)
     t.eq(recovered.store:load(cleanup_ref), nil)
     t.eq(recovered.store:load(aggregate_receipt_ref), nil)
   end
-  return recovered, state
+  local barrier_effect
+  if case.name == "cleanup-after-effect" then
+    barrier_effect = matching_effect(recovered, "environment-factory/effects", cleanup_effect)
+  elseif case.name == "publication-after-effect" then
+    barrier_effect = matching_effect(recovered, "test-publication/effects", aggregate_effect)
+  end
+  return recovered, state, barrier_effect and support.copy(barrier_effect) or nil
 end
 
 local function assert_terminal(context)
@@ -164,7 +187,7 @@ local function run_case(case)
         .. "\nstdout=" .. tostring(process.read_file(stdout_path))
         .. "\nstderr=" .. tostring(process.read_file(stderr_path)))
     end
-    local at_barrier, barrier_state = assert_barrier(context, case)
+    local at_barrier, barrier_state, barrier_effect = assert_barrier(context, case)
     local authorization_binding = support.copy(barrier_state.authorization)
     local profile_binding = support.copy(at_barrier.records:list("generic-host/profile-approval")[1].value)
     local preauthorization_binding = support.copy(
@@ -200,6 +223,21 @@ local function run_case(case)
     t.is_true(completed.publications >= barrier_counts.publications)
 
     local completed_files = durable_file_counts(context)
+    if case.name == "cleanup-after-effect" then
+      local replayed = matching_effect(recovered, "environment-factory/effects", cleanup_effect)
+      t.eq(replayed.key, barrier_effect.key)
+      t.is_true(support.equal(replayed.value, barrier_effect.value))
+      t.eq(recovered:terminal_record().cleanup_receipt_ref,
+        context.artifact_root .. "/cleanup-receipt-complete.json")
+      t.eq(completed_files.cleanup_receipts, 1)
+    elseif case.name == "publication-after-effect" then
+      local replayed = matching_effect(recovered, "test-publication/effects", aggregate_effect)
+      t.eq(replayed.key, barrier_effect.key)
+      t.is_true(support.equal(replayed.value, barrier_effect.value))
+      t.eq(recovered:terminal_record().aggregate_publication_receipt_ref,
+        context.artifact_root .. "/publication-receipts/aggregate-report-1.json")
+      t.eq(completed_files.aggregate_receipts, 1)
+    end
     local noop, noop_stdout, noop_stderr = process.start_supervisor(
       context, "noop-" .. case.name, false, live_pids)
     if not process.wait_for_noop(context, "noop-" .. case.name) then
