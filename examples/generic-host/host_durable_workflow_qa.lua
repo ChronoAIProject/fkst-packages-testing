@@ -1,6 +1,8 @@
 local browser_readiness = require("contract.browser_readiness")
 local execution = require("contract.structured_execution")
+local environment_factory = require("contract.environment_factory")
 local json_codec = require("testing_runtime.json")
+local project_profile = require("contract.project_profile")
 local Store = require("host_durable_store")
 
 local M = {}
@@ -534,6 +536,44 @@ end
 function Context:_structured_runtime()
   local context = self
   local function replay_key(grant_id) return "testing-runner/replay/" .. context:_key(grant_id) end
+  local function authorization_key(receipt_id)
+    return "testing-runner/cli-effect-authorizations/" .. context:_key(receipt_id)
+  end
+  local function argv_allowed(argv, capabilities)
+    for _, capability in ipairs(capabilities or {}) do
+      local prefix = capability.argv_prefix or {}
+      local matches = #prefix > 0 and #prefix <= #argv
+      for index, item in ipairs(prefix) do
+        if argv[index] ~= item then matches = false break end
+      end
+      if matches then return true end
+    end
+    return false
+  end
+  local function decision(envelope, value, reason, inputs)
+    local envelope_sha256 = context.records:digest(json_codec.encode(envelope))
+    local receipt = {
+      schema = execution.schemas.effect_authorization_receipt,
+      decision = value,
+      reason_code = reason,
+      receipt_id = "durable-cli-effect-" .. envelope_sha256:sub(1, 32),
+      envelope_sha256 = envelope_sha256,
+      evaluated_input_digests = inputs,
+      issued_at = "2026-07-22T00:20:00Z",
+      expires_at = envelope.expires_at,
+      fence_id = envelope.fence_id,
+      trace_id = envelope.trace_id,
+      dedup_key = envelope.dedup_key,
+      auth_tag = context.records:digest(context.run_id .. "\0" .. envelope_sha256 .. "\0" .. value),
+    }
+    if value == "allow" then
+      local stored = context.records:immutable(authorization_key(receipt.receipt_id), copy(receipt))
+      if stored.written ~= true and stored.replayed ~= true then
+        error("generic-host durable CLI authorization receipt conflict")
+      end
+    end
+    return receipt
+  end
   return {
     load_artifact = function(path) return context.store:load(path) end,
     now = function(request)
@@ -563,16 +603,90 @@ function Context:_structured_runtime()
       if claimed.replayed == true then return { status = "in-progress" } end
       return { status = "claimed", claim_id = claim_id }
     end,
+    authorize_cli_effect = function(request)
+      local envelope = request.action_envelope
+      local ok = pcall(execution.validate_cli_action_envelope, envelope)
+      local empty = {
+        profile = string.rep("0", 64), validation_receipt = string.rep("0", 64),
+        preauthorization = string.rep("0", 64), environment_receipt = string.rep("0", 64),
+        plan = string.rep("0", 64), grant = string.rep("0", 64),
+      }
+      if not ok then return decision(envelope, "deny", "malformed-envelope", empty) end
+      local profile = context.store:load(envelope.profile_ref)
+      local validation = context.store:load(envelope.validation_receipt_ref)
+      local preauthorization = context.store:load(envelope.preauthorization_ref)
+      local environment = context.store:load(envelope.environment_receipt_ref)
+      local plan = context.store:load(envelope.plan_ref)
+      local grant = context.store:load(envelope.grant_ref)
+      local inputs = {
+        profile = profile and profile.digest or empty.profile,
+        validation_receipt = validation and validation.digest or empty.validation_receipt,
+        preauthorization = preauthorization and preauthorization.digest or empty.preauthorization,
+        environment_receipt = environment and environment.digest or empty.environment_receipt,
+        plan = plan and plan.digest or empty.plan,
+        grant = grant and grant.digest or empty.grant,
+      }
+      if profile == nil or validation == nil or preauthorization == nil
+        or environment == nil or plan == nil or grant == nil then
+        return decision(envelope, "deny", "missing-input", inputs)
+      end
+      local valid = pcall(project_profile.validate_profile, profile.value)
+        and pcall(project_profile.validate_validation_receipt, validation.value)
+        and pcall(execution.validate_preauthorization, preauthorization.value, "2026-07-22T00:20:00Z")
+        and pcall(environment_factory.validate_receipt, environment.value)
+        and pcall(execution.validate_plan, plan.value)
+        and pcall(execution.validate_grant, grant.value, "2026-07-22T00:20:00Z")
+      local planned_case
+      for _, item in ipairs(plan.value.cases or {}) do
+        if item.case_id == envelope.case.case_id then planned_case = item end
+      end
+      if not valid or profile.digest ~= envelope.profile_artifact_sha256
+        or project_profile.profile_sha256(profile.value, function(body) return context.records:digest(body) end)
+          ~= envelope.profile_sha256
+        or validation.digest ~= envelope.validation_receipt_sha256
+        or validation.value.profile_sha256 ~= envelope.profile_sha256
+        or preauthorization.digest ~= envelope.preauthorization_sha256
+        or preauthorization.value.profile_sha256 ~= envelope.profile_sha256
+        or environment.digest ~= envelope.environment_receipt_sha256
+        or plan.value.environment_receipt_sha256 ~= environment.digest
+        or plan.digest ~= envelope.plan_sha256 or grant.digest ~= envelope.grant_sha256
+        or grant.value.parent_authorization_sha256 ~= preauthorization.digest
+        or grant.value.plan_sha256 ~= plan.digest
+        or grant.value.environment_receipt_sha256 ~= environment.digest
+        or not equal(environment.value.workspace_ref, envelope.workspace_ref)
+        or not equal(planned_case, envelope.case)
+        or not argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
+        or not argv_allowed(envelope.case.argv, grant.value.cli_capabilities) then
+        return decision(envelope, "deny", "foreign-binding", inputs)
+      end
+      return decision(envelope, "allow", "authorized", inputs)
+    end,
     exec_argv = function(request)
-      if request.operation_id ~= context.run_id
-        or type(request.workspace_ref) ~= "table"
-        or request.workspace_ref.ref ~= context.run_id .. "-workspace"
-        or request.repository.commit_sha ~= context.commit_sha then
+      local envelope = request.action_envelope
+      local receipt = request.authorization_receipt
+      execution.validate_cli_action_envelope(envelope)
+      execution.validate_effect_authorization_receipt(receipt, envelope, "2026-07-22T00:20:00Z")
+      local issued = context.records:read(authorization_key(receipt.receipt_id))
+      if receipt.decision ~= "allow"
+        or receipt.envelope_sha256 ~= context.records:digest(json_codec.encode(envelope))
+        or issued == nil or not equal(issued, receipt) then
+        error("generic-host durable structured CLI authorization receipt is unavailable")
+      end
+      local consumed = context.records:claim(
+        "testing-runner/cli-effect-consumptions/" .. context:_key(receipt.receipt_id),
+        { binding = copy(receipt), receipt_id = receipt.receipt_id })
+      if consumed.claimed ~= true or consumed.replayed == true then
+        error("generic-host durable structured CLI authorization receipt is replayed")
+      end
+      if envelope.operation_id ~= context.run_id
+        or type(envelope.workspace_ref) ~= "table"
+        or envelope.workspace_ref.ref ~= context.run_id .. "-workspace"
+        or envelope.repository.commit_sha ~= context.commit_sha then
         error("generic-host durable structured CLI request is not bound to the ready workspace")
       end
-      local workspace = context.records:read(context:_resource("environment-factory", request.workspace_ref))
+      local workspace = context.records:read(context:_resource("environment-factory", envelope.workspace_ref))
       if workspace == nil then error("generic-host durable structured workspace is unavailable") end
-      local result = direct_exec(request.argv, workspace.path)
+      local result = direct_exec(envelope.case.argv, workspace.path)
       context.records:immutable("testing-runner/target-effects/" .. context:_key(request), {
         binding = copy(request), result = copy(result),
       })

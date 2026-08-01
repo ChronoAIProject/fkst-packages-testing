@@ -77,4 +77,25 @@ return {
     context:cleanup()
     if not ok then error(err, 0) end
   end,
+
+  test_canonical_local_pep_denies_changed_plan_binding_without_cli_effect = function()
+    local context = support.new({
+      cli_only = true,
+      count_effect = true,
+      pep_mutate_plan_binding = true,
+    })
+    local ok, err = pcall(function()
+      context:run_lifecycle()
+      t.is_true(context.terminal.status ~= "passed")
+      t.eq(#context.target_effects, 0)
+      local receipt = context.store:load(
+        context.request.structured_execution.artifact_root .. "/authorization/cli-version.json")
+      t.eq(receipt.value.schema, "testing-effect-authorization-receipt.v1")
+      t.eq(receipt.value.decision, "deny")
+      t.eq(receipt.value.reason_code, "foreign-binding")
+    end)
+    context:cleanup()
+    if not ok then error(err, 0) end
+  end,
+
 }

@@ -66,6 +66,8 @@ local function run_to_barrier(context, live_pids, label)
   t.eq(barrier.result_sha256, recovered.store:digest(barrier.result_ref))
   t.eq(barrier.replay_status, "completed")
   t.eq(effect_count(context), 1)
+  t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
+  t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
   t.eq(recovered:terminal_record(), nil)
   local ownership = recovered:_fixture_effect("fixture-resource-status", {
     run_id = context.run_id,
@@ -100,6 +102,8 @@ local function assert_terminal(context)
   t.eq(#durable.list_pending(context.project_root, context.durable_root, 10), 0)
   t.eq(effect_count(context), 1)
   t.eq(#recovered.records:list("testing-runner/target-effects"), 1)
+  t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
+  t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
   local recovery = recovered.records:read("generic-host/recovery/execution")
   if context.completed_replay_failpoint ~= nil then t.eq(recovery.replayed, true) else t.eq(recovery, nil) end
 

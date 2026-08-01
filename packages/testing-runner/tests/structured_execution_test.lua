@@ -11,6 +11,7 @@ local function runtime(artifacts, options)
       if options.now_request then options.now_request(input) end
       return options.now or "2026-07-20T00:30:00Z"
     end,
+
     verify_grant = function(input)
       if options.verify_grant then return options.verify_grant(input) end
       return fixtures.attestation()
@@ -18,6 +19,10 @@ local function runtime(artifacts, options)
     replay_guard = function(claim)
       if options.replay_guard then return options.replay_guard(claim) end
       return { status = "claimed", claim_id = "claim-110" }
+    end,
+    authorize_cli_effect = function(input)
+      if options.authorize_cli_effect then return options.authorize_cli_effect(input) end
+      return fixtures.authorization_receipt(input.action_envelope)
     end,
     exec_argv = function(input)
       table.insert(effects, { kind = "cli", request = input })
@@ -60,6 +65,21 @@ return {
     t.eq(result.status, "blocked")
     t.eq(result.classification, "harness-tooling-issue")
     t.eq(loads, 0)
+  end,
+
+  test_local_pep_denial_records_receipt_and_performs_zero_cli_effects = function()
+    local request = fixtures.request()
+    local ports, effects, writes = runtime(fixtures.artifacts(request), {
+      authorize_cli_effect = function(input)
+        return fixtures.authorization_receipt(input.action_envelope, "deny", "scope-denied")
+      end,
+    })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "blocked")
+    t.eq(result.error_count, 1)
+    t.eq(#effects, 0)
+    local receipt_path = request.artifact_root .. "/authorization/cli-version.json"
+    t.eq(writes[receipt_path].decision, "deny")
   end,
 
   test_unauthenticated_grant_performs_zero_effects = function()
@@ -129,10 +149,10 @@ return {
     t.eq(result.case_count, 2)
     t.eq(result.passed_count, 2)
     t.eq(effects[1].kind, "cli")
-    t.eq(effects[1].request.operation_id, request.source_ref.ref)
-    t.eq(effects[1].request.workspace_ref.kind, "workspace")
-    t.eq(effects[1].request.repository.commit_sha, request.repository.commit_sha)
-    t.eq(effects[1].request.argv[2], "--version")
+    t.eq(effects[1].request.action_envelope.operation_id, request.source_ref.ref)
+    t.eq(effects[1].request.action_envelope.workspace_ref.kind, "workspace")
+    t.eq(effects[1].request.action_envelope.repository.commit_sha, request.repository.commit_sha)
+    t.eq(effects[1].request.action_envelope.case.argv[2], "--version")
     t.eq(effects[2].kind, "http")
     t.eq(effects[2].request.base_url, "http://127.0.0.1:4173/health")
     t.eq(effects[2].request.request.url, "http://127.0.0.1:4173/health")

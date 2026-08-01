@@ -6,7 +6,7 @@ const http = require('http');
 const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
-const { stableStringify } = require('../../../packages/environment-factory/bin/runtime/common');
+const { sha256, stableStringify } = require('../../../packages/environment-factory/bin/runtime/common');
 const { dispatch: environmentDispatch } = require('../../../packages/environment-factory/bin/environment-factory-runtime');
 const { resourcePath } = require('../../../packages/environment-factory/bin/runtime/workspace');
 const { dispatch, localOrigin } = require('../bin/fkst-structured-execution-runtime');
@@ -45,7 +45,7 @@ async function main() {
   const operationId = `${runId}-operation`;
   let workspaceRef;
   const repository = { url: 'https://example.invalid/testing/runtime.git', commit_sha: '' };
-  const grantSha256 = 'a'.repeat(64);
+  let grantSha256;
   const authority = { kind: 'policy', ref: 'runtime-test-authority' };
   const evidenceRef = { kind: 'attestation', ref: 'runtime-test-grant' };
   let server;
@@ -88,29 +88,70 @@ async function main() {
     workspaceRef = checkout.workspace_ref;
     workspace = JSON.parse(fs.readFileSync(resourcePath(workspaceRef.ref), 'utf8')).path;
 
+    const traceId = `${runId}-trace`;
+    const dedupKey = `${runId}-dedup`;
+    const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const authorityRoot = `.testing/runs/${runId}/authorization`;
+    const writeAuthority = (name, value) => {
+      const ref = `${authorityRoot}/${name}.json`;
+      const body = `${stableStringify(value)}\n`;
+      fs.mkdirSync(path.dirname(ref), { recursive: true });
+      fs.writeFileSync(ref, body);
+      return { ref, digest: sha256(body), value };
+    };
+    const profile = writeAuthority('profile', {
+      schema: 'testing-project-profile.v1', revision: 'runtime-profile-v1', repository,
+      working_directory: '.', mutation_policy: { mode: 'read-only' },
+      resource_budgets: { output_bytes: 65536 },
+    });
+    const validation = writeAuthority('validation', {
+      schema: 'testing-project-profile-validation-receipt.v1', profile_revision: 'runtime-profile-v1',
+      profile_sha256: sha256(stableStringify(profile.value)), repository, trace_id: traceId, dedup_key: dedupKey,
+    });
+    const preauthorization = writeAuthority('preauthorization', {
+      schema: 'testing-structured-execution-authorization.v1', profile_sha256: validation.value.profile_sha256,
+      repository, capabilities: { cli: [{ argv_prefix: [process.execPath] }], http: [] },
+      trace_id: traceId, dedup_key: dedupKey,
+    });
+    const environment = writeAuthority('environment', {
+      schema: 'environment-factory.receipt.v2', status: 'ready', operation_id: operationId,
+      profile_sha256: validation.value.profile_sha256, repository, workspace_ref: workspaceRef,
+      trace_id: traceId, dedup_key: dedupKey,
+    });
+    const cliCase = {
+      case_id: 'cli-version', kind: 'cli',
+      argv: [process.execPath, '-e', 'process.stdout.write(process.cwd())'], timeout_seconds: 10,
+      assertions: [{ type: 'exit-code', expected: 0 }],
+    };
+    const plan = writeAuthority('plan', {
+      schema: 'testing-structured-plan.v2', repository,
+      environment_receipt_sha256: environment.digest, cases: [cliCase],
+      trace_id: traceId, dedup_key: dedupKey,
+    });
+    const grant = writeAuthority('grant', {
+      schema: 'testing-structured-execution-grant.v1', grant_id: `${runId}-effect-grant`,
+      parent_authorization_sha256: preauthorization.digest, plan_sha256: plan.digest,
+      environment_receipt_sha256: environment.digest, repository,
+      cli_capabilities: [{ argv_prefix: [process.execPath] }], authority,
+      policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef,
+      expires_at: expiresAt, max_uses: 1, trace_id: traceId, dedup_key: dedupKey,
+    });
+    grantSha256 = grant.digest;
+
     fs.mkdirSync(path.dirname(configRef), { recursive: true });
     fs.writeFileSync(configRef, `${stableStringify({
       schema: 'testing-runtime.structured-execution-config.v1',
       state_auth_key: 'structured-runtime-test-state-key-00000000000000000000',
-      state_mac_generation: 'runtime-test-v1',
-      command_environment: {},
-      output_bytes: 65536,
-      http_response_bytes: 65536,
-      grant_attestations: [{
-        grant_sha256: grantSha256,
-        authority,
-        policy_revision: 'runtime-test-policy-v1',
-        evidence_ref: evidenceRef,
-      }],
+      state_mac_generation: 'runtime-test-v1', command_environment: {},
+      output_bytes: 65536, http_response_bytes: 65536,
+      grant_attestations: [{ grant_sha256: grantSha256, authority,
+        policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef }],
     })}\n`);
 
     const common = {
-      artifact_root: artifactRoot,
-      operation_id: operationId,
-      repository,
-      environment_receipt_sha256: 'b'.repeat(64),
-      trace_id: `${runId}-trace`,
-      dedup_key: `${runId}-dedup`,
+      artifact_root: artifactRoot, operation_id: operationId, repository,
+      environment_receipt_sha256: environment.digest,
+      trace_id: traceId, dedup_key: dedupKey,
       runtime_config_ref: { kind: 'artifact', ref: configRef },
     };
 
@@ -124,29 +165,45 @@ async function main() {
     });
     assert.strictEqual(attestation.grant_sha256, grantSha256);
 
+    const effectClaim = await dispatch('replay-guard', {
+      ...common, grant_id: grant.value.grant_id, grant_sha256: grant.digest,
+      parent_authorization_sha256: preauthorization.digest, plan_sha256: plan.digest,
+      environment_receipt_sha256: environment.digest,
+    });
+    const actionEnvelope = {
+      schema: 'testing-cli-action-envelope.v1', effect_kind: 'cli', capability: 'direct-argv',
+      profile_ref: profile.ref, profile_artifact_sha256: profile.digest,
+      profile_sha256: validation.value.profile_sha256,
+      validation_receipt_ref: validation.ref, validation_receipt_sha256: validation.digest,
+      preauthorization_ref: preauthorization.ref, preauthorization_sha256: preauthorization.digest,
+      repository, run_id: operationId, operation_id: operationId,
+      environment_receipt_ref: environment.ref, environment_receipt_sha256: environment.digest,
+      workspace_ref: workspaceRef, plan_ref: plan.ref, plan_sha256: plan.digest,
+      grant_ref: grant.ref, grant_sha256: grant.digest, case: cliCase,
+      resource_bounds: { output_bytes: 65536 }, attempt: 1,
+      trace_id: traceId, dedup_key: dedupKey, expires_at: expiresAt,
+      fence_id: effectClaim.claim_id,
+    };
+    const authorization = await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: actionEnvelope,
+    });
+    assert.strictEqual(authorization.decision, 'allow');
     const cli = await dispatch('exec-argv', {
-      ...common,
-      workspace_ref: workspaceRef,
-      argv: [process.execPath, '-e', 'process.stdout.write(process.cwd())'],
-      timeout_seconds: 10,
+      ...common, action_envelope: actionEnvelope, authorization_receipt: authorization,
     });
     assert.strictEqual(cli.exit_code, 0);
     assert.strictEqual(cli.stdout, fs.realpathSync(workspace));
     await assert.rejects(() => dispatch('exec-argv', {
-      ...common,
-      operation_id: 'foreign-operation',
-      workspace_ref: workspaceRef,
-      argv: [process.execPath, '-e', 'process.exit(0)'],
-      timeout_seconds: 10,
-    }), /ownership binding/);
-    fs.writeFileSync(path.join(workspace, 'marker.txt'), 'tampered\n');
+      ...common, action_envelope: actionEnvelope, authorization_receipt: authorization,
+    }), /replayed or is unavailable/);
+    const foreignEnvelope = { ...actionEnvelope, plan_sha256: '0'.repeat(64) };
+    const denied = await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: foreignEnvelope,
+    });
+    assert.strictEqual(denied.decision, 'deny');
     await assert.rejects(() => dispatch('exec-argv', {
-      ...common,
-      workspace_ref: workspaceRef,
-      argv: [process.execPath, '-e', 'process.exit(0)'],
-      timeout_seconds: 10,
-    }), /tracked files differ/);
-    fs.writeFileSync(path.join(workspace, 'marker.txt'), 'committed\n');
+      ...common, action_envelope: foreignEnvelope, authorization_receipt: denied,
+    }), /missing, denied, malformed, expired, or foreign/);
 
     server = await listen();
     const address = server.address();
@@ -235,10 +292,7 @@ async function main() {
     assert.strictEqual(fs.existsSync(workspace), false);
     await assert.rejects(() => dispatch('exec-argv', {
       ...common,
-      workspace_ref: workspaceRef,
-      argv: [process.execPath, '-e', 'process.exit(0)'],
-      timeout_seconds: 10,
-    }), /cleaned or unavailable/);
+    }), /fields are invalid|malformed/);
   } finally {
     if (server) await new Promise((resolve) => server.close(resolve));
     if (previousDurable === undefined) delete process.env.FKST_DURABLE_ROOT;

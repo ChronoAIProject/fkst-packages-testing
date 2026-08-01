@@ -33,6 +33,9 @@ local function run_edge(mutate, options)
     replay_guard = function()
       return options.claim or { status = "claimed", claim_id = "claim-edges" }
     end,
+    authorize_cli_effect = function(input)
+      return fixtures.authorization_receipt(input.action_envelope)
+    end,
     exec_argv = function()
       if options.exec_error then error("cli unavailable") end
       if options.exec_result == false then return nil end
@@ -88,7 +91,7 @@ return {
     t.raises(function() structured_execution.production_ports() end)
     local ports = {}
     for _, name in ipairs({
-      "load_artifact", "now", "verify_grant", "replay_guard", "exec_argv",
+      "load_artifact", "now", "verify_grant", "replay_guard", "authorize_cli_effect", "exec_argv",
       "http_request", "write_artifact", "load_result", "complete_replay",
     }) do ports[name] = function() return true end end
     _G.structured_execution_runtime = ports
