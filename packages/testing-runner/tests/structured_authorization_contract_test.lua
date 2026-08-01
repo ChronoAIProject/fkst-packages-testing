@@ -91,6 +91,34 @@ return {
     malformed = fixtures.copy(receipt)
     malformed.unknown = true
     t.raises(function() contract.validate_effect_authorization_receipt(malformed, envelope) end)
+
+    local invalid_http_case = {
+      case_id = "health", kind = "http", timeout_seconds = 10,
+      request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+      assertions = { { type = "status-code", expected = 99 } },
+    }
+    t.raises(function() contract.validate_case(invalid_http_case, {}, false) end)
+
+    for _, mutate in ipairs({
+      function(value) value.capability = "shell" end,
+      function(value) value.attempt = 2 end,
+      function(value)
+        value.case = {
+          case_id = "health", kind = "http", timeout_seconds = 10,
+          request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+          assertions = { { type = "status-code", expected = 200 } },
+        }
+      end,
+      function(value) value.resource_bounds.output_bytes = 1023 end,
+    }) do
+      malformed = fixtures.copy(envelope)
+      mutate(malformed)
+      t.raises(function() contract.validate_cli_action_envelope(malformed) end)
+    end
+
+    local foreign = fixtures.copy(receipt)
+    foreign.fence_id = "claim-foreign"
+    t.raises(function() contract.validate_effect_authorization_receipt(foreign, envelope) end)
   end,
 
 

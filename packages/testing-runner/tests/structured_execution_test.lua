@@ -82,6 +82,20 @@ return {
     t.eq(writes[receipt_path].decision, "deny")
   end,
 
+  test_unpersisted_local_pep_receipt_blocks_before_cli_effect = function()
+    local request = fixtures.request()
+    local ports, effects = runtime(fixtures.artifacts(request), {
+      write_artifact = function(path)
+        return path ~= request.artifact_root .. "/authorization/cli-version.json"
+      end,
+    })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "blocked")
+    t.eq(result.classification, "harness-tooling-issue")
+    t.is_true(result.message:find("malformed CLI authorization receipt", 1, true) ~= nil)
+    t.eq(#effects, 0)
+  end,
+
   test_unauthenticated_grant_performs_zero_effects = function()
     local request = fixtures.request()
     local claims = 0
