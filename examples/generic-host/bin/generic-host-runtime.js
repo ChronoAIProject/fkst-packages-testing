@@ -278,16 +278,18 @@ function publicationResult(projectRoot, payload) {
   return result;
 }
 
-function directExec(argv, cwd, timeoutSeconds) {
+function directExec(argv, cwd, timeoutSeconds, outputBytes) {
   if (!Array.isArray(argv) || argv.length === 0 || argv.some((item) => typeof item !== 'string')) {
     fail('argv must be a non-empty string list');
   }
-  const result = spawnSync(argv[0], argv.slice(1), {
+  const options = {
     cwd,
     encoding: 'utf8',
     timeout: Math.max(1, Number(timeoutSeconds) || 30) * 1000,
     env: process.env,
-  });
+  };
+  if (Number.isInteger(outputBytes) && outputBytes >= 1024) options.maxBuffer = outputBytes;
+  const result = spawnSync(argv[0], argv.slice(1), options);
   return {
     exit_code: result.status == null ? -1 : result.status,
     stdout: result.stdout || '',
@@ -547,6 +549,301 @@ function waitForHttp(url, timeoutSeconds) {
 
 function structuredReplayKey(grantId) {
   return `testing-runner/replay/${sha256(stable(grantId))}`;
+}
+
+function structuredAuthorizationKey(receiptId) {
+  return `testing-runner/cli-effect-authorizations/${sha256(stable(receiptId))}`;
+}
+
+function structuredConsumptionKey(grantId) {
+  return `testing-runner/cli-effect-consumptions/${sha256(stable(grantId))}`;
+}
+
+function exactKeys(value, expected) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  return Object.keys(value).sort().join('\0') === [...expected].sort().join('\0');
+}
+
+function boundedString(value, limit) {
+  return typeof value === 'string' && value.length > 0 && value.length <= limit
+    && !/[\0-\x1f\x7f]/.test(value);
+}
+
+function validDigest(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+}
+
+function validRepository(value) {
+  return exactKeys(value, ['url', 'commit_sha'])
+    && boundedString(value.url, 2048) && /^https:\/\/[^/@]+\/[^?#]+$/.test(value.url)
+    && !value.url.includes('@') && /^[0-9a-f]{40}$/.test(value.commit_sha);
+}
+
+function sameRepository(left, right) {
+  return validRepository(left) && validRepository(right)
+    && left.url === right.url && left.commit_sha === right.commit_sha;
+}
+
+function samePointer(left, right) {
+  return exactKeys(left, ['kind', 'ref']) && exactKeys(right, ['kind', 'ref'])
+    && left.kind === right.kind && left.ref === right.ref;
+}
+
+const shellExecutables = new Set([
+  'sh', 'bash', 'dash', 'zsh', 'fish', 'ksh', 'csh', 'tcsh', 'cmd', 'cmd.exe',
+  'powershell', 'powershell.exe', 'pwsh', 'pwsh.exe',
+]);
+
+function executableName(argv) {
+  let index = 0;
+  let name = path.basename(String(argv[index] || '')).toLowerCase();
+  if (name === 'env') {
+    index += 1;
+    while (typeof argv[index] === 'string' && /^[A-Za-z_][A-Za-z0-9_]*=/.test(argv[index])) index += 1;
+    name = path.basename(String(argv[index] || '')).toLowerCase();
+  }
+  return name;
+}
+
+function validArgv(argv) {
+  return Array.isArray(argv) && argv.length > 0 && argv.length <= 32
+    && argv.every((item) => boundedString(item, 512)) && !shellExecutables.has(executableName(argv));
+}
+
+function validCliCapabilities(value) {
+  return Array.isArray(value) && value.length <= 64 && value.every((capability) =>
+    exactKeys(capability, ['argv_prefix']) && validArgv(capability.argv_prefix));
+}
+
+function argvAllowed(argv, capabilities) {
+  return validArgv(argv) && validCliCapabilities(capabilities) && capabilities.some((capability) =>
+    capability.argv_prefix.length <= argv.length
+      && capability.argv_prefix.every((item, index) => item === argv[index]));
+}
+
+function validWindow(value, now) {
+  const issued = Date.parse(value && value.issued_at);
+  const expires = Date.parse(value && value.expires_at);
+  const current = Date.parse(now);
+  return Number.isFinite(issued) && Number.isFinite(expires) && expires > issued
+    && Number.isFinite(current) && current >= issued && current < expires;
+}
+
+function validCliEnvelope(envelope) {
+  const fields = [
+    'schema', 'effect_kind', 'capability', 'profile_ref', 'profile_artifact_sha256',
+    'profile_sha256', 'validation_receipt_ref', 'validation_receipt_sha256',
+    'preauthorization_ref', 'preauthorization_sha256', 'repository', 'run_id',
+    'operation_id', 'environment_receipt_ref', 'environment_receipt_sha256',
+    'workspace_ref', 'plan_ref', 'plan_sha256', 'grant_ref', 'grant_sha256', 'case',
+    'resource_bounds', 'attempt', 'trace_id', 'dedup_key', 'expires_at', 'fence_id',
+  ];
+  const digestFields = [
+    'profile_artifact_sha256', 'profile_sha256', 'validation_receipt_sha256',
+    'preauthorization_sha256', 'environment_receipt_sha256', 'plan_sha256', 'grant_sha256',
+  ];
+  const pointerFields = [
+    'profile_ref', 'validation_receipt_ref', 'preauthorization_ref',
+    'environment_receipt_ref', 'plan_ref', 'grant_ref',
+  ];
+  const action = envelope && envelope.case;
+  const assertions = action && action.assertions;
+  return exactKeys(envelope, fields)
+    && envelope.schema === 'testing-cli-action-envelope.v1'
+    && envelope.effect_kind === 'cli' && envelope.capability === 'direct-argv'
+    && envelope.run_id === envelope.operation_id && envelope.attempt === 1
+    && boundedString(envelope.run_id, 180) && /^[A-Za-z0-9._-]+$/.test(envelope.run_id)
+    && boundedString(envelope.trace_id, 180) && boundedString(envelope.dedup_key, 180)
+    && boundedString(envelope.fence_id, 180) && Number.isFinite(Date.parse(envelope.expires_at))
+    && validRepository(envelope.repository) && samePointer(envelope.workspace_ref, envelope.workspace_ref)
+    && envelope.workspace_ref.kind === 'workspace' && boundedString(envelope.workspace_ref.ref, 2048)
+    && pointerFields.every((field) => safeArtifactPath(envelope[field]))
+    && digestFields.every((field) => validDigest(envelope[field]))
+    && exactKeys(envelope.resource_bounds, ['output_bytes'])
+    && Number.isInteger(envelope.resource_bounds.output_bytes)
+    && envelope.resource_bounds.output_bytes >= 1024
+    && envelope.resource_bounds.output_bytes <= 1024 * 1024
+    && exactKeys(action, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'])
+    && boundedString(action.case_id, 180) && /^[A-Za-z0-9._-]+$/.test(action.case_id)
+    && action.kind === 'cli' && validArgv(action.argv)
+    && Number.isInteger(action.timeout_seconds) && action.timeout_seconds >= 1
+    && action.timeout_seconds <= 300 && Array.isArray(assertions)
+    && assertions.length > 0 && assertions.length <= 16
+    && assertions.every((assertion) => exactKeys(assertion, ['type', 'expected'])
+      && assertion.type === 'exit-code' && Number.isInteger(assertion.expected)
+      && assertion.expected >= 0 && assertion.expected <= 255);
+}
+
+function activeStructuredRequest(root, runId) {
+  const state = recordRead(root, `workflow-qa/state/${runId}`);
+  if (!state || state.phase !== 'structured-execution-pending' || !Array.isArray(state.pending_actions)) return null;
+  const action = state.pending_actions.find((item) => item && item.queue === 'testing-runner.structured_execution_request');
+  return action && action.payload || null;
+}
+
+function envelopeMatchesRequest(envelope, request, payload) {
+  return request && payload.artifact_root === request.artifact_root
+    && envelope.run_id === request.source_ref.ref && envelope.operation_id === request.source_ref.ref
+    && sameRepository(envelope.repository, request.repository)
+    && envelope.profile_ref === request.project_profile_ref
+    && envelope.profile_artifact_sha256 === request.project_profile_artifact_sha256
+    && envelope.profile_sha256 === request.profile_sha256
+    && envelope.validation_receipt_ref === request.validation_receipt_ref
+    && envelope.validation_receipt_sha256 === request.validation_receipt_sha256
+    && envelope.preauthorization_ref === request.preauthorization_ref
+    && envelope.preauthorization_sha256 === request.preauthorization_sha256
+    && envelope.environment_receipt_ref === request.environment_receipt_ref
+    && envelope.environment_receipt_sha256 === request.environment_receipt_sha256
+    && envelope.plan_ref === request.test_plan_ref && envelope.plan_sha256 === request.test_plan_sha256
+    && envelope.grant_ref === request.execution_grant_ref
+    && envelope.grant_sha256 === request.execution_grant_sha256
+    && envelope.trace_id === request.trace_id && envelope.dedup_key === request.dedup_key;
+}
+
+function structuredAuthorizationReceipt(runId, envelope, decision, reasonCode, inputs) {
+  const envelopeSha256 = sha256(stable(envelope));
+  const issuedAt = '2026-07-22T00:20:00Z';
+  const expiresAt = Number.isFinite(Date.parse(envelope && envelope.expires_at))
+    && Date.parse(envelope.expires_at) > Date.parse(issuedAt)
+    ? envelope.expires_at : '2026-07-22T00:21:00Z';
+  return {
+    schema: 'testing-effect-authorization-receipt.v1', decision, reason_code: reasonCode,
+    receipt_id: `durable-cli-effect-${envelopeSha256.slice(0, 32)}`,
+    envelope_sha256: envelopeSha256, evaluated_input_digests: inputs, issued_at: issuedAt,
+    expires_at: expiresAt,
+    fence_id: typeof envelope.fence_id === 'string' ? envelope.fence_id : 'invalid-fence',
+    trace_id: typeof envelope.trace_id === 'string' ? envelope.trace_id : 'invalid-trace',
+    dedup_key: typeof envelope.dedup_key === 'string' ? envelope.dedup_key : 'invalid-dedup',
+    auth_tag: sha256(`${runId}\0${envelopeSha256}\0${decision}`),
+  };
+}
+
+function authorizeCliEffect(projectRoot, payload) {
+  const runId = runIdFor(payload);
+  const root = runRoot(runId);
+  const config = loadConfig(projectRoot, runId);
+  const envelope = payload.action_envelope || {};
+  const empty = {
+    profile: '0'.repeat(64), validation_receipt: '0'.repeat(64),
+    preauthorization: '0'.repeat(64), environment_receipt: '0'.repeat(64),
+    plan: '0'.repeat(64), grant: '0'.repeat(64),
+  };
+  const deny = (reason, inputs = empty) =>
+    structuredAuthorizationReceipt(runId, envelope, 'deny', reason, inputs);
+  try {
+    if (!validCliEnvelope(envelope)) return deny('malformed-envelope');
+    const request = activeStructuredRequest(root, runId);
+    if (!envelopeMatchesRequest(envelope, request, payload)) return deny('foreign-binding');
+    const profile = artifactRead(projectRoot, envelope.profile_ref);
+    const validation = artifactRead(projectRoot, envelope.validation_receipt_ref);
+    const preauthorization = artifactRead(projectRoot, envelope.preauthorization_ref);
+    const environment = artifactRead(projectRoot, envelope.environment_receipt_ref);
+    const plan = artifactRead(projectRoot, envelope.plan_ref);
+    const grant = artifactRead(projectRoot, envelope.grant_ref);
+    const inputs = {
+      profile: profile && profile.digest || empty.profile,
+      validation_receipt: validation && validation.digest || empty.validation_receipt,
+      preauthorization: preauthorization && preauthorization.digest || empty.preauthorization,
+      environment_receipt: environment && environment.digest || empty.environment_receipt,
+      plan: plan && plan.digest || empty.plan,
+      grant: grant && grant.digest || empty.grant,
+    };
+    if (!profile || !validation || !preauthorization || !environment || !plan || !grant) {
+      return deny('missing-input', inputs);
+    }
+    const values = [profile.value, validation.value, preauthorization.value,
+      environment.value, plan.value, grant.value];
+    if (values.some((value) => !value || typeof value !== 'object' || Array.isArray(value))) {
+      return deny('malformed-input', inputs);
+    }
+    const sameRun = (value) => value.trace_id === envelope.trace_id
+      && value.dedup_key === envelope.dedup_key;
+    const planned = Array.isArray(plan.value.cases)
+      ? plan.value.cases.find((item) => item && item.case_id === envelope.case.case_id) : null;
+    const expectedEvidence = { kind: 'signed-attestation', ref: `${runId}-execution-grant` };
+    const replay = recordRead(root, structuredReplayKey(grant.value.grant_id));
+    const replayBinding = replay && replay.binding;
+    const now = '2026-07-22T00:20:00Z';
+    const schemasValid = profile.value.schema === 'testing-project-profile.v1'
+      && validation.value.schema === 'testing-project-profile-validation-receipt.v1'
+      && preauthorization.value.schema === 'testing-structured-execution-authorization.v1'
+      && environment.value.schema === 'environment-factory.receipt.v2'
+      && plan.value.schema === 'testing-structured-plan.v2'
+      && grant.value.schema === 'testing-structured-execution-grant.v1';
+    if (!schemasValid) return deny('malformed-input', inputs);
+    const preauthorizationValid = preauthorization.value.max_uses === 1
+      && validWindow(preauthorization.value, now)
+      && validCliCapabilities(preauthorization.value.capabilities && preauthorization.value.capabilities.cli);
+    if (!preauthorizationValid) return deny('stale-preauthorization', inputs);
+    const grantValid = grant.value.max_uses === 1 && validWindow(grant.value, now)
+      && validCliCapabilities(grant.value.cli_capabilities);
+    if (!grantValid) return deny('stale-grant', inputs);
+    if (!sameRun(validation.value) || !sameRun(preauthorization.value) || !sameRun(environment.value)
+      || !sameRun(plan.value) || !sameRun(grant.value)) return deny('foreign-binding', inputs);
+    const repositoriesValid = sameRepository(profile.value.repository, envelope.repository)
+      && sameRepository(validation.value.repository, envelope.repository)
+      && sameRepository(preauthorization.value.repository, envelope.repository)
+      && sameRepository(environment.value.repository, envelope.repository)
+      && sameRepository(plan.value.repository, envelope.repository)
+      && sameRepository(grant.value.repository, envelope.repository);
+    if (!repositoriesValid) return deny('malformed-input', inputs);
+    if (!profile.value.resource_budgets
+      || envelope.resource_bounds.output_bytes !== profile.value.resource_budgets.output_bytes) {
+      return deny('profile-policy-denied', inputs);
+    }
+    const artifactBindings = profile.digest === envelope.profile_artifact_sha256
+      && sha256(stable(profile.value)) === envelope.profile_sha256
+      && validation.digest === envelope.validation_receipt_sha256
+      && validation.value.profile_revision === profile.value.revision
+      && validation.value.profile_sha256 === envelope.profile_sha256
+      && preauthorization.digest === envelope.preauthorization_sha256
+      && preauthorization.value.profile_sha256 === envelope.profile_sha256
+      && environment.digest === envelope.environment_receipt_sha256
+      && environment.value.status === 'ready' && environment.value.operation_id === envelope.operation_id
+      && environment.value.profile_sha256 === envelope.profile_sha256
+      && samePointer(environment.value.workspace_ref, envelope.workspace_ref)
+      && plan.value.environment_receipt_sha256 === environment.digest
+      && plan.digest === envelope.plan_sha256 && grant.digest === envelope.grant_sha256
+      && grant.value.parent_authorization_sha256 === preauthorization.digest
+      && grant.value.plan_sha256 === plan.digest
+      && grant.value.environment_receipt_sha256 === environment.digest;
+    if (!artifactBindings) return deny('foreign-binding', inputs);
+    const authenticated = samePointer(grant.value.authority, preauthorization.value.authority)
+      && grant.value.policy_revision === preauthorization.value.policy_revision
+      && samePointer(grant.value.evidence_ref, expectedEvidence);
+    if (!authenticated) return deny('foreign-binding', inputs);
+    if (stable(planned) !== stable(envelope.case)
+      || !argvAllowed(envelope.case.argv, preauthorization.value.capabilities.cli)
+      || !argvAllowed(envelope.case.argv, grant.value.cli_capabilities)) {
+      return deny('scope-denied', inputs);
+    }
+    const replayOwned = replay && replay.status === 'claimed' && replay.claim_id === envelope.fence_id
+      && replayBinding && replayBinding.grant_id === grant.value.grant_id
+      && replayBinding.grant_sha256 === grant.digest
+      && replayBinding.plan_sha256 === plan.digest
+      && replayBinding.environment_receipt_sha256 === environment.digest
+      && sameRepository(replayBinding.repository, envelope.repository)
+      && replayBinding.operation_id === envelope.operation_id
+      && replayBinding.artifact_root === request.artifact_root
+      && replayBinding.trace_id === envelope.trace_id && replayBinding.dedup_key === envelope.dedup_key;
+    if (!replayOwned) return deny('foreign-fence', inputs);
+    const fixturePolicy = config.runtime_pep_denial;
+    if (fixturePolicy !== undefined) {
+      const token = process.env.FKST_GENERIC_HOST_FIXTURE_CLI_DENY_TOKEN;
+      const fixturePolicyValid = exactKeys(fixturePolicy, ['reason_code', 'token'])
+        && fixturePolicy.reason_code === 'profile-policy-denied'
+        && boundedString(fixturePolicy.token, 256) && token === fixturePolicy.token;
+      if (!fixturePolicyValid) return deny('malformed-input', inputs);
+      return deny(fixturePolicy.reason_code, inputs);
+    }
+    const receipt = structuredAuthorizationReceipt(runId, envelope, 'allow', 'authorized', inputs);
+    const authorization = { receipt, grant_id: grant.value.grant_id, fence_id: envelope.fence_id };
+    const stored = recordImmutable(root, structuredAuthorizationKey(receipt.receipt_id), authorization);
+    if (!stored.written && !stored.replayed) fail('durable CLI authorization receipt conflict');
+    return receipt;
+  } catch (_error) {
+    return deny('malformed-input');
+  }
 }
 
 function dispatch(name, payload, projectRoot) {
@@ -890,18 +1187,60 @@ function dispatch(name, payload, projectRoot) {
       if (claimed.replayed) return { status: 'in-progress' };
       return { status: 'claimed', claim_id: claimId };
     }
+    case 'authorize-cli-effect':
+      return authorizeCliEffect(projectRoot, payload);
     case 'exec-argv': {
       const runId = runIdFor(payload);
+      const root = runRoot(runId);
       const config = loadConfig(projectRoot, runId);
-      if (payload.operation_id !== runId || !payload.workspace_ref
-        || payload.workspace_ref.ref !== `${runId}-workspace`
-        || payload.repository.commit_sha !== config.commit_sha) fail('structured CLI request binding differs');
-      const workspace = recordRead(runRoot(runId), environmentResourceKey(payload.workspace_ref));
-      if (!workspace || typeof workspace.path !== 'string') fail('structured workspace is unavailable');
-      const result = directExec(payload.argv, workspace.path, payload.timeout_seconds);
-      recordImmutable(runRoot(runId), `testing-runner/target-effects/${sha256(stable(payload))}`, {
+      const envelope = payload.action_envelope;
+      const receipt = payload.authorization_receipt;
+      const request = activeStructuredRequest(root, runId);
+      const validReceipt = validCliEnvelope(envelope) && envelopeMatchesRequest(envelope, request, payload)
+        && exactKeys(receipt, [
+          'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
+          'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
+          'dedup_key', 'auth_tag',
+        ])
+        && exactKeys(receipt.evaluated_input_digests, [
+          'profile', 'validation_receipt', 'preauthorization', 'environment_receipt', 'plan', 'grant',
+        ])
+        && Object.values(receipt.evaluated_input_digests).every(validDigest)
+        && receipt.schema === 'testing-effect-authorization-receipt.v1'
+        && receipt.decision === 'allow' && receipt.reason_code === 'authorized'
+        && receipt.envelope_sha256 === sha256(stable(envelope))
+        && receipt.auth_tag === sha256(`${runId}\0${receipt.envelope_sha256}\0allow`)
+        && receipt.fence_id === envelope.fence_id && receipt.trace_id === envelope.trace_id
+        && receipt.dedup_key === envelope.dedup_key && receipt.expires_at === envelope.expires_at
+        && receipt.issued_at === '2026-07-22T00:20:00Z'
+        && Date.parse(receipt.expires_at) > Date.parse('2026-07-22T00:20:00Z');
+      const authorization = validReceipt
+        ? recordRead(root, structuredAuthorizationKey(receipt.receipt_id)) : null;
+      const grant = validReceipt ? artifactRead(projectRoot, envelope.grant_ref) : null;
+      const replay = grant && grant.value
+        ? recordRead(root, structuredReplayKey(grant.value.grant_id)) : null;
+      if (!validReceipt || !authorization || !grant || !grant.value || typeof grant.value !== 'object'
+        || stable(authorization.receipt) !== stable(receipt)
+        || authorization.grant_id !== grant.value.grant_id || authorization.fence_id !== envelope.fence_id
+        || grant.digest !== envelope.grant_sha256 || !replay || replay.status !== 'claimed'
+        || replay.claim_id !== envelope.fence_id) {
+        fail('durable structured CLI authorization receipt is unavailable');
+      }
+      if (envelope.operation_id !== runId || envelope.workspace_ref.ref !== `${runId}-workspace`
+        || envelope.repository.commit_sha !== config.commit_sha) fail('structured CLI request binding differs');
+      const workspace = workspaceResource(root, envelope.workspace_ref);
+      const ownership = verifyWorkspace(config, workspace);
+      if (ownership.owned !== true) fail(`structured workspace is not owned: ${ownership.reason}`);
+      const consumed = recordClaim(root, structuredConsumptionKey(grant.value.grant_id), {
+        binding: receipt, receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id,
+      });
+      if (!consumed.claimed || consumed.replayed) fail('durable structured CLI authorization receipt is replayed');
+      const result = directExec(envelope.case.argv, workspace.path, envelope.case.timeout_seconds,
+        envelope.resource_bounds.output_bytes);
+      const stored = recordImmutable(root, `testing-runner/target-effects/${sha256(stable(payload))}`, {
         binding: payload, result,
       });
+      if (!stored.written && !stored.replayed) fail('structured CLI target effect conflict');
       return result;
     }
     case 'http-request': {

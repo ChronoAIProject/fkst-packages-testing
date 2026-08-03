@@ -953,6 +953,7 @@ function M.initialize(context, durable_root)
     authorization_approval_ref = copy(context.authorization_context.approval_ref),
     completed_replay_failpoint = copy(context.completed_replay_failpoint),
     crash_barrier = copy(context.crash_barrier),
+    runtime_pep_denial = copy(context.runtime_pep_denial),
     request = copy(context.request),
   }
   local stored = records:immutable("generic-host/config", config)

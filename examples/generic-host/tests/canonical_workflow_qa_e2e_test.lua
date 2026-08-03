@@ -1,4 +1,5 @@
 local adapter = require("host_workflow_qa_adapter")
+local process = require("test_support.durable_workflow_qa_process")
 local support = require("test_support.canonical_workflow_qa")
 local t = fkst.test
 
@@ -85,9 +86,15 @@ return {
       pep_mutate_plan_binding = true,
     })
     local ok, err = pcall(function()
-      context:run_lifecycle()
-      t.is_true(context.terminal.status ~= "passed")
+      local supervisor = require("test_support.host_workflow_qa_supervisor")
+      local prepared = supervisor.prepare_phase(
+        context, context.project_root, "structured-execution-pending")
+      local outcome = prepared.structured.run(
+        prepared.pending_action.payload, context.structured_runtime)
+      t.eq(outcome.status, "blocked")
+      t.eq(outcome.error_count, 1)
       t.eq(#context.target_effects, 0)
+      t.eq(process.effect_count(context), 0)
       local receipt = context.store:load(
         context.request.structured_execution.artifact_root .. "/authorization/cli-version.json")
       t.eq(receipt.value.schema, "testing-effect-authorization-receipt.v1")

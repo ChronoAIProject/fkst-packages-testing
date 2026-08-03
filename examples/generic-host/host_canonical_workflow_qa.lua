@@ -603,6 +603,9 @@ function Context:framework_environment(label, arm_failpoint)
     and self.crash_barrier.name == arm_failpoint then
     environment.FKST_DURABLE_CRASH_BARRIER = self.crash_barrier.token
   end
+  if type(self.runtime_pep_denial) == "table" then
+    environment.FKST_GENERIC_HOST_FIXTURE_CLI_DENY_TOKEN = self.runtime_pep_denial.token
+  end
   return environment
 end
 
@@ -824,6 +827,16 @@ function M.new(options)
       token = sha256_bytes(run_id .. "\0" .. options.crash_barrier),
     }
   end
+  local runtime_pep_denial
+  if options.runtime_pep_deny_reason ~= nil then
+    if options.runtime_pep_deny_reason ~= "profile-policy-denied" then
+      error("canonical workflow runtime PEP deny reason is invalid")
+    end
+    runtime_pep_denial = {
+      reason_code = options.runtime_pep_deny_reason,
+      token = sha256_bytes(run_id .. "\0fixture-cli-effect-denial"),
+    }
+  end
   local catalog_cases = {
     {
       design_case_id = "service:reachability",
@@ -1008,6 +1021,7 @@ function M.new(options)
     effect_counter_path = effect_counter_path,
     completed_replay_failpoint = completed_replay_failpoint,
     crash_barrier = crash_barrier,
+    runtime_pep_denial = runtime_pep_denial,
     pep_mutate_plan_binding = options.pep_mutate_plan_binding == true,
   }, Context)
   context.environment_runtime = context:_environment_runtime()
