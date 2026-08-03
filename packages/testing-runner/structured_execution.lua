@@ -2,6 +2,7 @@ local M = {}
 local browser_readiness_contract = require("contract.browser_readiness")
 local environment_contract = require("contract.environment_factory")
 local execution_contract = require("contract.structured_execution")
+local project_profile_contract = require("contract.project_profile")
 local testing_contract = require("contract.testing")
 local local_runtime = require("testing_runtime.structured_execution")
 
@@ -43,6 +44,13 @@ end
 local request_fields = {
   schema = true,
   repository = true,
+  project_profile_ref = true,
+  project_profile_artifact_sha256 = true,
+  profile_sha256 = true,
+  validation_receipt_ref = true,
+  validation_receipt_sha256 = true,
+  preauthorization_ref = true,
+  preauthorization_sha256 = true,
   environment_receipt_ref = true,
   environment_receipt_sha256 = true,
   browser_readiness_ref = true,
@@ -62,7 +70,7 @@ function M.validate_request(value)
   for key, _ in pairs(value) do
     if request_fields[key] ~= true then error("testing-runner: structured-execution: unsupported request field " .. tostring(key)) end
   end
-  if value.schema ~= "testing-runner.structured-execution.request.v2" then
+  if value.schema ~= "testing-runner.structured-execution.request.v3" then
     error("testing-runner: structured-execution: unknown request schema")
   end
   local repository = value.repository
@@ -72,10 +80,10 @@ function M.validate_request(value)
     or repository.commit_sha:match("^[0-9a-f]+$") == nil then
     error("testing-runner: structured-execution: immutable repository identity is required")
   end
-  for _, field in ipairs({ "environment_receipt_ref", "browser_readiness_ref", "test_plan_ref", "execution_grant_ref", "artifact_root" }) do
+  for _, field in ipairs({ "project_profile_ref", "validation_receipt_ref", "preauthorization_ref", "environment_receipt_ref", "browser_readiness_ref", "test_plan_ref", "execution_grant_ref", "artifact_root" }) do
     if not safe_pointer(value[field]) then error("testing-runner: structured-execution: unsafe pointer " .. field) end
   end
-  for _, field in ipairs({ "environment_receipt_sha256", "browser_readiness_sha256", "test_plan_sha256", "execution_grant_sha256" }) do
+  for _, field in ipairs({ "project_profile_artifact_sha256", "profile_sha256", "validation_receipt_sha256", "preauthorization_sha256", "environment_receipt_sha256", "browser_readiness_sha256", "test_plan_sha256", "execution_grant_sha256" }) do
     if not sha256(value[field]) then error("testing-runner: structured-execution: invalid digest " .. field) end
   end
   if not bounded(value.trace_id, 180) or not bounded(value.dedup_key, 180) then
@@ -102,7 +110,7 @@ local function blocked(message)
 end
 
 local required_ports = {
-  "load_artifact", "now", "verify_grant", "replay_guard", "exec_argv", "http_request",
+  "load_artifact", "now", "verify_grant", "replay_guard", "authorize_cli_effect", "exec_argv", "http_request",
   "write_artifact", "load_result", "complete_replay",
 }
 
@@ -214,9 +222,56 @@ local function execute_case(case, grant, ports, context)
     if not argv_allowed(case.argv, grant.cli_capabilities) then
       error("testing-runner: structured-execution: unauthorized cli capability")
     end
-    effect.workspace_ref = copy(context.environment.workspace_ref)
-    effect.argv = copy_list(case.argv)
-    ok, response = pcall(ports.exec_argv, effect)
+    local envelope = {
+      schema = execution_contract.schemas.cli_action_envelope,
+      effect_kind = "cli", capability = "direct-argv",
+      profile_ref = context.request.project_profile_ref,
+      profile_artifact_sha256 = context.profile.digest,
+      profile_sha256 = context.request.profile_sha256,
+      validation_receipt_ref = context.request.validation_receipt_ref,
+      validation_receipt_sha256 = context.validation.digest,
+      preauthorization_ref = context.request.preauthorization_ref,
+      preauthorization_sha256 = context.preauthorization.digest,
+      repository = copy(context.request.repository),
+      run_id = context.request.source_ref.ref, operation_id = context.environment.operation_id,
+      environment_receipt_ref = context.request.environment_receipt_ref,
+      environment_receipt_sha256 = context.environment_digest,
+      workspace_ref = copy(context.environment.workspace_ref),
+      plan_ref = context.request.test_plan_ref, plan_sha256 = context.plan.digest,
+      grant_ref = context.request.execution_grant_ref, grant_sha256 = context.grant.digest,
+      case = copy(case),
+      resource_bounds = { output_bytes = context.profile.value.resource_budgets.output_bytes },
+      attempt = 1, trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
+      expires_at = grant.expires_at, fence_id = context.claim.claim_id,
+    }
+    execution_contract.validate_cli_action_envelope(envelope)
+    local receipt = ports.authorize_cli_effect({
+      action_envelope = envelope, artifact_root = context.request.artifact_root,
+      operation_id = context.environment.operation_id,
+      trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
+    })
+    local receipt_ok = pcall(execution_contract.validate_effect_authorization_receipt,
+      receipt, envelope, context.now)
+    local authorization_path = context.request.artifact_root
+      .. "/authorization/" .. case.case_id .. ".json"
+    if not receipt_ok or ports.write_artifact(authorization_path, receipt) ~= true then
+      error("testing-runner: structured-execution: malformed CLI authorization receipt")
+    end
+    if receipt.decision ~= "allow" then
+      return {
+        case_id = case.case_id, kind = case.kind, status = "error",
+        classification = "harness-tooling-issue", assertions = {},
+        evidence = {
+          authorization_receipt_path = authorization_path,
+          authorization_reason = receipt.reason_code,
+        },
+      }
+    end
+    ok, response = pcall(ports.exec_argv, {
+      action_envelope = envelope,
+      authorization_receipt = receipt,
+      artifact_root = context.request.artifact_root,
+    })
   else
     if not http_allowed(case.request, grant.http_capabilities, context.environment.base_url) then
       error("testing-runner: structured-execution: unauthorized http capability")
@@ -247,6 +302,8 @@ local function execute_case(case, grant, ports, context)
           exit_code = tonumber(response.exit_code) or -1,
           stdout_excerpt = tostring(response.stdout or ""):sub(1, 600),
           stderr_excerpt = tostring(response.stderr or ""):sub(1, 600),
+          authorization_receipt_path = context.request.artifact_root
+            .. "/authorization/" .. case.case_id .. ".json",
         } or {
           status_code = tonumber(response.status) or 0,
           body_excerpt = tostring(response.body or ""):sub(1, 600),
@@ -284,13 +341,26 @@ end
 function M.run(request, ports)
   local ok, result = pcall(function()
     M.validate_request(request)
+    local profile = load_bound(ports, request.project_profile_ref, request.project_profile_artifact_sha256, "project profile")
+    local validation = load_bound(ports, request.validation_receipt_ref, request.validation_receipt_sha256, "validation receipt")
+    local preauthorization = load_bound(ports, request.preauthorization_ref, request.preauthorization_sha256, "preauthorization")
     local environment = load_bound(ports, request.environment_receipt_ref, request.environment_receipt_sha256, "environment receipt")
     local readiness = load_bound(ports, request.browser_readiness_ref, request.browser_readiness_sha256, "browser readiness")
     local plan = load_bound(ports, request.test_plan_ref, request.test_plan_sha256, "test plan")
     local grant = load_bound(ports, request.execution_grant_ref, request.execution_grant_sha256, "execution grant")
 
+    local profile_ok = pcall(project_profile_contract.validate_profile, profile.value)
+    local validation_ok = pcall(project_profile_contract.validate_validation_receipt, validation.value)
+    local preauthorization_ok = pcall(execution_contract.validate_preauthorization, preauthorization.value)
     local environment_ok = pcall(environment_contract.validate_receipt, environment.value)
-    if not environment_ok or environment.value.status ~= "ready"
+    if not profile_ok or not validation_ok or not preauthorization_ok
+      or validation.value.profile_sha256 ~= request.profile_sha256
+      or preauthorization.value.profile_sha256 ~= request.profile_sha256
+      or validation.value.repository.url ~= request.repository.url
+      or validation.value.repository.commit_sha ~= request.repository.commit_sha
+      or preauthorization.value.repository.url ~= request.repository.url
+      or preauthorization.value.repository.commit_sha ~= request.repository.commit_sha
+      or not environment_ok or environment.value.status ~= "ready"
       or not same_repository(environment.value.repository, request.repository)
       or type(environment.value.browser_readiness) ~= "table"
       or environment.value.browser_readiness.status ~= "ready"
@@ -325,6 +395,7 @@ function M.run(request, ports)
     })
     local grant_ok = pcall(execution_contract.validate_grant, grant.value, now)
     if not grant_ok or grant.value.plan_sha256 ~= request.test_plan_sha256
+      or grant.value.parent_authorization_sha256 ~= preauthorization.digest
       or grant.value.environment_receipt_sha256 ~= request.environment_receipt_sha256
       or not same_repository(grant.value.repository, request.repository)
       or not http_capabilities_bound(grant.value.http_capabilities, environment.value.base_url)
@@ -380,8 +451,15 @@ function M.run(request, ports)
     local case_results = {}
     local execution_context = {
       request = request,
+      profile = profile,
+      validation = validation,
+      preauthorization = preauthorization,
       environment = environment.value,
       environment_digest = environment.digest,
+      plan = plan,
+      grant = grant,
+      claim = claim,
+      now = now,
     }
     for _, case in ipairs(plan.value.cases) do
       local case_result = execute_case(case, grant.value, ports, execution_context)

@@ -15,6 +15,7 @@ return {
         now = function() return "2026-07-20T00:30:00Z" end,
         verify_grant = function() return fixtures.attestation() end,
         replay_guard = function() return { status = "claimed", claim_id = "claim-110" } end,
+        authorize_cli_effect = function(input) return fixtures.authorization_receipt(input.action_envelope) end,
         exec_argv = function() return { exit_code = 0, stdout = "fixture 1.0", stderr = "" } end,
         http_request = function() error("unexpected HTTP request") end,
         write_artifact = function(path, value) writes[path] = value return true end,

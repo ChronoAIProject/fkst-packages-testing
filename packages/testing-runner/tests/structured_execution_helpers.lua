@@ -7,6 +7,9 @@ M.digest_grant = string.rep("c", 64)
 M.digest_catalog = string.rep("d", 64)
 M.digest_module_plan = string.rep("e", 64)
 M.digest_authorization = string.rep("f", 64)
+M.digest_profile = string.rep("9", 64)
+M.digest_profile_artifact = string.rep("3", 64)
+M.digest_validation = string.rep("7", 64)
 M.repository = {
   url = "https://example.invalid/repository.git",
   commit_sha = string.rep("1", 40),
@@ -14,6 +17,63 @@ M.repository = {
 
 local function copy(value)
   if type(value) ~= "table" then return value end
+
+function M.profile(request)
+  return {
+    schema = "testing-project-profile.v1", revision = "profile-v1",
+    repository = copy(request.repository), working_directory = ".",
+    commands = { install = { "fixture", "install" }, build = { "fixture", "build" },
+      start = { "fixture", "start" }, cleanup = { "fixture", "cleanup" } },
+    application_listener_mode = "fkst-inherited-listeners-v1",
+    readiness_checks = { { type = "http", url = "http://127.0.0.1:4173/health", expected_status = 200 } },
+    allowed_origins = { "http://127.0.0.1:4173" }, mutation_policy = { mode = "read-only" },
+    timeouts = { install_seconds = 10, build_seconds = 10, migrate_seconds = 10,
+      seed_seconds = 10, start_seconds = 10, readiness_seconds = 10,
+      cleanup_seconds = 10, total_seconds = 60, receipt_ttl_seconds = 60 },
+    resource_budgets = { cpu_millis = 1000, memory_mb = 256, disk_mb = 128,
+      processes = 4, network_requests = 16, output_bytes = 32768 },
+  }
+end
+
+function M.validation_receipt(request)
+  return {
+    schema = "testing-project-profile-validation-receipt.v1",
+    profile_schema = "testing-project-profile.v1", profile_revision = "profile-v1",
+    canonicalization = "fkst-project-profile-canonical-json.v1", profile_sha256 = M.digest_profile,
+    repository = copy(request.repository), approval_ref = { kind = "approval", ref = "fixture" },
+    approval_id = "approval-110", approval_sha256 = string.rep("6", 64),
+    authority = { kind = "policy", ref = "testing-authority" }, policy_revision = "policy-v1",
+    evidence_ref = { kind = "attestation", ref = "validation-110" },
+    issued_at = "2026-07-20T00:00:00Z", trace_id = request.trace_id, dedup_key = request.dedup_key,
+  }
+end
+
+function M.preauthorization(request)
+  return {
+    schema = "testing-structured-execution-authorization.v1", authorization_id = "authorization-110",
+    repository = copy(request.repository), profile_sha256 = M.digest_profile,
+    case_catalog_sha256 = M.digest_catalog,
+    capabilities = { cli = { { argv_prefix = { "fixture-cli" } } }, http = {} },
+    authority = { kind = "policy", ref = "testing-authority" }, policy_revision = "policy-v1",
+    evidence_ref = { kind = "attestation", ref = "authorization-110" },
+    issued_at = "2026-07-20T00:00:00Z", expires_at = "2026-07-20T01:00:00Z",
+    max_uses = 1, trace_id = request.trace_id, dedup_key = request.dedup_key,
+  }
+end
+
+function M.authorization_receipt(envelope, decision, reason)
+  return {
+    schema = "testing-effect-authorization-receipt.v1", decision = decision or "allow",
+    reason_code = reason or "authorized", receipt_id = "receipt-110",
+    envelope_sha256 = string.rep("5", 64),
+    evaluated_input_digests = { profile = M.digest_profile, validation_receipt = M.digest_validation,
+      preauthorization = M.digest_authorization, environment_receipt = M.digest_environment,
+      plan = M.digest_plan, grant = M.digest_grant },
+    issued_at = "2026-07-20T00:29:00Z", expires_at = envelope.expires_at,
+    fence_id = envelope.fence_id, trace_id = envelope.trace_id, dedup_key = envelope.dedup_key,
+    auth_tag = string.rep("4", 64),
+  }
+end
   local out = {}
   for key, item in pairs(value) do out[copy(key)] = copy(item) end
   return out
@@ -24,8 +84,15 @@ function M.request(root, run_id)
   root = root or ".testing/runs/structured"
   run_id = run_id or "run-110"
   local value = {
-    schema = "testing-runner.structured-execution.request.v2",
+    schema = "testing-runner.structured-execution.request.v3",
     repository = copy(M.repository),
+    project_profile_ref = root .. "/authorization/profile.json",
+    project_profile_artifact_sha256 = M.digest_profile_artifact,
+    profile_sha256 = M.digest_profile,
+    validation_receipt_ref = root .. "/authorization/profile-validation.json",
+    validation_receipt_sha256 = M.digest_validation,
+    preauthorization_ref = root .. "/authorization/preauthorization.json",
+    preauthorization_sha256 = M.digest_authorization,
     environment_receipt_ref = root .. "/environment/environment-receipt-ready.json",
     environment_receipt_sha256 = M.digest_environment,
     browser_readiness_ref = root .. "/browser-readiness.json",
@@ -157,6 +224,9 @@ end
 
 function M.artifacts(request, plan, grant)
   return {
+    [request.project_profile_ref] = { raw = "profile", digest = request.project_profile_artifact_sha256, value = M.profile(request) },
+    [request.validation_receipt_ref] = { raw = "validation", digest = request.validation_receipt_sha256, value = M.validation_receipt(request) },
+    [request.preauthorization_ref] = { raw = "preauthorization", digest = request.preauthorization_sha256, value = M.preauthorization(request) },
     [request.environment_receipt_ref] = {
       raw = "environment",
       digest = request.environment_receipt_sha256,

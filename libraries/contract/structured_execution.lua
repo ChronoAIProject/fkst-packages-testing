@@ -12,6 +12,8 @@ M.schemas = {
   plan_result = "testing-runner.structured-plan.result.v1",
   grant_request = "workflow-qa.execution-grant.request.v1",
   grant_result = "workflow-qa.execution-grant.result.v1",
+  cli_action_envelope = "testing-cli-action-envelope.v1",
+  effect_authorization_receipt = "testing-effect-authorization-receipt.v1",
 }
 
 local max_cases = 64
@@ -358,6 +360,86 @@ function M.validate_grant(value, now)
   validate_window(value, now, "grant")
   return value
 end
+
+function M.validate_cli_action_envelope(value)
+  only_fields(value, {
+    schema = true, effect_kind = true, capability = true, profile_ref = true,
+    profile_artifact_sha256 = true, profile_sha256 = true, validation_receipt_ref = true, validation_receipt_sha256 = true,
+    preauthorization_ref = true, preauthorization_sha256 = true, repository = true,
+    run_id = true, operation_id = true, environment_receipt_ref = true,
+    environment_receipt_sha256 = true, workspace_ref = true, plan_ref = true,
+    plan_sha256 = true, grant_ref = true, grant_sha256 = true, case = true,
+    resource_bounds = true, attempt = true, trace_id = true, dedup_key = true,
+    expires_at = true, fence_id = true,
+  }, "cli-action-envelope")
+  if value.schema ~= M.schemas.cli_action_envelope then fail("unknown-schema", "CLI action envelope schema") end
+  if value.effect_kind ~= "cli" or value.capability ~= "direct-argv" then
+    fail("unsupported-effect", "only the direct-argv CLI effect is supported")
+  end
+  for _, field in ipairs({ "profile_ref", "validation_receipt_ref", "preauthorization_ref", "environment_receipt_ref", "plan_ref", "grant_ref" }) do
+    pointer(value[field], field)
+  end
+  for _, field in ipairs({ "profile_artifact_sha256", "profile_sha256", "validation_receipt_sha256", "preauthorization_sha256", "environment_receipt_sha256", "plan_sha256", "grant_sha256" }) do
+    digest(value[field], field)
+  end
+  validate_repository(value.repository, "action-repository")
+  validate_ref(value.workspace_ref, "workspace-ref")
+  if value.workspace_ref.kind ~= "workspace" or not bounded(value.run_id, 180)
+    or not bounded(value.operation_id, 180) or value.run_id ~= value.operation_id
+    or value.attempt ~= 1 or not bounded(value.trace_id, 180) or not bounded(value.dedup_key, 180)
+    or not bounded(value.fence_id, 180) or time.iso_timestamp_epoch_seconds(value.expires_at) == nil then
+    fail("malformed-envelope", "CLI action identity, expiry, attempt, or fence is invalid")
+  end
+  validate_case(value.case, {}, false)
+  if value.case.kind ~= "cli" or value.case.skip_reason ~= nil then
+    fail("unsupported-effect", "the action envelope must contain one executable CLI case")
+  end
+  only_fields(value.resource_bounds, { output_bytes = true }, "resource-bounds")
+  if type(value.resource_bounds.output_bytes) ~= "number"
+    or value.resource_bounds.output_bytes ~= math.floor(value.resource_bounds.output_bytes)
+    or value.resource_bounds.output_bytes < 1024 or value.resource_bounds.output_bytes > 1048576 then
+    fail("unbounded-value", "output_bytes must be from 1024 to 1048576")
+  end
+  return value
+end
+
+function M.validate_effect_authorization_receipt(value, envelope, now)
+  only_fields(value, {
+    schema = true, decision = true, reason_code = true, receipt_id = true,
+    envelope_sha256 = true, evaluated_input_digests = true, issued_at = true,
+    expires_at = true, fence_id = true, trace_id = true, dedup_key = true, auth_tag = true,
+  }, "effect-authorization-receipt")
+  if value.schema ~= M.schemas.effect_authorization_receipt
+    or (value.decision ~= "allow" and value.decision ~= "deny")
+    or not bounded(value.reason_code, 80) or not bounded(value.receipt_id, 180)
+    or not bounded(value.fence_id, 180) or not bounded(value.trace_id, 180)
+    or not bounded(value.dedup_key, 180) then
+    fail("malformed-receipt", "authorization receipt identity or decision is invalid")
+  end
+  digest(value.envelope_sha256, "envelope_sha256")
+  digest(value.auth_tag, "auth_tag")
+  only_fields(value.evaluated_input_digests, {
+    profile = true, validation_receipt = true, preauthorization = true,
+    environment_receipt = true, plan = true, grant = true,
+  }, "evaluated-input-digests")
+  for field, item in pairs(value.evaluated_input_digests) do digest(item, field) end
+  local issued = time.iso_timestamp_epoch_seconds(value.issued_at)
+  local expires = time.iso_timestamp_epoch_seconds(value.expires_at)
+  if issued == nil or expires == nil or expires <= issued then fail("malformed-receipt", "receipt validity window is invalid") end
+  if now ~= nil then
+    local current = time.iso_timestamp_epoch_seconds(now)
+    if current == nil or current < issued or current >= expires then fail("stale-receipt", "authorization receipt is expired") end
+  end
+  if envelope ~= nil then
+    M.validate_cli_action_envelope(envelope)
+    if value.fence_id ~= envelope.fence_id or value.trace_id ~= envelope.trace_id
+      or value.dedup_key ~= envelope.dedup_key or value.expires_at ~= envelope.expires_at then
+      fail("foreign-receipt", "authorization receipt differs from the action envelope")
+    end
+  end
+  return value
+end
+
 
 local function cli_allowed(argv, capabilities)
   for _, capability in ipairs(capabilities or {}) do

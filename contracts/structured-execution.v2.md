@@ -29,14 +29,14 @@ For `agentic-browser`, the signer publishes the separate browser grant documente
 
 ## Fixed API/CLI executor
 
-`testing-runner.structured_execution_request` accepts `testing-runner.structured-execution.request.v2`. The request is pointer-only and binds one immutable repository commit, ready Environment Factory receipt-v2, plan-v2, single-use structured grant, artifact root, source reference, trace ID, and dedup key.
+`testing-runner.structured_execution_request` accepts `testing-runner.structured-execution.request.v3`. The request is pointer-only and binds the validated Project Profile, profile validation receipt, preauthorization, one immutable repository commit, ready Environment Factory receipt-v2, plan-v2, single-use structured grant, artifact root, source reference, trace ID, and dedup key.
 
 The fixed executor accepts only `execution_mode = "structured-api-cli"` and supports:
 
 - `cli`: bounded direct argv, timeout, and `exit-code` assertions;
 - `http`: explicit method, credential-free query-free URL, empty inline headers, timeout, and `status-code` or `body-contains` assertions.
 
-Shell executables are unsupported. HTTP requests and CLI argv must match the positive capabilities in the authenticated grant. Every CLI effect is a typed request derived from the ready receipt and binds the Environment Factory `operation_id`, opaque `workspace_ref`, immutable repository, environment digest, timeout, trace ID, and dedup key. Every HTTP effect binds the same operation and the exact loopback origin of the ready receipt `base_url`; redirects, proxy routing, non-loopback origins, and origins outside the grant are rejected.
+Shell executables are unsupported. HTTP requests and CLI argv must match the positive capabilities in the authenticated grant. Every CLI effect is a closed `testing-cli-action-envelope.v1` derived from persisted authority artifacts. The Host-owned Local PEP reloads those artifacts immediately before execution and issues a bounded `testing-effect-authorization-receipt.v1`. The physical `exec-argv` gateway authenticates and atomically consumes that single-use receipt before executing direct argv. Every HTTP effect binds the same operation and the exact loopback origin of the ready receipt `base_url`; redirects, proxy routing, non-loopback origins, and origins outside the grant are rejected.
 
 The reference runtime executes direct argv in the approved working directory of the exact-commit disposable local checkout and rejects tracked-file changes before a test effect; untracked install/build outputs remain allowed. It never falls back to the Host process current directory. The host verifier returns an attestation bound to the grant digest, authority, policy revision, and evidence reference. An atomic replay guard grants execution to exactly one caller before the first target effect; concurrent redelivery observes `in-progress` and performs no effects. Completion validates the bound execution artifact and stores its digest. Completed claims return that exact result pointer and digest and perform no effects or effective writes.
 

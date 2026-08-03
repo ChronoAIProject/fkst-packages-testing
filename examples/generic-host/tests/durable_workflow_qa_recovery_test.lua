@@ -66,6 +66,8 @@ local function run_to_barrier(context, live_pids, label)
   t.eq(barrier.result_sha256, recovered.store:digest(barrier.result_ref))
   t.eq(barrier.replay_status, "completed")
   t.eq(effect_count(context), 1)
+  t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
+  t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
   t.eq(recovered:terminal_record(), nil)
   local ownership = recovered:_fixture_effect("fixture-resource-status", {
     run_id = context.run_id,
@@ -100,6 +102,8 @@ local function assert_terminal(context)
   t.eq(#durable.list_pending(context.project_root, context.durable_root, 10), 0)
   t.eq(effect_count(context), 1)
   t.eq(#recovered.records:list("testing-runner/target-effects"), 1)
+  t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
+  t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
   local recovery = recovered.records:read("generic-host/recovery/execution")
   if context.completed_replay_failpoint ~= nil then t.eq(recovery.replayed, true) else t.eq(recovery, nil) end
 
@@ -250,6 +254,69 @@ return {
       stop_live(pid, live_pids)
       local recovered = assert_terminal(context)
       t.eq(recovered.records:read("generic-host/barriers/post-replay-complete"), nil)
+    end)
+  end,
+
+  test_durable_workflow_qa_production_pep_denial_reaches_blocked_terminal_without_cli_effect = function()
+    with_context({
+      cli_only = true,
+      count_effect = true,
+      durable = true,
+      runtime_pep_deny_reason = "profile-policy-denied",
+    }, function(context, live_pids)
+      local pid, stdout_path, stderr_path = start_supervisor(
+        context, "production-pep-denial", false, live_pids)
+      if not wait_for_terminal(context) then
+        error("generic-host recovery test: production PEP denial did not reach terminal "
+          .. state_diagnostic(context) .. "\nstdout=" .. tostring(read_file(stdout_path))
+          .. "\nstderr=" .. tostring(read_file(stderr_path)))
+      end
+      stop_live(pid, live_pids)
+      local recovered = durable.load(context.project_root, context.durable_root, context.run_id)
+      local state = recovered.workflow_runtime.load_state(recovered.request.state_ref)
+      t.eq(state.phase, "terminal")
+      t.eq(#durable.list_pending(context.project_root, context.durable_root, 10), 0)
+      local terminal = recovered:terminal_record()
+      t.eq(terminal.status, "blocked")
+      t.eq(terminal.counts.executed, 0)
+      t.eq(terminal.counts.blocked, 1)
+      local authorization = recovered.store:load(
+        context.request.structured_execution.artifact_root .. "/authorization/cli-version.json")
+      t.eq(authorization.value.schema, "testing-effect-authorization-receipt.v1")
+      t.eq(authorization.value.decision, "deny")
+      t.eq(authorization.value.reason_code, "profile-policy-denied")
+      t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 0)
+      t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 0)
+      t.eq(#recovered.records:list("testing-runner/target-effects"), 0)
+      t.eq(effect_count(context), 0)
+      local cleanup = recovered.store:load(terminal.cleanup_receipt_ref).value
+      t.eq(cleanup.status, "complete")
+      t.eq(#cleanup.remaining_resources, 0)
+      local publication = recovered.store:load(terminal.aggregate_publication_receipt_ref).value
+      t.eq(publication.status, "published")
+      t.eq(publication.stage, "aggregate-report")
+      assert_log_markers(stdout_path, "production PEP denial supervisor", {
+        "dept=generic-host.workflow_qa_supervisor ",
+        "dept=testing-runner.run_structured_execution ",
+        "dept=generic-host.workflow_qa_terminal ",
+      })
+      local before = record_counts(recovered)
+      t.eq(before.replay_claims, 1)
+      t.eq(before.target_effects, 0)
+      t.eq(before.terminal_records, 1)
+
+      local noop_pid, noop_stdout, noop_stderr = start_supervisor(
+        context, "production-pep-denial-noop", false, live_pids)
+      if not wait_for_noop(context, "production-pep-denial-noop") then
+        error("generic-host recovery test: blocked terminal restart was not a no-op\nstdout="
+          .. tostring(read_file(noop_stdout)) .. "\nstderr=" .. tostring(read_file(noop_stderr)))
+      end
+      stop_live(noop_pid, live_pids)
+      local after = durable.load(context.project_root, context.durable_root, context.run_id)
+      assert_counts_equal(before, record_counts(after))
+      t.eq(#after.records:list("testing-runner/cli-effect-authorizations"), 0)
+      t.eq(#after.records:list("testing-runner/cli-effect-consumptions"), 0)
+      t.eq(effect_count(context), 0)
     end)
   end,
 
