@@ -102,6 +102,35 @@ function linuxListenerRows() {
   return rows;
 }
 
+function linuxIpv4Address(hex) {
+  const value = String(hex || '').toUpperCase();
+  if (value.length !== 8) return null;
+  const bytes = value.match(/../g).reverse().map((item) => Number.parseInt(item, 16));
+  if (bytes.some((item) => !Number.isInteger(item))) return null;
+  return bytes.join('.');
+}
+
+function linuxEstablishedRows() {
+  let body;
+  try { body = fs.readFileSync('/proc/net/tcp', 'utf8'); } catch (_error) { return null; }
+  const rows = [];
+  for (const line of body.split('\n').slice(1)) {
+    const fields = line.trim().split(/\s+/);
+    if (fields.length < 10 || fields[3] !== '01') continue;
+    const local = fields[1].split(':');
+    const remote = fields[2].split(':');
+    const localAddress = linuxIpv4Address(local[0]);
+    const remoteAddress = linuxIpv4Address(remote[0]);
+    const localPort = Number.parseInt(local[1], 16);
+    const remotePort = Number.parseInt(remote[1], 16);
+    if (!localAddress || !remoteAddress || !Number.isInteger(localPort) || !Number.isInteger(remotePort)) continue;
+    rows.push({
+      inode: fields[9], localAddress, localPort, remoteAddress, remotePort,
+    });
+  }
+  return rows;
+}
+
 function socketOwnersForPids(inodes, pids) {
   const wanted = new Set(inodes);
   const owners = new Map([...wanted].map((inode) => [inode, new Set()]));
@@ -198,6 +227,80 @@ function listenerOwners(port) {
     if (listener.port === port) for (const pid of listener.pids) pids.add(pid);
   }
   return { supported: true, pids: [...pids] };
+}
+
+function parseEstablishedLsofName(value) {
+  const text = String(value || '').replace(/\s+\(ESTABLISHED\)$/, '');
+  const match = text.match(/^127\.0\.0\.1:(\d+)->127\.0\.0\.1:(\d+)$/);
+  if (!match) return null;
+  return { localPort: Number(match[1]), remotePort: Number(match[2]) };
+}
+
+function lsofEstablishedRows() {
+  const candidates = process.platform === 'darwin' ? ['/usr/sbin/lsof', 'lsof'] : ['lsof'];
+  for (const command of candidates) {
+    const result = directCommand([
+      command, '-nP', '-iTCP', '-sTCP:ESTABLISHED', '-Fpn',
+    ], { timeoutMs: 1_000, outputBytes: 4 * 1024 * 1024 });
+    if (result.error && result.error.code === 'ENOENT') continue;
+    if (result.error) return null;
+    if (result.status !== 0 && String(result.stdout || '').trim() === '') return [];
+    if (result.status !== 0) return null;
+    const rows = [];
+    let pid = null;
+    for (const line of String(result.stdout || '').split('\n')) {
+      if (/^p\d+$/.test(line)) pid = Number(line.slice(1));
+      if (line.startsWith('n')) {
+        const parsed = parseEstablishedLsofName(line.slice(1));
+        if (parsed && Number.isInteger(pid)) rows.push({ ...parsed, pid });
+      }
+    }
+    return rows;
+  }
+  return null;
+}
+
+function connectionOwnedByProcessGroup(socket, pgid) {
+  const localAddress = socket && socket.localAddress;
+  const remoteAddress = socket && socket.remoteAddress;
+  const localPort = Number(socket && socket.localPort);
+  const remotePort = Number(socket && socket.remotePort);
+  if (localAddress !== '127.0.0.1' || remoteAddress !== '127.0.0.1'
+    || !Number.isInteger(localPort) || !Number.isInteger(remotePort)
+    || !Number.isInteger(pgid) || pgid < 1) {
+    return { supported: true, owned: false, reason: 'connection-tuple-invalid', pids: [] };
+  }
+  const processes = processTable();
+  if (!processes) return { supported: false, owned: false, reason: 'process-table-unavailable', pids: [] };
+  let pids;
+  if (process.platform === 'linux') {
+    const rows = linuxEstablishedRows();
+    if (rows === null) {
+      return { supported: false, owned: false, reason: 'connection-inspection-unavailable', pids: [] };
+    }
+    const matches = rows.filter((row) => row.localAddress === remoteAddress
+      && row.localPort === remotePort && row.remoteAddress === localAddress
+      && row.remotePort === localPort);
+    const owners = socketOwnersForPids(matches.map((row) => row.inode), processes.map((row) => row.pid));
+    pids = [...new Set(matches.flatMap((row) => [...(owners.get(row.inode) || [])]))];
+  } else if (process.platform === 'darwin') {
+    const rows = lsofEstablishedRows();
+    if (rows === null) {
+      return { supported: false, owned: false, reason: 'connection-inspection-unavailable', pids: [] };
+    }
+    pids = [...new Set(rows.filter((row) => row.localPort === remotePort
+      && row.remotePort === localPort).map((row) => row.pid))];
+  } else {
+    return { supported: false, owned: false, reason: 'connection-inspection-unsupported', pids: [] };
+  }
+  if (pids.length === 0) {
+    return { supported: true, owned: false, reason: 'connection-not-visible', pids: [] };
+  }
+  const groups = new Map(processes.map((row) => [row.pid, row.pgid]));
+  if (pids.some((pid) => groups.get(pid) !== pgid)) {
+    return { supported: true, owned: false, reason: 'foreign-connection', pids };
+  }
+  return { supported: true, owned: true, pids };
 }
 
 function listenersOwnedByProcessGroup(ports, pgid) {
@@ -306,6 +409,7 @@ function directoryBytes(directory) {
 }
 
 module.exports = {
+  connectionOwnedByProcessGroup,
   directoryBytes,
   listenerOwners,
   listenersOwnedByProcessGroup,

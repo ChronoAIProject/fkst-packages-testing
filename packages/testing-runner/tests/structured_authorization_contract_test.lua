@@ -82,6 +82,79 @@ return {
     local receipt = fixtures.authorization_receipt(envelope)
     t.eq(contract.validate_effect_authorization_receipt(receipt, envelope,
       "2026-07-20T00:30:00Z"), receipt)
+
+    local http_envelope = {
+      schema = contract.schemas.action_envelope, effect_kind = "http",
+      capability = "direct-loopback-http",
+      profile_ref = request.project_profile_ref,
+      profile_artifact_sha256 = request.project_profile_artifact_sha256,
+      profile_sha256 = request.profile_sha256,
+      validation_receipt_ref = request.validation_receipt_ref,
+      validation_receipt_sha256 = request.validation_receipt_sha256,
+      preauthorization_ref = request.preauthorization_ref,
+      preauthorization_sha256 = request.preauthorization_sha256,
+      repository = fixtures.copy(request.repository), run_id = request.source_ref.ref,
+      operation_id = request.source_ref.ref,
+      environment_receipt_ref = request.environment_receipt_ref,
+      environment_receipt_sha256 = request.environment_receipt_sha256,
+      workspace_ref = { kind = "workspace", ref = "run-110-workspace" },
+      ready_origin = "http://127.0.0.1:4173",
+      plan_ref = request.test_plan_ref, plan_sha256 = request.test_plan_sha256,
+      grant_ref = request.execution_grant_ref, grant_sha256 = request.execution_grant_sha256,
+      effect = {
+        kind = "http", case_id = "api-probe", origin = "http://127.0.0.1:4173",
+        host = "127.0.0.1", port = 4173, method = "POST", path = "/api/probe", headers = {},
+        redirect_mode = "error", proxy_mode = "disabled", address_mode = "numeric-loopback",
+        timeout_seconds = 10,
+        assertions = { { type = "status-code", expected = 200 } },
+      },
+      resource_bounds = { output_bytes = 32768, network_requests = 1 }, attempt = 1,
+      trace_id = request.trace_id, dedup_key = request.dedup_key,
+      expires_at = "2026-07-20T01:00:00Z", fence_id = "claim-110",
+    }
+    t.eq(contract.validate_action_envelope(http_envelope), http_envelope)
+    receipt = fixtures.authorization_receipt(http_envelope)
+    t.eq(contract.validate_effect_authorization_receipt(receipt, http_envelope,
+      "2026-07-20T00:30:00Z"), receipt)
+
+    local canonical_cli = fixtures.copy(http_envelope)
+    local cli_case = fixtures.plan(request).cases[1]
+    canonical_cli.effect_kind = "cli"
+    canonical_cli.capability = "direct-argv"
+    canonical_cli.effect = {
+      kind = "cli", case_id = cli_case.case_id, argv = fixtures.copy(cli_case.argv),
+      timeout_seconds = cli_case.timeout_seconds, assertions = fixtures.copy(cli_case.assertions),
+    }
+    canonical_cli.resource_bounds = { output_bytes = 32768 }
+    canonical_cli.ready_origin = "http://localhost:4173"
+    t.eq(contract.validate_action_envelope(canonical_cli), canonical_cli)
+    canonical_cli.ready_origin = "http://[::1]:4173"
+    t.eq(contract.validate_action_envelope(canonical_cli), canonical_cli)
+
+    for _, mutate_http in ipairs({
+      function(value) value.effect.method = "TRACE" end,
+      function(value) value.ready_origin = "http://localhost:4173" end,
+      function(value) value.effect.origin = "http://localhost:4173" end,
+      function(value) value.effect.path = "relative" end,
+      function(value) value.effect.path = "/other?query=1" end,
+      function(value) value.effect.path = "/safe/../admin" end,
+      function(value) value.effect.path = "/safe%2fadmin" end,
+      function(value) value.effect.path = "/safe\\admin" end,
+      function(value) value.effect.headers = { { name = "x", value = "y" } } end,
+      function(value) value.effect.redirect_mode = "follow" end,
+      function(value) value.effect.proxy_mode = "ambient" end,
+      function(value) value.effect.address_mode = "dns" end,
+      function(value) value.effect_kind = "browser" end,
+      function(value) value.run_id = "run-foreign" end,
+      function(value) value.resource_bounds.network_requests = 2 end,
+      function(value) value.resource_bounds.output_bytes = 1023 end,
+      function(value) value.unknown = true end,
+    }) do
+      local malformed_http = fixtures.copy(http_envelope)
+      mutate_http(malformed_http)
+      t.raises(function() contract.validate_action_envelope(malformed_http) end)
+    end
+
     local unknown = fixtures.copy(envelope)
     unknown.command = { "forbidden" }
     t.raises(function() contract.validate_cli_action_envelope(unknown) end)
@@ -116,9 +189,22 @@ return {
       t.raises(function() contract.validate_cli_action_envelope(malformed) end)
     end
 
+    local missing_digest = fixtures.copy(receipt)
+    missing_digest.evaluated_input_digests.plan = nil
+    t.raises(function()
+      contract.validate_effect_authorization_receipt(missing_digest, http_envelope)
+    end)
     local foreign = fixtures.copy(receipt)
     foreign.fence_id = "claim-foreign"
     t.raises(function() contract.validate_effect_authorization_receipt(foreign, envelope) end)
+    for _, field in ipairs({ "fence_id", "trace_id", "dedup_key" }) do
+      local oversized = fixtures.copy(receipt)
+      oversized[field] = string.rep("x", 181)
+      t.raises(function() contract.validate_effect_authorization_receipt(oversized) end)
+      local controlled = fixtures.copy(receipt)
+      controlled[field] = "bad\nidentity"
+      t.raises(function() contract.validate_effect_authorization_receipt(controlled) end)
+    end
   end,
 
 
@@ -185,6 +271,12 @@ return {
       function(value) value.profile_sha256 = "bad" end,
       function(value) value.repository.url = "https://user@example.invalid/repo.git" end,
       function(value) value.max_uses = 2 end,
+      function(value) value.capabilities.http[1].unexpected = true end,
+      function(value) value.capabilities.http[1].methods = { "GET", "TRACE" } end,
+      function(value) value.capabilities.http[1].methods = { "GET", "GET" } end,
+      function(value) value.capabilities.http[1].path_prefixes = { "/safe/../admin" } end,
+      function(value) value.capabilities.http[1].path_prefixes = { "/safe%2fadmin" } end,
+      function(value) value.capabilities.http[1].path_prefixes = { "/safe\\admin" } end,
     }) do
       local value = fixtures.copy(authorization)
       mutate(value)

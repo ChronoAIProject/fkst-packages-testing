@@ -3,6 +3,7 @@ local execution = require("contract.structured_execution")
 local environment_factory = require("contract.environment_factory")
 local json_codec = require("testing_runtime.json")
 local project_profile = require("contract.project_profile")
+local structured_effect_binding = require("host_structured_effect_binding")
 local Store = require("host_durable_store")
 
 local M = {}
@@ -127,18 +128,6 @@ local function wait_http(url, timeout_seconds)
     "function retry(){if(Date.now()>=end)process.exit(47);setTimeout(probe,20)}probe();",
   })
   return direct_exec({ "node", "-e", script, url, tostring(timeout_seconds or 10) }).exit_code == 0
-end
-
-local function http_request(request, timeout_seconds)
-  local script = table.concat({
-    "const http=require('http'),u=new URL(process.argv[1]);",
-    "const req=http.request({hostname:u.hostname,port:u.port,path:u.pathname+u.search,method:process.argv[2],timeout:Number(process.argv[3])*1000},res=>{",
-    "let body='';res.setEncoding('utf8');res.on('data',c=>body+=c);res.on('end',()=>process.stdout.write(JSON.stringify({status:res.statusCode,body})));",
-    "});req.on('timeout',()=>req.destroy(new Error('timeout')));req.on('error',error=>{process.stderr.write(error.message);process.exit(48)});req.end();",
-  })
-  local result = direct_exec({ "node", "-e", script, request.url, request.method, tostring(timeout_seconds or 10) })
-  if result.exit_code ~= 0 then error(result.stderr) end
-  return json.decode(result.stdout)
 end
 
 local function runtime_cli(project_root)
@@ -536,8 +525,100 @@ end
 function Context:_structured_runtime()
   local context = self
   local function replay_key(grant_id) return "testing-runner/replay/" .. context:_key(grant_id) end
-  local function authorization_key(receipt_id)
-    return "testing-runner/cli-effect-authorizations/" .. context:_key(receipt_id)
+  local function replay_owner_key(grant_id)
+    return "testing-runner/replay-owners/" .. context:_key(grant_id)
+  end
+  local function authorization_key(receipt_id, owner_generation)
+    local identity = owner_generation == 1 and receipt_id or {
+      receipt_id = receipt_id, owner_generation = owner_generation,
+    }
+    return "testing-runner/cli-effect-authorizations/" .. context:_key(identity)
+  end
+  local function valid_delivery_owner(owner)
+    return type(owner) == "table" and type(owner.pid) == "number"
+      and owner.pid == math.floor(owner.pid) and owner.pid > 0
+      and type(owner.process_start_identity) == "string"
+      and owner.process_start_identity ~= "" and #owner.process_start_identity <= 512
+  end
+  local function delivery_owner()
+    if valid_delivery_owner(context.structured_delivery_owner) then
+      return copy(context.structured_delivery_owner)
+    end
+    return context:_fixture_effect("structured-delivery-owner", {
+      run_id = context.run_id, artifact_root = context.artifact_root,
+    })
+  end
+  local function delivery_owner_live(owner)
+    if type(context.structured_delivery_owner_liveness) == "function" then
+      return context.structured_delivery_owner_liveness(copy(owner))
+    end
+    local result = context:_fixture_effect("structured-delivery-owner-status", {
+      run_id = context.run_id, artifact_root = context.artifact_root, owner = copy(owner),
+    })
+    return type(result) == "table" and result.live or nil
+  end
+  local function valid_replay_owner(value, claim_id, binding)
+    return type(value) == "table" and value.schema == "generic-host.structured-replay-owner.v1"
+      and type(value.version) == "number" and value.version == math.floor(value.version)
+      and value.version >= 1 and value.generation == value.version
+      and value.claim_id == claim_id and equal(value.binding, binding)
+      and valid_delivery_owner(value.owner)
+  end
+  local function claim_replay_owner(grant_id, claim_id, binding, allow_create)
+    local key = replay_owner_key(grant_id)
+    local owner = delivery_owner()
+    if not valid_delivery_owner(owner) then
+      error("generic-host durable structured delivery owner is unavailable")
+    end
+    for _ = 1, 4 do
+      local current = context.records:read(key)
+      if current == nil then
+        if not allow_create then return { status = "in-progress" } end
+        local value = {
+          schema = "generic-host.structured-replay-owner.v1",
+          version = 1, generation = 1, claim_id = claim_id,
+          binding = copy(binding), owner = copy(owner),
+        }
+        local saved = context.records:cas(key, value, 0)
+        if saved.saved == true then
+          return { status = "claimed", owner_generation = 1, replayed = false }
+        end
+      else
+        if not valid_replay_owner(current, claim_id, binding) then
+          error("generic-host durable structured replay owner binding differs")
+        end
+        if equal(current.owner, owner) then
+          if delivery_owner_live(current.owner) ~= true then
+            error("generic-host durable structured delivery owner cannot be verified")
+          end
+          return { status = "in-progress" }
+        end
+        local live = delivery_owner_live(current.owner)
+        if live ~= false then return { status = "in-progress" } end
+        local next_owner = copy(current)
+        next_owner.version = current.version + 1
+        next_owner.generation = current.generation + 1
+        next_owner.owner = copy(owner)
+        local saved = context.records:cas(key, next_owner, current.version)
+        if saved.saved == true then
+          return {
+            status = "claimed", owner_generation = next_owner.generation, replayed = true,
+          }
+        end
+      end
+    end
+    return { status = "in-progress" }
+  end
+  local function require_replay_owner(grant_id, claim_id, binding, generation)
+    local current = context.records:read(replay_owner_key(grant_id))
+    local owner = delivery_owner()
+    if type(generation) ~= "number" or generation ~= math.floor(generation) or generation < 1
+      or not valid_replay_owner(current, claim_id, binding)
+      or current.generation ~= generation or not equal(current.owner, owner)
+      or delivery_owner_live(current.owner) ~= true then
+      error("generic-host durable structured replay delivery owner differs")
+    end
+    return current
   end
   local function argv_allowed(argv, capabilities)
     for _, capability in ipairs(capabilities or {}) do
@@ -550,31 +631,262 @@ function Context:_structured_runtime()
     end
     return false
   end
-  local function decision(envelope, value, reason, inputs)
+  local function contains(values, expected)
+    for _, value in ipairs(values or {}) do if value == expected then return true end end
+    return false
+  end
+  local function http_allowed(effect, capabilities)
+    for _, capability in ipairs(capabilities or {}) do
+      if capability.origin == effect.origin and contains(capability.methods, effect.method) then
+        for _, prefix in ipairs(capability.path_prefixes or {}) do
+          if effect.path:sub(1, #prefix) == prefix then return true end
+        end
+      end
+    end
+    return false
+  end
+  local function validate_envelope(envelope)
+    if envelope.schema == execution.schemas.action_envelope then
+      return pcall(execution.validate_action_envelope, envelope), envelope.effect, false
+    end
+    return pcall(execution.validate_cli_action_envelope, envelope), envelope.case, true
+  end
+  local function planned_effect_matches(planned, effect, legacy)
+    if legacy or effect.kind == "cli" then return equal(planned, effect) end
+    return type(planned) == "table" and planned.kind == "http"
+      and planned.case_id == effect.case_id
+      and planned.timeout_seconds == effect.timeout_seconds
+      and equal(planned.assertions, effect.assertions)
+      and equal(planned.request, {
+        method = effect.method, url = effect.origin .. effect.path, headers = effect.headers,
+      })
+  end
+  local function effect_identity(envelope, effect)
+    return {
+      operation_id = envelope.operation_id, grant_sha256 = envelope.grant_sha256,
+      plan_sha256 = envelope.plan_sha256, case_id = effect.case_id,
+      effect_kind = effect.kind, attempt = envelope.attempt,
+    }
+  end
+  local function effect_execution(envelope, effect, receipt, recovery_allowed)
+    local identity = effect_identity(envelope, effect)
+    local key = "testing-runner/effect-executions/" .. context:_key(identity)
+    local binding = {
+      identity = identity, envelope_sha256 = receipt.envelope_sha256,
+      receipt_id = receipt.receipt_id, fence_id = envelope.fence_id,
+      trace_id = envelope.trace_id, dedup_key = envelope.dedup_key,
+    }
+    local current = context.records:read(key)
+    if current ~= nil then
+      if not equal(current.binding, binding) then
+        error("generic-host durable structured effect execution binding differs")
+      end
+      if recovery_allowed ~= true then
+        error("generic-host durable structured effect authorization receipt is replayed")
+      end
+      if current.status == "completed" then
+        local result_sha256 = context.records:digest(json_codec.encode(current.result))
+        if type(current.result_sha256) ~= "string" or current.result_sha256 ~= result_sha256 then
+          error("generic-host durable structured effect completed result digest differs")
+        end
+        return { key = key, binding = binding, recovered_result = copy(current.result) }
+      end
+      if current.status == "started" then
+        error("generic-host durable structured effect outcome is indeterminate after restart")
+      end
+      error("generic-host durable structured effect execution journal is malformed")
+    end
+    return { key = key, binding = binding }
+  end
+  local function begin_effect_execution(execution_state)
+    local started = context.records:cas(execution_state.key, {
+      version = 1, status = "started", binding = copy(execution_state.binding),
+    }, 0)
+    if started.saved ~= true then
+      error("generic-host durable structured effect execution journal claim failed")
+    end
+  end
+  local function complete_effect_execution(execution_state, result)
+    require_replay_owner(
+      execution_state.grant_id, execution_state.claim_id,
+      execution_state.replay_binding, execution_state.owner_generation)
+    local completed = context.records:cas(execution_state.key, {
+      version = 2, status = "completed", binding = copy(execution_state.binding),
+      result = copy(result), result_sha256 = context.records:digest(json_codec.encode(result)),
+    }, 1)
+    if completed.saved ~= true then
+      local current = completed.value
+      if type(current) ~= "table" or current.status ~= "completed"
+        or not equal(current.binding, execution_state.binding) or not equal(current.result, result) then
+        error("generic-host durable structured effect execution completion conflict")
+      end
+    end
+  end
+  local function record_target_effect(request, result)
+    local stored = context.records:immutable(
+      "testing-runner/target-effects/" .. context:_key(request), {
+        binding = copy(request), result = copy(result),
+      })
+    if stored.written ~= true and stored.replayed ~= true then
+      error("generic-host durable structured target effect conflict")
+    end
+  end
+  local function consume(envelope, receipt, owner_generation)
+    execution.validate_effect_authorization_receipt(receipt, envelope, "2026-07-22T00:20:00Z")
+    local issued = type(owner_generation) == "number"
+      and context.records:read(authorization_key(receipt.receipt_id, owner_generation)) or nil
+    if receipt.decision ~= "allow"
+      or receipt.envelope_sha256 ~= context.records:digest(json_codec.encode(envelope))
+      or type(issued) ~= "table" or issued.owner_generation ~= owner_generation
+      or not equal(issued.receipt, receipt) then
+      error("generic-host durable structured effect authorization receipt is unavailable")
+    end
+    local envelope_ok, effect = validate_envelope(envelope)
+    if not envelope_ok or type(effect) ~= "table" then
+      error("generic-host durable structured effect envelope is malformed")
+    end
+    local grant = context.store:load(envelope.grant_ref)
+    if grant == nil or type(grant.value) ~= "table" then
+      error("generic-host durable structured effect grant is unavailable")
+    end
+    local replay = context.records:read(replay_key(grant.value.grant_id))
+    if type(replay) ~= "table" or replay.status ~= "claimed"
+      or replay.claim_id ~= envelope.fence_id or type(replay.binding) ~= "table" then
+      error("generic-host durable structured replay claim is unavailable")
+    end
+    local replay_owner = require_replay_owner(
+      grant.value.grant_id, replay.claim_id, replay.binding, owner_generation)
+    local recovery_allowed = replay_owner.generation > 1
+    local identity = effect_identity(envelope, effect)
+    local function claim_recovery_use()
+      if not recovery_allowed then return end
+      local recovery_use = context.records:claim(
+        "testing-runner/effect-recovery-uses/" .. context:_key({
+          identity = identity, owner_generation = replay_owner.generation,
+        }), {
+          binding = {
+            identity = copy(identity), claim_id = envelope.fence_id,
+            owner_generation = replay_owner.generation,
+          },
+        })
+      if recovery_use.claimed ~= true or recovery_use.replayed == true then
+        error("generic-host durable structured effect recovery authorization is replayed")
+      end
+    end
+    local execution_state = effect_execution(envelope, effect, receipt, recovery_allowed)
+    execution_state.grant_id = grant.value.grant_id
+    execution_state.claim_id = replay.claim_id
+    execution_state.replay_binding = copy(replay.binding)
+    execution_state.owner_generation = replay_owner.generation
+    if execution_state.recovered_result ~= nil then
+      claim_recovery_use()
+      return execution_state
+    end
+    claim_recovery_use()
+    local legacy_cli = envelope.schema == execution.schemas.cli_action_envelope
+    if effect.kind == "cli" then
+      local legacy_receipt_id = receipt.receipt_id
+      if not legacy_cli then
+        local legacy_envelope = copy(envelope)
+        legacy_envelope.schema = execution.schemas.cli_action_envelope
+        legacy_envelope.effect_kind = "cli"
+        legacy_envelope.capability = "direct-argv"
+        legacy_envelope.case = copy(effect)
+        legacy_envelope.effect = nil
+        legacy_envelope.ready_origin = nil
+        local legacy_sha256 = context.records:digest(json_codec.encode(legacy_envelope))
+        legacy_receipt_id = "durable-cli-effect-" .. legacy_sha256:sub(1, 32)
+      end
+      local historical_keys = {
+        "testing-runner/cli-effect-consumptions/" .. context:_key(grant.value.grant_id),
+        "testing-runner/cli-effect-consumptions/" .. context:_key(legacy_receipt_id),
+      }
+      for _, historical_key in ipairs(historical_keys) do
+        if context.records:read(historical_key) ~= nil then
+          if not legacy_cli then
+            local witness = context.records:immutable(
+              "testing-runner/effect-compatibility/" .. context:_key(identity), {
+                identity = copy(identity), source_key = historical_key,
+                decision = "replay-rejected",
+              })
+            if witness.written ~= true and witness.replayed ~= true then
+              error("generic-host durable structured CLI compatibility witness differs")
+            end
+          end
+          error("generic-host durable structured effect authorization receipt is replayed")
+        end
+      end
+    end
+    local consumption_key = legacy_cli
+      and "testing-runner/cli-effect-consumptions/" .. context:_key(receipt.receipt_id)
+      or "testing-runner/cli-effect-consumptions/" .. context:_key({
+        receipt_id = receipt.receipt_id, envelope_sha256 = receipt.envelope_sha256,
+      })
+    if context.records:read(consumption_key) ~= nil then
+      error("generic-host durable structured effect authorization receipt is replayed")
+    end
+    begin_effect_execution(execution_state)
+    local consumed = context.records:claim(consumption_key, {
+      binding = copy(receipt), receipt_id = receipt.receipt_id,
+    })
+    if consumed.claimed ~= true or consumed.replayed == true then
+      error("generic-host durable structured effect authorization receipt is replayed")
+    end
+    return execution_state
+  end
+  local function decision(envelope, value, reason, inputs, owner_generation)
     local envelope_sha256 = context.records:digest(json_codec.encode(envelope))
+    local function safe_identity(field, fallback)
+      local candidate = type(envelope) == "table" and envelope[field] or nil
+      if type(candidate) ~= "string" or candidate == "" or #candidate > 180
+        or candidate:find("[%z\1-\31\127]") then
+        return fallback
+      end
+      return candidate
+    end
+    local zero = string.rep("0", 64)
+    local safe_inputs = {}
+    for _, field in ipairs({
+      "profile", "validation_receipt", "preauthorization",
+      "environment_receipt", "plan", "grant",
+    }) do
+      local digest = type(inputs) == "table" and inputs[field] or nil
+      safe_inputs[field] = type(digest) == "string" and digest:match("^[0-9a-f]+$")
+        and #digest == 64 and digest or zero
+    end
     local receipt = {
       schema = execution.schemas.effect_authorization_receipt,
-      decision = value,
-      reason_code = reason,
-      receipt_id = "durable-cli-effect-" .. envelope_sha256:sub(1, 32),
+      decision = value == "allow" and "allow" or "deny",
+      reason_code = type(reason) == "string" and reason ~= "" and #reason <= 80
+        and not reason:find("[%z\1-\31\127]") and reason or "malformed-input",
+      receipt_id = (envelope.schema == execution.schemas.cli_action_envelope
+        and "durable-cli-effect-" or "durable-effect-") .. envelope_sha256:sub(1, 32),
       envelope_sha256 = envelope_sha256,
-      evaluated_input_digests = inputs,
+      evaluated_input_digests = safe_inputs,
       issued_at = "2026-07-22T00:20:00Z",
-      expires_at = envelope.expires_at,
-      fence_id = envelope.fence_id,
-      trace_id = envelope.trace_id,
-      dedup_key = envelope.dedup_key,
+      expires_at = type(envelope) == "table" and type(envelope.expires_at) == "string"
+        and #envelope.expires_at <= 64 and envelope.expires_at or "2026-07-22T00:21:00Z",
+      fence_id = safe_identity("fence_id", "invalid-fence"),
+      trace_id = safe_identity("trace_id", "invalid-trace"),
+      dedup_key = safe_identity("dedup_key", "invalid-dedup"),
       auth_tag = context.records:digest(context.run_id .. "\0" .. envelope_sha256 .. "\0" .. value),
     }
     if value == "allow" then
-      local stored = context.records:immutable(authorization_key(receipt.receipt_id), copy(receipt))
+      if type(owner_generation) ~= "number" or owner_generation ~= math.floor(owner_generation)
+        or owner_generation < 1 then
+        error("generic-host durable effect authorization owner generation is unavailable")
+      end
+      local stored = context.records:immutable(
+        authorization_key(receipt.receipt_id, owner_generation), {
+          receipt = copy(receipt), owner_generation = owner_generation,
+        })
       if stored.written ~= true and stored.replayed ~= true then
-        error("generic-host durable CLI authorization receipt conflict")
+        error("generic-host durable effect authorization receipt conflict")
       end
     end
     return receipt
   end
-  return {
+  local ports = {
     load_artifact = function(path) return context.store:load(path) end,
     now = function(request)
       if request.artifact_root ~= context.request.structured_execution.artifact_root then
@@ -600,12 +912,18 @@ function Context:_structured_runtime()
       if value.status == "completed" then
         return { status = "completed", result_ref = value.result_ref, result_sha256 = value.result_sha256 }
       end
-      if claimed.replayed == true then return { status = "in-progress" } end
-      return { status = "claimed", claim_id = claim_id }
+      local owner = claim_replay_owner(
+        request.grant_id, claim_id, request, claimed.replayed ~= true)
+      if owner.status == "in-progress" then return owner end
+      return {
+        status = "claimed", claim_id = claim_id,
+        owner_generation = owner.owner_generation,
+        replayed = owner.replayed == true,
+      }
     end,
-    authorize_cli_effect = function(request)
+    authorize_effect = function(request)
       local envelope = request.action_envelope
-      local ok = pcall(execution.validate_cli_action_envelope, envelope)
+      local ok, effect, legacy = validate_envelope(envelope)
       local empty = {
         profile = string.rep("0", 64), validation_receipt = string.rep("0", 64),
         preauthorization = string.rep("0", 64), environment_receipt = string.rep("0", 64),
@@ -614,6 +932,9 @@ function Context:_structured_runtime()
       if not ok then return decision(envelope, "deny", "malformed-envelope", empty) end
       local profile = context.store:load(envelope.profile_ref)
       local validation = context.store:load(envelope.validation_receipt_ref)
+      local approval_ref = validation and validation.value and validation.value.approval_ref
+      local approval = type(approval_ref) == "table" and type(approval_ref.ref) == "string"
+        and context.store:load(approval_ref.ref) or nil
       local preauthorization = context.store:load(envelope.preauthorization_ref)
       local environment = context.store:load(envelope.environment_receipt_ref)
       local plan = context.store:load(envelope.plan_ref)
@@ -626,57 +947,119 @@ function Context:_structured_runtime()
         plan = plan and plan.digest or empty.plan,
         grant = grant and grant.digest or empty.grant,
       }
-      if profile == nil or validation == nil or preauthorization == nil
+      if profile == nil or approval == nil or validation == nil or preauthorization == nil
         or environment == nil or plan == nil or grant == nil then
         return decision(envelope, "deny", "missing-input", inputs)
       end
-      local valid = pcall(project_profile.validate_profile, profile.value)
-        and pcall(project_profile.validate_validation_receipt, validation.value)
+      local verification_context = {
+        now = "2026-07-22T00:20:00Z",
+        sha256 = function(body) return context.records:digest(body) end,
+        trusted_authorities = context.authorization_context.trusted_authorities,
+        approval_ref = copy(context.authorization_context.approval_ref),
+      }
+      local profile_authorization_verified = pcall(
+        project_profile.verify_execution_authorization,
+        profile.value, approval.value, validation.value, verification_context)
+      local valid = profile_authorization_verified
         and pcall(execution.validate_preauthorization, preauthorization.value, "2026-07-22T00:20:00Z")
         and pcall(environment_factory.validate_receipt, environment.value)
         and pcall(execution.validate_plan, plan.value)
         and pcall(execution.validate_grant, grant.value, "2026-07-22T00:20:00Z")
       local planned_case
       for _, item in ipairs(plan.value.cases or {}) do
-        if item.case_id == envelope.case.case_id then planned_case = item end
+        if item.case_id == effect.case_id then planned_case = item end
       end
-      if not valid or profile.digest ~= envelope.profile_artifact_sha256
-        or project_profile.profile_sha256(profile.value, function(body) return context.records:digest(body) end)
-          ~= envelope.profile_sha256
+      local replay = context.records:read(replay_key(grant.value.grant_id))
+      local replay_binding = replay and replay.binding or nil
+      local profile_budget = profile.value.resource_budgets or {}
+      local environment_origin = type(environment.value.base_url) == "string"
+        and environment.value.base_url:match("^(http://127%.0%.0%.1:%d+)") or nil
+      local effect_allowed = effect.kind == "cli"
+        and argv_allowed(effect.argv, preauthorization.value.capabilities.cli)
+        and argv_allowed(effect.argv, grant.value.cli_capabilities)
+        or effect.kind == "http"
+        and contains(profile.value.allowed_origins, effect.origin)
+        and http_allowed(effect, preauthorization.value.capabilities.http)
+        and http_allowed(effect, grant.value.http_capabilities)
+      local replay_owned = type(replay) == "table" and replay.status == "claimed"
+        and replay.claim_id == envelope.fence_id and type(replay_binding) == "table"
+        and replay_binding.grant_id == grant.value.grant_id
+        and replay_binding.grant_sha256 == grant.digest
+        and replay_binding.plan_sha256 == plan.digest
+        and replay_binding.environment_receipt_sha256 == environment.digest
+        and replay_binding.operation_id == envelope.operation_id
+        and replay_binding.artifact_root == request.artifact_root
+        and replay_binding.trace_id == envelope.trace_id
+        and replay_binding.dedup_key == envelope.dedup_key
+        and execution.same_repository(replay_binding.repository, envelope.repository)
+      local profile_sha256 = project_profile.profile_sha256(
+        profile.value, function(body) return context.records:digest(body) end)
+      local bindings_match = structured_effect_binding.matches({
+        envelope = envelope,
+        artifacts = {
+          profile = profile, approval = approval, validation = validation,
+          preauthorization = preauthorization, environment = environment,
+          plan = plan, grant = grant,
+        },
+        profile_authorization_verified = profile_authorization_verified,
+        profile_sha256 = profile_sha256,
+        expected_base_url = effect.kind == "http" and context.base_url or nil,
+        expected_runtime_ports = effect.kind == "http"
+          and { { name = "application", port = effect.port } } or nil,
+        expected_grant_evidence_ref = {
+          kind = "signed-attestation", ref = context.run_id .. "-execution-grant",
+        },
+      })
+      if not valid or not bindings_match
+        or profile.digest ~= envelope.profile_artifact_sha256
+        or profile_sha256 ~= envelope.profile_sha256
         or validation.digest ~= envelope.validation_receipt_sha256
         or validation.value.profile_sha256 ~= envelope.profile_sha256
         or preauthorization.digest ~= envelope.preauthorization_sha256
         or preauthorization.value.profile_sha256 ~= envelope.profile_sha256
         or environment.digest ~= envelope.environment_receipt_sha256
+        or environment.value.status ~= "ready" or environment.value.operation_id ~= envelope.operation_id
         or plan.value.environment_receipt_sha256 ~= environment.digest
         or plan.digest ~= envelope.plan_sha256 or grant.digest ~= envelope.grant_sha256
         or grant.value.parent_authorization_sha256 ~= preauthorization.digest
         or grant.value.plan_sha256 ~= plan.digest
         or grant.value.environment_receipt_sha256 ~= environment.digest
         or not equal(environment.value.workspace_ref, envelope.workspace_ref)
-        or not equal(planned_case, envelope.case)
-        or not argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
-        or not argv_allowed(envelope.case.argv, grant.value.cli_capabilities) then
+        or not execution.same_repository(profile.value.repository, envelope.repository)
+        or not execution.same_repository(validation.value.repository, envelope.repository)
+        or not execution.same_repository(preauthorization.value.repository, envelope.repository)
+        or not execution.same_repository(environment.value.repository, envelope.repository)
+        or not execution.same_repository(plan.value.repository, envelope.repository)
+        or not execution.same_repository(grant.value.repository, envelope.repository)
+        or validation.value.trace_id ~= envelope.trace_id or validation.value.dedup_key ~= envelope.dedup_key
+        or preauthorization.value.trace_id ~= envelope.trace_id or preauthorization.value.dedup_key ~= envelope.dedup_key
+        or environment.value.trace_id ~= envelope.trace_id or environment.value.dedup_key ~= envelope.dedup_key
+        or plan.value.trace_id ~= envelope.trace_id or plan.value.dedup_key ~= envelope.dedup_key
+        or grant.value.trace_id ~= envelope.trace_id or grant.value.dedup_key ~= envelope.dedup_key
+        or not planned_effect_matches(planned_case, effect, legacy)
+        or envelope.resource_bounds.output_bytes ~= profile_budget.output_bytes
+        or effect.kind == "http" and (
+          envelope.ready_origin ~= context.origin or environment_origin ~= envelope.ready_origin
+          or envelope.resource_bounds.network_requests ~= 1
+          or profile_budget.network_requests == nil or profile_budget.network_requests < 1)
+        or not effect_allowed then
         return decision(envelope, "deny", "foreign-binding", inputs)
       end
-      return decision(envelope, "allow", "authorized", inputs)
+      if not replay_owned then return decision(envelope, "deny", "foreign-fence", inputs) end
+      local replay_owner = require_replay_owner(
+        grant.value.grant_id, replay.claim_id, replay.binding,
+        request.replay_owner_generation)
+      return decision(envelope, "allow", "authorized", inputs, replay_owner.generation)
     end,
     exec_argv = function(request)
       local envelope = request.action_envelope
       local receipt = request.authorization_receipt
-      execution.validate_cli_action_envelope(envelope)
-      execution.validate_effect_authorization_receipt(receipt, envelope, "2026-07-22T00:20:00Z")
-      local issued = context.records:read(authorization_key(receipt.receipt_id))
-      if receipt.decision ~= "allow"
-        or receipt.envelope_sha256 ~= context.records:digest(json_codec.encode(envelope))
-        or issued == nil or not equal(issued, receipt) then
-        error("generic-host durable structured CLI authorization receipt is unavailable")
-      end
-      local consumed = context.records:claim(
-        "testing-runner/cli-effect-consumptions/" .. context:_key(receipt.receipt_id),
-        { binding = copy(receipt), receipt_id = receipt.receipt_id })
-      if consumed.claimed ~= true or consumed.replayed == true then
-        error("generic-host durable structured CLI authorization receipt is replayed")
+      local ok, effect = validate_envelope(envelope)
+      if not ok or effect.kind ~= "cli" then error("generic-host durable structured CLI envelope is malformed") end
+      local execution_state = consume(envelope, receipt, request.replay_owner_generation)
+      if execution_state.recovered_result ~= nil then
+        record_target_effect(request, execution_state.recovered_result)
+        return execution_state.recovered_result
       end
       if envelope.operation_id ~= context.run_id
         or type(envelope.workspace_ref) ~= "table"
@@ -686,21 +1069,40 @@ function Context:_structured_runtime()
       end
       local workspace = context.records:read(context:_resource("environment-factory", envelope.workspace_ref))
       if workspace == nil then error("generic-host durable structured workspace is unavailable") end
-      local result = direct_exec(envelope.case.argv, workspace.path)
-      context.records:immutable("testing-runner/target-effects/" .. context:_key(request), {
-        binding = copy(request), result = copy(result),
-      })
+      local result = direct_exec(effect.argv, workspace.path)
+      complete_effect_execution(execution_state, result)
+      record_target_effect(request, result)
       return result
     end,
-    http_request = function(input)
-      if input.operation_id ~= context.run_id or input.base_url ~= context.base_url
-        or input.request.url ~= context.base_url then
+    http_request = function(request)
+      local envelope = request.action_envelope
+      local receipt = request.authorization_receipt
+      local ok, effect, legacy = validate_envelope(envelope)
+      if not ok or legacy or effect.kind ~= "http" then
+        error("generic-host durable structured HTTP envelope is malformed")
+      end
+      local execution_state = consume(envelope, receipt, request.replay_owner_generation)
+      if execution_state.recovered_result ~= nil then
+        record_target_effect(request, execution_state.recovered_result)
+        return execution_state.recovered_result
+      end
+      if envelope.operation_id ~= context.run_id or envelope.ready_origin ~= context.origin
+        or effect.origin ~= context.origin or effect.host ~= "127.0.0.1"
+        or effect.port ~= context.port or effect.method ~= "GET" or effect.path ~= "/health" then
         error("generic-host durable structured HTTP request is not bound to the ready environment")
       end
-      local result = http_request(input.request, input.timeout_seconds)
-      context.records:immutable("testing-runner/target-effects/" .. context:_key(input), {
-        binding = copy(input), result = copy(result),
+      local result = context:_fixture_effect("fixture-owned-http-request", {
+        run_id = context.run_id,
+        artifact_root = request.artifact_root,
+        effect = copy(effect),
+        output_bytes = envelope.resource_bounds.output_bytes,
+        grant_id = execution_state.grant_id,
+        claim_id = execution_state.claim_id,
+        replay_binding = copy(execution_state.replay_binding),
+        replay_owner_generation = execution_state.owner_generation,
       })
+      complete_effect_execution(execution_state, result)
+      record_target_effect(request, result)
       return result
     end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
@@ -736,6 +1138,8 @@ function Context:_structured_runtime()
         or binding.trace_id ~= request.trace_id or binding.dedup_key ~= request.dedup_key then
         return false
       end
+      require_replay_owner(
+        binding.grant_id, current.value.claim_id, binding, request.claim.owner_generation)
       local result_sha256 = context.store:digest(request.result_ref)
       if result_sha256 == nil then return false end
       local completion = copy(request)
@@ -744,6 +1148,15 @@ function Context:_structured_runtime()
       return context.records:complete_replay(current.key, request.claim.claim_id, completion).completed == true
     end,
   }
+  ports.authorize_cli_effect = function(request)
+    local envelope = request.action_envelope
+    if type(envelope) ~= "table" or envelope.schema ~= execution.schemas.cli_action_envelope
+      or type(envelope.case) ~= "table" or envelope.case.kind ~= "cli" then
+      error("generic-host durable legacy CLI authorization accepts only legacy CLI envelopes")
+    end
+    return ports.authorize_effect(request)
+  end
+  return ports
 end
 
 function Context:_publication_runtime()
@@ -954,6 +1367,8 @@ function M.initialize(context, durable_root)
     completed_replay_failpoint = copy(context.completed_replay_failpoint),
     crash_barrier = copy(context.crash_barrier),
     runtime_pep_denial = copy(context.runtime_pep_denial),
+    runtime_pep_plan_mutation = copy(context.runtime_pep_plan_mutation),
+    expected_case_count = context.expected_case_count,
     request = copy(context.request),
   }
   local stored = records:immutable("generic-host/config", config)

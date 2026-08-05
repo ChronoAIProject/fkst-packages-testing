@@ -20,6 +20,10 @@ local function runtime(artifacts, options)
       if options.replay_guard then return options.replay_guard(claim) end
       return { status = "claimed", claim_id = "claim-110" }
     end,
+    authorize_effect = function(input)
+      if options.authorize_effect then return options.authorize_effect(input) end
+      return fixtures.authorization_receipt(input.action_envelope)
+    end,
     authorize_cli_effect = function(input)
       if options.authorize_cli_effect then return options.authorize_cli_effect(input) end
       return fixtures.authorization_receipt(input.action_envelope)
@@ -47,6 +51,7 @@ local function runtime(artifacts, options)
       return true
     end,
   }
+  if options.legacy_cli_only then ports.authorize_effect = nil end
   return ports, effects, writes
 end
 
@@ -70,7 +75,7 @@ return {
   test_local_pep_denial_records_receipt_and_performs_zero_cli_effects = function()
     local request = fixtures.request()
     local ports, effects, writes = runtime(fixtures.artifacts(request), {
-      authorize_cli_effect = function(input)
+      authorize_effect = function(input)
         return fixtures.authorization_receipt(input.action_envelope, "deny", "scope-denied")
       end,
     })
@@ -80,6 +85,44 @@ return {
     t.eq(#effects, 0)
     local receipt_path = request.artifact_root .. "/authorization/cli-version.json"
     t.eq(writes[receipt_path].decision, "deny")
+  end,
+
+  test_legacy_cli_authorization_port_remains_supported = function()
+    local request = fixtures.request()
+    local observed
+    local ports, effects = runtime(fixtures.artifacts(request), {
+      legacy_cli_only = true,
+      authorize_cli_effect = function(input)
+        observed = input.action_envelope
+        return fixtures.authorization_receipt(input.action_envelope)
+      end,
+    })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "passed")
+    t.eq(#effects, 1)
+    t.eq(observed.schema, "testing-cli-action-envelope.v1")
+    t.eq(observed.case.kind, "cli")
+  end,
+
+  test_http_has_no_legacy_cli_authorization_fallback = function()
+    local request = fixtures.request()
+    local plan = fixtures.plan(request, { {
+      case_id = "health", kind = "http", timeout_seconds = 10,
+      request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+      assertions = { { type = "status-code", expected = 200 } },
+    } })
+    local grant = fixtures.grant(request, {
+      cli = {},
+      http = { {
+        origin = "http://127.0.0.1:4173", methods = { "GET" }, path_prefixes = { "/health" },
+      } },
+    })
+    local ports, effects = runtime(fixtures.artifacts(request, plan, grant), {
+      legacy_cli_only = true,
+    })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "blocked")
+    t.eq(#effects, 0)
   end,
 
   test_unpersisted_local_pep_receipt_blocks_before_cli_effect = function()
@@ -92,7 +135,7 @@ return {
     local result = structured_execution.run(request, ports)
     t.eq(result.status, "blocked")
     t.eq(result.classification, "harness-tooling-issue")
-    t.is_true(result.message:find("malformed CLI authorization receipt", 1, true) ~= nil)
+    t.is_true(result.message:find("malformed effect authorization receipt", 1, true) ~= nil)
     t.eq(#effects, 0)
   end,
 
@@ -166,10 +209,14 @@ return {
     t.eq(effects[1].request.action_envelope.operation_id, request.source_ref.ref)
     t.eq(effects[1].request.action_envelope.workspace_ref.kind, "workspace")
     t.eq(effects[1].request.action_envelope.repository.commit_sha, request.repository.commit_sha)
-    t.eq(effects[1].request.action_envelope.case.argv[2], "--version")
+    t.eq(effects[1].request.action_envelope.schema, "testing-action-envelope.v1")
+    t.eq(effects[1].request.action_envelope.effect.argv[2], "--version")
     t.eq(effects[2].kind, "http")
-    t.eq(effects[2].request.base_url, "http://127.0.0.1:4173/health")
-    t.eq(effects[2].request.request.url, "http://127.0.0.1:4173/health")
+    t.eq(effects[2].request.action_envelope.effect.origin, "http://127.0.0.1:4173")
+    t.eq(effects[2].request.action_envelope.effect.path, "/health")
+    t.eq(effects[2].request.authorization_receipt.decision, "allow")
+    t.is_true(type(writes[request.artifact_root .. "/authorization/cli-version.json"]) == "table")
+    t.is_true(type(writes[request.artifact_root .. "/authorization/health-api.json"]) == "table")
     t.is_true(type(writes[result.case_results_path]) == "table")
     t.is_true(type(writes[result.execution_path]) == "table")
     t.eq(completed.claim.claim_id, "claim-110")
@@ -216,6 +263,8 @@ return {
       replay_guard = function()
         return { status = "completed", result_ref = request.artifact_root .. "/execution.json" }
       end,
+      authorize_effect = function() error("completed replay must not authorize effects") end,
+      authorize_cli_effect = function() error("completed replay must not use legacy authorization") end,
       load_result = function()
         return {
           status = "passed", classification = "passed", case_count = 1, passed_count = 1,
@@ -236,6 +285,33 @@ return {
     t.eq(result.replayed, true)
     t.eq(#effects, 0)
     t.eq(writes, 0)
+  end,
+
+  test_in_progress_replay_defers_without_effects_writes_or_completion = function()
+    local request = fixtures.request()
+    local writes = 0
+    local completions = 0
+    local ports, effects = runtime(fixtures.artifacts(request), {
+      replay_guard = function() return { status = "in-progress" } end,
+      authorize_effect = function() error("in-progress replay must not authorize effects") end,
+      authorize_cli_effect = function() error("in-progress replay must not use legacy authorization") end,
+      load_result = function() error("in-progress replay must not load a completed result") end,
+      write_artifact = function()
+        writes = writes + 1
+        return true
+      end,
+      complete_replay = function()
+        completions = completions + 1
+        return true
+      end,
+    })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "in-progress")
+    t.eq(result.publish, false)
+    t.eq(result.replayed, true)
+    t.eq(#effects, 0)
+    t.eq(writes, 0)
+    t.eq(completions, 0)
   end,
 
   test_typed_skip_records_not_executed_risk_without_effect = function()

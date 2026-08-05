@@ -186,6 +186,26 @@ return {
     t.eq(receipt.secret_refs, nil)
   end,
 
+  test_non_consuming_execution_verification_rechecks_authority_without_claiming = function()
+    local value = profile()
+    local artifact = approval(value)
+    local receipt = validation_receipt(value, artifact)
+    local context = receipt_context()
+    local first = project_profile.verify_execution_authorization(value, artifact, receipt, context)
+    local second = project_profile.verify_execution_authorization(value, artifact, receipt, context)
+    t.eq(first.revision, value.revision)
+    t.eq(second.revision, value.revision)
+    t.eq(first == value, false)
+    first.commands.start[1] = "mutated"
+    t.eq(second.commands.start[1], value.commands.start[1])
+
+    local foreign = copy(receipt)
+    foreign.approval_sha256 = string.rep("f", 64)
+    t.raises(function()
+      project_profile.verify_execution_authorization(value, artifact, foreign, context)
+    end)
+  end,
+
   test_canonicalization_is_stable_and_profile_changes_change_the_digest = function()
     local first = profile()
     local second = copy(first)
@@ -437,6 +457,10 @@ return {
 
     value = profile()
     value.dependent_services[1].readiness_checks[1].host = "invalid host"
+    t.raises(function() project_profile.validate_profile(value) end)
+
+    value = profile()
+    value.dependent_services[1].readiness_checks[1].expected_status = 200
     t.raises(function() project_profile.validate_profile(value) end)
 
     value = profile()

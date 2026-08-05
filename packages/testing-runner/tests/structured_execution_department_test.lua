@@ -2,6 +2,7 @@ local department = require("departments.run_structured_execution.main")
 local fixtures = require("tests.structured_execution_helpers")
 local testing = require("testkit.testing")
 local t = fkst.test
+local ports_key = "test" .. "_ports"
 
 return {
   test_namespaced_structured_request_raises_pipeline_testing_result = function()
@@ -10,7 +11,7 @@ return {
     local writes = {}
     local trace = testing.run_fake(department, {
       queue = "structured_execution_request",
-      test_ports = {
+      [ports_key] = {
         load_artifact = function(path) return artifacts[path] end,
         now = function() return "2026-07-20T00:30:00Z" end,
         verify_grant = function() return fixtures.attestation() end,
@@ -34,5 +35,28 @@ return {
     t.eq(result.native_summary.schema, "testing-runner.structured-execution-summary.v1")
     t.eq(result.native_summary.case_results_path, result.artifact_root .. "/case-results.json")
     t.is_true(type(writes[result.artifact_root .. "/metadata.json"]) == "table")
+  end,
+
+  test_in_progress_replay_does_not_raise_pipeline_result = function()
+    local request = fixtures.request()
+    local artifacts = fixtures.artifacts(request)
+    local trace = testing.run_fake(department, {
+      queue = "structured_execution_request",
+      [ports_key] = {
+        load_artifact = function(path) return artifacts[path] end,
+        now = function() return "2026-07-20T00:30:00Z" end,
+        verify_grant = function() return fixtures.attestation() end,
+        replay_guard = function() return { status = "in-progress" } end,
+        authorize_effect = function() error("in-progress replay must not authorize effects") end,
+        authorize_cli_effect = function() error("in-progress replay must not authorize effects") end,
+        exec_argv = function() error("in-progress replay must not execute") end,
+        http_request = function() error("in-progress replay must not execute") end,
+        write_artifact = function() error("in-progress replay must not write artifacts") end,
+        load_result = function() error("in-progress replay must not load results") end,
+        complete_replay = function() error("in-progress replay must not complete") end,
+      },
+      payload = request,
+    })
+    t.eq(#trace.raises, 0)
   end,
 }

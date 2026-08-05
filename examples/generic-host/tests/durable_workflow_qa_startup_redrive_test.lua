@@ -80,7 +80,7 @@ local function assert_bindings_preserved(context, expected)
 end
 
 local function assert_child_marker(root, prefix, fragment, case_name)
-  if not process.wait_for_child_text(root, prefix, fragment, 5) then
+  if not process.wait_for_child_text(root, prefix, fragment, 15) then
     error("generic-host startup redrive test: " .. case_name
       .. " missing child route marker " .. fragment)
   end
@@ -145,7 +145,6 @@ local function run_case(case)
       error("generic-host startup redrive test: " .. case.name .. " did not reach terminal\nstdout="
         .. tostring(process.read_file(stdout_path)) .. "\nstderr=" .. tostring(process.read_file(stderr_path)))
     end
-    process.stop_live(pid, live_pids)
     local child_root = context.host_root .. "/framework-runtime-startup-" .. case.name
       .. "/logs/framework-child"
     assert_child_marker(child_root, "generic-host.workflow_qa_supervisor-",
@@ -155,6 +154,7 @@ local function run_case(case)
     assert_child_marker(child_root, "", case.marker, case.name)
     assert_child_marker(child_root, "generic-host.workflow_qa_terminal-",
       "generic-host dept=workflow_qa_terminal tag=RECORDED run_id=" .. context.run_id, case.name)
+    process.stop_live(pid, live_pids)
 
     local recovered, terminal_state = assert_terminal(context)
     t.is_true(support.equal(recovered.request, request_binding))

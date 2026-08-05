@@ -1,3 +1,4 @@
+local contract = require("contract.structured_execution")
 local durable = require("host_durable_workflow_qa")
 local json_codec = require("testing_runtime.json")
 local structured_runtime = require("testing_runtime.structured_execution")
@@ -46,6 +47,17 @@ local function direct_exec(argv)
   os.remove(stdout_path)
   os.remove(stderr_path)
   return result
+end
+
+local function generic_runtime_exec(context)
+  return function(request)
+    local command = {
+      "env", "FKST_GENERIC_HOST_DURABLE_ROOT=" .. context.durable_root,
+      "sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", context.project_root,
+    }
+    for _, item in ipairs(request.argv or {}) do table.insert(command, item) end
+    return direct_exec(command)
+  end
 end
 
 local function expect_failure(fragment, fn)
@@ -137,14 +149,7 @@ return {
       local ports = structured_runtime.production({
         runtime_cli = context.project_root .. "/packages/generic-host/bin/generic-host-runtime.js",
         runtime_config_ref = { kind = "artifact", ref = context.runtime_config_ref },
-        exec_argv = function(request)
-          local command = {
-            "env", "FKST_GENERIC_HOST_DURABLE_ROOT=" .. context.durable_root,
-            "sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", context.project_root,
-          }
-          for _, item in ipairs(request.argv or {}) do table.insert(command, item) end
-          return direct_exec(command)
-        end,
+        exec_argv = generic_runtime_exec(context),
       })
       local production_exec_argv = ports.exec_argv
       local authorized_request
@@ -154,6 +159,7 @@ return {
         t.eq(#current.records:list("testing-runner/cli-effect-authorizations"), 1)
         t.eq(#current.records:list("testing-runner/cli-effect-consumptions"), 0)
         t.eq(#current.records:list("testing-runner/target-effects"), 0)
+        t.eq(process.http_effect_count(context), 0)
         t.eq(process.effect_count(context), 0)
       end
 
@@ -202,7 +208,7 @@ return {
 
         local foreign_plan = support.copy(envelope)
         foreign_plan.plan_ref = context.request.structured_execution.artifact_root .. "/foreign-plan.json"
-        local denied = ports.authorize_cli_effect({
+        local denied = ports.authorize_effect({
           action_envelope = foreign_plan,
           artifact_root = context.request.structured_execution.artifact_root,
         })
@@ -212,7 +218,7 @@ return {
 
         local fresh_fence = support.copy(envelope)
         fresh_fence.fence_id = fresh_fence.fence_id .. "-fresh"
-        denied = ports.authorize_cli_effect({
+        denied = ports.authorize_effect({
           action_envelope = fresh_fence,
           artifact_root = context.request.structured_execution.artifact_root,
         })
@@ -221,14 +227,26 @@ return {
         expect_gateway_rejection(gateway_request(fresh_fence, denied))
 
         local shell = support.copy(envelope)
-        shell.case.argv = { "sh", "-c", "exit 0" }
-        denied = ports.authorize_cli_effect({
+        shell.effect.argv = { "sh", "-c", "exit 0" }
+        denied = ports.authorize_effect({
           action_envelope = shell,
           artifact_root = context.request.structured_execution.artifact_root,
         })
         t.eq(denied.decision, "deny")
         t.eq(denied.reason_code, "malformed-envelope")
         expect_gateway_rejection(gateway_request(shell, denied))
+
+        local oversized = support.copy(envelope)
+        oversized.trace_id = string.rep("x", 181)
+        denied = ports.authorize_effect({
+          action_envelope = oversized,
+          artifact_root = context.request.structured_execution.artifact_root,
+          replay_owner_generation = request.replay_owner_generation,
+        })
+        t.eq(denied.decision, "deny")
+        t.eq(denied.reason_code, "malformed-envelope")
+        t.eq(denied.trace_id, "invalid-trace")
+        t.eq(contract.validate_effect_authorization_receipt(denied), denied)
 
         local result = production_exec_argv(request)
         expect_failure("durable structured CLI authorization receipt is replayed", function()
@@ -246,8 +264,13 @@ return {
         local failed = durable.load(context.project_root, context.durable_root, context.run_id)
         local authorization = failed.store:load(
           context.request.structured_execution.artifact_root .. "/authorization/cli-version.json")
-        error("generic-host runtime authorization lifecycle blocked: " .. tostring(outcome.message)
-          .. " reason=" .. tostring(authorization and authorization.value.reason_code))
+        error("generic-host runtime authorization lifecycle blocked: outcome="
+          .. json_codec.encode(outcome)
+          .. " reason=" .. tostring(authorization and authorization.value.reason_code)
+          .. " journals=" .. json_codec.encode(failed.records:list("testing-runner/effect-executions"))
+          .. " recoveries=" .. json_codec.encode(failed.records:list("testing-runner/replay-owners"))
+          .. " consumptions=" .. json_codec.encode(
+            failed.records:list("testing-runner/cli-effect-consumptions")))
       end
       t.eq(outcome.status, "passed")
       t.eq(outcome.replayed, false)
@@ -302,6 +325,267 @@ return {
       t.eq(process.effect_count(context), 1)
     end)
     cleanup(io_link)
+    context:cleanup()
+    if not ok then error(err, 0) end
+  end,
+
+  test_canonical_cli_rejects_legacy_consumption_records_without_reexecution = function()
+    for _, format in ipairs({ "legacy-js-grant", "legacy-lua-receipt" }) do
+      local context = support.new({
+        cli_only = true,
+        count_effect = true,
+        durable = true,
+        prepare_execution_grant_pending = false,
+      })
+      local io_link = ".testing/runs/" .. context.run_id
+      local ok, err = pcall(function()
+        cleanup(io_link)
+        os.execute("mkdir -p .testing/runs")
+        local linked = os.execute("ln -s "
+          .. shell_quote(context.project_root .. "/" .. io_link) .. " " .. shell_quote(io_link))
+        if linked ~= true and linked ~= 0 then error("generic-host compatibility test: failed to link run I/O") end
+        local preparation = durable.load(context.project_root, context.durable_root, context.run_id)
+        local prepared = supervisor_support.prepare_phase(
+          preparation, context.project_root, "structured-execution-pending")
+        local structured = supervisor_support.load_package(
+          context.project_root, "testing-runner", "structured_execution")
+        local ports = structured_runtime.production({
+          runtime_cli = context.project_root .. "/packages/generic-host/bin/generic-host-runtime.js",
+          runtime_config_ref = { kind = "artifact", ref = context.runtime_config_ref },
+          exec_argv = generic_runtime_exec(context),
+        })
+        local production_exec_argv = ports.exec_argv
+        ports.exec_argv = function(request)
+          local current = durable.load(context.project_root, context.durable_root, context.run_id)
+          local envelope = request.action_envelope
+          local grant = current.store:load(envelope.grant_ref)
+          local key
+          if format == "legacy-js-grant" then
+            key = "testing-runner/cli-effect-consumptions/" .. current:_key(grant.value.grant_id)
+          else
+            local legacy = support.copy(envelope)
+            legacy.schema = "testing-cli-action-envelope.v1"
+            legacy.effect_kind = "cli"
+            legacy.capability = "direct-argv"
+            legacy.case = support.copy(envelope.effect)
+            legacy.effect = nil
+            legacy.ready_origin = nil
+            local legacy_sha256 = current.records:digest(json_codec.encode(legacy))
+            local legacy_receipt_id = "durable-cli-effect-" .. legacy_sha256:sub(1, 32)
+            key = "testing-runner/cli-effect-consumptions/" .. current:_key(legacy_receipt_id)
+          end
+          local seeded = current.records:claim(key, { binding = { seeded = format } })
+          t.eq(seeded.claimed, true)
+          expect_failure("durable structured CLI authorization receipt is replayed", function()
+            production_exec_argv(request)
+          end)
+          return nil
+        end
+        local outcome = structured.run(prepared.pending_action.payload, ports)
+        t.eq(outcome.status, "blocked")
+        local recovered = durable.load(context.project_root, context.durable_root, context.run_id)
+        t.eq(process.effect_count(context), 0)
+        t.eq(#recovered.records:list("testing-runner/target-effects"), 0)
+        t.eq(#recovered.records:list("testing-runner/effect-executions"), 0)
+        t.eq(#recovered.records:list("testing-runner/effect-compatibility"), 1)
+      end)
+      cleanup(io_link)
+      context:cleanup()
+      if not ok then error(err, 0) end
+    end
+  end,
+
+  test_generic_host_runtime_http_gateway_rejects_invalid_receipts_before_target_effect = function()
+    local context = support.new({
+      http_only = true,
+      count_effect = true,
+      durable = true,
+      prepare_execution_grant_pending = false,
+    })
+    local io_link = ".testing/runs/" .. context.run_id
+    local ok, err = pcall(function()
+      cleanup(io_link)
+      os.execute("mkdir -p .testing/runs")
+      local linked = os.execute("ln -s "
+        .. shell_quote(context.project_root .. "/" .. io_link) .. " " .. shell_quote(io_link))
+      if linked ~= true and linked ~= 0 then error("generic-host runtime HTTP test: failed to link run I/O") end
+      local preparation = durable.load(context.project_root, context.durable_root, context.run_id)
+      local prepared = supervisor_support.prepare_phase(
+        preparation, context.project_root, "structured-execution-pending")
+      local structured = supervisor_support.load_package(
+        context.project_root, "testing-runner", "structured_execution")
+      local ports = structured_runtime.production({
+        runtime_cli = context.project_root .. "/packages/generic-host/bin/generic-host-runtime.js",
+        runtime_config_ref = { kind = "artifact", ref = context.runtime_config_ref },
+        exec_argv = generic_runtime_exec(context),
+      })
+      local production_http_request = ports.http_request
+      local authorized_request
+
+      local function gateway_request(envelope, receipt)
+        return {
+          action_envelope = support.copy(envelope),
+          authorization_receipt = receipt and support.copy(receipt) or nil,
+          artifact_root = context.request.structured_execution.artifact_root,
+        }
+      end
+
+      local function assert_unconsumed()
+        local current = durable.load(context.project_root, context.durable_root, context.run_id)
+        t.eq(#current.records:list("testing-runner/cli-effect-authorizations"), 1)
+        t.eq(#current.records:list("testing-runner/cli-effect-consumptions"), 0)
+        t.eq(#current.records:list("testing-runner/target-effects"), 0)
+        t.eq(process.http_effect_count(context), 0)
+      end
+
+      local function expect_rejection(request, fragment)
+        expect_failure(fragment or "durable structured HTTP authorization receipt is unavailable", function()
+          production_http_request(request)
+        end)
+        assert_unconsumed()
+      end
+
+      ports.http_request = function(request)
+        if authorized_request ~= nil then error("generic-host runtime HTTP test: duplicate execution request") end
+        authorized_request = support.copy(request)
+        local envelope = request.action_envelope
+        local receipt = request.authorization_receipt
+
+        expect_rejection(gateway_request(envelope, nil))
+
+        local denied = support.copy(receipt)
+        denied.decision = "deny"
+        denied.reason_code = "scope-denied"
+        expect_rejection(gateway_request(envelope, denied))
+
+        local malformed = support.copy(receipt)
+        malformed.auth_tag = string.rep("0", 64)
+        expect_rejection(gateway_request(envelope, malformed))
+
+        local expired = support.copy(receipt)
+        expired.expires_at = "2026-07-22T00:19:59Z"
+        expect_rejection(gateway_request(envelope, expired))
+
+        local foreign = support.copy(envelope)
+        foreign.plan_sha256 = string.rep("0", 64)
+        expect_rejection(gateway_request(foreign, receipt))
+
+        local foreign_plan = support.copy(envelope)
+        foreign_plan.plan_ref = context.request.structured_execution.artifact_root .. "/foreign-http-plan.json"
+        local authority_denial = ports.authorize_effect({
+          action_envelope = foreign_plan,
+          artifact_root = context.request.structured_execution.artifact_root,
+        })
+        t.eq(authority_denial.decision, "deny")
+        t.eq(authority_denial.reason_code, "foreign-binding")
+        expect_rejection(gateway_request(foreign_plan, authority_denial))
+
+        local result = production_http_request(request)
+        expect_failure("durable structured HTTP authorization receipt is replayed", function()
+          production_http_request(request)
+        end)
+        return result
+      end
+
+      local outcome = structured.run(prepared.pending_action.payload, ports)
+      if outcome.status ~= "passed" then
+        local failed = durable.load(context.project_root, context.durable_root, context.run_id)
+        local authorization = failed.store:load(
+          context.request.structured_execution.artifact_root .. "/authorization/health.json")
+        error("generic-host runtime HTTP authorization lifecycle blocked: outcome="
+          .. json_codec.encode(outcome)
+          .. " reason=" .. tostring(authorization and authorization.value.reason_code)
+          .. " journals=" .. json_codec.encode(failed.records:list("testing-runner/effect-executions"))
+          .. " recoveries=" .. json_codec.encode(failed.records:list("testing-runner/replay-owners"))
+          .. " consumptions=" .. json_codec.encode(
+            failed.records:list("testing-runner/cli-effect-consumptions")))
+      end
+      t.eq(outcome.status, "passed")
+      t.eq(outcome.passed_count, 1)
+      t.is_true(type(authorized_request) == "table")
+      local recovered = durable.load(context.project_root, context.durable_root, context.run_id)
+      t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
+      t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
+      t.eq(#recovered.records:list("testing-runner/target-effects"), 1)
+      t.eq(process.http_effect_count(context), 1)
+      local target = recovered.records:list("testing-runner/target-effects")[1].value
+      t.eq(target.binding.action_envelope.effect.kind, "http")
+      t.eq(target.binding.action_envelope.effect.origin, context.origin)
+      t.eq(target.binding.action_envelope.effect.port, context.port)
+      t.eq(target.result.status, 200)
+    end)
+    cleanup(io_link)
+    context:cleanup()
+    if not ok then error(err, 0) end
+  end,
+
+  test_generic_host_runtime_rejects_http_redirect_without_following = function()
+    local context = support.new({
+      http_only = true,
+      count_effect = true,
+      durable = true,
+      http_redirect_response = true,
+      prepare_execution_grant_pending = false,
+    })
+    local io_link = ".testing/runs/" .. context.run_id
+    local ok, err = pcall(function()
+      cleanup(io_link)
+      os.execute("mkdir -p .testing/runs")
+      local linked = os.execute("ln -s "
+        .. shell_quote(context.project_root .. "/" .. io_link) .. " " .. shell_quote(io_link))
+      if linked ~= true and linked ~= 0 then error("generic-host redirect test: failed to link run I/O") end
+      local preparation = durable.load(context.project_root, context.durable_root, context.run_id)
+      local prepared = supervisor_support.prepare_phase(
+        preparation, context.project_root, "structured-execution-pending")
+      local structured = supervisor_support.load_package(
+        context.project_root, "testing-runner", "structured_execution")
+      local ports = structured_runtime.production({
+        runtime_cli = context.project_root .. "/packages/generic-host/bin/generic-host-runtime.js",
+        runtime_config_ref = { kind = "artifact", ref = context.runtime_config_ref },
+        exec_argv = generic_runtime_exec(context),
+      })
+      local outcome = structured.run(prepared.pending_action.payload, ports)
+      t.eq(outcome.status, "blocked")
+      t.eq(outcome.error_count, 1)
+      local recovered = durable.load(context.project_root, context.durable_root, context.run_id)
+      t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
+      t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
+      t.eq(#recovered.records:list("testing-runner/target-effects"), 0)
+      local journals = recovered.records:list("testing-runner/effect-executions")
+      t.eq(#journals, 1)
+      t.eq(journals[1].value.status, "started")
+      t.eq(process.http_effect_count(context), 1)
+    end)
+    cleanup(io_link)
+    context:cleanup()
+    if not ok then error(err, 0) end
+  end,
+
+  test_durable_lua_http_gateway_rejects_redirect_without_following = function()
+    local context = support.new({
+      http_only = true,
+      count_effect = true,
+      durable = true,
+      http_redirect_response = true,
+      prepare_execution_grant_pending = false,
+    })
+    local ok, err = pcall(function()
+      local preparation = durable.load(context.project_root, context.durable_root, context.run_id)
+      local prepared = supervisor_support.prepare_phase(
+        preparation, context.project_root, "structured-execution-pending")
+      local structured = supervisor_support.load_package(
+        context.project_root, "testing-runner", "structured_execution")
+      local outcome = structured.run(prepared.pending_action.payload, preparation.structured_runtime)
+      t.eq(outcome.status, "blocked")
+      t.eq(outcome.error_count, 1)
+      local recovered = durable.load(context.project_root, context.durable_root, context.run_id)
+      t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
+      t.eq(#recovered.records:list("testing-runner/target-effects"), 0)
+      local journals = recovered.records:list("testing-runner/effect-executions")
+      t.eq(#journals, 1)
+      t.eq(journals[1].value.status, "started")
+      t.eq(process.http_effect_count(context), 1)
+    end)
     context:cleanup()
     if not ok then error(err, 0) end
   end,

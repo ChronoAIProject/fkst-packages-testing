@@ -102,7 +102,16 @@ Payloads must carry small control fields and artifact pointers only; large repor
 Structured execution uses the independent plan, grant, and executor seams documented in
 `structured-execution.v2.md`. Fixed API/CLI execution does not extend legacy module `native_argv`
 authority: every plan requires a separate authenticated single-use grant bound to the plan digest
-and exact positive capabilities.
+and exact positive capabilities. At point of use the runner constructs a closed
+`testing-action-envelope.v1`, calls the Host-owned `authorize_effect` boundary, persists the bounded
+allow/deny receipt, and passes the envelope plus allow receipt to the physical gateway. CLI and exact
+planned/granted numeric-loopback HTTP requests share this decision contract and receipt store; HTTP
+has no receipt-free direct execution path. The default generic-host fixture narrows this to `GET /health`.
+A live duplicate replay is an internal `in-progress` outcome: it performs no authorization or target effect,
+writes no execution artifacts, and emits no `testing_result`. Durable CLI/HTTP journals are at-most-once:
+`started` is indeterminate and never retried automatically, while `completed` reuses the exact persisted result.
+Legacy CLI-only hosts may continue to expose
+`authorize_cli_effect` while migrating to the canonical boundary.
 
 Agentic browser execution uses `testing-runner.ai_browser_control_request` and
 `agentic-browser-execution.v1.md`. It accepts only a one-case `agentic-browser` plan and exact-target

@@ -3,6 +3,7 @@ local execution = require("contract.structured_execution")
 local environment_factory = require("contract.environment_factory")
 local json_codec = require("testing_runtime.json")
 local project_profile = require("contract.project_profile")
+local structured_effect_binding = require("host_structured_effect_binding")
 local workflow_qa = require("contract.workflow_qa")
 
 local M = {}
@@ -304,6 +305,7 @@ function Context:_structured_runtime()
   local context = self
   local claims = {}
   local authorizations = {}
+  local consumed = {}
   local function argv_allowed(argv, capabilities)
     for _, capability in ipairs(capabilities or {}) do
       local prefix = capability.argv_prefix or {}
@@ -315,13 +317,54 @@ function Context:_structured_runtime()
     end
     return false
   end
+  local function contains(values, expected)
+    for _, value in ipairs(values or {}) do if value == expected then return true end end
+    return false
+  end
+  local function http_allowed(effect, capabilities)
+    for _, capability in ipairs(capabilities or {}) do
+      if capability.origin == effect.origin and contains(capability.methods, effect.method) then
+        for _, prefix in ipairs(capability.path_prefixes or {}) do
+          if effect.path:sub(1, #prefix) == prefix then return true end
+        end
+      end
+    end
+    return false
+  end
+  local function validate_envelope(envelope)
+    if envelope.schema == execution.schemas.action_envelope then
+      return pcall(execution.validate_action_envelope, envelope), envelope.effect, false
+    end
+    return pcall(execution.validate_cli_action_envelope, envelope), envelope.case, true
+  end
+  local function planned_effect_matches(planned, effect, legacy)
+    if legacy or effect.kind == "cli" then return equal(planned, effect) end
+    return type(planned) == "table" and planned.kind == "http"
+      and planned.case_id == effect.case_id
+      and planned.timeout_seconds == effect.timeout_seconds
+      and equal(planned.assertions, effect.assertions)
+      and equal(planned.request, {
+        method = effect.method, url = effect.origin .. effect.path, headers = effect.headers,
+      })
+  end
+  local function consume(envelope, receipt)
+    execution.validate_effect_authorization_receipt(receipt, envelope, "2026-07-22T00:20:00Z")
+    local issued = authorizations[receipt.receipt_id]
+    local key = receipt.receipt_id .. "\0" .. receipt.envelope_sha256
+    if receipt.decision ~= "allow" or issued == nil or not equal(issued, receipt) or consumed[key] then
+      error("canonical structured effect authorization receipt is unavailable or replayed")
+    end
+    consumed[key] = true
+    authorizations[receipt.receipt_id] = nil
+  end
   local function decision(envelope, value, reason, inputs)
     local envelope_sha256 = sha256_bytes(json_codec.encode(envelope))
     local receipt = {
       schema = execution.schemas.effect_authorization_receipt,
       decision = value,
       reason_code = reason,
-      receipt_id = "canonical-cli-effect-" .. envelope_sha256:sub(1, 32),
+      receipt_id = (envelope.schema == execution.schemas.cli_action_envelope
+        and "canonical-cli-effect-" or "canonical-effect-") .. envelope_sha256:sub(1, 32),
       envelope_sha256 = envelope_sha256,
       evaluated_input_digests = inputs,
       issued_at = "2026-07-22T00:20:00Z",
@@ -334,7 +377,7 @@ function Context:_structured_runtime()
     if value == "allow" then authorizations[receipt.receipt_id] = copy(receipt) end
     return receipt
   end
-  return {
+  local ports = {
     load_artifact = function(path) return context.store:load(path) end,
     now = function(request)
       if request.artifact_root ~= context.request.structured_execution.artifact_root then
@@ -357,14 +400,14 @@ function Context:_structured_runtime()
         if claim.completed then return { status = "completed", result_ref = claim.result_ref } end
         return { status = "in-progress" }
       end
-      claim = { claim_id = context.run_id .. "-execution-claim" }
+      claim = { claim_id = context.run_id .. "-execution-claim", binding = copy(request) }
       claims[request.grant_id] = claim
       context.execution_claims = context.execution_claims + 1
       return { status = "claimed", claim_id = claim.claim_id }
     end,
-    authorize_cli_effect = function(request)
+    authorize_effect = function(request)
       local envelope = request.action_envelope
-      local ok = pcall(execution.validate_cli_action_envelope, envelope)
+      local ok, effect, legacy = validate_envelope(envelope)
       local empty = {
         profile = string.rep("0", 64), validation_receipt = string.rep("0", 64),
         preauthorization = string.rep("0", 64), environment_receipt = string.rep("0", 64),
@@ -373,6 +416,9 @@ function Context:_structured_runtime()
       if not ok then return decision(envelope, "deny", "malformed-envelope", empty) end
       local profile = context.store:load(envelope.profile_ref)
       local validation = context.store:load(envelope.validation_receipt_ref)
+      local approval_ref = validation and validation.value and validation.value.approval_ref
+      local approval = type(approval_ref) == "table" and type(approval_ref.ref) == "string"
+        and context.store:load(approval_ref.ref) or nil
       local preauthorization = context.store:load(envelope.preauthorization_ref)
       local environment = context.store:load(envelope.environment_receipt_ref)
       local plan = context.store:load(envelope.plan_ref)
@@ -385,12 +431,20 @@ function Context:_structured_runtime()
         plan = plan and plan.digest or empty.plan,
         grant = grant and grant.digest or empty.grant,
       }
-      if profile == nil or validation == nil or preauthorization == nil
+      if profile == nil or approval == nil or validation == nil or preauthorization == nil
         or environment == nil or plan == nil or grant == nil then
         return decision(envelope, "deny", "missing-input", inputs)
       end
-      local valid = pcall(project_profile.validate_profile, profile.value)
-        and pcall(project_profile.validate_validation_receipt, validation.value)
+      local verification_context = {
+        now = "2026-07-22T00:20:00Z",
+        sha256 = sha256_bytes,
+        trusted_authorities = context.authorization_context.trusted_authorities,
+        approval_ref = copy(context.authorization_context.approval_ref),
+      }
+      local profile_authorization_verified = pcall(
+        project_profile.verify_execution_authorization,
+        profile.value, approval.value, validation.value, verification_context)
+      local valid = profile_authorization_verified
         and pcall(execution.validate_preauthorization, preauthorization.value, "2026-07-22T00:20:00Z")
         and pcall(environment_factory.validate_receipt, environment.value)
         and pcall(execution.validate_plan, plan.value)
@@ -401,10 +455,47 @@ function Context:_structured_runtime()
       end
       local planned_case
       for _, item in ipairs(evaluated_plan.cases or {}) do
-        if item.case_id == envelope.case.case_id then planned_case = item end
+        if item.case_id == effect.case_id then planned_case = item end
       end
-      if not valid or profile.digest ~= envelope.profile_artifact_sha256
-        or project_profile.profile_sha256(profile.value, sha256_bytes) ~= envelope.profile_sha256
+      local profile_budget = profile.value.resource_budgets or {}
+      local environment_origin = type(environment.value.base_url) == "string"
+        and environment.value.base_url:match("^(http://127%.0%.0%.1:%d+)") or nil
+      local effect_allowed = effect.kind == "cli"
+        and argv_allowed(effect.argv, preauthorization.value.capabilities.cli)
+        and argv_allowed(effect.argv, grant.value.cli_capabilities)
+        or effect.kind == "http"
+        and contains(profile.value.allowed_origins, effect.origin)
+        and http_allowed(effect, preauthorization.value.capabilities.http)
+        and http_allowed(effect, grant.value.http_capabilities)
+      local claim = claims[grant.value.grant_id]
+      local binding = claim and claim.binding or nil
+      local replay_owned = type(claim) == "table" and claim.claim_id == envelope.fence_id
+        and type(binding) == "table" and binding.grant_id == grant.value.grant_id
+        and binding.grant_sha256 == grant.digest and binding.plan_sha256 == plan.digest
+        and binding.environment_receipt_sha256 == environment.digest
+        and binding.operation_id == envelope.operation_id and binding.artifact_root == request.artifact_root
+        and binding.trace_id == envelope.trace_id and binding.dedup_key == envelope.dedup_key
+        and execution.same_repository(binding.repository, envelope.repository)
+      local profile_sha256 = project_profile.profile_sha256(profile.value, sha256_bytes)
+      local bindings_match = structured_effect_binding.matches({
+        envelope = envelope,
+        artifacts = {
+          profile = profile, approval = approval, validation = validation,
+          preauthorization = preauthorization, environment = environment,
+          plan = plan, grant = grant,
+        },
+        profile_authorization_verified = profile_authorization_verified,
+        profile_sha256 = profile_sha256,
+        expected_base_url = effect.kind == "http" and context.base_url or nil,
+        expected_runtime_ports = effect.kind == "http"
+          and { { name = "application", port = effect.port } } or nil,
+        expected_grant_evidence_ref = {
+          kind = "signed-attestation", ref = context.run_id .. "-execution-grant",
+        },
+      })
+      if not valid or not bindings_match
+        or profile.digest ~= envelope.profile_artifact_sha256
+        or profile_sha256 ~= envelope.profile_sha256
         or validation.digest ~= envelope.validation_receipt_sha256
         or validation.value.profile_sha256 ~= envelope.profile_sha256
         or preauthorization.digest ~= envelope.preauthorization_sha256
@@ -416,40 +507,51 @@ function Context:_structured_runtime()
         or grant.value.plan_sha256 ~= plan.digest
         or grant.value.environment_receipt_sha256 ~= environment.digest
         or not equal(environment.value.workspace_ref, envelope.workspace_ref)
-        or not equal(planned_case, envelope.case)
-        or not argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
-        or not argv_allowed(envelope.case.argv, grant.value.cli_capabilities) then
+        or not planned_effect_matches(planned_case, effect, legacy)
+        or envelope.resource_bounds.output_bytes ~= profile_budget.output_bytes
+        or effect.kind == "http" and (
+          envelope.ready_origin ~= context.origin or environment_origin ~= envelope.ready_origin
+          or envelope.resource_bounds.network_requests ~= 1
+          or profile_budget.network_requests == nil or profile_budget.network_requests < 1)
+        or not effect_allowed then
         return decision(envelope, "deny", "foreign-binding", inputs)
       end
+      if not replay_owned then return decision(envelope, "deny", "foreign-fence", inputs) end
       return decision(envelope, "allow", "authorized", inputs)
     end,
     exec_argv = function(request)
       local envelope = request.action_envelope
       local receipt = request.authorization_receipt
-      execution.validate_cli_action_envelope(envelope)
-      execution.validate_effect_authorization_receipt(receipt, envelope, "2026-07-22T00:20:00Z")
-      local issued = authorizations[receipt.receipt_id]
-      if receipt.decision ~= "allow" or issued == nil or not equal(issued, receipt) then
-        error("canonical structured CLI authorization receipt is unavailable or replayed")
-      end
-      authorizations[receipt.receipt_id] = nil
+      local ok, effect = validate_envelope(envelope)
+      if not ok or effect.kind ~= "cli" then error("canonical structured CLI envelope is malformed") end
+      consume(envelope, receipt)
       if envelope.operation_id ~= context.run_id
         or envelope.workspace_ref.ref ~= context.run_id .. "-workspace"
         or envelope.repository.commit_sha ~= context.commit_sha then
         error("canonical structured CLI request is not bound to the ready workspace")
       end
-      table.insert(context.target_effects, { kind = "cli", argv = copy(envelope.case.argv) })
-      return direct_exec(envelope.case.argv, context.workspace_root)
+      table.insert(context.target_effects, { kind = "cli", argv = copy(effect.argv) })
+      return direct_exec(effect.argv, context.workspace_root)
     end,
-    http_request = function(input)
-      if input.operation_id ~= context.run_id or input.base_url ~= context.base_url
-        or input.request.url ~= context.base_url then
+    http_request = function(request)
+      local envelope = request.action_envelope
+      local receipt = request.authorization_receipt
+      local ok, effect, legacy = validate_envelope(envelope)
+      if not ok or legacy or effect.kind ~= "http" then
+        error("canonical structured HTTP envelope is malformed")
+      end
+      consume(envelope, receipt)
+      if envelope.operation_id ~= context.run_id or envelope.ready_origin ~= context.origin
+        or effect.origin ~= context.origin or effect.host ~= "127.0.0.1"
+        or effect.port ~= context.port or effect.method ~= "GET" or effect.path ~= "/health" then
         error("canonical structured HTTP request is not bound to the ready environment")
       end
+      local result = http_request(
+        { method = effect.method, url = effect.origin .. effect.path }, effect.timeout_seconds)
       table.insert(context.target_effects, {
-        kind = "http", method = input.request.method, url = input.request.url,
+        kind = "http", method = effect.method, url = effect.origin .. effect.path,
       })
-      return http_request(input.request, input.timeout_seconds)
+      return result
     end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
     load_result = function(request)
@@ -478,6 +580,15 @@ function Context:_structured_runtime()
       return false
     end,
   }
+  ports.authorize_cli_effect = function(request)
+    local envelope = request.action_envelope
+    if type(envelope) ~= "table" or envelope.schema ~= execution.schemas.cli_action_envelope
+      or type(envelope.case) ~= "table" or envelope.case.kind ~= "cli" then
+      error("canonical legacy CLI authorization accepts only legacy CLI envelopes")
+    end
+    return ports.authorize_effect(request)
+  end
+  return ports
 end
 
 function Context:_publication_runtime()
@@ -606,6 +717,9 @@ function Context:framework_environment(label, arm_failpoint)
   if type(self.runtime_pep_denial) == "table" then
     environment.FKST_GENERIC_HOST_FIXTURE_CLI_DENY_TOKEN = self.runtime_pep_denial.token
   end
+  if type(self.runtime_pep_plan_mutation) == "table" then
+    environment.FKST_GENERIC_HOST_FIXTURE_HTTP_PLAN_MUTATION_TOKEN = self.runtime_pep_plan_mutation.token
+  end
   return environment
 end
 
@@ -704,7 +818,19 @@ function M.new(options)
   local trace_id = "trace-" .. run_id
   local dedup_key = run_id
   local origin = "http://127.0.0.1:" .. tostring(port)
-  local base_url = origin .. "/health"
+  local base_url = origin .. "/ready"
+  local target_url = origin .. "/health"
+  local effect_counter_path = options.effect_counter_path
+  if effect_counter_path == nil and options.count_effect == true then
+    effect_counter_path = temp_root .. "/effect-invocations"
+  end
+  local cli_effect_counter_path = effect_counter_path and effect_counter_path .. "/cli" or nil
+  local http_effect_counter_path = effect_counter_path and effect_counter_path .. "/http" or nil
+  local server_argv = { "node", "server.js", tostring(port) }
+  if http_effect_counter_path ~= nil then
+    server_argv = { "node", "server.js", tostring(port), "--count-effect", http_effect_counter_path }
+  end
+  if options.http_redirect_response == true then table.insert(server_argv, "--redirect-health") end
   local profile_ref = ref(artifact_root .. "/authorization/profile.json")
   local approval_ref = ref(artifact_root .. "/authorization/approval.json")
   local validation_ref = ref(artifact_root .. "/authorization/profile-validation.json")
@@ -718,7 +844,7 @@ function M.new(options)
     commands = {
       install = { "npm", "ci", "--offline", "--ignore-scripts" },
       build = { "npm", "run", "build" },
-      start = { "node", "server.js", tostring(port) },
+      start = server_argv,
       cleanup = { "node", "cleanup.js" },
     },
     application_listener_mode = project_profile.listener_mode,
@@ -765,7 +891,7 @@ function M.new(options)
   }
   local authorization_claim
   local authorization_context = {
-    now = "2026-07-22T00:10:00Z",
+    now = "2026-07-22T00:19:00Z",
     sha256 = sha256_bytes,
     trusted_authorities = { trusted },
     approval_ref = approval_ref,
@@ -796,13 +922,9 @@ function M.new(options)
   assert(store:write(analysis_approval_ref.ref, analysis_approval))
 
   local catalog_ref = artifact_root .. "/execution/case-catalog.json"
-  local effect_counter_path = options.effect_counter_path
-  if effect_counter_path == nil and options.count_effect == true then
-    effect_counter_path = temp_root .. "/effect-invocations"
-  end
   local cli_argv = { "node", "cli.js", "--version" }
-  if effect_counter_path ~= nil then
-    cli_argv = { "node", "cli.js", "--count-effect", effect_counter_path, "--version" }
+  if cli_effect_counter_path ~= nil then
+    cli_argv = { "node", "cli.js", "--count-effect", cli_effect_counter_path, "--version" }
   end
   local completed_replay_failpoint
   if options.arm_completed_replay_failpoint == true then
@@ -816,6 +938,8 @@ function M.new(options)
     ["workflow-after-state-save"] = true,
     ["cleanup-after-effect"] = true,
     ["publication-after-effect"] = true,
+    ["http-after-response-before-journal-complete"] = true,
+    ["http-after-journal-complete-before-return"] = true,
   }
   local crash_barrier
   if type(options.crash_barrier) == "string" then
@@ -837,22 +961,30 @@ function M.new(options)
       token = sha256_bytes(run_id .. "\0fixture-cli-effect-denial"),
     }
   end
-  local catalog_cases = {
-    {
+  local runtime_pep_plan_mutation
+  if options.runtime_pep_mutate_plan_digest == true then
+    runtime_pep_plan_mutation = {
+      field = "plan_sha256",
+      token = sha256_bytes(run_id .. "\0fixture-http-plan-mutation"),
+    }
+  end
+  local catalog_cases = {}
+  if options.http_only ~= true then
+    table.insert(catalog_cases, {
       design_case_id = "service:reachability",
       case_id = "cli-version",
       kind = "cli",
       argv = cli_argv,
       timeout_seconds = 10,
       assertions = { { type = "exit-code", expected = 0 } },
-    },
-  }
+    })
+  end
   if options.cli_only ~= true then
     table.insert(catalog_cases, {
       design_case_id = "service:page-load",
       case_id = "health",
       kind = "http",
-      request = { method = "GET", url = base_url, headers = {} },
+      request = { method = "GET", url = target_url, headers = {} },
       timeout_seconds = 10,
       assertions = {
         { type = "status-code", expected = 200 },
@@ -876,7 +1008,7 @@ function M.new(options)
     profile_sha256 = approval.profile_sha256,
     case_catalog_sha256 = store:digest(catalog_ref),
     capabilities = {
-      cli = { { argv_prefix = { "node", "cli.js" } } },
+      cli = options.http_only == true and {} or { { argv_prefix = { "node", "cli.js" } } },
       http = options.cli_only == true and {} or {
         { origin = origin, methods = { "GET" }, path_prefixes = { "/health" } },
       },
@@ -996,6 +1128,7 @@ function M.new(options)
     cdp_port = cdp_port,
     origin = origin,
     base_url = base_url,
+    target_url = target_url,
     run_id = run_id,
     artifact_root = artifact_root,
     temp_root = temp_root,
@@ -1019,10 +1152,14 @@ function M.new(options)
     preauthorization_claims = 0,
     terminal_records = 0,
     effect_counter_path = effect_counter_path,
+    cli_effect_counter_path = cli_effect_counter_path,
+    http_effect_counter_path = http_effect_counter_path,
     completed_replay_failpoint = completed_replay_failpoint,
     crash_barrier = crash_barrier,
     runtime_pep_denial = runtime_pep_denial,
+    runtime_pep_plan_mutation = runtime_pep_plan_mutation,
     pep_mutate_plan_binding = options.pep_mutate_plan_binding == true,
+    expected_case_count = #catalog_cases,
   }, Context)
   context.environment_runtime = context:_environment_runtime()
   context.workflow_runtime = context:_workflow_runtime()

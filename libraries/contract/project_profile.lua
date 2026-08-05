@@ -870,6 +870,23 @@ local function deep_copy(value)
   return copy
 end
 
+local function verify_execution_binding(profile, approval, receipt, context)
+  local profile_digest, approval_digest, now = validate_profile_approval_binding(profile, approval, context)
+  receipt_matches(profile, approval, receipt, context, profile_digest, approval_digest, now)
+  return profile_digest, approval_digest, deep_copy(profile)
+end
+
+function P.verify_execution_authorization(profile, approval, receipt, context)
+  only_fields(context, {
+    now = true,
+    sha256 = true,
+    trusted_authorities = true,
+    approval_ref = true,
+  }, "execution-verification-context")
+  local _, _, verified_profile = verify_execution_binding(profile, approval, receipt, context)
+  return verified_profile
+end
+
 function P.authorize_execution(profile, approval, receipt, context)
   only_fields(context, {
     now = true,
@@ -878,10 +895,10 @@ function P.authorize_execution(profile, approval, receipt, context)
     approval_ref = true,
     replay_guard = true,
   }, "execution-context")
-  local profile_digest, approval_digest, now = validate_profile_approval_binding(profile, approval, context)
-  receipt_matches(profile, approval, receipt, context, profile_digest, approval_digest, now)
+  local profile_digest, approval_digest, verified_profile = verify_execution_binding(
+    profile, approval, receipt, context)
   claim_replay_guard(profile, approval, receipt, profile_digest, approval_digest, context.replay_guard)
-  return deep_copy(profile)
+  return verified_profile
 end
 
 return P

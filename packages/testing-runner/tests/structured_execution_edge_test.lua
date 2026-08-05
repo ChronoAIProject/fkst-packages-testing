@@ -33,6 +33,10 @@ local function run_edge(mutate, options)
     replay_guard = function()
       return options.claim or { status = "claimed", claim_id = "claim-edges" }
     end,
+    authorize_effect = function(input)
+      if options.authorize_effect then return options.authorize_effect(input) end
+      return fixtures.authorization_receipt(input.action_envelope)
+    end,
     authorize_cli_effect = function(input)
       return fixtures.authorization_receipt(input.action_envelope)
     end,
@@ -41,7 +45,8 @@ local function run_edge(mutate, options)
       if options.exec_result == false then return nil end
       return { exit_code = 0, stdout = "ok", stderr = "" }
     end,
-    http_request = function()
+    http_request = function(input)
+      if options.http_request then return options.http_request(input) end
       if options.http_error then error("http unavailable") end
       return { status = 200, body = "ok" }
     end,
@@ -85,6 +90,7 @@ return {
 
     _G.structured_execution_runtime = nil
     local defaults = structured_execution.production_ports()
+    t.is_true(type(defaults.authorize_effect) == "function")
     t.is_true(type(defaults.exec_argv) == "function")
     t.is_true(type(defaults.http_request) == "function")
     _G.structured_execution_runtime = {}
@@ -168,6 +174,18 @@ return {
     local http_error = run_edge(function(_, _, plan, grant) http_case(plan, grant) end, { http_error = true })
     t.eq(http_error.status, "blocked")
     t.eq(http_error.error_count, 1)
+    local http_calls = 0
+    local denied_http = run_edge(function(_, _, plan, grant) http_case(plan, grant) end, {
+      authorize_effect = function(input)
+        return fixtures.authorization_receipt(input.action_envelope, "deny", "scope-denied")
+      end,
+      http_request = function()
+        http_calls = http_calls + 1
+        return { status = 200, body = "unexpected" }
+      end,
+    })
+    t.eq(denied_http.status, "blocked")
+    t.eq(http_calls, 0)
     t.eq(run_edge(nil, { exec_result = false }).status, "blocked")
     t.eq(run_edge(nil, { claim = { status = "busy" } }).status, "blocked")
     t.eq(run_edge(nil, { fail_evidence = true }).status, "blocked")

@@ -9,10 +9,12 @@ const { spawn } = require('child_process');
 const {
   acquireLock,
   authorizationArtifact,
+  processStartIdentity,
   stableStringify,
 } = require('../bin/runtime/common');
 const { runMeasuredCommand } = require('../bin/runtime/measured-command');
 const { listenersOwnedByProcessGroup } = require('../bin/runtime/platform');
+const { ownedLoopbackHttpRequest } = require('../bin/runtime/owned-loopback-http');
 const { dispatch, initialReadinessState, sha256 } = require('../bin/environment-factory-runtime');
 
 function delay(ms) {
@@ -75,6 +77,45 @@ async function spawnListener(addresses, temp) {
     throw new Error(`listener startup failed: ${ready.error}`);
   }
   return { child, ports: ready.ports };
+}
+
+async function spawnHttpListener(temp) {
+  const readyPath = path.join(temp, `http-listener-${process.pid}-${Date.now()}-${Math.random()}.json`);
+  const countPath = `${readyPath}.count`;
+  const source = `
+    const fs = require('fs');
+    const http = require('http');
+    const readyPath = process.argv[1];
+    const countPath = process.argv[2];
+    let count = 0;
+    const server = http.createServer((request, response) => {
+      count += 1;
+      fs.writeFileSync(countPath, String(count));
+      response.writeHead(200, { 'content-type': 'text/plain' });
+      response.end('healthy');
+    });
+    server.listen(0, '127.0.0.1', () => {
+      fs.writeFileSync(countPath, '0');
+      fs.writeFileSync(readyPath, JSON.stringify({ port: server.address().port }));
+    });
+    setInterval(() => {}, 1000);
+  `;
+  const child = spawn(process.execPath, ['-e', source, readyPath, countPath], {
+    detached: true,
+    stdio: 'ignore',
+  });
+  child.unref();
+  const deadline = Date.now() + 5_000;
+  while (!fs.existsSync(readyPath)) {
+    if (Date.now() >= deadline) {
+      stopGroup(child);
+      throw new Error(`HTTP listener readiness timed out: ${readyPath}`);
+    }
+    await delay(10);
+  }
+  const ready = JSON.parse(fs.readFileSync(readyPath, 'utf8'));
+  fs.rmSync(readyPath, { force: true });
+  return { child, port: ready.port, countPath };
 }
 
 async function main() {
@@ -163,6 +204,33 @@ async function main() {
     assert.strictEqual(wildcardResult.supported, true);
     assert.strictEqual(wildcardResult.owned, false);
     assert.match(wildcardResult.reason, /^non-loopback-listener:/);
+
+    const ownedHttp = await spawnHttpListener(temp);
+    const ownedHttpResource = {
+      pid: ownedHttp.child.pid,
+      pgid: ownedHttp.child.pid,
+      process_start_identity: processStartIdentity(ownedHttp.child.pid),
+    };
+    const ownedHttpEffect = {
+      kind: 'http', host: '127.0.0.1', port: ownedHttp.port,
+      method: 'GET', path: '/health', timeout_seconds: 5,
+    };
+    const ownedHttpResponse = await ownedLoopbackHttpRequest({
+      resource: ownedHttpResource,
+      effect: ownedHttpEffect,
+      outputBytes: 1024,
+    });
+    assert.strictEqual(ownedHttpResponse.status, 200);
+    assert.strictEqual(ownedHttpResponse.body, 'healthy');
+    assert.strictEqual(fs.readFileSync(ownedHttp.countPath, 'utf8'), '1');
+    await assert.rejects(() => ownedLoopbackHttpRequest({
+      resource: { ...ownedHttpResource, pgid: ownedHttpResource.pgid + 1 },
+      effect: ownedHttpEffect,
+      outputBytes: 1024,
+    }), /foreign-connection|not owned/);
+    assert.strictEqual(fs.readFileSync(ownedHttp.countPath, 'utf8'), '1');
+    stopGroup(ownedHttp.child);
+    fs.rmSync(ownedHttp.countPath, { force: true });
 
     const effectPayload = {
       effect_id: `node-runtime-${process.pid}/readiness-attempt`,

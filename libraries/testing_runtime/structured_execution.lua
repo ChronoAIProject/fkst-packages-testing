@@ -72,6 +72,12 @@ local function call_cli(name, payload, timeout, options)
   return client(options).call(name, payload, root, identity, timeout)
 end
 
+local function effect_timeout(request)
+  local envelope = type(request) == "table" and request.action_envelope or nil
+  local effect = type(envelope) == "table" and (envelope.effect or envelope.case) or nil
+  return type(effect) == "table" and effect.timeout_seconds or request.timeout_seconds or 30
+end
+
 function M.production(options)
   return {
     load_artifact = function(path)
@@ -89,14 +95,17 @@ function M.production(options)
     replay_guard = function(request)
       return call_cli("replay-guard", request, 15, options)
     end,
+    authorize_effect = function(request)
+      return call_cli("authorize-effect", request, 15, options)
+    end,
     authorize_cli_effect = function(request)
       return call_cli("authorize-cli-effect", request, 15, options)
     end,
     exec_argv = function(request)
-      return call_cli("exec-argv", request, (request.timeout_seconds or 30) + 3, options)
+      return call_cli("exec-argv", request, effect_timeout(request) + 3, options)
     end,
     http_request = function(request)
-      return call_cli("http-request", request, (request.timeout_seconds or 30) + 3, options)
+      return call_cli("http-request", request, effect_timeout(request) + 3, options)
     end,
     write_artifact = function(path, value)
       local result = call_cli("write-artifact", {

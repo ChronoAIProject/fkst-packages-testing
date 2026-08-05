@@ -53,8 +53,12 @@ Environment Factory 的终态结果包含 immutable typed cleanup-receipt 指针
 
 对于 headless API/CLI 计划，host 使用 `contracts/structured-execution.v2.md` 定义的
 `testing-runner.structured-execution.request.v3` pointer-only seam。独立、已认证、单次使用的 approval
-把精确 plan digest 绑定到正向 argv 与 HTTP capability；runner 只有在 point-of-use 验证和原子 replay
-claim 后才执行 direct argv/HTTP effect，并继续复用现有 artifact/publication packages。
+把精确 plan digest 绑定到正向 argv 与 HTTP capability；runner 在 point-of-use 构造统一的 canonical
+Action Envelope，并调用 Host-owned Local PEP。CLI 与受控的 numeric-loopback `GET /health` HTTP case
+都必须先获得、持久化并由物理 gateway 原子消费单次 allow receipt，之后才允许 direct argv 或 HTTP
+effect。仍存活 owner 的并发重放只返回内部 `in-progress`，不会执行 effect、写 execution artifact 或发布
+`testing_result`；durable effect 使用 at-most-once 语义，`started` 表示物理结果不确定且不会自动重试，
+`completed` replay 不会重复执行任一 target effect，并继续复用现有 artifact/publication packages。
 
 GitHub 可见的 durable QA 报告使用 `contracts/qa-publication.v1.md` 中的 checkpoint 与 finalize
 seam。`test-publication` 维护 compare-and-swap run ledger，通过 host capability 发布 immutable

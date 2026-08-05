@@ -29,7 +29,14 @@ return {
       t.eq(context.target_effects[1].argv[1], "node")
       t.eq(context.target_effects[1].argv[2], "cli.js")
       t.eq(context.target_effects[2].kind, "http")
-      t.eq(context.target_effects[2].url, context.base_url)
+      t.eq(context.target_effects[2].url, context.target_url)
+      for _, case_id in ipairs({ "cli-version", "health" }) do
+        local authorization = context.store:load(
+          context.request.structured_execution.artifact_root .. "/authorization/" .. case_id .. ".json")
+        t.eq(authorization.value.schema, "testing-effect-authorization-receipt.v1")
+        t.eq(authorization.value.decision, "allow")
+        t.eq(authorization.value.reason_code, "authorized")
+      end
 
       local ledger = context.publication_ledger
       t.eq(ledger.latest_stage_rank, 100)
@@ -79,9 +86,30 @@ return {
     if not ok then error(err, 0) end
   end,
 
-  test_canonical_local_pep_denies_changed_plan_binding_without_cli_effect = function()
+  test_canonical_http_gateway_rejects_redirect_without_following = function()
     local context = support.new({
-      cli_only = true,
+      http_only = true,
+      count_effect = true,
+      http_redirect_response = true,
+    })
+    local ok, err = pcall(function()
+      local supervisor = require("test_support.host_workflow_qa_supervisor")
+      local prepared = supervisor.prepare_phase(
+        context, context.project_root, "structured-execution-pending")
+      local outcome = prepared.structured.run(
+        prepared.pending_action.payload, context.structured_runtime)
+      t.eq(outcome.status, "blocked")
+      t.eq(outcome.error_count, 1)
+      t.eq(#context.target_effects, 0)
+      t.eq(process.http_effect_count(context), 1)
+    end)
+    context:cleanup()
+    if not ok then error(err, 0) end
+  end,
+
+  test_canonical_local_pep_denies_changed_plan_binding_without_http_effect = function()
+    local context = support.new({
+      http_only = true,
       count_effect = true,
       pep_mutate_plan_binding = true,
     })
@@ -95,8 +123,9 @@ return {
       t.eq(outcome.error_count, 1)
       t.eq(#context.target_effects, 0)
       t.eq(process.effect_count(context), 0)
+      t.eq(process.http_effect_count(context), 0)
       local receipt = context.store:load(
-        context.request.structured_execution.artifact_root .. "/authorization/cli-version.json")
+        context.request.structured_execution.artifact_root .. "/authorization/health.json")
       t.eq(receipt.value.schema, "testing-effect-authorization-receipt.v1")
       t.eq(receipt.value.decision, "deny")
       t.eq(receipt.value.reason_code, "foreign-binding")

@@ -172,13 +172,25 @@ function M.stop_live(pid, live_pids)
   end
 end
 
-function M.effect_count(context)
+local function counter_count(path)
   local script = table.concat({
     "const fs=require('fs'),path=process.argv[1];",
-    "if(!fs.existsSync(path)){process.stdout.write('0');process.exit(0)}",
+    "if(!path||!fs.existsSync(path)){process.stdout.write('0');process.exit(0)}",
     "process.stdout.write(String(fs.readdirSync(path).filter(name=>name.endsWith('.json')).length));",
   })
-  return tonumber(M.exec({ "node", "-e", script, context.effect_counter_path }).stdout)
+  return tonumber(M.exec({ "node", "-e", script, path or "" }).stdout)
+end
+
+function M.effect_count(context)
+  return counter_count(context.cli_effect_counter_path or context.effect_counter_path)
+end
+
+function M.http_effect_count(context)
+  return counter_count(context.http_effect_counter_path)
+end
+
+function M.total_effect_count(context)
+  return M.effect_count(context) + M.http_effect_count(context)
 end
 
 function M.terminal_path(context)

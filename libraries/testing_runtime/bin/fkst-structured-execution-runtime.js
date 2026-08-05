@@ -3,7 +3,6 @@
 
 const crypto = require('crypto');
 const fs = require('fs');
-const http = require('http');
 const path = require('path');
 const {
   acquireLock,
@@ -20,7 +19,15 @@ const {
   writeJsonImmutable,
 } = require('../../../packages/environment-factory/bin/runtime/common');
 const { runMeasuredCommand } = require('../../../packages/environment-factory/bin/runtime/measured-command');
-const { processGroupUsage } = require('../../../packages/environment-factory/bin/runtime/platform');
+const {
+  listenerOwners,
+  processGroupState,
+  processGroupUsage,
+  processTable,
+} = require('../../../packages/environment-factory/bin/runtime/platform');
+const {
+  ownedLoopbackHttpRequest,
+} = require('../../../packages/environment-factory/bin/runtime/owned-loopback-http');
 const { resolveWorkspace } = require('../../../packages/environment-factory/bin/runtime/workspace');
 
 function durableRoot() {
@@ -240,6 +247,203 @@ function exactKeys(value, keys, label) {
   }
 }
 
+function boundedString(value, maximum = 180) {
+  return typeof value === 'string' && value !== '' && value.length <= maximum
+    && !/[\x00-\x20\x7f]/.test(value);
+}
+
+function validDigest(value) {
+  return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+}
+
+const supportedHttpMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
+
+function validHttpPath(value) {
+  if (!boundedString(value, 512) || !value.startsWith('/') || value.includes('?')
+    || value.includes('#') || value.includes('\\') || value.includes('%')) return false;
+  return !value.split('/').some((segment) => segment === '.' || segment === '..');
+}
+
+function validateCliCapabilities(value, label) {
+  if (!Array.isArray(value) || value.length > 64) throw new Error(`${label} are malformed`);
+  for (const capability of value) {
+    exactKeys(capability, ['argv_prefix'], `${label} entry`);
+    if (!Array.isArray(capability.argv_prefix) || capability.argv_prefix.length < 1
+      || capability.argv_prefix.length > 32) throw new Error(`${label} entry is malformed`);
+    validateArgv(capability.argv_prefix);
+  }
+}
+
+function validateHttpCapabilities(value, label) {
+  if (!Array.isArray(value) || value.length > 64) throw new Error(`${label} are malformed`);
+  for (const capability of value) {
+    exactKeys(capability, ['origin', 'methods', 'path_prefixes'], `${label} entry`);
+    let origin;
+    try { origin = new URL(capability.origin); } catch (_error) { throw new Error(`${label} origin is malformed`); }
+    if (!['http:', 'https:'].includes(origin.protocol) || origin.username || origin.password
+      || origin.origin !== capability.origin || !Array.isArray(capability.methods)
+      || capability.methods.length < 1 || capability.methods.length > 8
+      || new Set(capability.methods).size !== capability.methods.length
+      || capability.methods.some((method) => !supportedHttpMethods.has(method))
+      || !Array.isArray(capability.path_prefixes) || capability.path_prefixes.length < 1
+      || capability.path_prefixes.length > 16
+      || new Set(capability.path_prefixes).size !== capability.path_prefixes.length
+      || capability.path_prefixes.some((prefix) => !validHttpPath(prefix))) {
+      throw new Error(`${label} entry is malformed`);
+    }
+  }
+}
+
+function validatePointer(value, label) {
+  exactKeys(value, ['kind', 'ref'], label);
+  if (!boundedString(value.kind) || !boundedString(value.ref)) throw new Error(`${label} is malformed`);
+}
+
+function validateAuthorizationWindow(value, now, label) {
+  const issuedAt = Date.parse(value.issued_at);
+  const expiresAt = Date.parse(value.expires_at);
+  if (!Number.isFinite(issuedAt) || !Number.isFinite(expiresAt) || issuedAt >= expiresAt) {
+    throw new Error(`${label} validity window is malformed`);
+  }
+  if (now.getTime() < issuedAt || now.getTime() >= expiresAt) throw new Error(`${label} is expired`);
+}
+
+function validatePreauthorization(preauthorization, plan, grant, envelope, now) {
+  exactKeys(preauthorization, [
+    'schema', 'authorization_id', 'repository', 'profile_sha256', 'case_catalog_sha256',
+    'capabilities', 'authority', 'policy_revision', 'evidence_ref', 'issued_at',
+    'expires_at', 'max_uses', 'trace_id', 'dedup_key',
+  ], 'preauthorization');
+  exactKeys(preauthorization.repository, ['url', 'commit_sha'], 'preauthorization repository');
+  if (!preauthorization.capabilities || typeof preauthorization.capabilities !== 'object'
+    || Array.isArray(preauthorization.capabilities)
+    || Object.keys(preauthorization.capabilities).some((key) => key !== 'cli' && key !== 'http')) {
+    throw new Error('preauthorization capabilities are malformed');
+  }
+  validateCliCapabilities(preauthorization.capabilities.cli || [], 'preauthorization CLI capabilities');
+  validateHttpCapabilities(preauthorization.capabilities.http || [], 'preauthorization HTTP capabilities');
+  validateCliCapabilities(grant.cli_capabilities || [], 'grant CLI capabilities');
+  validateHttpCapabilities(grant.http_capabilities || [], 'grant HTTP capabilities');
+  validatePointer(preauthorization.authority, 'preauthorization authority');
+  validatePointer(preauthorization.evidence_ref, 'preauthorization evidence');
+  if (preauthorization.schema !== 'testing-structured-execution-authorization.v1'
+    || !boundedString(preauthorization.authorization_id)
+    || !boundedString(preauthorization.policy_revision)
+    || !validDigest(preauthorization.profile_sha256)
+    || !validDigest(preauthorization.case_catalog_sha256)
+    || preauthorization.case_catalog_sha256 !== plan.case_catalog_sha256
+    || preauthorization.max_uses !== 1
+    || !sameAuthority(preauthorization.authority, grant.authority)
+    || preauthorization.policy_revision !== grant.policy_revision) {
+    throw new Error('preauthorization binding is malformed');
+  }
+  validateAuthorizationWindow(preauthorization, now, 'preauthorization');
+  validateAuthorizationWindow(grant, now, 'execution grant');
+  if (grant.max_uses !== 1 || envelope.expires_at !== grant.expires_at) {
+    throw new Error('execution grant binding is malformed');
+  }
+}
+
+function validateProfileAuthorization(config, profileArtifact, validationArtifact, now) {
+  const profile = profileArtifact.value;
+  const validation = validationArtifact.value;
+  exactKeys(validation, [
+    'schema', 'profile_schema', 'profile_revision', 'canonicalization', 'profile_sha256',
+    'repository', 'approval_ref', 'approval_id', 'approval_sha256', 'authority',
+    'policy_revision', 'evidence_ref', 'issued_at', 'trace_id', 'dedup_key',
+  ], 'profile validation receipt');
+  validatePointer(validation.approval_ref, 'profile approval reference');
+  const approvalArtifact = readArtifact(validation.approval_ref);
+  const approval = approvalArtifact.value;
+  exactKeys(approval, [
+    'schema', 'approval_id', 'canonicalization', 'profile_sha256', 'repository',
+    'authority', 'policy_revision', 'evidence_ref', 'issued_at', 'expires_at',
+    'max_uses', 'trace_id', 'dedup_key',
+  ], 'profile approval');
+  validatePointer(approval.authority, 'profile approval authority');
+  validatePointer(approval.evidence_ref, 'profile approval evidence');
+  validatePointer(validation.authority, 'validation receipt authority');
+  validatePointer(validation.evidence_ref, 'validation receipt evidence');
+  const approvalIssued = Date.parse(approval.issued_at);
+  const approvalExpires = Date.parse(approval.expires_at);
+  const receiptIssued = Date.parse(validation.issued_at);
+  const receiptTtl = Number(profile.timeouts && profile.timeouts.receipt_ttl_seconds);
+  if (approval.schema !== 'testing-project-profile-approval.v1'
+    || approval.canonicalization !== 'fkst-project-profile-canonical-json.v1'
+    || approval.max_uses !== 1 || validation.schema !== 'testing-project-profile-validation-receipt.v1'
+    || validation.profile_schema !== profile.schema || validation.profile_revision !== profile.revision
+    || validation.canonicalization !== approval.canonicalization
+    || validation.profile_sha256 !== sha256(stableStringify(profile))
+    || approval.profile_sha256 !== validation.profile_sha256
+    || validation.approval_sha256 !== sha256(stableStringify(approval))
+    || !sameRepository(approval.repository, profile.repository)
+    || !sameRepository(validation.repository, profile.repository)
+    || validation.approval_id !== approval.approval_id
+    || !samePointer(validation.authority, approval.authority)
+    || validation.policy_revision !== approval.policy_revision
+    || !samePointer(validation.evidence_ref, approval.evidence_ref)
+    || validation.trace_id !== approval.trace_id || validation.dedup_key !== approval.dedup_key
+    || !Number.isFinite(approvalIssued) || !Number.isFinite(approvalExpires)
+    || approvalExpires <= approvalIssued || approvalExpires - approvalIssued > 24 * 60 * 60 * 1000
+    || now.getTime() < approvalIssued || now.getTime() >= approvalExpires
+    || !Number.isFinite(receiptIssued) || receiptIssued < approvalIssued || receiptIssued > now.getTime()
+    || !Number.isInteger(receiptTtl) || receiptTtl < 1
+    || now.getTime() - receiptIssued > receiptTtl * 1000) {
+    throw new Error('profile approval or validation receipt binding is malformed');
+  }
+  const authenticated = (config.profile_approval_attestations || []).some((entry) =>
+    entry.approval_sha256 === validation.approval_sha256
+      && sameAuthority(entry.authority, approval.authority)
+      && entry.policy_revision === approval.policy_revision
+      && samePointer(entry.evidence_ref, approval.evidence_ref));
+  if (!authenticated) throw new Error('profile approval is unauthenticated');
+}
+
+function processResources(operationId) {
+  const root = path.join(durableRoot(), 'environment-factory', 'resources');
+  let entries;
+  try {
+    entries = fs.readdirSync(root);
+  } catch (error) {
+    if (error.code === 'ENOENT') return [];
+    throw error;
+  }
+  return entries.flatMap((entry) => {
+    let resource;
+    try { resource = readJson(path.join(root, entry)); } catch (_error) { return []; }
+    if (!resource || resource.schema !== 'environment-factory.resource.v1'
+      || resource.kind !== 'process' || resource.operation_id !== operationId
+      || resource.cleaned === true) return [];
+    return [resource];
+  });
+}
+
+function assertOwnedApplicationListener(operationId, port) {
+  const expected = [{ name: 'application', port }];
+  const matches = [];
+  for (const resource of processResources(operationId)) {
+    if (!Number.isInteger(resource.pid) || resource.pid < 1
+      || !Number.isInteger(resource.pgid) || resource.pgid < 1
+      || typeof resource.process_start_identity !== 'string'
+      || resource.process_start_identity === '' || resource.process_start_identity.length > 512
+      || !boundedString(resource.ownership_token, 512)
+      || stableStringify(resource.runtime_ports) !== stableStringify(expected)) continue;
+    const state = processGroupState(resource);
+    if (!state.supported) throw new Error('HTTP listener process ownership is unavailable');
+    if (!state.alive || state.foreign) continue;
+    const ownership = listenerOwners(port);
+    const processes = processTable();
+    if (!ownership.supported || !processes) {
+      throw new Error('HTTP listener ownership inspection is unavailable');
+    }
+    const groups = new Map(processes.map((entry) => [entry.pid, entry.pgid]));
+    if (ownership.pids.length > 0
+      && ownership.pids.every((pid) => groups.get(pid) === resource.pgid)) matches.push(resource);
+  }
+  if (matches.length !== 1) throw new Error('HTTP listener is not owned by the ready environment');
+  return matches[0];
+}
+
 function boundArtifact(ref, digest) {
   if (!isSafeArtifactPath(ref) || !/^[0-9a-f]{64}$/.test(String(digest || ''))) {
     throw new Error('authorization input binding is malformed');
@@ -260,28 +464,56 @@ function authorizationPath(receiptId) {
   return path.join(durableRoot(), 'testing-runner', 'cli-effect-authorization', `${sha256(receiptId)}.json`);
 }
 
-function receiptTag(config, receipt) {
+function receiptDomain(envelope) {
+  return envelope && envelope.schema === 'testing-cli-action-envelope.v1'
+    ? 'cli-effect-receipt' : 'effect-receipt';
+}
+
+function receiptTag(config, receipt, envelope) {
   const unsigned = { ...receipt };
   delete unsigned.auth_tag;
   return crypto.createHmac('sha256', config.state_auth_key)
-    .update(`${config.state_mac_generation}\0cli-effect-receipt\0${stableStringify(unsigned)}`).digest('hex');
+    .update(`${config.state_mac_generation}\0${receiptDomain(envelope)}\0${stableStringify(unsigned)}`).digest('hex');
 }
 
 function authorizationReceipt(config, envelope, decision, reasonCode, inputs, now) {
   const envelopeSha256 = sha256(stableStringify(envelope));
+  const legacy = envelope && envelope.schema === 'testing-cli-action-envelope.v1';
   const receipt = {
     schema: 'testing-effect-authorization-receipt.v1', decision, reason_code: reasonCode,
-    receipt_id: `cli-effect-${envelopeSha256.slice(0, 40)}`,
+    receipt_id: `${legacy ? 'cli-effect' : 'effect'}-${envelopeSha256.slice(0, 40)}`,
     envelope_sha256: envelopeSha256,
     evaluated_input_digests: inputs,
     issued_at: now.toISOString(), expires_at: envelope.expires_at,
     fence_id: envelope.fence_id, trace_id: envelope.trace_id, dedup_key: envelope.dedup_key,
   };
-  receipt.auth_tag = receiptTag(config, receipt);
+  receipt.auth_tag = receiptTag(config, receipt, envelope);
   return receipt;
 }
 
-function validateEnvelope(envelope) {
+function validateAssertions(assertions, kind) {
+  if (!Array.isArray(assertions) || assertions.length < 1 || assertions.length > 16) {
+    throw new Error('action assertions are malformed');
+  }
+  for (const assertion of assertions) {
+    exactKeys(assertion, ['expected', 'type'], 'action assertion');
+    if (kind === 'cli') {
+      if (assertion.type !== 'exit-code' || !Number.isInteger(assertion.expected)
+        || assertion.expected < 0 || assertion.expected > 255) {
+        throw new Error('CLI action assertions are malformed');
+      }
+    } else if (assertion.type === 'status-code') {
+      if (!Number.isInteger(assertion.expected) || assertion.expected < 100 || assertion.expected > 599) {
+        throw new Error('HTTP status assertion is malformed');
+      }
+    } else if (assertion.type !== 'body-contains' || typeof assertion.expected !== 'string'
+      || assertion.expected === '' || assertion.expected.length > 512) {
+      throw new Error('HTTP action assertions are malformed');
+    }
+  }
+}
+
+function validateLegacyCliEnvelope(envelope) {
   exactKeys(envelope, [
     'schema', 'effect_kind', 'capability', 'profile_ref', 'profile_artifact_sha256', 'profile_sha256',
     'validation_receipt_ref', 'validation_receipt_sha256', 'preauthorization_ref',
@@ -294,14 +526,7 @@ function validateEnvelope(envelope) {
   exactKeys(envelope.workspace_ref, ['kind', 'ref'], 'action workspace');
   exactKeys(envelope.resource_bounds, ['output_bytes'], 'action resource bounds');
   exactKeys(envelope.case, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'], 'action case');
-  if (!Array.isArray(envelope.case.assertions) || envelope.case.assertions.length < 1
-    || envelope.case.assertions.length > 16
-    || envelope.case.assertions.some((assertion) => !assertion
-      || Object.keys(assertion).sort().join(',') !== 'expected,type'
-      || assertion.type !== 'exit-code' || !Number.isInteger(assertion.expected)
-      || assertion.expected < 0 || assertion.expected > 255)) {
-    throw new Error('CLI action assertions are malformed');
-  }
+  validateAssertions(envelope.case.assertions, 'cli');
   if (envelope.schema !== 'testing-cli-action-envelope.v1' || envelope.effect_kind !== 'cli'
     || envelope.capability !== 'direct-argv' || envelope.attempt !== 1
     || envelope.run_id !== envelope.operation_id || envelope.case.kind !== 'cli'
@@ -317,7 +542,132 @@ function validateEnvelope(envelope) {
   return envelope;
 }
 
-function evaluateCliEnvelope(config, envelope, now) {
+function strictHttpOrigin(value) {
+  const match = /^http:\/\/127\.0\.0\.1:([0-9]+)$/.exec(String(value || ''));
+  if (!match) throw new Error('HTTP action origin must use numeric loopback and an explicit port');
+  const port = Number(match[1]);
+  if (!Number.isInteger(port) || port < 1 || port > 65535) throw new Error('HTTP action port is malformed');
+  return port;
+}
+
+function localReadyOrigin(value) {
+  let parsed;
+  try { parsed = new URL(value); } catch (_error) { throw new Error('action ready origin is malformed'); }
+  if (parsed.protocol !== 'http:' || parsed.username || parsed.password
+    || !['127.0.0.1', 'localhost', '::1', '[::1]'].includes(parsed.hostname)
+    || parsed.origin.toLowerCase() !== String(value).toLowerCase()) {
+    throw new Error('action ready origin must be an exact loopback HTTP origin');
+  }
+  return parsed.origin.toLowerCase();
+}
+
+function emptyHeaders(value) {
+  return Array.isArray(value) ? value.length === 0
+    : Boolean(value && typeof value === 'object' && Object.keys(value).length === 0);
+}
+
+function validateActionEnvelope(envelope) {
+  exactKeys(envelope, [
+    'schema', 'effect_kind', 'capability', 'profile_ref', 'profile_artifact_sha256', 'profile_sha256',
+    'validation_receipt_ref', 'validation_receipt_sha256', 'preauthorization_ref',
+    'preauthorization_sha256', 'repository', 'run_id', 'operation_id',
+    'environment_receipt_ref', 'environment_receipt_sha256', 'workspace_ref', 'ready_origin',
+    'plan_ref', 'plan_sha256', 'grant_ref', 'grant_sha256', 'effect', 'resource_bounds',
+    'attempt', 'trace_id', 'dedup_key', 'expires_at', 'fence_id',
+  ], 'action envelope');
+  exactKeys(envelope.repository, ['url', 'commit_sha'], 'action repository');
+  exactKeys(envelope.workspace_ref, ['kind', 'ref'], 'action workspace');
+  localReadyOrigin(envelope.ready_origin);
+  const digestFields = [
+    'profile_artifact_sha256', 'profile_sha256', 'validation_receipt_sha256',
+    'preauthorization_sha256', 'environment_receipt_sha256', 'plan_sha256', 'grant_sha256',
+  ];
+  const artifactRefs = [
+    'profile_ref', 'validation_receipt_ref', 'preauthorization_ref',
+    'environment_receipt_ref', 'plan_ref', 'grant_ref',
+  ];
+  if (envelope.schema !== 'testing-action-envelope.v1' || envelope.attempt !== 1
+    || envelope.run_id !== envelope.operation_id || envelope.workspace_ref.kind !== 'workspace'
+    || !boundedString(envelope.run_id, 180) || !/^[A-Za-z0-9._-]+$/.test(envelope.run_id)
+    || !boundedString(envelope.trace_id, 180) || !boundedString(envelope.dedup_key, 180)
+    || !boundedString(envelope.fence_id, 180) || !boundedString(envelope.expires_at, 64)
+    || !boundedString(envelope.workspace_ref.ref, 2048)
+    || !boundedString(envelope.repository.url, 2048)
+    || !/^[0-9a-f]{40}$/.test(String(envelope.repository.commit_sha || ''))
+    || digestFields.some((field) => !validDigest(envelope[field]))
+    || artifactRefs.some((field) => !isSafeArtifactPath(envelope[field]))
+    || !Number.isFinite(Date.parse(envelope.expires_at))) {
+    throw new Error('action envelope is malformed');
+  }
+  if (envelope.effect_kind === 'cli') {
+    if (envelope.capability !== 'direct-argv') throw new Error('CLI action capability is unsupported');
+    exactKeys(envelope.effect, ['kind', 'case_id', 'argv', 'timeout_seconds', 'assertions'], 'CLI action effect');
+    exactKeys(envelope.resource_bounds, ['output_bytes'], 'CLI action resource bounds');
+    validateAssertions(envelope.effect.assertions, 'cli');
+    if (envelope.effect.kind !== 'cli') throw new Error('CLI action effect is malformed');
+    validateArgv(envelope.effect.argv);
+  } else if (envelope.effect_kind === 'http') {
+    if (envelope.capability !== 'direct-loopback-http') throw new Error('HTTP action capability is unsupported');
+    exactKeys(envelope.effect, [
+      'kind', 'case_id', 'origin', 'host', 'port', 'method', 'path', 'headers',
+      'redirect_mode', 'proxy_mode', 'address_mode', 'timeout_seconds', 'assertions',
+    ], 'HTTP action effect');
+    exactKeys(envelope.resource_bounds, ['network_requests', 'output_bytes'], 'HTTP action resource bounds');
+    validateAssertions(envelope.effect.assertions, 'http');
+    const port = strictHttpOrigin(envelope.effect.origin);
+    if (envelope.effect.kind !== 'http' || envelope.effect.origin !== envelope.ready_origin
+      || envelope.effect.host !== '127.0.0.1' || envelope.effect.port !== port
+      || !supportedHttpMethods.has(envelope.effect.method) || !validHttpPath(envelope.effect.path)
+      || !emptyHeaders(envelope.effect.headers)
+      || envelope.effect.redirect_mode !== 'error' || envelope.effect.proxy_mode !== 'disabled'
+      || envelope.effect.address_mode !== 'numeric-loopback'
+      || envelope.resource_bounds.network_requests !== 1) {
+      throw new Error('HTTP action effect is malformed');
+    }
+  } else {
+    throw new Error('action effect kind is unsupported');
+  }
+  if (!Number.isInteger(envelope.effect.timeout_seconds) || envelope.effect.timeout_seconds < 1
+    || envelope.effect.timeout_seconds > 300
+    || !Number.isInteger(envelope.resource_bounds.output_bytes)
+    || envelope.resource_bounds.output_bytes < 1024 || envelope.resource_bounds.output_bytes > 1024 * 1024) {
+    throw new Error('action bounds are malformed');
+  }
+  return envelope;
+}
+
+function validateEnvelope(envelope) {
+  if (envelope && envelope.schema === 'testing-cli-action-envelope.v1') {
+    return validateLegacyCliEnvelope(envelope);
+  }
+  return validateActionEnvelope(envelope);
+}
+
+function envelopeCase(envelope) {
+  if (envelope.schema === 'testing-cli-action-envelope.v1') return envelope.case;
+  const effect = envelope.effect;
+  if (effect.kind === 'cli') {
+    return {
+      case_id: effect.case_id, kind: 'cli', argv: effect.argv,
+      timeout_seconds: effect.timeout_seconds, assertions: effect.assertions,
+    };
+  }
+  return {
+    case_id: effect.case_id, kind: 'http',
+    request: { method: effect.method, url: `${effect.origin}${effect.path}`, headers: effect.headers },
+    timeout_seconds: effect.timeout_seconds, assertions: effect.assertions,
+  };
+}
+
+function httpWithin(effect, capabilities) {
+  return (capabilities || []).some((capability) => capability
+    && capability.origin === effect.origin
+    && Array.isArray(capability.methods) && capability.methods.includes(effect.method)
+    && Array.isArray(capability.path_prefixes)
+    && capability.path_prefixes.some((prefix) => effect.path.startsWith(prefix)));
+}
+
+function evaluateEnvelope(config, envelope, request, now) {
   validateEnvelope(envelope);
   const profile = boundArtifact(envelope.profile_ref, envelope.profile_artifact_sha256);
   const validation = boundArtifact(envelope.validation_receipt_ref, envelope.validation_receipt_sha256);
@@ -330,6 +680,7 @@ function evaluateCliEnvelope(config, envelope, now) {
     preauthorization: preauthorization.digest, environment_receipt: environment.digest,
     plan: plan.digest, grant: grant.digest,
   };
+  validateProfileAuthorization(config, profile, validation, now);
   const sameRun = (value) => value && value.trace_id === envelope.trace_id
     && value.dedup_key === envelope.dedup_key;
   if (profile.value.schema !== 'testing-project-profile.v1'
@@ -359,35 +710,68 @@ function evaluateCliEnvelope(config, envelope, now) {
     || !sameRepository(grant.value.repository, envelope.repository)) {
     throw new Error('authorization input bindings differ');
   }
+  validatePreauthorization(preauthorization.value, plan.value, grant.value, envelope, now);
   if (profile.value.working_directory !== '.' || !profile.value.mutation_policy
     || profile.value.mutation_policy.mode !== 'read-only'
     || !profile.value.resource_budgets
     || profile.value.resource_budgets.output_bytes !== envelope.resource_bounds.output_bytes) {
-    throw new Error('project profile policy denies CLI effect');
+    throw new Error('project profile policy denies effect');
   }
-  const planned = (plan.value.cases || []).find((item) => item.case_id === envelope.case.case_id);
-  if (!planned || stableStringify(planned) !== stableStringify(envelope.case)) {
+  if (envelope.schema === 'testing-action-envelope.v1'
+    && localOrigin(environment.value.base_url) !== envelope.ready_origin) {
+    throw new Error('ready environment origin differs');
+  }
+  const actionCase = envelopeCase(envelope);
+  const planned = (plan.value.cases || []).find((item) => item.case_id === actionCase.case_id);
+  if (!planned || stableStringify(planned) !== stableStringify(actionCase)) {
     throw new Error('approved plan scope differs');
   }
-  if (!argvWithin(envelope.case.argv, preauthorization.value.capabilities && preauthorization.value.capabilities.cli)
-    || !argvWithin(envelope.case.argv, grant.value.cli_capabilities)) {
-    throw new Error('CLI capability is not authorized');
+  if (actionCase.kind === 'cli') {
+    if (!argvWithin(actionCase.argv, preauthorization.value.capabilities && preauthorization.value.capabilities.cli)
+      || !argvWithin(actionCase.argv, grant.value.cli_capabilities)) {
+      throw new Error('CLI capability is not authorized');
+    }
+  } else {
+    const profileOrigins = profile.value.allowed_origins;
+    const runtimePorts = environment.value.runtime_ports;
+    if (!Array.isArray(profileOrigins) || !profileOrigins.includes(envelope.effect.origin)
+      || !Number.isInteger(profile.value.resource_budgets.network_requests)
+      || profile.value.resource_budgets.network_requests < envelope.resource_bounds.network_requests
+      || !Array.isArray(runtimePorts)
+      || !runtimePorts.some((entry) => entry && entry.name === 'application'
+        && entry.port === envelope.effect.port)
+      || !httpWithin(envelope.effect, preauthorization.value.capabilities && preauthorization.value.capabilities.http)
+      || !httpWithin(envelope.effect, grant.value.http_capabilities)) {
+      throw new Error('HTTP capability is not authorized');
+    }
   }
   const attested = (config.grant_attestations || []).some((entry) => entry.grant_sha256 === grant.digest
     && sameAuthority(entry.authority, grant.value.authority)
     && entry.policy_revision === grant.value.policy_revision
     && samePointer(entry.evidence_ref, grant.value.evidence_ref));
-  if (!attested || now >= new Date(grant.value.expires_at) || now >= new Date(envelope.expires_at)) {
-    throw new Error('execution grant is unauthenticated or expired');
-  }
+  if (!attested) throw new Error('execution grant is unauthenticated');
   const replay = readReplay(config, grant.value.grant_id);
-  if (!replay || replay.status !== 'claimed' || replay.claim_id !== envelope.fence_id) {
+  const expectedReplayBinding = replayBinding({
+    grant_id: grant.value.grant_id,
+    grant_sha256: grant.digest,
+    parent_authorization_sha256: preauthorization.digest,
+    plan_sha256: plan.digest,
+    environment_receipt_sha256: environment.digest,
+    repository: envelope.repository,
+    operation_id: envelope.operation_id,
+    artifact_root: request.artifact_root,
+    trace_id: envelope.trace_id,
+    dedup_key: envelope.dedup_key,
+  });
+  if (!replay || replay.status !== 'claimed' || replay.claim_id !== envelope.fence_id
+    || stableStringify(replay.binding) !== stableStringify(expectedReplayBinding)) {
     throw new Error('replay fence is not owned by this effect');
   }
+  if (actionCase.kind === 'http') assertOwnedApplicationListener(envelope.operation_id, envelope.effect.port);
   return inputs;
 }
 
-function authorizeCliEffect(payload) {
+function authorizeEffect(payload) {
   const config = runtimeConfig(payload);
   const envelope = payload.action_envelope || {};
   const now = new Date();
@@ -397,7 +781,7 @@ function authorizeCliEffect(payload) {
     plan: '0'.repeat(64), grant: '0'.repeat(64),
   };
   try {
-    inputs = evaluateCliEnvelope(config, envelope, now);
+    inputs = evaluateEnvelope(config, envelope, payload, now);
     const receipt = authorizationReceipt(config, envelope, 'allow', 'authorized', inputs, now);
     const target = authorizationPath(receipt.receipt_id);
     const release = acquireLock(`${target}.lock`);
@@ -422,24 +806,22 @@ function authorizeCliEffect(payload) {
               : message.includes('fields') || message.includes('malformed') ? 'malformed-envelope'
                 : 'foreign-binding';
     const safeEnvelope = {
-      expires_at: Number.isFinite(Date.parse(envelope.expires_at)) ? envelope.expires_at : new Date(now.getTime() + 1000).toISOString(),
-      fence_id: typeof envelope.fence_id === 'string' ? envelope.fence_id : 'invalid-fence',
-      trace_id: typeof envelope.trace_id === 'string' ? envelope.trace_id : 'invalid-trace',
-      dedup_key: typeof envelope.dedup_key === 'string' ? envelope.dedup_key : 'invalid-dedup',
+      expires_at: boundedString(envelope.expires_at, 64) && Number.isFinite(Date.parse(envelope.expires_at))
+        ? envelope.expires_at : new Date(now.getTime() + 1000).toISOString(),
+      fence_id: boundedString(envelope.fence_id, 180) ? envelope.fence_id : 'invalid-fence',
+      trace_id: boundedString(envelope.trace_id, 180) ? envelope.trace_id : 'invalid-trace',
+      dedup_key: boundedString(envelope.dedup_key, 180) ? envelope.dedup_key : 'invalid-dedup',
     };
     return authorizationReceipt(config, safeEnvelope, 'deny', reason, inputs, now);
   }
 }
 
-async function execArgv(payload) {
-  const config = runtimeConfig(payload);
-  const envelope = validateEnvelope(payload.action_envelope);
-  const receipt = payload.authorization_receipt;
+function validateAllowReceipt(config, envelope, receipt, label) {
   exactKeys(receipt, [
     'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
     'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
     'dedup_key', 'auth_tag',
-  ], 'CLI authorization receipt');
+  ], `${label} authorization receipt`);
   exactKeys(receipt.evaluated_input_digests, [
     'profile', 'validation_receipt', 'preauthorization', 'environment_receipt', 'plan', 'grant',
   ], 'evaluated authorization inputs');
@@ -447,31 +829,53 @@ async function execArgv(payload) {
     .some((digest) => !/^[0-9a-f]{64}$/.test(String(digest || '')))) {
     throw new Error('evaluated authorization input digests are malformed');
   }
+  const issuedAt = Date.parse(receipt.issued_at);
+  const expiresAt = Date.parse(receipt.expires_at);
   if (receipt.schema !== 'testing-effect-authorization-receipt.v1' || receipt.decision !== 'allow'
     || receipt.reason_code !== 'authorized' || receipt.envelope_sha256 !== sha256(stableStringify(envelope))
-    || receipt.auth_tag !== receiptTag(config, receipt) || receipt.fence_id !== envelope.fence_id
+    || receipt.auth_tag !== receiptTag(config, receipt, envelope) || receipt.fence_id !== envelope.fence_id
     || receipt.trace_id !== envelope.trace_id || receipt.dedup_key !== envelope.dedup_key
-    || Date.now() >= Date.parse(receipt.expires_at)) {
-    throw new Error('CLI authorization receipt is missing, denied, malformed, expired, or foreign');
+    || receipt.expires_at !== envelope.expires_at || !Number.isFinite(issuedAt)
+    || !Number.isFinite(expiresAt) || issuedAt >= expiresAt || Date.now() < issuedAt || Date.now() >= expiresAt) {
+    throw new Error(`${label} authorization receipt is missing, denied, malformed, expired, or foreign`);
   }
+  return receipt;
+}
+
+function consumeAuthorization(config, envelope, receipt, label) {
+  validateAllowReceipt(config, envelope, receipt, label);
   const target = authorizationPath(receipt.receipt_id);
   const release = acquireLock(`${target}.lock`);
   try {
     const current = fs.existsSync(target) ? readJson(target) : null;
     if (!current || current.status !== 'issued'
       || stableStringify(current.receipt) !== stableStringify(receipt)) {
-      throw new Error('CLI authorization receipt was replayed or is unavailable');
+      throw new Error(`${label} authorization receipt was replayed or is unavailable`);
     }
     writeJsonAtomic(target, { status: 'consumed', receipt });
+    return release;
+  } catch (error) {
+    release();
+    throw error;
+  }
+}
+
+async function execArgv(payload) {
+  const config = runtimeConfig(payload);
+  const envelope = validateEnvelope(payload.action_envelope);
+  const actionCase = envelopeCase(envelope);
+  if (actionCase.kind !== 'cli') throw new Error('CLI gateway requires a CLI action envelope');
+  const release = consumeAuthorization(config, envelope, payload.authorization_receipt, 'CLI');
+  try {
     const workspace = resolveWorkspace({
       operation_id: envelope.operation_id, repository: envelope.repository,
       environment_receipt_sha256: envelope.environment_receipt_sha256,
       workspace_ref: envelope.workspace_ref, require_clean: true,
     });
-    const result = await runMeasuredCommand(validateArgv(envelope.case.argv), {
-    cwd: workspace.cwd,
-    env: minimalEnvironment(config.command_environment || {}),
-      timeoutMs: envelope.case.timeout_seconds * 1000,
+    const result = await runMeasuredCommand(validateArgv(actionCase.argv), {
+      cwd: workspace.cwd,
+      env: minimalEnvironment(config.command_environment || {}),
+      timeoutMs: actionCase.timeout_seconds * 1000,
       outputBytes: Math.min(boundedOutput(config), envelope.resource_bounds.output_bytes),
     });
     if (result.timedOut) throw new Error('structured CLI effect timed out');
@@ -496,45 +900,25 @@ function localOrigin(value) {
   return parsed.origin.toLowerCase();
 }
 
-function httpRequest(payload) {
+async function httpRequest(payload) {
   const config = runtimeConfig(payload);
-  const allowedMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
-  if (!payload.request || !allowedMethods.has(payload.request.method)
-    || !Array.isArray(payload.request.headers) || payload.request.headers.length !== 0) {
-    throw new Error('HTTP effect request is invalid');
-  }
-  const target = new URL(payload.request.url);
-  if (target.search || target.hash) throw new Error('HTTP effect URL must not contain query or fragment');
-  if (localOrigin(target.toString()) !== localOrigin(payload.base_url)) {
-    throw new Error('HTTP effect origin differs from ready environment');
-  }
-  const maximum = Math.max(1024, Math.min(Number(config.http_response_bytes) || 256 * 1024, 1024 * 1024));
-  return new Promise((resolve, reject) => {
-    const request = http.request({
-      hostname: target.hostname,
-      port: target.port,
-      path: `${target.pathname}${target.search}`,
-      method: payload.request.method,
-      headers: {},
-      timeout: Math.max(1, Number(payload.timeout_seconds) || 1) * 1000,
-    }, (response) => {
-      const chunks = [];
-      let size = 0;
-      response.on('data', (chunk) => {
-        size += chunk.length;
-        if (size > maximum) request.destroy(new Error('HTTP response exceeded bound'));
-        else chunks.push(chunk);
-      });
-      response.on('end', () => resolve({
-        status: response.statusCode,
-        body: Buffer.concat(chunks).toString('utf8'),
-        headers: {},
-      }));
+  const envelope = validateActionEnvelope(payload.action_envelope);
+  if (envelope.effect_kind !== 'http') throw new Error('HTTP gateway requires an HTTP action envelope');
+  const release = consumeAuthorization(config, envelope, payload.authorization_receipt, 'HTTP');
+  const effect = envelope.effect;
+  const resource = assertOwnedApplicationListener(envelope.operation_id, effect.port);
+  const maximum = Math.min(
+    Math.max(1024, Math.min(Number(config.http_response_bytes) || 256 * 1024, 1024 * 1024)),
+    envelope.resource_bounds.output_bytes,
+  );
+  try {
+    return await ownedLoopbackHttpRequest({
+      resource,
+      effect,
+      outputBytes: maximum,
+      verifyOwner: () => assertOwnedApplicationListener(envelope.operation_id, effect.port),
     });
-    request.on('timeout', () => request.destroy(new Error('HTTP effect timed out')));
-    request.on('error', reject);
-    request.end();
-  });
+  } finally { release(); }
 }
 
 function loadResult(payload) {
@@ -577,7 +961,15 @@ async function dispatch(name, payload) {
   }
   if (name === 'verify-grant') return verifyGrant(payload);
   if (name === 'replay-guard') return replayGuard(payload);
-  if (name === 'authorize-cli-effect') return authorizeCliEffect(payload);
+  if (name === 'authorize-effect') return authorizeEffect(payload);
+  if (name === 'authorize-cli-effect') {
+    const envelope = payload && payload.action_envelope;
+    if (!envelope || envelope.schema !== 'testing-cli-action-envelope.v1'
+      || envelope.effect_kind !== 'cli') {
+      throw new Error('legacy CLI authorization accepts only legacy CLI envelopes');
+    }
+    return authorizeEffect(payload);
+  }
   if (name === 'complete-replay') return completeReplay(payload);
   if (name === 'exec-argv') return execArgv(payload);
   if (name === 'http-request') return httpRequest(payload);

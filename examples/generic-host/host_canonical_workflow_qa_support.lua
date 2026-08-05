@@ -245,6 +245,7 @@ local function http_request(request, timeout_seconds)
   local script = table.concat({
     "const http=require('http'),u=new URL(process.argv[1]);",
     "const req=http.request({hostname:u.hostname,port:u.port,path:u.pathname+u.search,method:process.argv[2],timeout:Number(process.argv[3])*1000},res=>{",
+    "if(res.statusCode>=300&&res.statusCode<400){res.resume();process.stderr.write('redirect response is forbidden');process.exit(49);return}",
     "let body='';res.setEncoding('utf8');res.on('data',c=>body+=c);res.on('end',()=>process.stdout.write(JSON.stringify({status:res.statusCode,body})));",
     "});req.on('timeout',()=>req.destroy(new Error('timeout')));req.on('error',error=>{process.stderr.write(error.message);process.exit(48)});req.end();",
   })

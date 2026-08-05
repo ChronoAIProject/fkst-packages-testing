@@ -24,6 +24,7 @@ const {
 const {
   listenerOwners, listenersOwnedByProcessGroup, listenersReleased, processGroupState, terminateProcessGroup,
 } = environmentRuntimeHelper('platform');
+const { ownedLoopbackHttpRequest } = environmentRuntimeHelper('owned-loopback-http');
 
 function fail(message) {
   throw new Error(`generic-host runtime: ${message}`);
@@ -551,12 +552,261 @@ function structuredReplayKey(grantId) {
   return `testing-runner/replay/${sha256(stable(grantId))}`;
 }
 
-function structuredAuthorizationKey(receiptId) {
-  return `testing-runner/cli-effect-authorizations/${sha256(stable(receiptId))}`;
+function structuredReplayOwnerKey(grantId) {
+  return `testing-runner/replay-owners/${sha256(stable(grantId))}`;
 }
 
-function structuredConsumptionKey(grantId) {
+function processInfo(pid) {
+  if (!Number.isInteger(pid) || pid < 1) return null;
+  const result = spawnSync('ps', ['-o', 'ppid=', '-o', 'comm=', '-p', String(pid)], {
+    shell: false,
+    encoding: 'utf8',
+    timeout: 1000,
+    maxBuffer: 4096,
+  });
+  if (result.error || result.status !== 0) return null;
+  const match = String(result.stdout || '').trim().match(/^(\d+)\s+(.+)$/);
+  if (!match) return null;
+  return { pid, ppid: Number(match[1]), command: match[2].trim() };
+}
+
+function structuredDeliveryOwner() {
+  let pid = process.ppid;
+  for (let depth = 0; depth < 8; depth += 1) {
+    const info = processInfo(pid);
+    if (!info) break;
+    if (path.basename(info.command).includes('fkst-framework')) {
+      const processStart = processStartIdentity(info.pid);
+      if (processAlive(info.pid) && boundedString(processStart, 512)) {
+        return { pid: info.pid, process_start_identity: processStart };
+      }
+      break;
+    }
+    if (!Number.isInteger(info.ppid) || info.ppid < 1 || info.ppid === info.pid) break;
+    pid = info.ppid;
+  }
+  fail('structured execution delivery owner is unavailable');
+}
+
+function validStructuredDeliveryOwner(value) {
+  return exactKeys(value, ['pid', 'process_start_identity'])
+    && Number.isInteger(value.pid) && value.pid > 0
+    && boundedString(value.process_start_identity, 512);
+}
+
+function sameStructuredDeliveryOwner(left, right) {
+  return validStructuredDeliveryOwner(left) && validStructuredDeliveryOwner(right)
+    && left.pid === right.pid
+    && left.process_start_identity === right.process_start_identity;
+}
+
+function structuredDeliveryOwnerLive(owner) {
+  if (!validStructuredDeliveryOwner(owner)) return null;
+  if (!processAlive(owner.pid)) return false;
+  const current = processStartIdentity(owner.pid);
+  if (!boundedString(current, 512)) return null;
+  return current === owner.process_start_identity;
+}
+
+function validStructuredReplayOwner(value, claimId, binding) {
+  return exactKeys(value, ['schema', 'version', 'generation', 'claim_id', 'binding', 'owner'])
+    && value.schema === 'generic-host.structured-replay-owner.v1'
+    && Number.isInteger(value.version) && value.version >= 1
+    && value.generation === value.version
+    && value.claim_id === claimId
+    && stable(value.binding) === stable(binding)
+    && validStructuredDeliveryOwner(value.owner);
+}
+
+function claimStructuredReplayOwner(root, grantId, claimId, binding, allowCreate) {
+  const key = structuredReplayOwnerKey(grantId);
+  const owner = structuredDeliveryOwner();
+  for (let attempt = 0; attempt < 4; attempt += 1) {
+    const current = recordRead(root, key);
+    if (!current) {
+      if (!allowCreate) return { status: 'in-progress' };
+      const value = {
+        schema: 'generic-host.structured-replay-owner.v1',
+        version: 1,
+        generation: 1,
+        claim_id: claimId,
+        binding,
+        owner,
+      };
+      const saved = recordCas(root, key, value, 0);
+      if (saved.saved) return { status: 'claimed', owner_generation: 1, replayed: false };
+      continue;
+    }
+    if (!validStructuredReplayOwner(current, claimId, binding)) {
+      fail('structured replay owner binding is malformed or differs');
+    }
+    if (sameStructuredDeliveryOwner(current.owner, owner)) {
+      if (structuredDeliveryOwnerLive(current.owner) !== true) {
+        fail('structured replay delivery owner cannot be verified');
+      }
+      return { status: 'in-progress' };
+    }
+    const live = structuredDeliveryOwnerLive(current.owner);
+    if (live !== false) return { status: 'in-progress' };
+    const next = {
+      ...current,
+      version: current.version + 1,
+      generation: current.generation + 1,
+      owner,
+    };
+    const saved = recordCas(root, key, next, current.version);
+    if (saved.saved) {
+      return { status: 'claimed', owner_generation: next.generation, replayed: true };
+    }
+  }
+  return { status: 'in-progress' };
+}
+
+function requireStructuredReplayOwner(root, grantId, claimId, binding, generation) {
+  const current = recordRead(root, structuredReplayOwnerKey(grantId));
+  if (!Number.isInteger(generation) || generation < 1
+    || !validStructuredReplayOwner(current, claimId, binding)
+    || current.generation !== generation
+    || !sameStructuredDeliveryOwner(current.owner, structuredDeliveryOwner())
+    || structuredDeliveryOwnerLive(current.owner) !== true) {
+    fail('structured replay delivery owner differs');
+  }
+  return current;
+}
+
+function recheckStructuredReplayOwner(root, grantId, owner) {
+  return requireStructuredReplayOwner(
+    root, grantId, owner.claim_id, owner.binding, owner.generation,
+  );
+}
+
+function structuredAuthorizationKey(receiptId, ownerGeneration = 1) {
+  const identity = ownerGeneration === 1 ? receiptId : { receipt_id: receiptId, owner_generation: ownerGeneration };
+  return `testing-runner/cli-effect-authorizations/${sha256(stable(identity))}`;
+}
+
+function structuredConsumptionKey(receiptId, envelopeSha256) {
+  return `testing-runner/cli-effect-consumptions/${sha256(stable({ receipt_id: receiptId, envelope_sha256: envelopeSha256 }))}`;
+}
+
+function legacyCliConsumptionKey(grantId) {
   return `testing-runner/cli-effect-consumptions/${sha256(stable(grantId))}`;
+}
+
+function legacyLuaCliConsumptionKey(receiptId) {
+  return `testing-runner/cli-effect-consumptions/${sha256(stable(receiptId))}`;
+}
+
+function legacyCliEnvelope(envelope, effect) {
+  const legacy = { ...envelope };
+  delete legacy.ready_origin;
+  delete legacy.effect;
+  legacy.schema = 'testing-cli-action-envelope.v1';
+  legacy.effect_kind = 'cli';
+  legacy.capability = 'direct-argv';
+  legacy.case = {
+    kind: 'cli', case_id: effect.case_id, argv: effect.argv,
+    timeout_seconds: effect.timeout_seconds, assertions: effect.assertions,
+  };
+  return legacy;
+}
+
+function legacyCliReceiptId(envelope, effect) {
+  return `durable-cli-effect-${sha256(stable(legacyCliEnvelope(envelope, effect))).slice(0, 32)}`;
+}
+
+function structuredEffectIdentity(envelope, effect) {
+  return {
+    operation_id: envelope.operation_id,
+    grant_sha256: envelope.grant_sha256,
+    plan_sha256: envelope.plan_sha256,
+    case_id: effect.case_id,
+    effect_kind: effect.kind,
+    attempt: envelope.attempt,
+  };
+}
+
+function structuredEffectExecutionKey(identity) {
+  return `testing-runner/effect-executions/${sha256(stable(identity))}`;
+}
+
+function structuredEffectRecoveryUseKey(identity, ownerGeneration) {
+  return `testing-runner/effect-recovery-uses/${sha256(stable({ identity, owner_generation: ownerGeneration }))}`;
+}
+
+function inspectEffectExecution(root, envelope, effect, receipt, recoveryAllowed, label) {
+  const identity = structuredEffectIdentity(envelope, effect);
+  const key = structuredEffectExecutionKey(identity);
+  const current = recordRead(root, key);
+  if (!current) return { key, identity, current: null };
+  const expectedBinding = {
+    identity,
+    envelope_sha256: receipt.envelope_sha256,
+    receipt_id: receipt.receipt_id,
+    fence_id: envelope.fence_id,
+    trace_id: envelope.trace_id,
+    dedup_key: envelope.dedup_key,
+  };
+  if (stable(current.binding) !== stable(expectedBinding)) fail('structured effect execution binding differs');
+  if (!recoveryAllowed) fail(`durable structured ${label} authorization receipt is replayed`);
+  if (current.status === 'completed') {
+    if (!validDigest(current.result_sha256) || current.result_sha256 !== sha256(stable(current.result))) {
+      fail('structured effect completed result digest differs');
+    }
+    return { key, identity, current, result: current.result };
+  }
+  if (current.status === 'started') fail('structured effect outcome is indeterminate after restart');
+  fail('structured effect execution journal is malformed');
+}
+
+function beginEffectExecution(root, inspected, envelope, receipt, grantId, replayOwner) {
+  recheckStructuredReplayOwner(root, grantId, replayOwner);
+  const binding = {
+    identity: inspected.identity,
+    envelope_sha256: receipt.envelope_sha256,
+    receipt_id: receipt.receipt_id,
+    fence_id: envelope.fence_id,
+    trace_id: envelope.trace_id,
+    dedup_key: envelope.dedup_key,
+  };
+  const started = recordCas(root, inspected.key, { version: 1, status: 'started', binding }, 0);
+  if (!started.saved) {
+    const effect = envelopeEffect(envelope);
+    const replayed = inspectEffectExecution(root, envelope, effect, receipt, false,
+      effect.kind === 'cli' ? 'CLI' : 'HTTP');
+    if (replayed.result !== undefined) return { ...replayed, recovered: true };
+    fail('structured effect execution journal claim failed');
+  }
+  return {
+    key: inspected.key,
+    identity: inspected.identity,
+    binding,
+    grantId,
+    replayOwner,
+    recovered: false,
+  };
+}
+
+function completeEffectExecution(root, execution, result) {
+  recheckStructuredReplayOwner(root, execution.grantId, execution.replayOwner);
+  const completed = recordCas(root, execution.key, {
+    version: 2, status: 'completed', binding: execution.binding,
+    result, result_sha256: sha256(stable(result)),
+  }, 1);
+  if (!completed.saved && !(completed.stale && completed.value
+    && completed.value.status === 'completed'
+    && stable(completed.value.binding) === stable(execution.binding)
+    && stable(completed.value.result) === stable(result))) {
+    fail('structured effect execution completion conflict');
+  }
+  return result;
+}
+
+function recordStructuredTargetEffect(root, payload, result, label) {
+  const stored = recordImmutable(root, `testing-runner/target-effects/${sha256(stable(payload))}`, {
+    binding: payload, result,
+  });
+  if (!stored.written && !stored.replayed) fail(`structured ${label} target effect conflict`);
 }
 
 function exactKeys(value, expected) {
@@ -571,6 +821,12 @@ function boundedString(value, limit) {
 
 function validDigest(value) {
   return typeof value === 'string' && /^[0-9a-f]{64}$/.test(value);
+}
+
+function validHttpPath(value) {
+  if (!boundedString(value, 512) || !value.startsWith('/') || value.includes('?')
+    || value.includes('#') || value.includes('\\') || value.includes('%')) return false;
+  return !value.split('/').some((segment) => segment === '.' || segment === '..');
 }
 
 function validRepository(value) {
@@ -619,6 +875,54 @@ function argvAllowed(argv, capabilities) {
   return validArgv(argv) && validCliCapabilities(capabilities) && capabilities.some((capability) =>
     capability.argv_prefix.length <= argv.length
       && capability.argv_prefix.every((item, index) => item === argv[index]));
+}
+
+const httpMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
+
+function validHttpCapabilities(value) {
+  return Array.isArray(value) && value.length <= 64 && value.every((capability) =>
+    exactKeys(capability, ['origin', 'methods', 'path_prefixes'])
+      && strictLoopbackOrigin(capability.origin) !== null
+      && Array.isArray(capability.methods) && capability.methods.length > 0
+      && capability.methods.length <= 8 && new Set(capability.methods).size === capability.methods.length
+      && capability.methods.every((method) => httpMethods.has(method))
+      && Array.isArray(capability.path_prefixes) && capability.path_prefixes.length > 0
+      && capability.path_prefixes.length <= 16
+      && new Set(capability.path_prefixes).size === capability.path_prefixes.length
+      && capability.path_prefixes.every((prefix) => validHttpPath(prefix)));
+}
+
+function httpAllowed(effect, capabilities) {
+  return validHttpCapabilities(capabilities) && capabilities.some((capability) =>
+    capability.origin === effect.origin && capability.methods.includes(effect.method)
+      && capability.path_prefixes.some((prefix) => effect.path.startsWith(prefix)));
+}
+
+function emptyHeaders(value) {
+  return Array.isArray(value) ? value.length === 0
+    : Boolean(value && typeof value === 'object' && Object.keys(value).length === 0);
+}
+
+function strictLoopbackOrigin(value) {
+  if (typeof value !== 'string') return null;
+  const match = /^http:\/\/127\.0\.0\.1:(\d+)$/.exec(value);
+  const port = match && Number(match[1]);
+  return Number.isInteger(port) && port >= 1 && port <= 65535 ? port : null;
+}
+
+function validCliAssertions(assertions) {
+  return Array.isArray(assertions) && assertions.length > 0 && assertions.length <= 16
+    && assertions.every((assertion) => exactKeys(assertion, ['type', 'expected'])
+      && assertion.type === 'exit-code' && Number.isInteger(assertion.expected)
+      && assertion.expected >= 0 && assertion.expected <= 255);
+}
+
+function validHttpAssertions(assertions) {
+  return Array.isArray(assertions) && assertions.length > 0 && assertions.length <= 16
+    && assertions.every((assertion) => exactKeys(assertion, ['type', 'expected'])
+      && (assertion.type === 'status-code' && Number.isInteger(assertion.expected)
+        && assertion.expected >= 100 && assertion.expected <= 599
+        || assertion.type === 'body-contains' && boundedString(assertion.expected, 512)));
 }
 
 function validWindow(value, now) {
@@ -674,6 +978,88 @@ function validCliEnvelope(envelope) {
       && assertion.expected >= 0 && assertion.expected <= 255);
 }
 
+function validCanonicalEnvelope(envelope) {
+  const fields = [
+    'schema', 'effect_kind', 'capability', 'profile_ref', 'profile_artifact_sha256',
+    'profile_sha256', 'validation_receipt_ref', 'validation_receipt_sha256',
+    'preauthorization_ref', 'preauthorization_sha256', 'repository', 'run_id',
+    'operation_id', 'environment_receipt_ref', 'environment_receipt_sha256',
+    'workspace_ref', 'ready_origin', 'plan_ref', 'plan_sha256', 'grant_ref',
+    'grant_sha256', 'effect', 'resource_bounds', 'attempt', 'trace_id', 'dedup_key',
+    'expires_at', 'fence_id',
+  ];
+  const digestFields = [
+    'profile_artifact_sha256', 'profile_sha256', 'validation_receipt_sha256',
+    'preauthorization_sha256', 'environment_receipt_sha256', 'plan_sha256', 'grant_sha256',
+  ];
+  const pointerFields = [
+    'profile_ref', 'validation_receipt_ref', 'preauthorization_ref',
+    'environment_receipt_ref', 'plan_ref', 'grant_ref',
+  ];
+  const effect = envelope && envelope.effect;
+  const common = exactKeys(envelope, fields)
+    && envelope.schema === 'testing-action-envelope.v1'
+    && envelope.run_id === envelope.operation_id && envelope.attempt === 1
+    && boundedString(envelope.run_id, 180) && /^[A-Za-z0-9._-]+$/.test(envelope.run_id)
+    && boundedString(envelope.trace_id, 180) && boundedString(envelope.dedup_key, 180)
+    && boundedString(envelope.fence_id, 180) && Number.isFinite(Date.parse(envelope.expires_at))
+    && validRepository(envelope.repository) && samePointer(envelope.workspace_ref, envelope.workspace_ref)
+    && envelope.workspace_ref.kind === 'workspace' && boundedString(envelope.workspace_ref.ref, 2048)
+    && strictLoopbackOrigin(envelope.ready_origin) !== null
+    && pointerFields.every((field) => safeArtifactPath(envelope[field]))
+    && digestFields.every((field) => validDigest(envelope[field]));
+  if (!common || !effect || typeof effect !== 'object' || Array.isArray(effect)) return false;
+  if (envelope.effect_kind === 'cli') {
+    return envelope.capability === 'direct-argv'
+      && exactKeys(envelope.resource_bounds, ['output_bytes'])
+      && Number.isInteger(envelope.resource_bounds.output_bytes)
+      && envelope.resource_bounds.output_bytes >= 1024
+      && envelope.resource_bounds.output_bytes <= 1024 * 1024
+      && exactKeys(effect, ['kind', 'case_id', 'argv', 'timeout_seconds', 'assertions'])
+      && effect.kind === 'cli' && boundedString(effect.case_id, 180)
+      && /^[A-Za-z0-9._-]+$/.test(effect.case_id) && validArgv(effect.argv)
+      && Number.isInteger(effect.timeout_seconds) && effect.timeout_seconds >= 1
+      && effect.timeout_seconds <= 300 && validCliAssertions(effect.assertions);
+  }
+  const port = strictLoopbackOrigin(effect.origin);
+  return envelope.effect_kind === 'http' && envelope.capability === 'direct-loopback-http'
+    && exactKeys(envelope.resource_bounds, ['output_bytes', 'network_requests'])
+    && Number.isInteger(envelope.resource_bounds.output_bytes)
+    && envelope.resource_bounds.output_bytes >= 1024
+    && envelope.resource_bounds.output_bytes <= 1024 * 1024
+    && envelope.resource_bounds.network_requests === 1
+    && exactKeys(effect, [
+      'kind', 'case_id', 'origin', 'host', 'port', 'method', 'path', 'headers',
+      'redirect_mode', 'proxy_mode', 'address_mode', 'timeout_seconds', 'assertions',
+    ])
+    && effect.kind === 'http' && boundedString(effect.case_id, 180)
+    && /^[A-Za-z0-9._-]+$/.test(effect.case_id) && port !== null
+    && effect.origin === envelope.ready_origin && effect.host === '127.0.0.1'
+    && effect.port === port && effect.method === 'GET' && effect.path === '/health'
+    && emptyHeaders(effect.headers) && effect.redirect_mode === 'error'
+    && effect.proxy_mode === 'disabled' && effect.address_mode === 'numeric-loopback'
+    && Number.isInteger(effect.timeout_seconds) && effect.timeout_seconds >= 1
+    && effect.timeout_seconds <= 300 && validHttpAssertions(effect.assertions);
+}
+
+function validActionEnvelope(envelope) {
+  return validCanonicalEnvelope(envelope) || validCliEnvelope(envelope);
+}
+
+function envelopeEffect(envelope) {
+  return envelope && envelope.schema === 'testing-action-envelope.v1' ? envelope.effect : envelope.case;
+}
+
+function plannedEffectMatches(planned, effect, legacy) {
+  if (legacy || effect.kind === 'cli') return stable(planned) === stable(effect);
+  return planned && planned.kind === 'http' && planned.case_id === effect.case_id
+    && planned.timeout_seconds === effect.timeout_seconds
+    && stable(planned.assertions) === stable(effect.assertions)
+    && stable(planned.request) === stable({
+      method: effect.method, url: `${effect.origin}${effect.path}`, headers: effect.headers,
+    });
+}
+
 function activeStructuredRequest(root, runId) {
   const state = recordRead(root, `workflow-qa/state/${runId}`);
   if (!state || state.phase !== 'structured-execution-pending' || !Array.isArray(state.pending_actions)) return null;
@@ -700,25 +1086,96 @@ function envelopeMatchesRequest(envelope, request, payload) {
     && envelope.trace_id === request.trace_id && envelope.dedup_key === request.dedup_key;
 }
 
+function profileAuthorizationValid(config, root, profileArtifact, approvalArtifact, validationArtifact, now) {
+  const profile = profileArtifact && profileArtifact.value;
+  const approval = approvalArtifact && approvalArtifact.value;
+  const validation = validationArtifact && validationArtifact.value;
+  if (!profile || !approval || !validation
+    || !exactKeys(approval, [
+      'schema', 'approval_id', 'canonicalization', 'profile_sha256', 'repository',
+      'authority', 'policy_revision', 'evidence_ref', 'issued_at', 'expires_at',
+      'max_uses', 'trace_id', 'dedup_key',
+    ])
+    || !exactKeys(validation, [
+      'schema', 'profile_schema', 'profile_revision', 'canonicalization',
+      'profile_sha256', 'repository', 'approval_ref', 'approval_id', 'approval_sha256',
+      'authority', 'policy_revision', 'evidence_ref', 'issued_at', 'trace_id', 'dedup_key',
+    ])) return false;
+  const approvalIssued = Date.parse(approval.issued_at);
+  const approvalExpires = Date.parse(approval.expires_at);
+  const receiptIssued = Date.parse(validation.issued_at);
+  const current = Date.parse(now);
+  const receiptTtl = Number(profile.timeouts && profile.timeouts.receipt_ttl_seconds);
+  const claim = recordRead(root, `generic-host/profile-approval/${config.run_id}`);
+  const claimBinding = claim && claim.binding;
+  return stable(profile) === stable(config.profile)
+    && stable(approval) === stable(config.approval)
+    && stable(validation) === stable(config.validation_receipt)
+    && approval.schema === 'testing-project-profile-approval.v1'
+    && approval.canonicalization === 'fkst-project-profile-canonical-json.v1'
+    && approval.max_uses === 1
+    && validation.schema === 'testing-project-profile-validation-receipt.v1'
+    && validation.profile_schema === profile.schema
+    && validation.profile_revision === profile.revision
+    && validation.canonicalization === approval.canonicalization
+    && validation.profile_sha256 === sha256(stable(profile))
+    && approval.profile_sha256 === validation.profile_sha256
+    && validation.approval_sha256 === sha256(stable(approval))
+    && sameRepository(approval.repository, profile.repository)
+    && sameRepository(validation.repository, profile.repository)
+    && samePointer(validation.approval_ref, config.authorization_approval_ref)
+    && validation.approval_id === approval.approval_id
+    && samePointer(validation.authority, approval.authority)
+    && validation.policy_revision === approval.policy_revision
+    && samePointer(validation.evidence_ref, approval.evidence_ref)
+    && validation.trace_id === approval.trace_id && validation.dedup_key === approval.dedup_key
+    && Number.isFinite(approvalIssued) && Number.isFinite(approvalExpires)
+    && approvalExpires > approvalIssued && approvalExpires - approvalIssued <= 24 * 60 * 60 * 1000
+    && Number.isFinite(receiptIssued) && Number.isFinite(current)
+    && current >= approvalIssued && current < approvalExpires
+    && receiptIssued >= approvalIssued && receiptIssued <= current
+    && Number.isInteger(receiptTtl) && receiptTtl > 0 && current - receiptIssued <= receiptTtl * 1000
+    && claim && claim.claim_id === `${config.run_id}-profile-claim`
+    && claimBinding && claimBinding.approval_id === approval.approval_id
+    && claimBinding.approval_sha256 === validation.approval_sha256
+    && claimBinding.profile_sha256 === validation.profile_sha256
+    && sameRepository(claimBinding.repository, profile.repository)
+    && claimBinding.trace_id === validation.trace_id && claimBinding.dedup_key === validation.dedup_key
+    && claimBinding.max_uses === approval.max_uses;
+}
+
 function structuredAuthorizationReceipt(runId, envelope, decision, reasonCode, inputs) {
   const envelopeSha256 = sha256(stable(envelope));
   const issuedAt = '2026-07-22T00:20:00Z';
-  const expiresAt = Number.isFinite(Date.parse(envelope && envelope.expires_at))
+  const expiresAt = boundedString(envelope && envelope.expires_at, 64)
+    && Number.isFinite(Date.parse(envelope.expires_at))
     && Date.parse(envelope.expires_at) > Date.parse(issuedAt)
     ? envelope.expires_at : '2026-07-22T00:21:00Z';
+  const zero = '0'.repeat(64);
+  const safeInputs = {
+    profile: validDigest(inputs && inputs.profile) ? inputs.profile : zero,
+    validation_receipt: validDigest(inputs && inputs.validation_receipt) ? inputs.validation_receipt : zero,
+    preauthorization: validDigest(inputs && inputs.preauthorization) ? inputs.preauthorization : zero,
+    environment_receipt: validDigest(inputs && inputs.environment_receipt) ? inputs.environment_receipt : zero,
+    plan: validDigest(inputs && inputs.plan) ? inputs.plan : zero,
+    grant: validDigest(inputs && inputs.grant) ? inputs.grant : zero,
+  };
+  const safeDecision = decision === 'allow' ? 'allow' : 'deny';
+  const safeReason = boundedString(reasonCode, 80) ? reasonCode : 'malformed-input';
   return {
-    schema: 'testing-effect-authorization-receipt.v1', decision, reason_code: reasonCode,
-    receipt_id: `durable-cli-effect-${envelopeSha256.slice(0, 32)}`,
-    envelope_sha256: envelopeSha256, evaluated_input_digests: inputs, issued_at: issuedAt,
+    schema: 'testing-effect-authorization-receipt.v1', decision: safeDecision, reason_code: safeReason,
+    receipt_id: `${envelope && envelope.schema === 'testing-cli-action-envelope.v1'
+      ? 'durable-cli-effect' : 'durable-effect'}-${envelopeSha256.slice(0, 32)}`,
+    envelope_sha256: envelopeSha256, evaluated_input_digests: safeInputs, issued_at: issuedAt,
     expires_at: expiresAt,
-    fence_id: typeof envelope.fence_id === 'string' ? envelope.fence_id : 'invalid-fence',
-    trace_id: typeof envelope.trace_id === 'string' ? envelope.trace_id : 'invalid-trace',
-    dedup_key: typeof envelope.dedup_key === 'string' ? envelope.dedup_key : 'invalid-dedup',
-    auth_tag: sha256(`${runId}\0${envelopeSha256}\0${decision}`),
+    fence_id: boundedString(envelope && envelope.fence_id, 180) ? envelope.fence_id : 'invalid-fence',
+    trace_id: boundedString(envelope && envelope.trace_id, 180) ? envelope.trace_id : 'invalid-trace',
+    dedup_key: boundedString(envelope && envelope.dedup_key, 180) ? envelope.dedup_key : 'invalid-dedup',
+    auth_tag: sha256(`${runId}\0${envelopeSha256}\0${safeDecision}`),
   };
 }
 
-function authorizeCliEffect(projectRoot, payload) {
+function authorizeEffect(projectRoot, payload) {
   const runId = runIdFor(payload);
   const root = runRoot(runId);
   const config = loadConfig(projectRoot, runId);
@@ -731,11 +1188,16 @@ function authorizeCliEffect(projectRoot, payload) {
   const deny = (reason, inputs = empty) =>
     structuredAuthorizationReceipt(runId, envelope, 'deny', reason, inputs);
   try {
-    if (!validCliEnvelope(envelope)) return deny('malformed-envelope');
+    if (!validActionEnvelope(envelope)) return deny('malformed-envelope');
+    const effect = envelopeEffect(envelope);
+    const legacy = envelope.schema === 'testing-cli-action-envelope.v1';
     const request = activeStructuredRequest(root, runId);
     if (!envelopeMatchesRequest(envelope, request, payload)) return deny('foreign-binding');
     const profile = artifactRead(projectRoot, envelope.profile_ref);
     const validation = artifactRead(projectRoot, envelope.validation_receipt_ref);
+    const approvalRef = validation && validation.value && validation.value.approval_ref;
+    const approval = approvalRef && exactKeys(approvalRef, ['kind', 'ref'])
+      ? artifactRead(projectRoot, approvalRef.ref) : null;
     const preauthorization = artifactRead(projectRoot, envelope.preauthorization_ref);
     const environment = artifactRead(projectRoot, envelope.environment_receipt_ref);
     const plan = artifactRead(projectRoot, envelope.plan_ref);
@@ -748,10 +1210,10 @@ function authorizeCliEffect(projectRoot, payload) {
       plan: plan && plan.digest || empty.plan,
       grant: grant && grant.digest || empty.grant,
     };
-    if (!profile || !validation || !preauthorization || !environment || !plan || !grant) {
+    if (!profile || !approval || !validation || !preauthorization || !environment || !plan || !grant) {
       return deny('missing-input', inputs);
     }
-    const values = [profile.value, validation.value, preauthorization.value,
+    const values = [profile.value, approval.value, validation.value, preauthorization.value,
       environment.value, plan.value, grant.value];
     if (values.some((value) => !value || typeof value !== 'object' || Array.isArray(value))) {
       return deny('malformed-input', inputs);
@@ -759,24 +1221,38 @@ function authorizeCliEffect(projectRoot, payload) {
     const sameRun = (value) => value.trace_id === envelope.trace_id
       && value.dedup_key === envelope.dedup_key;
     const planned = Array.isArray(plan.value.cases)
-      ? plan.value.cases.find((item) => item && item.case_id === envelope.case.case_id) : null;
+      ? plan.value.cases.find((item) => item && item.case_id === effect.case_id) : null;
     const expectedEvidence = { kind: 'signed-attestation', ref: `${runId}-execution-grant` };
     const replay = recordRead(root, structuredReplayKey(grant.value.grant_id));
     const replayBinding = replay && replay.binding;
     const now = '2026-07-22T00:20:00Z';
     const schemasValid = profile.value.schema === 'testing-project-profile.v1'
+      && approval.value.schema === 'testing-project-profile-approval.v1'
       && validation.value.schema === 'testing-project-profile-validation-receipt.v1'
+      && exactKeys(preauthorization.value, [
+        'schema', 'authorization_id', 'repository', 'profile_sha256', 'case_catalog_sha256',
+        'capabilities', 'authority', 'policy_revision', 'evidence_ref', 'issued_at',
+        'expires_at', 'max_uses', 'trace_id', 'dedup_key',
+      ])
       && preauthorization.value.schema === 'testing-structured-execution-authorization.v1'
       && environment.value.schema === 'environment-factory.receipt.v2'
       && plan.value.schema === 'testing-structured-plan.v2'
+      && exactKeys(grant.value, [
+        'schema', 'grant_id', 'parent_authorization_sha256', 'plan_sha256',
+        'environment_receipt_sha256', 'repository', 'cli_capabilities', 'http_capabilities',
+        'authority', 'policy_revision', 'evidence_ref', 'issued_at', 'expires_at',
+        'max_uses', 'trace_id', 'dedup_key',
+      ])
       && grant.value.schema === 'testing-structured-execution-grant.v1';
     if (!schemasValid) return deny('malformed-input', inputs);
-    const preauthorizationValid = preauthorization.value.max_uses === 1
-      && validWindow(preauthorization.value, now)
-      && validCliCapabilities(preauthorization.value.capabilities && preauthorization.value.capabilities.cli);
+    const capabilities = preauthorization.value.capabilities || {};
+    const preauthorizationValid = exactKeys(capabilities, ['cli', 'http'])
+      && preauthorization.value.max_uses === 1 && validWindow(preauthorization.value, now)
+      && validCliCapabilities(capabilities.cli) && validHttpCapabilities(capabilities.http);
     if (!preauthorizationValid) return deny('stale-preauthorization', inputs);
     const grantValid = grant.value.max_uses === 1 && validWindow(grant.value, now)
-      && validCliCapabilities(grant.value.cli_capabilities);
+      && validCliCapabilities(grant.value.cli_capabilities)
+      && validHttpCapabilities(grant.value.http_capabilities);
     if (!grantValid) return deny('stale-grant', inputs);
     if (!sameRun(validation.value) || !sameRun(preauthorization.value) || !sameRun(environment.value)
       || !sameRun(plan.value) || !sameRun(grant.value)) return deny('foreign-binding', inputs);
@@ -787,11 +1263,27 @@ function authorizeCliEffect(projectRoot, payload) {
       && sameRepository(plan.value.repository, envelope.repository)
       && sameRepository(grant.value.repository, envelope.repository);
     if (!repositoriesValid) return deny('malformed-input', inputs);
-    if (!profile.value.resource_budgets
-      || envelope.resource_bounds.output_bytes !== profile.value.resource_budgets.output_bytes) {
+    const budgets = profile.value.resource_budgets;
+    if (!budgets || envelope.resource_bounds.output_bytes !== budgets.output_bytes
+      || effect.kind === 'http' && (envelope.resource_bounds.network_requests !== 1
+        || !Number.isInteger(budgets.network_requests) || budgets.network_requests < 1)) {
       return deny('profile-policy-denied', inputs);
     }
-    const artifactBindings = profile.digest === envelope.profile_artifact_sha256
+    let evaluatedPlanDigest = plan.digest;
+    const fixtureMutation = config.runtime_pep_plan_mutation;
+    if (fixtureMutation !== undefined) {
+      const token = process.env.FKST_GENERIC_HOST_FIXTURE_HTTP_PLAN_MUTATION_TOKEN;
+      const validMutation = effect.kind === 'http'
+        && exactKeys(fixtureMutation, ['field', 'token'])
+        && fixtureMutation.field === 'plan_sha256'
+        && boundedString(fixtureMutation.token, 256) && token === fixtureMutation.token;
+      if (!validMutation) return deny('malformed-input', inputs);
+      evaluatedPlanDigest = '0'.repeat(64);
+    }
+    const profileAuthorization = profileAuthorizationValid(
+      config, root, profile, approval, validation, now);
+    const artifactBindings = profileAuthorization
+      && profile.digest === envelope.profile_artifact_sha256
       && sha256(stable(profile.value)) === envelope.profile_sha256
       && validation.digest === envelope.validation_receipt_sha256
       && validation.value.profile_revision === profile.value.revision
@@ -803,7 +1295,7 @@ function authorizeCliEffect(projectRoot, payload) {
       && environment.value.profile_sha256 === envelope.profile_sha256
       && samePointer(environment.value.workspace_ref, envelope.workspace_ref)
       && plan.value.environment_receipt_sha256 === environment.digest
-      && plan.digest === envelope.plan_sha256 && grant.digest === envelope.grant_sha256
+      && evaluatedPlanDigest === envelope.plan_sha256 && grant.digest === envelope.grant_sha256
       && grant.value.parent_authorization_sha256 === preauthorization.digest
       && grant.value.plan_sha256 === plan.digest
       && grant.value.environment_receipt_sha256 === environment.digest;
@@ -812,9 +1304,15 @@ function authorizeCliEffect(projectRoot, payload) {
       && grant.value.policy_revision === preauthorization.value.policy_revision
       && samePointer(grant.value.evidence_ref, expectedEvidence);
     if (!authenticated) return deny('foreign-binding', inputs);
-    if (stable(planned) !== stable(envelope.case)
-      || !argvAllowed(envelope.case.argv, preauthorization.value.capabilities.cli)
-      || !argvAllowed(envelope.case.argv, grant.value.cli_capabilities)) {
+    const cliScope = effect.kind === 'cli' && argvAllowed(effect.argv, capabilities.cli)
+      && argvAllowed(effect.argv, grant.value.cli_capabilities);
+    const httpScope = effect.kind === 'http'
+      && envelope.ready_origin === config.origin && effect.origin === config.origin
+      && environment.value.base_url === config.base_url
+      && samePorts(environment.value.runtime_ports, [{ name: 'application', port: effect.port }])
+      && Array.isArray(profile.value.allowed_origins) && profile.value.allowed_origins.includes(effect.origin)
+      && httpAllowed(effect, capabilities.http) && httpAllowed(effect, grant.value.http_capabilities);
+    if (!plannedEffectMatches(planned, effect, legacy) || !cliScope && !httpScope) {
       return deny('scope-denied', inputs);
     }
     const replayOwned = replay && replay.status === 'claimed' && replay.claim_id === envelope.fence_id
@@ -827,6 +1325,19 @@ function authorizeCliEffect(projectRoot, payload) {
       && replayBinding.artifact_root === request.artifact_root
       && replayBinding.trace_id === envelope.trace_id && replayBinding.dedup_key === envelope.dedup_key;
     if (!replayOwned) return deny('foreign-fence', inputs);
+    const replayOwner = requireStructuredReplayOwner(
+      root,
+      grant.value.grant_id,
+      replay.claim_id,
+      replay.binding,
+      payload.replay_owner_generation,
+    );
+    if (effect.kind === 'http') {
+      const ownership = inspectResources(projectRoot, { run_id: runId });
+      if (!ownership.owned || !samePorts(ownership.runtime_ports, [{ name: 'application', port: effect.port }])) {
+        return deny('environment-not-owned', inputs);
+      }
+    }
     const fixturePolicy = config.runtime_pep_denial;
     if (fixturePolicy !== undefined) {
       const token = process.env.FKST_GENERIC_HOST_FIXTURE_CLI_DENY_TOKEN;
@@ -837,16 +1348,185 @@ function authorizeCliEffect(projectRoot, payload) {
       return deny(fixturePolicy.reason_code, inputs);
     }
     const receipt = structuredAuthorizationReceipt(runId, envelope, 'allow', 'authorized', inputs);
-    const authorization = { receipt, grant_id: grant.value.grant_id, fence_id: envelope.fence_id };
-    const stored = recordImmutable(root, structuredAuthorizationKey(receipt.receipt_id), authorization);
-    if (!stored.written && !stored.replayed) fail('durable CLI authorization receipt conflict');
+    const authorization = {
+      receipt,
+      grant_id: grant.value.grant_id,
+      fence_id: envelope.fence_id,
+      owner_generation: replayOwner.generation,
+    };
+    const stored = recordImmutable(
+      root,
+      structuredAuthorizationKey(receipt.receipt_id, replayOwner.generation),
+      authorization,
+    );
+    if (!stored.written && !stored.replayed) fail('durable effect authorization receipt conflict');
     return receipt;
   } catch (_error) {
     return deny('malformed-input');
   }
 }
 
-function dispatch(name, payload, projectRoot) {
+function authorizeCliEffect(projectRoot, payload) {
+  const envelope = payload && payload.action_envelope;
+  if (!envelope || envelope.schema !== 'testing-cli-action-envelope.v1'
+    || !envelope.case || envelope.case.kind !== 'cli') {
+    fail('legacy CLI authorization accepts only legacy CLI envelopes');
+  }
+  return authorizeEffect(projectRoot, payload);
+}
+
+function consumeStructuredAuthorization(projectRoot, payload, expectedKind) {
+  const runId = runIdFor(payload);
+  const root = runRoot(runId);
+  const config = loadConfig(projectRoot, runId);
+  const envelope = payload.action_envelope;
+  const effect = envelopeEffect(envelope);
+  const receipt = payload.authorization_receipt;
+  const request = activeStructuredRequest(root, runId);
+  const validReceipt = validActionEnvelope(envelope) && effect && effect.kind === expectedKind
+    && envelopeMatchesRequest(envelope, request, payload)
+    && exactKeys(receipt, [
+      'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
+      'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
+      'dedup_key', 'auth_tag',
+    ])
+    && exactKeys(receipt.evaluated_input_digests, [
+      'profile', 'validation_receipt', 'preauthorization', 'environment_receipt', 'plan', 'grant',
+    ])
+    && Object.values(receipt.evaluated_input_digests).every(validDigest)
+    && receipt.schema === 'testing-effect-authorization-receipt.v1'
+    && receipt.decision === 'allow' && receipt.reason_code === 'authorized'
+    && receipt.envelope_sha256 === sha256(stable(envelope))
+    && receipt.auth_tag === sha256(`${runId}\0${receipt.envelope_sha256}\0allow`)
+    && receipt.fence_id === envelope.fence_id && receipt.trace_id === envelope.trace_id
+    && receipt.dedup_key === envelope.dedup_key && receipt.expires_at === envelope.expires_at
+    && receipt.issued_at === '2026-07-22T00:20:00Z'
+    && Date.parse(receipt.expires_at) > Date.parse('2026-07-22T00:20:00Z');
+  const ownerGeneration = payload.replay_owner_generation;
+  const authorization = validReceipt && Number.isInteger(ownerGeneration) && ownerGeneration >= 1
+    ? recordRead(root, structuredAuthorizationKey(receipt.receipt_id, ownerGeneration)) : null;
+  const grant = validReceipt ? artifactRead(projectRoot, envelope.grant_ref) : null;
+  const replay = grant && grant.value
+    ? recordRead(root, structuredReplayKey(grant.value.grant_id)) : null;
+  const label = expectedKind === 'cli' ? 'CLI' : 'HTTP';
+  if (!validReceipt || !authorization || !grant || !grant.value || typeof grant.value !== 'object'
+    || stable(authorization.receipt) !== stable(receipt)
+    || authorization.grant_id !== grant.value.grant_id || authorization.fence_id !== envelope.fence_id
+    || authorization.owner_generation !== ownerGeneration
+    || grant.digest !== envelope.grant_sha256 || !replay || replay.status !== 'claimed'
+    || replay.claim_id !== envelope.fence_id) {
+    fail(`durable structured ${label} authorization receipt is unavailable`);
+  }
+  if (envelope.operation_id !== runId || envelope.workspace_ref.ref !== `${runId}-workspace`
+    || envelope.repository.commit_sha !== config.commit_sha) {
+    fail(`structured ${label} request binding differs`);
+  }
+  const workspace = workspaceResource(root, envelope.workspace_ref);
+  const ownership = verifyWorkspace(config, workspace);
+  if (ownership.owned !== true) fail(`structured workspace is not owned: ${ownership.reason}`);
+  const replayOwner = requireStructuredReplayOwner(
+    root,
+    grant.value.grant_id,
+    replay.claim_id,
+    replay.binding,
+    ownerGeneration,
+  );
+  const recoveryAllowed = replayOwner.generation > 1;
+  const identity = structuredEffectIdentity(envelope, effect);
+  const claimRecoveryUse = () => {
+    if (!recoveryAllowed) return;
+    const recoveryUse = recordClaim(
+      root,
+      structuredEffectRecoveryUseKey(identity, replayOwner.generation),
+      {
+        binding: {
+          identity,
+          claim_id: envelope.fence_id,
+          owner_generation: replayOwner.generation,
+        },
+      },
+    );
+    if (!recoveryUse.claimed || recoveryUse.replayed) {
+      fail(`durable structured ${label} recovery authorization is replayed`);
+    }
+  };
+  const inspected = inspectEffectExecution(root, envelope, effect, receipt, recoveryAllowed, label);
+  if (inspected.result !== undefined) {
+    claimRecoveryUse();
+    return {
+      runId,
+      root,
+      config,
+      envelope,
+      effect,
+      receipt,
+      workspace,
+      replayOwner,
+      recovered_result: inspected.result,
+    };
+  }
+  claimRecoveryUse();
+  const legacyCli = envelope.schema === 'testing-cli-action-envelope.v1';
+  if (expectedKind === 'cli') {
+    const historicalKeys = [
+      legacyCliConsumptionKey(grant.value.grant_id),
+      legacyLuaCliConsumptionKey(legacyCli ? receipt.receipt_id : legacyCliReceiptId(envelope, effect)),
+    ];
+    const historicalKey = historicalKeys.find((key) => recordRead(root, key));
+    if (historicalKey) {
+      if (!legacyCli) {
+        const witness = recordImmutable(root,
+          `testing-runner/effect-compatibility/${sha256(stable(identity))}`, {
+            identity, source_key: historicalKey, decision: 'replay-rejected',
+          });
+        if (!witness.written && !witness.replayed) fail('structured CLI compatibility witness differs');
+      }
+      fail(`durable structured ${label} authorization receipt is replayed`);
+    }
+  }
+  const consumptionKey = legacyCli
+    ? legacyCliConsumptionKey(grant.value.grant_id)
+    : structuredConsumptionKey(receipt.receipt_id, receipt.envelope_sha256);
+  if (recordRead(root, consumptionKey)) {
+    fail(`durable structured ${label} authorization receipt is replayed`);
+  }
+  const execution = beginEffectExecution(
+    root, inspected, envelope, receipt, grant.value.grant_id, replayOwner,
+  );
+  if (execution.recovered) {
+    return { runId, root, config, envelope, effect, receipt, workspace,
+      recovered_result: execution.result };
+  }
+  const consumed = recordClaim(root, consumptionKey, {
+    binding: receipt, receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id,
+    envelope_sha256: receipt.envelope_sha256,
+  });
+  if (!consumed.claimed || consumed.replayed) {
+    fail(`durable structured ${label} authorization receipt is replayed`);
+  }
+  return {
+    runId,
+    root,
+    config,
+    envelope,
+    effect,
+    receipt,
+    workspace,
+    replayOwner,
+    execution,
+  };
+}
+
+function directHttpRequest(effect, outputBytes, resource, verifyOwner) {
+  return ownedLoopbackHttpRequest({
+    effect,
+    outputBytes,
+    resource,
+    verifyOwner,
+  }).then((result) => ({ status: result.status, body: result.body }));
+}
+
+async function dispatch(name, payload, projectRoot) {
   switch (name) {
     case 'workflow-load-state': {
       const runId = runIdFor(payload);
@@ -1162,6 +1842,12 @@ function dispatch(name, payload, projectRoot) {
       return artifactRead(projectRoot, payload.artifact_ref.ref);
     case 'write-artifact':
       return artifactWrite(projectRoot, payload.artifact_ref.ref, payload.value);
+    case 'structured-delivery-owner':
+      loadConfig(projectRoot, runIdFor(payload));
+      return structuredDeliveryOwner();
+    case 'structured-delivery-owner-status':
+      loadConfig(projectRoot, runIdFor(payload));
+      return { live: structuredDeliveryOwnerLive(payload.owner) };
     case 'now':
       loadConfig(projectRoot, runIdFor(payload));
       return { now: '2026-07-22T00:20:00Z' };
@@ -1184,74 +1870,68 @@ function dispatch(name, payload, projectRoot) {
         return { status: 'completed', result_ref: claimed.value.result_ref,
           result_sha256: claimed.value.result_sha256 };
       }
-      if (claimed.replayed) return { status: 'in-progress' };
-      return { status: 'claimed', claim_id: claimId };
+      const owner = claimStructuredReplayOwner(
+        runRoot(runId), payload.grant_id, claimId, payload, claimed.replayed !== true,
+      );
+      if (owner.status === 'in-progress') return owner;
+      return {
+        status: 'claimed',
+        claim_id: claimId,
+        owner_generation: owner.owner_generation,
+        replayed: owner.replayed === true,
+      };
     }
+    case 'authorize-effect':
+      return authorizeEffect(projectRoot, payload);
     case 'authorize-cli-effect':
       return authorizeCliEffect(projectRoot, payload);
     case 'exec-argv': {
-      const runId = runIdFor(payload);
-      const root = runRoot(runId);
-      const config = loadConfig(projectRoot, runId);
-      const envelope = payload.action_envelope;
-      const receipt = payload.authorization_receipt;
-      const request = activeStructuredRequest(root, runId);
-      const validReceipt = validCliEnvelope(envelope) && envelopeMatchesRequest(envelope, request, payload)
-        && exactKeys(receipt, [
-          'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
-          'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
-          'dedup_key', 'auth_tag',
-        ])
-        && exactKeys(receipt.evaluated_input_digests, [
-          'profile', 'validation_receipt', 'preauthorization', 'environment_receipt', 'plan', 'grant',
-        ])
-        && Object.values(receipt.evaluated_input_digests).every(validDigest)
-        && receipt.schema === 'testing-effect-authorization-receipt.v1'
-        && receipt.decision === 'allow' && receipt.reason_code === 'authorized'
-        && receipt.envelope_sha256 === sha256(stable(envelope))
-        && receipt.auth_tag === sha256(`${runId}\0${receipt.envelope_sha256}\0allow`)
-        && receipt.fence_id === envelope.fence_id && receipt.trace_id === envelope.trace_id
-        && receipt.dedup_key === envelope.dedup_key && receipt.expires_at === envelope.expires_at
-        && receipt.issued_at === '2026-07-22T00:20:00Z'
-        && Date.parse(receipt.expires_at) > Date.parse('2026-07-22T00:20:00Z');
-      const authorization = validReceipt
-        ? recordRead(root, structuredAuthorizationKey(receipt.receipt_id)) : null;
-      const grant = validReceipt ? artifactRead(projectRoot, envelope.grant_ref) : null;
-      const replay = grant && grant.value
-        ? recordRead(root, structuredReplayKey(grant.value.grant_id)) : null;
-      if (!validReceipt || !authorization || !grant || !grant.value || typeof grant.value !== 'object'
-        || stable(authorization.receipt) !== stable(receipt)
-        || authorization.grant_id !== grant.value.grant_id || authorization.fence_id !== envelope.fence_id
-        || grant.digest !== envelope.grant_sha256 || !replay || replay.status !== 'claimed'
-        || replay.claim_id !== envelope.fence_id) {
-        fail('durable structured CLI authorization receipt is unavailable');
+      const authorized = consumeStructuredAuthorization(projectRoot, payload, 'cli');
+      if (authorized.recovered_result !== undefined) {
+        recordStructuredTargetEffect(authorized.root, payload, authorized.recovered_result, 'CLI');
+        return authorized.recovered_result;
       }
-      if (envelope.operation_id !== runId || envelope.workspace_ref.ref !== `${runId}-workspace`
-        || envelope.repository.commit_sha !== config.commit_sha) fail('structured CLI request binding differs');
-      const workspace = workspaceResource(root, envelope.workspace_ref);
-      const ownership = verifyWorkspace(config, workspace);
-      if (ownership.owned !== true) fail(`structured workspace is not owned: ${ownership.reason}`);
-      const consumed = recordClaim(root, structuredConsumptionKey(grant.value.grant_id), {
-        binding: receipt, receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id,
-      });
-      if (!consumed.claimed || consumed.replayed) fail('durable structured CLI authorization receipt is replayed');
-      const result = directExec(envelope.case.argv, workspace.path, envelope.case.timeout_seconds,
-        envelope.resource_bounds.output_bytes);
-      const stored = recordImmutable(root, `testing-runner/target-effects/${sha256(stable(payload))}`, {
-        binding: payload, result,
-      });
-      if (!stored.written && !stored.replayed) fail('structured CLI target effect conflict');
+      const argv = authorized.effect.argv;
+      const result = directExec(argv, authorized.workspace.path, authorized.effect.timeout_seconds,
+        authorized.envelope.resource_bounds.output_bytes);
+      completeEffectExecution(authorized.root, authorized.execution, result);
+      recordStructuredTargetEffect(authorized.root, payload, result, 'CLI');
       return result;
     }
     case 'http-request': {
-      const runId = runIdFor(payload);
-      const config = loadConfig(projectRoot, runId);
-      if (payload.operation_id !== runId || payload.base_url !== config.base_url
-        || !payload.request || payload.request.url !== config.base_url) fail('structured HTTP request binding differs');
-      const result = directExec(['curl', '-sS', '-o', '-', '-w', '\n%{http_code}', payload.request.url],
-        projectRoot, payload.timeout_seconds);
-      const match = /\n(\d{3})$/.exec(result.stdout);
-      return { status: match ? Number(match[1]) : 0, body: match ? result.stdout.slice(0, match.index) : result.stdout };
+      const authorized = consumeStructuredAuthorization(projectRoot, payload, 'http');
+      if (authorized.recovered_result !== undefined) {
+        recordStructuredTargetEffect(authorized.root, payload, authorized.recovered_result, 'HTTP');
+        return authorized.recovered_result;
+      }
+      const effect = authorized.effect;
+      const ownership = inspectResources(projectRoot, { run_id: authorized.runId });
+      if (!ownership.owned
+        || !samePorts(ownership.runtime_ports, [{ name: 'application', port: effect.port }])
+        || authorized.envelope.ready_origin !== authorized.config.origin
+        || effect.origin !== authorized.config.origin || effect.host !== '127.0.0.1'
+        || effect.port !== authorized.config.port || effect.method !== 'GET' || effect.path !== '/health') {
+        fail('structured HTTP request binding differs');
+      }
+      const result = await directHttpRequest(
+        effect,
+        authorized.envelope.resource_bounds.output_bytes,
+        ownership,
+        () => recheckStructuredReplayOwner(
+          authorized.root,
+          authorized.execution.grantId,
+          authorized.execution.replayOwner,
+        ),
+      );
+      crashBarrier(projectRoot, authorized.runId, 'http-after-response-before-journal-complete', {
+        command: 'http-request', case_id: effect.case_id,
+      });
+      completeEffectExecution(authorized.root, authorized.execution, result);
+      crashBarrier(projectRoot, authorized.runId, 'http-after-journal-complete-before-return', {
+        command: 'http-request', case_id: effect.case_id,
+      });
+      recordStructuredTargetEffect(authorized.root, payload, result, 'HTTP');
+      return result;
     }
     case 'load-result': {
       const runId = runIdFor(payload);
@@ -1296,6 +1976,13 @@ function dispatch(name, payload, projectRoot) {
         || binding.trace_id !== payload.trace_id || binding.dedup_key !== payload.dedup_key) {
         return { completed: false };
       }
+      requireStructuredReplayOwner(
+        root,
+        binding.grant_id,
+        current.value.claim_id,
+        binding,
+        payload.claim.owner_generation,
+      );
       const artifact = artifactRead(projectRoot, payload.result_ref);
       if (!artifact) return { completed: false };
       const completion = { ...payload, result_sha256: artifact.digest };
@@ -1329,6 +2016,39 @@ function dispatch(name, payload, projectRoot) {
       return startApplication(projectRoot, payload);
     case 'fixture-resource-status':
       return inspectResources(projectRoot, payload);
+    case 'fixture-owned-http-request': {
+      const runId = runIdFor(payload);
+      const root = runRoot(runId);
+      const config = loadConfig(projectRoot, runId);
+      const effect = payload.effect;
+      if (!effect || effect.kind !== 'http' || effect.origin !== config.origin
+        || effect.host !== '127.0.0.1' || effect.port !== config.port
+        || effect.method !== 'GET' || effect.path !== '/health') {
+        fail('fixture HTTP request binding differs');
+      }
+      const ownership = inspectResources(projectRoot, payload);
+      if (!ownership.owned) fail('fixture HTTP process is not owned');
+      requireStructuredReplayOwner(
+        root,
+        payload.grant_id,
+        payload.claim_id,
+        payload.replay_binding,
+        payload.replay_owner_generation,
+      );
+      const result = await ownedLoopbackHttpRequest({
+        resource: ownership,
+        effect,
+        outputBytes: payload.output_bytes,
+        verifyOwner: () => requireStructuredReplayOwner(
+          root,
+          payload.grant_id,
+          payload.claim_id,
+          payload.replay_binding,
+          payload.replay_owner_generation,
+        ),
+      });
+      return { status: result.status, body: result.body };
+    }
     case 'fixture-release-status':
       return releasedResources(projectRoot, payload);
     default:
@@ -1352,7 +2072,7 @@ function writeResponse(target, value) {
   atomicWrite(path.resolve(target), `${stable(value)}\n`);
 }
 
-function main() {
+async function main() {
   const args = parseArgs(process.argv);
   let requestId = null;
   try {
@@ -1365,7 +2085,7 @@ function main() {
     delete payload.request_id;
     const config = readRuntimeConfig(payload);
     const projectRoot = path.resolve(config.project_root);
-    const result = dispatch(args.name, payload, projectRoot);
+    const result = await dispatch(args.name, payload, projectRoot);
     writeResponse(args.response, result === null
       ? { ok: true, request_id: requestId }
       : { ok: true, request_id: requestId, result });

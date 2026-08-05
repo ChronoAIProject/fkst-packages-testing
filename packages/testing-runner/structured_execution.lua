@@ -110,7 +110,7 @@ local function blocked(message)
 end
 
 local required_ports = {
-  "load_artifact", "now", "verify_grant", "replay_guard", "authorize_cli_effect", "exec_argv", "http_request",
+  "load_artifact", "now", "verify_grant", "replay_guard", "exec_argv", "http_request",
   "write_artifact", "load_result", "complete_replay",
 }
 
@@ -119,6 +119,9 @@ function M.production_ports()
   if type(ports) ~= "table" then ports = local_runtime.production() end
   for _, name in ipairs(required_ports) do
     if type(ports[name]) ~= "function" then error("testing-runner: structured-execution: missing runtime port " .. name) end
+  end
+  if type(ports.authorize_effect) ~= "function" and type(ports.authorize_cli_effect) ~= "function" then
+    error("testing-runner: structured-execution: missing runtime port authorize_effect")
   end
   return ports
 end
@@ -196,6 +199,101 @@ local function effect_error(case, value)
   }
 end
 
+local function envelope_identity(context, grant)
+  local ready_origin = execution_contract.local_http_origin(context.environment.base_url)
+  return {
+    profile_ref = context.request.project_profile_ref,
+    profile_artifact_sha256 = context.profile.digest,
+    profile_sha256 = context.request.profile_sha256,
+    validation_receipt_ref = context.request.validation_receipt_ref,
+    validation_receipt_sha256 = context.validation.digest,
+    preauthorization_ref = context.request.preauthorization_ref,
+    preauthorization_sha256 = context.preauthorization.digest,
+    repository = copy(context.request.repository),
+    run_id = context.request.source_ref.ref,
+    operation_id = context.environment.operation_id,
+    environment_receipt_ref = context.request.environment_receipt_ref,
+    environment_receipt_sha256 = context.environment_digest,
+    workspace_ref = copy(context.environment.workspace_ref),
+    ready_origin = ready_origin,
+    plan_ref = context.request.test_plan_ref,
+    plan_sha256 = context.plan.digest,
+    grant_ref = context.request.execution_grant_ref,
+    grant_sha256 = context.grant.digest,
+    attempt = 1,
+    trace_id = context.request.trace_id,
+    dedup_key = context.request.dedup_key,
+    expires_at = grant.expires_at,
+    fence_id = context.claim.claim_id,
+  }
+end
+
+local function legacy_cli_envelope(case, grant, context)
+  local envelope = envelope_identity(context, grant)
+  envelope.schema = execution_contract.schemas.cli_action_envelope
+  envelope.effect_kind = "cli"
+  envelope.capability = "direct-argv"
+  envelope.case = copy(case)
+  envelope.resource_bounds = { output_bytes = context.profile.value.resource_budgets.output_bytes }
+  envelope.ready_origin = nil
+  execution_contract.validate_cli_action_envelope(envelope)
+  return envelope
+end
+
+local function canonical_envelope(case, grant, context)
+  local envelope = envelope_identity(context, grant)
+  envelope.schema = execution_contract.schemas.action_envelope
+  envelope.effect_kind = case.kind
+  envelope.capability = case.kind == "cli" and "direct-argv" or "direct-loopback-http"
+  if case.kind == "cli" then
+    envelope.effect = {
+      kind = "cli", case_id = case.case_id, argv = copy(case.argv),
+      timeout_seconds = case.timeout_seconds, assertions = copy(case.assertions),
+    }
+    envelope.resource_bounds = { output_bytes = context.profile.value.resource_budgets.output_bytes }
+  else
+    local origin, path = execution_contract.local_http_origin(case.request.url)
+    local host, port = type(origin) == "string" and origin:match("^http://(127%.0%.0%.1):(%d+)$") or nil, nil
+    if host ~= nil then port = tonumber(origin:match(":(%d+)$")) end
+    envelope.effect = {
+      kind = "http", case_id = case.case_id, origin = origin, host = host, port = port,
+      method = case.request.method, path = path, headers = copy(case.request.headers),
+      redirect_mode = "error", proxy_mode = "disabled", address_mode = "numeric-loopback",
+      timeout_seconds = case.timeout_seconds, assertions = copy(case.assertions),
+    }
+    envelope.resource_bounds = {
+      output_bytes = context.profile.value.resource_budgets.output_bytes,
+      network_requests = 1,
+    }
+  end
+  execution_contract.validate_action_envelope(envelope)
+  return envelope
+end
+
+local function authorize_case(case, grant, ports, context)
+  local generic = type(ports.authorize_effect) == "function"
+  if case.kind == "http" and not generic then
+    error("testing-runner: structured-execution: generic HTTP authorization port is unavailable")
+  end
+  local envelope = generic and canonical_envelope(case, grant, context)
+    or legacy_cli_envelope(case, grant, context)
+  local authorize = generic and ports.authorize_effect or ports.authorize_cli_effect
+  local receipt = authorize({
+    action_envelope = envelope, artifact_root = context.request.artifact_root,
+    operation_id = context.environment.operation_id,
+    replay_owner_generation = context.claim.owner_generation,
+    trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
+  })
+  local receipt_ok = pcall(execution_contract.validate_effect_authorization_receipt,
+    receipt, envelope, context.now)
+  local authorization_path = context.request.artifact_root
+    .. "/authorization/" .. case.case_id .. ".json"
+  if not receipt_ok or ports.write_artifact(authorization_path, receipt) ~= true then
+    error("testing-runner: structured-execution: malformed effect authorization receipt")
+  end
+  return envelope, receipt, authorization_path
+end
+
 local function execute_case(case, grant, ports, context)
   if case.skip_reason ~= nil then
     return {
@@ -207,83 +305,41 @@ local function execute_case(case, grant, ports, context)
       evidence = { reason = case.skip_reason },
     }
   end
-  local effect = {
-    operation_id = context.environment.operation_id,
-    case_id = case.case_id,
-    repository = copy(context.request.repository),
-    environment_receipt_sha256 = context.environment_digest,
-    artifact_root = context.request.artifact_root,
-    trace_id = context.request.trace_id,
-    dedup_key = context.request.dedup_key,
-    timeout_seconds = case.timeout_seconds,
-  }
-  local ok, response
   if case.kind == "cli" then
     if not argv_allowed(case.argv, grant.cli_capabilities) then
       error("testing-runner: structured-execution: unauthorized cli capability")
     end
-    local envelope = {
-      schema = execution_contract.schemas.cli_action_envelope,
-      effect_kind = "cli", capability = "direct-argv",
-      profile_ref = context.request.project_profile_ref,
-      profile_artifact_sha256 = context.profile.digest,
-      profile_sha256 = context.request.profile_sha256,
-      validation_receipt_ref = context.request.validation_receipt_ref,
-      validation_receipt_sha256 = context.validation.digest,
-      preauthorization_ref = context.request.preauthorization_ref,
-      preauthorization_sha256 = context.preauthorization.digest,
-      repository = copy(context.request.repository),
-      run_id = context.request.source_ref.ref, operation_id = context.environment.operation_id,
-      environment_receipt_ref = context.request.environment_receipt_ref,
-      environment_receipt_sha256 = context.environment_digest,
-      workspace_ref = copy(context.environment.workspace_ref),
-      plan_ref = context.request.test_plan_ref, plan_sha256 = context.plan.digest,
-      grant_ref = context.request.execution_grant_ref, grant_sha256 = context.grant.digest,
-      case = copy(case),
-      resource_bounds = { output_bytes = context.profile.value.resource_budgets.output_bytes },
-      attempt = 1, trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
-      expires_at = grant.expires_at, fence_id = context.claim.claim_id,
-    }
-    execution_contract.validate_cli_action_envelope(envelope)
-    local receipt = ports.authorize_cli_effect({
-      action_envelope = envelope, artifact_root = context.request.artifact_root,
-      operation_id = context.environment.operation_id,
-      trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
-    })
-    local receipt_ok = pcall(execution_contract.validate_effect_authorization_receipt,
-      receipt, envelope, context.now)
-    local authorization_path = context.request.artifact_root
-      .. "/authorization/" .. case.case_id .. ".json"
-    if not receipt_ok or ports.write_artifact(authorization_path, receipt) ~= true then
-      error("testing-runner: structured-execution: malformed CLI authorization receipt")
-    end
-    if receipt.decision ~= "allow" then
-      return {
-        case_id = case.case_id, kind = case.kind, status = "error",
-        classification = "harness-tooling-issue", assertions = {},
-        evidence = {
-          authorization_receipt_path = authorization_path,
-          authorization_reason = receipt.reason_code,
-        },
-      }
-    end
-    ok, response = pcall(ports.exec_argv, {
-      action_envelope = envelope,
-      authorization_receipt = receipt,
-      artifact_root = context.request.artifact_root,
-    })
-  else
-    if not http_allowed(case.request, grant.http_capabilities, context.environment.base_url) then
-      error("testing-runner: structured-execution: unauthorized http capability")
-    end
-    effect.base_url = context.environment.base_url
-    effect.request = copy(case.request)
-    ok, response = pcall(ports.http_request, effect)
+  elseif not http_allowed(case.request, grant.http_capabilities, context.environment.base_url) then
+    error("testing-runner: structured-execution: unauthorized http capability")
   end
+
+  local envelope, receipt, authorization_path = authorize_case(case, grant, ports, context)
+  if receipt.decision ~= "allow" then
+    return {
+      case_id = case.case_id, kind = case.kind, status = "error",
+      classification = "harness-tooling-issue", assertions = {},
+      evidence = {
+        authorization_receipt_path = authorization_path,
+        authorization_reason = receipt.reason_code,
+      },
+    }
+  end
+  local request = {
+    action_envelope = envelope,
+    authorization_receipt = receipt,
+    artifact_root = context.request.artifact_root,
+    replay_owner_generation = context.claim.owner_generation,
+  }
+  local ok, response
+  if case.kind == "cli" then ok, response = pcall(ports.exec_argv, request)
+  else ok, response = pcall(ports.http_request, request) end
   local case_result = not ok and effect_error(case, response) or nil
   if case_result == nil then
     if type(response) ~= "table" then
-      case_result = { case_id = case.case_id, kind = case.kind, status = "error", classification = "environment-session-issue" }
+      case_result = {
+        case_id = case.case_id, kind = case.kind, status = "error",
+        classification = "environment-session-issue", assertions = {}, evidence = {},
+      }
     else
       local assertions = {}
       local passed = true
@@ -302,15 +358,17 @@ local function execute_case(case, grant, ports, context)
           exit_code = tonumber(response.exit_code) or -1,
           stdout_excerpt = tostring(response.stdout or ""):sub(1, 600),
           stderr_excerpt = tostring(response.stderr or ""):sub(1, 600),
-          authorization_receipt_path = context.request.artifact_root
-            .. "/authorization/" .. case.case_id .. ".json",
+          authorization_receipt_path = authorization_path,
         } or {
           status_code = tonumber(response.status) or 0,
           body_excerpt = tostring(response.body or ""):sub(1, 600),
+          authorization_receipt_path = authorization_path,
         },
       }
     end
   end
+  case_result.evidence = case_result.evidence or {}
+  case_result.evidence.authorization_receipt_path = authorization_path
   return case_result
 end
 
@@ -444,6 +502,13 @@ function M.run(request, ports)
       replayed.replayed = true
       return replayed
     end
+    if claim.status == "in-progress" then
+      return {
+        status = "in-progress",
+        publish = false,
+        replayed = true,
+      }
+    end
     if claim.status ~= "claimed" or not bounded(claim.claim_id, 180) then
       return blocked("replay guard did not claim execution")
     end
@@ -555,6 +620,13 @@ function M.result_payload(request, ports)
     if ok then runtime = resolved end
   end
   local outcome = runtime and M.run(request, runtime) or blocked("host runtime capability is unavailable")
+  if outcome.publish == false then
+    return {
+      status = outcome.status,
+      publish = false,
+      replayed = outcome.replayed == true,
+    }
+  end
   local summary = {
     schema = testing_contract.schemas.structured_execution_summary,
     status = outcome.status,

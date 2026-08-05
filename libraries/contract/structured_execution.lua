@@ -12,6 +12,7 @@ M.schemas = {
   plan_result = "testing-runner.structured-plan.result.v1",
   grant_request = "workflow-qa.execution-grant.request.v1",
   grant_result = "workflow-qa.execution-grant.result.v1",
+  action_envelope = "testing-action-envelope.v1",
   cli_action_envelope = "testing-cli-action-envelope.v1",
   effect_authorization_receipt = "testing-effect-authorization-receipt.v1",
 }
@@ -130,11 +131,22 @@ local function validate_assertion(value, kind)
   end
 end
 
+local function normalized_http_path(value)
+  if not bounded(value, 512) or value:sub(1, 1) ~= "/" or value:find("?", 1, true)
+    or value:find("#", 1, true) or value:find("\\", 1, true) or value:find("%", 1, true) then
+    return false
+  end
+  for segment in value:gmatch("[^/]+") do
+    if segment == "." or segment == ".." then return false end
+  end
+  return true
+end
+
 local function split_http_url(url)
   if not bounded(url, 2048) or url:find("?", 1, true) or url:find("#", 1, true) then return nil, nil end
   local origin, path = url:match("^(https?://[^/]+)(/.*)$")
   if origin == nil then origin = url:match("^(https?://[^/]+)$") path = "/" end
-  if origin == nil or origin:find("@", 1, true) then return nil, nil end
+  if origin == nil or origin:find("@", 1, true) or not normalized_http_path(path) then return nil, nil end
   return origin, path
 end
 M.split_http_url = split_http_url
@@ -229,11 +241,19 @@ local function validate_http_capabilities(value)
       or not dense(capability.path_prefixes, 16, true) then
       fail("malformed-capabilities", "HTTP capability is invalid")
     end
-    for _, method in ipairs(capability.methods) do if methods[method] ~= true then fail("malformed-capabilities", "HTTP method is invalid") end end
-    for _, prefix in ipairs(capability.path_prefixes) do
-      if not bounded(prefix, 512) or prefix:sub(1, 1) ~= "/" or prefix:find("?", 1, true) or prefix:find("#", 1, true) then
-        fail("malformed-capabilities", "HTTP path prefix is invalid")
+    local seen_methods = {}
+    for _, method in ipairs(capability.methods) do
+      if methods[method] ~= true or seen_methods[method] then
+        fail("malformed-capabilities", "HTTP method is invalid or duplicated")
       end
+      seen_methods[method] = true
+    end
+    local seen_prefixes = {}
+    for _, prefix in ipairs(capability.path_prefixes) do
+      if not normalized_http_path(prefix) or seen_prefixes[prefix] then
+        fail("malformed-capabilities", "HTTP path prefix is invalid or duplicated")
+      end
+      seen_prefixes[prefix] = true
     end
   end
 end
@@ -403,6 +423,103 @@ function M.validate_cli_action_envelope(value)
   return value
 end
 
+local function strict_numeric_loopback_origin(value)
+  if not bounded(value, 512) then return nil end
+  local port = value:match("^http://127%.0%.0%.1:(%d+)$")
+  port = tonumber(port)
+  if port == nil or port < 1 or port > 65535 or port ~= math.floor(port) then return nil end
+  return port
+end
+
+local function validate_canonical_effect(value, effect_kind, capability, ready_origin)
+  if effect_kind == "cli" then
+    if capability ~= "direct-argv" then fail("unsupported-effect", "CLI capability is unsupported") end
+    only_fields(value, {
+      kind = true, case_id = true, argv = true, timeout_seconds = true, assertions = true,
+    }, "action-effect")
+    validate_case({
+      kind = value.kind, case_id = value.case_id, argv = value.argv,
+      timeout_seconds = value.timeout_seconds, assertions = value.assertions,
+    }, {}, false)
+    if value.kind ~= "cli" then fail("unsupported-effect", "CLI action effect kind is invalid") end
+    return value
+  end
+  if effect_kind ~= "http" or capability ~= "direct-loopback-http" then
+    fail("unsupported-effect", "only direct CLI and loopback HTTP effects are supported")
+  end
+  only_fields(value, {
+    kind = true, case_id = true, origin = true, host = true, port = true, method = true,
+    path = true, headers = true, redirect_mode = true, proxy_mode = true,
+    address_mode = true, timeout_seconds = true, assertions = true,
+  }, "action-effect")
+  local port = strict_numeric_loopback_origin(value.origin)
+  if value.kind ~= "http" or not bounded(value.case_id, 180)
+    or value.case_id:match("^[%w%._%-]+$") == nil or value.host ~= "127.0.0.1"
+    or type(value.port) ~= "number" or value.port ~= math.floor(value.port) or value.port ~= port
+    or value.origin ~= ready_origin or methods[value.method] ~= true
+    or not normalized_http_path(value.path)
+    or not dense(value.headers, 0, false) or value.redirect_mode ~= "error"
+    or value.proxy_mode ~= "disabled" or value.address_mode ~= "numeric-loopback" then
+    fail("malformed-envelope", "HTTP action must be one direct planned numeric-loopback request")
+  end
+  validate_case({
+    kind = value.kind, case_id = value.case_id,
+    request = { method = value.method, url = value.origin .. value.path, headers = value.headers },
+    timeout_seconds = value.timeout_seconds, assertions = value.assertions,
+  }, {}, false)
+  return value
+end
+
+function M.validate_action_envelope(value)
+  only_fields(value, {
+    schema = true, effect_kind = true, capability = true, profile_ref = true,
+    profile_artifact_sha256 = true, profile_sha256 = true, validation_receipt_ref = true,
+    validation_receipt_sha256 = true, preauthorization_ref = true,
+    preauthorization_sha256 = true, repository = true, run_id = true,
+    operation_id = true, environment_receipt_ref = true,
+    environment_receipt_sha256 = true, workspace_ref = true, ready_origin = true,
+    plan_ref = true, plan_sha256 = true, grant_ref = true, grant_sha256 = true,
+    effect = true, resource_bounds = true, attempt = true, trace_id = true,
+    dedup_key = true, expires_at = true, fence_id = true,
+  }, "action-envelope")
+  if value.schema ~= M.schemas.action_envelope then fail("unknown-schema", "action envelope schema") end
+  for _, field in ipairs({ "profile_ref", "validation_receipt_ref", "preauthorization_ref", "environment_receipt_ref", "plan_ref", "grant_ref" }) do
+    pointer(value[field], field)
+  end
+  for _, field in ipairs({ "profile_artifact_sha256", "profile_sha256", "validation_receipt_sha256", "preauthorization_sha256", "environment_receipt_sha256", "plan_sha256", "grant_sha256" }) do
+    digest(value[field], field)
+  end
+  validate_repository(value.repository, "action-repository")
+  validate_ref(value.workspace_ref, "workspace-ref")
+  local ready_origin = M.local_http_origin(value.ready_origin)
+  local normalized_ready_origin = type(value.ready_origin) == "string" and value.ready_origin:lower() or nil
+  if value.workspace_ref.kind ~= "workspace" or not bounded(value.run_id, 180)
+    or not bounded(value.operation_id, 180) or value.run_id ~= value.operation_id
+    or ready_origin ~= normalized_ready_origin or value.attempt ~= 1
+    or not bounded(value.trace_id, 180) or not bounded(value.dedup_key, 180)
+    or not bounded(value.fence_id, 180) or time.iso_timestamp_epoch_seconds(value.expires_at) == nil then
+    fail("malformed-envelope", "action identity, ready origin, expiry, attempt, or fence is invalid")
+  end
+  if value.effect_kind == "http" and strict_numeric_loopback_origin(value.ready_origin) == nil then
+    fail("malformed-envelope", "HTTP ready origin must use numeric IPv4 loopback")
+  end
+  validate_canonical_effect(value.effect, value.effect_kind, value.capability, value.ready_origin)
+  if value.effect_kind == "cli" then
+    only_fields(value.resource_bounds, { output_bytes = true }, "resource-bounds")
+  else
+    only_fields(value.resource_bounds, { output_bytes = true, network_requests = true }, "resource-bounds")
+    if value.resource_bounds.network_requests ~= 1 then
+      fail("unbounded-value", "HTTP action must permit exactly one network request")
+    end
+  end
+  if type(value.resource_bounds.output_bytes) ~= "number"
+    or value.resource_bounds.output_bytes ~= math.floor(value.resource_bounds.output_bytes)
+    or value.resource_bounds.output_bytes < 1024 or value.resource_bounds.output_bytes > 1048576 then
+    fail("unbounded-value", "output_bytes must be from 1024 to 1048576")
+  end
+  return value
+end
+
 function M.validate_effect_authorization_receipt(value, envelope, now)
   only_fields(value, {
     schema = true, decision = true, reason_code = true, receipt_id = true,
@@ -422,7 +539,9 @@ function M.validate_effect_authorization_receipt(value, envelope, now)
     profile = true, validation_receipt = true, preauthorization = true,
     environment_receipt = true, plan = true, grant = true,
   }, "evaluated-input-digests")
-  for field, item in pairs(value.evaluated_input_digests) do digest(item, field) end
+  for _, field in ipairs({ "profile", "validation_receipt", "preauthorization", "environment_receipt", "plan", "grant" }) do
+    digest(value.evaluated_input_digests[field], field)
+  end
   local issued = time.iso_timestamp_epoch_seconds(value.issued_at)
   local expires = time.iso_timestamp_epoch_seconds(value.expires_at)
   if issued == nil or expires == nil or expires <= issued then fail("malformed-receipt", "receipt validity window is invalid") end
@@ -431,7 +550,8 @@ function M.validate_effect_authorization_receipt(value, envelope, now)
     if current == nil or current < issued or current >= expires then fail("stale-receipt", "authorization receipt is expired") end
   end
   if envelope ~= nil then
-    M.validate_cli_action_envelope(envelope)
+    if envelope.schema == M.schemas.action_envelope then M.validate_action_envelope(envelope)
+    else M.validate_cli_action_envelope(envelope) end
     if value.fence_id ~= envelope.fence_id or value.trace_id ~= envelope.trace_id
       or value.dedup_key ~= envelope.dedup_key or value.expires_at ~= envelope.expires_at then
       fail("foreign-receipt", "authorization receipt differs from the action envelope")

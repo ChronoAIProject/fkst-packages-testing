@@ -16,6 +16,7 @@ end
 local function act(event)
   local result = structured_execution.result_payload(event.payload or {}, event.test_ports)
   log.info("testing-runner dept=run_structured_execution tag=" .. string.upper(result.status))
+  if result.publish == false then return end
   raise("testing_result", result)
 end
 
