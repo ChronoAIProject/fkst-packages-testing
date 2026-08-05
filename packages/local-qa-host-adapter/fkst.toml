@@ -1,0 +1,12 @@
+kind = "package.composed"
+name = "local-qa-host-adapter"
+persistence_class = "stateless_adapter"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow", "testing_runtime", "testkit"]
+
+[event_deps]
+packages = ["workflow-qa"]
