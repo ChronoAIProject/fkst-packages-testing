@@ -1,0 +1,12 @@
+schema = 1
+runner_protocol = "fkst-declarative-rulepack@1"
+owner_package = "local-qa-host-adapter"
+
+[[rules]]
+id = "local-qa-host-adapter-no-shell-or-network"
+severity = "error"
+kind = "text_forbid_regex"
+include = ["adapter.lua", "departments/**/*.lua", "raisers/**/*.lua"]
+exclude = ["tests/**", "packages/local-qa-host-adapter/tests/**"]
+pattern = "exec_argv|exec_sync|os.execute|io.popen|curl|docker|kubectl"
+message = "local QA host adapter must delegate host effects through injected runtime ports"
