@@ -10,3 +10,6 @@ libraries = ["contract", "workflow", "testing_runtime", "testkit"]
 
 [event_deps]
 packages = ["workflow-qa"]
+
+[conformance]
+pack = "conformance/pack.toml"

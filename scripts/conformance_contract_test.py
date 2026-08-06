@@ -51,6 +51,9 @@ RULE_FIXTURES = {
     "no-browser-secret-fields": RuleFixture(
         "departments/contract_fixture/main.lua", joined("pass", "word")
     ),
+    "local-qa-host-adapter-no-shell-or-network": RuleFixture(
+        "departments/contract_fixture/main.lua", joined("os", ".execute")
+    ),
     "module-test-loop-no-fixed-host-config": RuleFixture(
         "departments/contract_fixture/main.lua", joined("http", "://localhost:", "4312")
     ),
