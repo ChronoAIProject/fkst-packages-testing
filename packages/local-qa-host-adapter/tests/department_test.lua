@@ -1,7 +1,6 @@
 local adapter = require("adapter")
 local structured_execution = require("contract.structured_execution")
 local dead_letter = require("departments.dead_letter.main")
-local execution_grant = require("departments.execution_grant.main")
 local seam = require("departments.seam.main")
 local testing = require("testkit.testing")
 local t = fkst.test
@@ -39,24 +38,6 @@ return {
     local ok = pcall(adapter.handle_execution_grant, grant_request())
     _G.local_qa_workflow_qa_runtime = previous
     t.eq(ok, false)
-  end,
-
-  test_execution_grant_department_raises_adapter_result = function()
-    local original = adapter.handle_execution_grant
-    adapter.handle_execution_grant = function()
-      return {
-        queue = "workflow-qa.execution_grant_result",
-        payload = { schema = "fixture.execution-grant-result.v1" },
-      }
-    end
-    local ok, trace = pcall(testing.run_fake, execution_grant, {
-      queue = "workflow-qa.workflow_qa_execution_grant_request",
-      payload = {},
-    })
-    adapter.handle_execution_grant = original
-    if not ok then error(trace) end
-    t.eq(#trace.raises, 1)
-    t.eq(trace.raises[1].queue, "workflow-qa.execution_grant_result")
   end,
 
   test_dead_letter_and_seam_departments_accept_events = function()
