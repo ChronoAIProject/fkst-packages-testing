@@ -1,34 +1,7 @@
 local adapter = require("host_workflow_qa_adapter")
 local host_require = require
-local testing = require("testkit.testing")
 
 local M = {}
-
-local function local_qa_department(name)
-  return require("departments." .. name .. ".main")
-end
-
-local function run_local_qa_department(context, name, queue, payload)
-  local previous = _G.local_qa_workflow_qa_runtime
-  _G.local_qa_workflow_qa_runtime = context.generic_host_runtime
-  local ok, trace = pcall(testing.run_fake, local_qa_department(name), {
-    queue = queue,
-    payload = payload,
-  })
-  _G.local_qa_workflow_qa_runtime = previous
-  if not ok then error(trace, 0) end
-  context.local_qa_department_calls[name] = (context.local_qa_department_calls[name] or 0) + 1
-  if type(context.records) == "table" and type(context.records.immutable) == "function" then
-    local count = context.local_qa_department_calls[name]
-    local stored = context.records:immutable("generic-host/local-qa-departments/" .. name .. "/" .. tostring(count), {
-      department = name, queue = queue, call = count, run_id = context.run_id,
-    })
-    if stored.written ~= true and stored.replayed ~= true then
-      error("canonical lifecycle Local QA department observation conflict")
-    end
-  end
-  return trace
-end
 
 local function copy(value)
   if type(value) ~= "table" then return value end
@@ -195,15 +168,11 @@ function M.run(context, project_root, options)
 
   local actions
   if context.workflow_runtime.load_state(context.request.state_ref) == nil then
-    local request = context.request
-    if context.use_local_qa_departments == true then
-      local intake = run_local_qa_department(context, "intake", "qa_run_request", request)
-      if #intake.raises ~= 1 or intake.raises[1].queue ~= "workflow-qa.qa_run_request" then
-        error("canonical lifecycle Local QA intake did not raise workflow-qa.qa_run_request")
-      end
-      request = intake.raises[1].payload
+    local intake = adapter.qa_run_event(context.request)
+    if intake.queue ~= "workflow-qa.qa_run_request" then
+      error("canonical lifecycle Local QA intake did not target workflow-qa.qa_run_request")
     end
-    actions = workflow.start(request, context.workflow_runtime)
+    actions = workflow.start(intake.payload, context.workflow_runtime)
     local stopped = prepared("intake-checkpoint", actions)
     if stopped ~= nil then return stopped end
     actions = release_checkpoint("intake", actions)
@@ -291,17 +260,7 @@ function M.run(context, project_root, options)
   end
 
   if type(actions[1]) == "table" and actions[1].queue == "workflow_qa_execution_grant_request" then
-    local grant_event
-    if context.use_local_qa_departments == true then
-      local trace = run_local_qa_department(context, "execution_grant",
-        "workflow-qa.workflow_qa_execution_grant_request", actions[1].payload)
-      if #trace.raises ~= 1 or trace.raises[1].queue ~= "workflow-qa.execution_grant_result" then
-        error("canonical lifecycle Local QA grant did not raise workflow-qa.execution_grant_result")
-      end
-      grant_event = trace.raises[1]
-    else
-      grant_event = adapter.handle_execution_grant(actions[1].payload, context.generic_host_runtime)
-    end
+    local grant_event = adapter.handle_execution_grant(actions[1].payload, context.generic_host_runtime)
     actions = workflow.handle_grant_result(grant_event.payload, context.request, context.workflow_runtime)
   end
   local stopped = prepared("structured-execution-pending", actions)
@@ -362,13 +321,7 @@ function M.run(context, project_root, options)
     aggregate_receipt, context.request, context.workflow_runtime)
   stopped = prepared("terminal-without-host-record", actions)
   if stopped ~= nil then return stopped end
-  if context.use_local_qa_departments == true then
-    local trace = run_local_qa_department(context, "terminal",
-      "workflow-qa.workflow_qa_terminal_request", actions[1].payload)
-    if #trace.raises ~= 0 then error("canonical lifecycle Local QA terminal raised a business event") end
-  else
-    adapter.handle_terminal(actions[1].payload, context.generic_host_runtime)
-  end
+  adapter.handle_terminal(actions[1].payload, context.generic_host_runtime)
 
   return {
     workflow = workflow,
