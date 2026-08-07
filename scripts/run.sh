@@ -813,7 +813,7 @@ cmd_live_cdp_smoke() {
 }
 
 generic_host_closed_world_roots() {
-  printf '%s\n' "environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/consensus @platform/github-proxy"
+  printf '%s\n' "local-qa-host-adapter environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/consensus @platform/github-proxy"
 }
 
 cmd_example() {

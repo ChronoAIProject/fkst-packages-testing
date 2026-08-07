@@ -133,7 +133,7 @@ local function http_request(request, timeout_seconds)
   local script = table.concat({
     "const http=require('http'),u=new URL(process.argv[1]);",
     "const req=http.request({hostname:u.hostname,port:u.port,path:u.pathname+u.search,method:process.argv[2],timeout:Number(process.argv[3])*1000},res=>{",
-    "let body='';res.setEncoding('utf8');res.on('data',c=>body+=c);res.on('end',()=>process.stdout.write(JSON.stringify({status:res.statusCode,body})));",
+    "let body='';res.setEncoding('utf8');res.on('data',c=>body+=c);res.on('end',()=>process.stdout.write(JSON.stringify({status:res.statusCode,headers:res.headers,body})));",
     "});req.on('timeout',()=>req.destroy(new Error('timeout')));req.on('error',error=>{process.stderr.write(error.message);process.exit(48)});req.end();",
   })
   local result = direct_exec({ "node", "-e", script, request.url, request.method, tostring(timeout_seconds or 10) })
@@ -954,6 +954,12 @@ function M.initialize(context, durable_root)
     completed_replay_failpoint = copy(context.completed_replay_failpoint),
     crash_barrier = copy(context.crash_barrier),
     runtime_pep_denial = copy(context.runtime_pep_denial),
+    fixture_name = context.fixture_name,
+    fixture_source_root = context.fixture_source_root,
+    use_local_qa_departments = context.use_local_qa_departments == true,
+    local_qa_department_calls = {},
+    temp_root_prefix = context.temp_root_prefix,
+    artifact_root_prefix = context.artifact_root_prefix,
     request = copy(context.request),
   }
   local stored = records:immutable("generic-host/config", config)

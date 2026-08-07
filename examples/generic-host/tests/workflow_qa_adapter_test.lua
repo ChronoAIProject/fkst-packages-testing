@@ -1,8 +1,8 @@
 local adapter = require("host_workflow_qa_adapter")
 local execution = require("contract.structured_execution")
 local workflow_qa = require("contract.workflow_qa")
-local grant_department = require("departments.workflow_qa_grant.main")
-local terminal_department = require("departments.workflow_qa_terminal.main")
+local grant_department = require("departments.execution_grant.main")
+local terminal_department = require("departments.terminal.main")
 local testing = require("testkit.testing")
 local t = fkst.test
 

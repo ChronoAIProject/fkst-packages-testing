@@ -90,7 +90,7 @@ local function run_to_barrier(context, live_pids, label)
   assert_log_markers(stdout_path, "first supervisor", {
     "dept=generic-host.workflow_qa_supervisor ",
     "dept=workflow-qa.seam ",
-    "dept=generic-host.workflow_qa_grant ",
+    "dept=local-qa-host-adapter.execution_grant ",
   })
   return recovered, stdout_path, stderr_path
 end
@@ -222,7 +222,7 @@ return {
         "dept=environment-factory.finalize ",
         "dept=test-publication.finalize_qa_run ",
         "dept=workflow-qa.terminal ",
-        "dept=generic-host.workflow_qa_terminal ",
+        "dept=local-qa-host-adapter.terminal ",
       })
       local recovered = assert_terminal(context)
       local before = record_counts(recovered)
@@ -298,7 +298,7 @@ return {
       assert_log_markers(stdout_path, "production PEP denial supervisor", {
         "dept=generic-host.workflow_qa_supervisor ",
         "dept=testing-runner.run_structured_execution ",
-        "dept=generic-host.workflow_qa_terminal ",
+        "dept=local-qa-host-adapter.terminal ",
       })
       local before = record_counts(recovered)
       t.eq(before.replay_claims, 1)

@@ -12,4 +12,5 @@ libraries = ["contract", "workflow", "testkit", "testing_ai", "testing_runtime"]
 packages = [
   "environment-factory", "testing-design", "browser-readiness", "module-testing-pipeline",
   "module-test-loop", "testing-runner", "test-artifacts", "test-publication", "workflow-qa",
+  "local-qa-host-adapter",
 ]

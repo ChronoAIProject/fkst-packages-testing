@@ -19,6 +19,7 @@ SOURCE_CI_CONTRACT = SOURCE_ROOT / "scripts" / "check_ci_contract.py"
 SOURCE_CI_WORKFLOW = SOURCE_ROOT / ".github" / "workflows" / "ci.yml"
 SUBSTRATE_PIN = "1" * 40
 GENERIC_HOST_CLOSED_WORLD_ROOTS = (
+    "local-qa-host-adapter",
     "environment-factory",
     "testing-design",
     "browser-readiness",
