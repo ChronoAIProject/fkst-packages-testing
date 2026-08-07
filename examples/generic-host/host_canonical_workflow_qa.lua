@@ -618,6 +618,7 @@ function Context:with_globals(fn)
     structured_execution_runtime = self.structured_runtime,
     qa_publication_runtime = self.publication_runtime,
     generic_host_workflow_qa_runtime = self.generic_host_runtime,
+    local_qa_workflow_qa_runtime = self.generic_host_runtime,
   }
   local previous = {}
   for name, value in pairs(values) do
@@ -661,15 +662,18 @@ function Context:cleanup()
       end
     end
   end
-  remove_tree(self.temp_root, "/tmp/fkst-generic-host-canonical-")
-  remove_tree(absolute(self.artifact_root), project_root .. "/.testing/runs/canonical-workflow-qa-")
+  remove_tree(self.temp_root, self.temp_root_prefix)
+  remove_tree(absolute(self.artifact_root), self.artifact_root_prefix)
 end
 
 function M.new(options)
   options = options or {}
+  local inventory = options.scenario == "downstream-inventory"
   local port = reserve_port()
   local cdp_port = reserve_port()
-  local run_id = "canonical-workflow-qa-" .. tostring(port)
+  local run_prefix = inventory and "inventory-initial-state-" or "canonical-workflow-qa-"
+  local fixture_name = inventory and "downstream-inventory" or "canonical-qa"
+  local run_id = run_prefix .. tostring(port)
   local artifact_root = ".testing/runs/" .. run_id
   local temp_root = "/tmp/fkst-generic-host-" .. run_id
   local source_root = temp_root .. "/source"
@@ -686,33 +690,34 @@ function M.new(options)
   require_exec({
     "node", "-e",
     "const fs=require('fs');fs.cpSync(process.argv[1],process.argv[2],{recursive:true});",
-    absolute("examples/generic-host/fixtures/canonical-qa"), source_root,
+    absolute("examples/generic-host/fixtures/" .. fixture_name), source_root,
   })
   require_exec({ "git", "init", "--quiet" }, source_root)
   require_exec({ "git", "config", "user.email", "fixture@example.invalid" }, source_root)
-  require_exec({ "git", "config", "user.name", "Canonical QA Fixture" }, source_root)
+  require_exec({ "git", "config", "user.name", "Generic Host Fixture" }, source_root)
   require_exec({ "git", "add", "." }, source_root)
-  require_exec({ "git", "commit", "--quiet", "-m", "canonical qa fixture" }, source_root)
+  require_exec({ "git", "commit", "--quiet", "-m", fixture_name .. " fixture" }, source_root)
   write_file(source_root .. "/source-only-uncommitted.txt", "must not enter the detached test checkout\n")
   local commit_sha = require_exec({ "git", "rev-parse", "HEAD" }, source_root):match("([0-9a-f]+)")
   local store = Store.new()
   local repository = {
-    slug = "owner/canonical-qa",
-    url = "https://example.invalid/generic/canonical-qa.git",
+    slug = inventory and "fixture/downstream-inventory" or "owner/canonical-qa",
+    url = inventory and "https://example.invalid/fixtures/downstream-inventory.git"
+      or "https://example.invalid/generic/canonical-qa.git",
     commit_sha = commit_sha,
   }
   local trace_id = "trace-" .. run_id
   local dedup_key = run_id
   local origin = "http://127.0.0.1:" .. tostring(port)
-  local base_url = origin .. "/health"
+  local base_url = origin .. (inventory and "/inventory/SKU-001" or "/health")
   local profile_ref = ref(artifact_root .. "/authorization/profile.json")
   local approval_ref = ref(artifact_root .. "/authorization/approval.json")
   local validation_ref = ref(artifact_root .. "/authorization/profile-validation.json")
-  local authority = { kind = "host-policy", ref = "fixtures/canonical-qa" }
-  local evidence = { kind = "signed-attestation", ref = "fixtures/canonical-qa-approval" }
+  local authority = { kind = "host-policy", ref = "fixtures/" .. fixture_name }
+  local evidence = { kind = "signed-attestation", ref = "fixtures/" .. fixture_name .. "-approval" }
   local profile = {
     schema = project_profile.schemas.profile,
-    revision = "canonical-qa-profile-v1",
+    revision = fixture_name .. "-profile-v1",
     repository = { url = repository.url, commit_sha = repository.commit_sha },
     working_directory = ".",
     commands = {
@@ -737,7 +742,7 @@ function M.new(options)
   }
   local trusted = {
     source_ref = authority,
-    policy_revision = "canonical-qa-policy-v1",
+    policy_revision = fixture_name .. "-policy-v1",
     verify = function(request)
       return {
         authenticated = true,
@@ -755,7 +760,7 @@ function M.new(options)
     profile_sha256 = project_profile.profile_sha256(profile, sha256_bytes),
     repository = { url = repository.url, commit_sha = repository.commit_sha },
     authority = authority,
-    policy_revision = "canonical-qa-policy-v1",
+    policy_revision = fixture_name .. "-policy-v1",
     evidence_ref = evidence,
     issued_at = "2026-07-22T00:00:00Z",
     expires_at = "2026-07-22T01:00:00Z",
@@ -837,28 +842,44 @@ function M.new(options)
       token = sha256_bytes(run_id .. "\0fixture-cli-effect-denial"),
     }
   end
-  local catalog_cases = {
-    {
+  local catalog_cases = {}
+  if inventory then
+    table.insert(catalog_cases, {
+      design_case_id = "inventory:initial-state",
+      case_id = "inventory-initial-state",
+      kind = "http",
+      request = { method = "GET", url = base_url, headers = {} },
+      timeout_seconds = 10,
+      assertions = {
+        { type = "status-code", expected = 200 },
+        { type = "body-contains", expected = "\"sku\":\"SKU-001\"" },
+        { type = "body-contains", expected = "\"on_hand\":5" },
+        { type = "body-contains", expected = "\"reserved\":0" },
+        { type = "body-contains", expected = "\"available\":5" },
+      },
+    })
+  else
+    table.insert(catalog_cases, {
       design_case_id = "service:reachability",
       case_id = "cli-version",
       kind = "cli",
       argv = cli_argv,
       timeout_seconds = 10,
       assertions = { { type = "exit-code", expected = 0 } },
-    },
-  }
-  if options.cli_only ~= true then
-    table.insert(catalog_cases, {
-      design_case_id = "service:page-load",
-      case_id = "health",
-      kind = "http",
-      request = { method = "GET", url = base_url, headers = {} },
-      timeout_seconds = 10,
-      assertions = {
-        { type = "status-code", expected = 200 },
-        { type = "body-contains", expected = "healthy" },
-      },
     })
+    if options.cli_only ~= true then
+      table.insert(catalog_cases, {
+        design_case_id = "service:page-load",
+        case_id = "health",
+        kind = "http",
+        request = { method = "GET", url = base_url, headers = {} },
+        timeout_seconds = 10,
+        assertions = {
+          { type = "status-code", expected = 200 },
+          { type = "body-contains", expected = "healthy" },
+        },
+      })
+    end
   end
   local catalog = {
     schema = execution.schemas.case_catalog,
@@ -876,14 +897,17 @@ function M.new(options)
     profile_sha256 = approval.profile_sha256,
     case_catalog_sha256 = store:digest(catalog_ref),
     capabilities = {
-      cli = { { argv_prefix = { "node", "cli.js" } } },
+      cli = inventory and {} or { { argv_prefix = { "node", "cli.js" } } },
       http = options.cli_only == true and {} or {
-        { origin = origin, methods = { "GET" }, path_prefixes = { "/health" } },
+        { origin = origin, methods = { "GET" },
+          path_prefixes = { inventory and "/inventory/" or "/health" } },
       },
     },
-    authority = { kind = "host-policy", ref = "fixtures/canonical-qa-execution" },
-    policy_revision = "canonical-qa-execution-v1",
-    evidence_ref = { kind = "signed-attestation", ref = "fixtures/canonical-qa-execution-approval" },
+    authority = { kind = "host-policy", ref = "fixtures/" .. fixture_name .. "-execution" },
+    policy_revision = fixture_name .. "-execution-v1",
+    evidence_ref = {
+      kind = "signed-attestation", ref = "fixtures/" .. fixture_name .. "-execution-approval",
+    },
     issued_at = "2026-07-22T00:00:00Z",
     expires_at = "2026-07-22T01:00:00Z",
     max_uses = 1,
@@ -899,7 +923,16 @@ function M.new(options)
     repository = copy(repository),
     artifact_root = artifact_root,
     state_ref = artifact_root .. "/workflow-state.json",
-    proposed_cases = {
+    proposed_cases = inventory and {
+      {
+        id = "inventory-initial-state", module_id = "inventory", priority = "P0",
+        title = "Initial inventory state",
+        objective = "Verify the durable initial inventory state for SKU-001.", case_kind = "api",
+        actions = { { action = "http", target = "/inventory/SKU-001", expected = "HTTP 200" } },
+        expected_observable = "SKU-001 has on-hand 5, reserved 0, and available 5.",
+        coverage_subject_ids = { "inventory:initial-state" }, review_status = "executable",
+      },
+    } or {
       {
         id = "seed-health", module_id = "service", priority = "P0", title = "Health endpoint",
         objective = "Verify the canonical fixture health endpoint.", case_kind = "api",
@@ -1023,6 +1056,12 @@ function M.new(options)
     crash_barrier = crash_barrier,
     runtime_pep_denial = runtime_pep_denial,
     pep_mutate_plan_binding = options.pep_mutate_plan_binding == true,
+    fixture_name = fixture_name,
+    fixture_source_root = absolute("examples/generic-host/fixtures/" .. fixture_name),
+    use_local_qa_departments = inventory,
+    local_qa_department_calls = {},
+    temp_root_prefix = "/tmp/fkst-generic-host-" .. run_prefix,
+    artifact_root_prefix = project_root .. "/.testing/runs/" .. run_prefix,
   }, Context)
   context.environment_runtime = context:_environment_runtime()
   context.workflow_runtime = context:_workflow_runtime()

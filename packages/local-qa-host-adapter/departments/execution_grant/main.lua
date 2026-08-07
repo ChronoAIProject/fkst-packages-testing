@@ -10,6 +10,7 @@ local spec = {
 
 local function act(event)
   local result = adapter.handle_execution_grant(event.payload or {}, event.test_ports)
+  log.info("local-qa-host dept=execution_grant tag=GRANTED")
   raise(result.queue, result.payload)
 end
 

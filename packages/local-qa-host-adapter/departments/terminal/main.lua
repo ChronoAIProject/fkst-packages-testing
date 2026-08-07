@@ -10,7 +10,8 @@ local spec = {
 }
 
 local function act(event)
-  adapter.handle_terminal(event.payload or {}, event.test_ports)
+  local terminal = adapter.handle_terminal(event.payload or {}, event.test_ports)
+  log.info("local-qa-host dept=terminal tag=RECORDED run_id=" .. tostring(terminal.run_id))
 end
 
 return saga.department(spec, {
