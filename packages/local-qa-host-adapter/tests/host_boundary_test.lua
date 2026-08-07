@@ -2,6 +2,7 @@ local execution = require("contract.structured_execution")
 local workflow_qa = require("contract.workflow_qa")
 local execution_grant = require("departments.execution_grant.main")
 local terminal = require("departments.terminal.main")
+local durable_runtime = require("testing_runtime.generic_host_workflow_qa")
 local testing = require("testkit.testing")
 local t = fkst.test
 
@@ -244,6 +245,42 @@ return {
     t.eq(replay.raises[1].payload.grant_sha256, first.raises[1].payload.grant_sha256)
     t.eq(writes(), 1)
     t.eq(claims(), 1)
+  end,
+
+  test_execution_grant_configured_runtime_is_created_cached_and_reused = function()
+    local request, ports, writes, claims = grant_runtime()
+    local previous = _G.local_qa_workflow_qa_runtime
+    local previous_configured = durable_runtime.configured
+    local previous_production = durable_runtime.production
+    local production_calls = 0
+    _G.local_qa_workflow_qa_runtime = nil
+    durable_runtime.configured = function() return true end
+    durable_runtime.production = function()
+      production_calls = production_calls + 1
+      return ports
+    end
+
+    local ok, failure = pcall(function()
+      local queue = "workflow-qa.workflow_qa_execution_grant_request"
+      local first = testing.run_fake(execution_grant, department_event(queue, request))
+      t.eq(#first.raises, 1)
+      t.eq(first.raises[1].queue, "workflow-qa.execution_grant_result")
+      t.eq(first.raises[1].payload.schema, execution.schemas.grant_result)
+      t.eq(production_calls, 1)
+      t.is_true(_G.local_qa_workflow_qa_runtime == ports)
+
+      local replay = testing.run_fake(execution_grant, department_event(queue, request))
+      t.eq(#replay.raises, 1)
+      t.eq(replay.raises[1].payload.grant_sha256, first.raises[1].payload.grant_sha256)
+      t.eq(production_calls, 1)
+      t.eq(writes(), 1)
+      t.eq(claims(), 1)
+    end)
+
+    _G.local_qa_workflow_qa_runtime = previous
+    durable_runtime.configured = previous_configured
+    durable_runtime.production = previous_production
+    if not ok then error(failure) end
   end,
 
   test_execution_grant_default_binding_and_failures_emit_no_result = function()
