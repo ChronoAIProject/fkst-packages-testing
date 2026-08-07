@@ -18,6 +18,15 @@ local function run_local_qa_department(context, name, queue, payload)
   _G.local_qa_workflow_qa_runtime = previous
   if not ok then error(trace, 0) end
   context.local_qa_department_calls[name] = (context.local_qa_department_calls[name] or 0) + 1
+  if type(context.records) == "table" and type(context.records.immutable) == "function" then
+    local count = context.local_qa_department_calls[name]
+    local stored = context.records:immutable("generic-host/local-qa-departments/" .. name .. "/" .. tostring(count), {
+      department = name, queue = queue, call = count, run_id = context.run_id,
+    })
+    if stored.written ~= true and stored.replayed ~= true then
+      error("canonical lifecycle Local QA department observation conflict")
+    end
+  end
   return trace
 end
 

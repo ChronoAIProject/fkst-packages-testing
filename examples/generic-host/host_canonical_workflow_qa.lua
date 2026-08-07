@@ -729,7 +729,9 @@ function M.new(options)
     application_listener_mode = project_profile.listener_mode,
     readiness_checks = { { type = "http", url = base_url, expected_status = 200 } },
     allowed_origins = { origin },
-    mutation_policy = { mode = "read-only" },
+    mutation_policy = inventory and {
+      mode = "fixture-scoped", allowed_operations = { "update" }, cleanup_required = true,
+    } or { mode = "read-only" },
     timeouts = {
       install_seconds = 20, build_seconds = 10, migrate_seconds = 5, seed_seconds = 5,
       start_seconds = 10, readiness_seconds = 10, cleanup_seconds = 10,
@@ -844,7 +846,8 @@ function M.new(options)
   end
   local catalog_cases = {}
   if inventory then
-    table.insert(catalog_cases, {
+    catalog_cases = {
+      {
       design_case_id = "inventory:initial-state",
       case_id = "inventory-initial-state",
       kind = "http",
@@ -857,7 +860,52 @@ function M.new(options)
         { type = "body-contains", expected = "\"reserved\":0" },
         { type = "body-contains", expected = "\"available\":5" },
       },
-    })
+      },
+      {
+        design_case_id = "inventory:reserve-three",
+        case_id = "inventory-reserve-three",
+        kind = "cli",
+        argv = { "node", "cli.js", "reserve", "SKU-001", "3" },
+        timeout_seconds = 10,
+        assertions = { { type = "exit-code", expected = 0 } },
+      },
+      {
+        design_case_id = "inventory:state-after-reserve",
+        case_id = "inventory-state-after-reserve",
+        kind = "http",
+        request = { method = "GET", url = base_url, headers = {} },
+        timeout_seconds = 10,
+        assertions = {
+          { type = "status-code", expected = 200 },
+          { type = "body-contains", expected = "\"sku\":\"SKU-001\"" },
+          { type = "body-contains", expected = "\"on_hand\":5" },
+          { type = "body-contains", expected = "\"reserved\":3" },
+          { type = "body-contains", expected = "\"available\":2" },
+        },
+      },
+      {
+        design_case_id = "inventory:over-reserve-rejected",
+        case_id = "inventory-over-reserve-rejected",
+        kind = "cli",
+        argv = { "node", "cli.js", "reserve", "SKU-001", "3" },
+        timeout_seconds = 10,
+        assertions = { { type = "exit-code", expected = 4 } },
+      },
+      {
+        design_case_id = "inventory:state-after-rejection",
+        case_id = "inventory-state-after-rejection",
+        kind = "http",
+        request = { method = "GET", url = base_url, headers = {} },
+        timeout_seconds = 10,
+        assertions = {
+          { type = "status-code", expected = 200 },
+          { type = "body-contains", expected = "\"sku\":\"SKU-001\"" },
+          { type = "body-contains", expected = "\"on_hand\":5" },
+          { type = "body-contains", expected = "\"reserved\":3" },
+          { type = "body-contains", expected = "\"available\":2" },
+        },
+      },
+    }
   else
     table.insert(catalog_cases, {
       design_case_id = "service:reachability",
@@ -897,7 +945,9 @@ function M.new(options)
     profile_sha256 = approval.profile_sha256,
     case_catalog_sha256 = store:digest(catalog_ref),
     capabilities = {
-      cli = inventory and {} or { { argv_prefix = { "node", "cli.js" } } },
+      cli = inventory and {
+        { argv_prefix = { "node", "cli.js", "reserve", "SKU-001", "3" } },
+      } or { { argv_prefix = { "node", "cli.js" } } },
       http = options.cli_only == true and {} or {
         { origin = origin, methods = { "GET" },
           path_prefixes = { inventory and "/inventory/" or "/health" } },
@@ -931,6 +981,34 @@ function M.new(options)
         actions = { { action = "http", target = "/inventory/SKU-001", expected = "HTTP 200" } },
         expected_observable = "SKU-001 has on-hand 5, reserved 0, and available 5.",
         coverage_subject_ids = { "inventory:initial-state" }, review_status = "executable",
+      },
+      {
+        id = "inventory-reserve-three", module_id = "inventory", priority = "P0",
+        title = "Reserve three units", objective = "Reserve three available SKU-001 units.", case_kind = "cli",
+        actions = { { action = "cli", target = "node cli.js reserve SKU-001 3", expected = "exit 0" } },
+        expected_observable = "SKU-001 has reserved 3 and available 2.",
+        coverage_subject_ids = { "inventory:reserve-three" }, review_status = "executable",
+      },
+      {
+        id = "inventory-state-after-reserve", module_id = "inventory", priority = "P0",
+        title = "Inventory after reservation", objective = "Observe the successful reservation.", case_kind = "api",
+        actions = { { action = "http", target = "/inventory/SKU-001", expected = "HTTP 200" } },
+        expected_observable = "SKU-001 has on-hand 5, reserved 3, and available 2.",
+        coverage_subject_ids = { "inventory:state-after-reserve" }, review_status = "executable",
+      },
+      {
+        id = "inventory-over-reserve-rejected", module_id = "inventory", priority = "P0",
+        title = "Reject over-reservation", objective = "Reject reserving more than available.", case_kind = "cli",
+        actions = { { action = "cli", target = "node cli.js reserve SKU-001 3", expected = "exit 4" } },
+        expected_observable = "The reservation is rejected without mutation.",
+        coverage_subject_ids = { "inventory:over-reserve-rejected" }, review_status = "executable",
+      },
+      {
+        id = "inventory-state-after-rejection", module_id = "inventory", priority = "P0",
+        title = "Inventory after rejection", objective = "Observe unchanged state after rejection.", case_kind = "api",
+        actions = { { action = "http", target = "/inventory/SKU-001", expected = "HTTP 200" } },
+        expected_observable = "SKU-001 remains on-hand 5, reserved 3, and available 2.",
+        coverage_subject_ids = { "inventory:state-after-rejection" }, review_status = "executable",
       },
     } or {
       {
