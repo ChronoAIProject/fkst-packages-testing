@@ -187,6 +187,21 @@ function artifactWrite(projectRoot, logicalPath, value) {
   return { written: true, replayed: result.replayed === true, digest: result.digest };
 }
 
+function artifactWriteRaw(projectRoot, logicalPath, body) {
+  const runId = runIdFromPath(logicalPath);
+  if (!runId) fail('artifact path has no run id');
+  loadConfig(projectRoot, runId);
+  const result = storeExecute({ root: runRoot(runId), operation: 'artifact-write', path: logicalPath, body });
+  if (!result.written) fail('immutable artifact differs');
+  const target = artifactFile(projectRoot, logicalPath);
+  if (fs.existsSync(target)) {
+    if (fs.readFileSync(target, 'utf8') !== body) fail('materialized artifact differs');
+  } else {
+    atomicWrite(target, body);
+  }
+  return { written: true, replayed: result.replayed === true, digest: result.digest };
+}
+
 function listIndexedRuns(projectRoot) {
   const runs = [];
   for (const entry of recordList(hostRoot(), 'runs')) {
@@ -555,8 +570,60 @@ function structuredAuthorizationKey(receiptId) {
   return `testing-runner/cli-effect-authorizations/${sha256(stable(receiptId))}`;
 }
 
-function structuredConsumptionKey(grantId) {
-  return `testing-runner/cli-effect-consumptions/${sha256(stable(grantId))}`;
+function structuredConsumptionKey(receiptId) {
+  return `testing-runner/cli-effect-consumptions/${sha256(stable(receiptId))}`;
+}
+
+function localHttpRequest(request, timeoutSeconds) {
+  const script = [
+    "const http=require('http'),url=process.argv[1],method=process.argv[2],timeout=Number(process.argv[3])*1000;",
+    "const req=http.request(url,{method},res=>{const chunks=[];res.on('data',chunk=>chunks.push(chunk));",
+    "res.on('end',()=>process.stdout.write(JSON.stringify({status:res.statusCode,headers:{'content-type':String(res.headers['content-type']||'')},body:Buffer.concat(chunks).toString('utf8')})))});",
+    "req.on('error',error=>{process.stderr.write(String(error.message||error));process.exit(1)});",
+    "req.setTimeout(timeout,()=>req.destroy(new Error('request-timeout')));req.end();",
+  ].join('');
+  const executed = directExec([process.execPath, '-e', script, request.url, request.method,
+    String(timeoutSeconds || 30)], process.cwd(), timeoutSeconds);
+  if (executed.exit_code !== 0) fail('structured HTTP request failed');
+  try { return JSON.parse(executed.stdout); } catch (_error) { fail('structured HTTP response is malformed'); }
+}
+
+function inventoryAcceptanceReport(projectRoot, config, terminal) {
+  if (config.fixture_name !== 'downstream-inventory') return;
+  const executionRoot = config.request.structured_execution.artifact_root;
+  const results = artifactRead(projectRoot, `${executionRoot}/case-results.json`);
+  if (!results || !results.value || !Array.isArray(results.value.cases)) fail('inventory case results are unavailable');
+  const effects = new Map();
+  for (const entry of recordList(runRoot(config.run_id), 'testing-runner/target-effects')) {
+    const binding = entry.value && entry.value.binding;
+    const envelope = binding && binding.action_envelope;
+    const caseId = binding && (binding.case_id || (envelope && envelope.case && envelope.case.case_id));
+    if (caseId) effects.set(caseId, entry.value.result);
+  }
+  const definitions = [
+    ['inventory-initial-state', 'GET inventory', 'HTTP 200 with initial inventory'],
+    ['inventory-reserve-three', 'Reserve three', 'Exit 0 with reserved inventory'],
+    ['inventory-state-after-reserve', 'GET inventory', 'HTTP 200 with reserved inventory'],
+    ['inventory-over-reserve-rejected', 'Reserve three again', 'Exit 4 with insufficient availability'],
+    ['inventory-state-after-rejection', 'GET inventory', 'HTTP 200 with unchanged inventory'],
+  ];
+  const byId = new Map(results.value.cases.map((value) => [value.case_id, value]));
+  const lines = [
+    '| Case ID | Action | Expected result | Actual result | Status | Evidence |',
+    '| --- | --- | --- | --- | --- | --- |',
+  ];
+  for (const [caseId, action, expected] of definitions) {
+    const result = byId.get(caseId);
+    const effect = effects.get(caseId) || {};
+    const actual = result && result.kind === 'cli'
+      ? `exit ${effect.exit_code}; stdout ${JSON.stringify(effect.stdout || '')}; stderr ${JSON.stringify(effect.stderr || '')}`
+      : `HTTP ${effect.status}; body ${JSON.stringify(effect.body || '')}`;
+    lines.push(`| ${caseId} | ${action} | ${expected} | ${actual} | ${result && result.status || 'missing'} | ${result && result.evidence_ref || 'missing'} |`);
+  }
+  const passed = terminal.status === 'passed' && terminal.counts && terminal.counts.planned === 5
+    && definitions.every(([caseId]) => byId.get(caseId) && byId.get(caseId).status === 'passed');
+  lines.push('', passed ? 'Verdict: downstream business acceptance passed' : 'Verdict: not ready', '');
+  artifactWriteRaw(projectRoot, `.testing/runs/${config.run_id}/acceptance-report.md`, lines.join('\n'));
 }
 
 function exactKeys(value, expected) {
@@ -679,6 +746,15 @@ function activeStructuredRequest(root, runId) {
   if (!state || state.phase !== 'structured-execution-pending' || !Array.isArray(state.pending_actions)) return null;
   const action = state.pending_actions.find((item) => item && item.queue === 'testing-runner.structured_execution_request');
   return action && action.payload || null;
+}
+
+function structuredCaseSequence(projectRoot, request, caseId) {
+  const plan = request && artifactRead(projectRoot, request.test_plan_ref);
+  const cases = plan && plan.value && plan.value.cases;
+  if (!Array.isArray(cases)) fail('structured test plan is unavailable');
+  const index = cases.findIndex((value) => value && value.case_id === caseId);
+  if (index < 0) fail('structured case is absent from the test plan');
+  return index + 1;
 }
 
 function envelopeMatchesRequest(envelope, request, payload) {
@@ -936,7 +1012,8 @@ function dispatch(name, payload, projectRoot) {
     }
     case 'host-record-terminal': {
       const runId = runIdFor(payload);
-      loadConfig(projectRoot, runId);
+      const config = loadConfig(projectRoot, runId);
+      inventoryAcceptanceReport(projectRoot, config, payload);
       const stored = recordImmutable(runRoot(runId), `generic-host/terminal/${runId}`, payload);
       return { recorded: stored.written === true || stored.replayed === true };
     }
@@ -1231,14 +1308,19 @@ function dispatch(name, payload, projectRoot) {
       const workspace = workspaceResource(root, envelope.workspace_ref);
       const ownership = verifyWorkspace(config, workspace);
       if (ownership.owned !== true) fail(`structured workspace is not owned: ${ownership.reason}`);
-      const consumed = recordClaim(root, structuredConsumptionKey(grant.value.grant_id), {
+      const consumed = recordClaim(root, structuredConsumptionKey(receipt.receipt_id), {
         binding: receipt, receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id,
       });
       if (!consumed.claimed || consumed.replayed) fail('durable structured CLI authorization receipt is replayed');
+      artifactWrite(projectRoot, `${payload.artifact_root}/authorization/${envelope.case.case_id}-consumption.json`, {
+        schema: 'generic-host.cli-effect-consumption.v1', case_id: envelope.case.case_id,
+        receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id, fence_id: envelope.fence_id,
+      });
       const result = directExec(envelope.case.argv, workspace.path, envelope.case.timeout_seconds,
         envelope.resource_bounds.output_bytes);
+      const sequence = structuredCaseSequence(projectRoot, request, envelope.case.case_id);
       const stored = recordImmutable(root, `testing-runner/target-effects/${sha256(stable(payload))}`, {
-        binding: payload, result,
+        sequence, binding: payload, result,
       });
       if (!stored.written && !stored.replayed) fail('structured CLI target effect conflict');
       return result;
@@ -1247,11 +1329,16 @@ function dispatch(name, payload, projectRoot) {
       const runId = runIdFor(payload);
       const config = loadConfig(projectRoot, runId);
       if (payload.operation_id !== runId || payload.base_url !== config.base_url
-        || !payload.request || payload.request.url !== config.base_url) fail('structured HTTP request binding differs');
-      const result = directExec(['curl', '-sS', '-o', '-', '-w', '\n%{http_code}', payload.request.url],
-        projectRoot, payload.timeout_seconds);
-      const match = /\n(\d{3})$/.exec(result.stdout);
-      return { status: match ? Number(match[1]) : 0, body: match ? result.stdout.slice(0, match.index) : result.stdout };
+        || !payload.request || payload.request.method !== 'GET'
+        || payload.request.url !== config.base_url) fail('structured HTTP request binding differs');
+      const result = localHttpRequest(payload.request, payload.timeout_seconds);
+      const request = activeStructuredRequest(runRoot(runId), runId);
+      const sequence = structuredCaseSequence(projectRoot, request, payload.case_id);
+      const stored = recordImmutable(runRoot(runId), `testing-runner/target-effects/${sha256(stable(payload))}`, {
+        sequence, binding: payload, result,
+      });
+      if (!stored.written && !stored.replayed) fail('structured HTTP target effect conflict');
+      return result;
     }
     case 'load-result': {
       const runId = runIdFor(payload);
