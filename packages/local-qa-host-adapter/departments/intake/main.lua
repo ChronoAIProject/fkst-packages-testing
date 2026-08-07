@@ -11,6 +11,7 @@ local spec = {
 
 local function act(event)
   local result = adapter.qa_run_event(event.payload or {})
+  log.info("local-qa-host dept=intake tag=ROUTED run_id=" .. tostring(result.payload.run_id))
   raise(result.queue, result.payload)
 end
 

@@ -15,6 +15,26 @@ local INITIAL = "{\"sku\":\"SKU-001\",\"on_hand\":5,\"reserved\":0,\"available\"
 local RESERVED = "{\"sku\":\"SKU-001\",\"on_hand\":5,\"reserved\":3,\"available\":2}\n"
 local REJECTED = "{\"error\":\"insufficient-available\",\"sku\":\"SKU-001\",\"requested\":3,\"available\":2}\n"
 
+local function adapter_log_root(context, label)
+  return context.host_root .. "/framework-runtime-" .. label .. "/logs/framework-child"
+end
+
+local function adapter_marker_counts(context, label)
+  local root = adapter_log_root(context, label)
+  return {
+    intake = process.count_child_text(root, "local-qa-host-adapter.intake-",
+      "local-qa-host dept=intake tag=ROUTED run_id=" .. context.run_id),
+    execution_grant = process.count_child_text(root, "local-qa-host-adapter.execution_grant-",
+      "local-qa-host dept=execution_grant tag=GRANTED"),
+    terminal = process.count_child_text(root, "local-qa-host-adapter.terminal-",
+      "local-qa-host dept=terminal tag=RECORDED run_id=" .. context.run_id),
+  }
+end
+
+local function add_marker_counts(total, counts)
+  for name, value in pairs(counts) do total[name] = total[name] + value end
+end
+
 local function artifact(context, path)
   local stored = context.store:load(path)
   t.is_true(type(stored) == "table")
@@ -123,6 +143,8 @@ return {
       t.eq(surviving.owned, true)
       t.eq(surviving.pgid, ownership.pgid)
       t.eq(surviving.ownership_token, ownership.ownership_token)
+      local adapter_calls = { intake = 0, execution_grant = 0, terminal = 0 }
+      add_marker_counts(adapter_calls, adapter_marker_counts(context, "inventory-first"))
 
       local second_pid, second_stdout, second_stderr = process.start_supervisor(
         context, "inventory-second", false, live_pids)
@@ -131,6 +153,7 @@ return {
           .. "\nstderr=" .. tostring(process.read_file(second_stderr)))
       end
       process.stop_live(second_pid, live_pids)
+      add_marker_counts(adapter_calls, adapter_marker_counts(context, "inventory-second"))
       local recovered = durable.load(context.project_root, context.durable_root, context.run_id)
       t.eq(recovered.records:read("generic-host/recovery/execution").replayed, true)
       local catalog = artifact(recovered, recovered.request.structured_execution.case_catalog_ref)
@@ -187,11 +210,6 @@ return {
         previous = position
       end
       t.eq(report:match("([^\n]+)\n$"), "Verdict: downstream business acceptance passed")
-      for _, department in ipairs({ "intake", "execution_grant", "terminal" }) do
-        local calls = recovered.records:list("generic-host/local-qa-departments/" .. department)
-        t.eq(#calls, 1)
-        t.eq(calls[1].value.call, 1)
-      end
       local released = recovered:_fixture_effect("fixture-release-status", {
         run_id = context.run_id, artifact_root = context.artifact_root,
       })
@@ -208,6 +226,10 @@ return {
           .. "\nstderr=" .. tostring(process.read_file(noop_stderr)))
       end
       process.stop_live(noop_pid, live_pids)
+      add_marker_counts(adapter_calls, adapter_marker_counts(context, "inventory-noop"))
+      t.eq(adapter_calls.intake, 1)
+      t.eq(adapter_calls.execution_grant, 1)
+      t.eq(adapter_calls.terminal, 1)
       assert_same_counts(before, counts(durable.load(context.project_root, context.durable_root, context.run_id)))
       t.eq(before.profile, 1)
       t.eq(before.preauthorization, 1)

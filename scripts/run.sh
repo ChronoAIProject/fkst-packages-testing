@@ -827,7 +827,9 @@ cmd_example() {
   for t in $roots; do args+=(--package-root "$work/packages/${t#@platform/}"); done
   echo "example $name (closed-world: $roots)"
   ( trap 'rm -rf "$work"' EXIT; mkdir -p "$work/.fkst/run/runtime" "$work/.fkst/run/durable"; \
-    FKST_RUNTIME_ROOT="$work/.fkst/run/runtime" FKST_DURABLE_ROOT="$work/.fkst/run/durable" FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 run_engine "$BIN" test "${args[@]}" )
+    FKST_GENERIC_HOST_CLOSED_WORLD_ROOTS="$roots" FKST_RUNTIME_ROOT="$work/.fkst/run/runtime" \
+      FKST_DURABLE_ROOT="$work/.fkst/run/durable" FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 \
+      run_engine "$BIN" test "${args[@]}" )
 }
 
 cmd_external_host() {

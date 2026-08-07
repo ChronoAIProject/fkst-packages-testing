@@ -1,9 +1,6 @@
 local adapter = require("host_workflow_qa_adapter")
 local execution = require("contract.structured_execution")
 local workflow_qa = require("contract.workflow_qa")
-local grant_department = require("departments.execution_grant.main")
-local terminal_department = require("departments.terminal.main")
-local testing = require("testkit.testing")
 local t = fkst.test
 
 local function digest(char) return string.rep(char, 64) end
@@ -251,23 +248,15 @@ return {
     t.eq(event.payload.source_ref.ref, "controlled-run-1")
   end,
 
-  test_host_grant_department_persists_once_and_replays_same_result = function()
+  test_host_wrapper_persists_grant_once_and_replays_same_result = function()
     local request, materials = fixture()
     local ports, writes, _, claim_calls = runtime(request, materials)
-    local first = testing.run_fake(grant_department, {
-      queue = "workflow-qa.workflow_qa_execution_grant_request",
-      payload = request,
-      test_ports = ports,
-    })
-    local replay = testing.run_fake(grant_department, {
-      queue = "workflow-qa.workflow_qa_execution_grant_request",
-      payload = request,
-      test_ports = ports,
-    })
+    local first = adapter.handle_execution_grant(request, ports)
+    local replay = adapter.handle_execution_grant(request, ports)
     t.eq(writes(), 1)
     t.eq(claim_calls(), 1)
-    t.eq(first.raises[1].queue, "workflow-qa.execution_grant_result")
-    t.eq(replay.raises[1].payload.grant_sha256, first.raises[1].payload.grant_sha256)
+    t.eq(first.queue, "workflow-qa.execution_grant_result")
+    t.eq(replay.payload.grant_sha256, first.payload.grant_sha256)
   end,
 
   test_host_rejects_changed_plan_after_preauthorization_claim = function()
@@ -280,16 +269,11 @@ return {
     t.eq(claim_calls(), 1)
   end,
 
-  test_terminal_department_records_only_valid_host_handoff = function()
+  test_host_wrapper_records_only_valid_terminal_handoff = function()
     local request, materials = fixture()
     local ports, _, recorded = runtime(request, materials)
     local payload = terminal_payload()
-    local trace = testing.run_fake(terminal_department, {
-      queue = "workflow-qa.workflow_qa_terminal_request",
-      payload = payload,
-      test_ports = ports,
-    })
-    t.eq(#trace.raises, 0)
+    adapter.handle_terminal(payload, ports)
     t.eq(recorded().run_id, payload.run_id)
     local malformed = terminal_payload()
     malformed.terminal_policy = "package"
