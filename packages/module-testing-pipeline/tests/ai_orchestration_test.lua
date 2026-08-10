@@ -296,6 +296,31 @@ return {
     t.eq(model.writes[artifact_root .. "/ai-context-manifest.json"], nil)
   end,
 
+  test_legacy_nested_design_request_emits_nested_state_reference = function()
+    local model = memory_io()
+    local design_request = design_fixture(model)
+    local coverage = decode(model, design_request.coverage_scope_ref.artifact_pointer)
+    coverage.subjects = { coverage.subjects[1] }
+    model.writes[design_request.coverage_scope_ref.artifact_pointer] = ai.json_encode(coverage)
+    design_request.coverage_scope_ref.artifact_digest = design_loop.document_digest(coverage)
+    local payload = module_start({
+      cdp_execution = {
+        schema = "testing-runner.module-cdp-execution.v1",
+        ai_design_loop_request = design_request,
+      },
+    })
+    design_request.trace_id = payload.trace_id
+    design_request.dedup_key = payload.dedup_key
+    local action = core.start_module(payload, model.ports)
+    t.eq(action.kind, "module-loop-request")
+    t.eq(action.design.kind, "design-closure")
+    t.eq(action.request.ai_design_loop_request, nil)
+    t.eq(action.request.ai_design_loop_state_ref, nil)
+    t.eq(action.request.cdp_execution.ai_design_loop_request, nil)
+    t.eq(action.request.cdp_execution.ai_design_loop_state_ref.artifact_pointer,
+      design_request.artifact_root .. "/ai-design-loop-state.json")
+  end,
+
   test_design_transport_rejects_simultaneous_top_level_and_nested_authorities = function()
     local model = memory_io()
     local payload = module_start()
@@ -455,6 +480,10 @@ return {
     local custom_root = artifact_root .. "/custom"
     local model = memory_io()
     local start_payload = module_start({
+      ai_design_loop_state_ref = {
+        artifact_pointer = custom_root .. "/design-state.json",
+        artifact_digest = "design-state-digest",
+      },
       cdp_execution = {
         schema = "testing-runner.module-cdp-execution.v1",
         step_budget = 8,
@@ -469,10 +498,6 @@ return {
           ai_agent_generation_path = custom_root .. "/generation-review.json",
           generated_case_agent_review_path = custom_root .. "/execution-review.json",
           ai_test_design_loop_path = custom_root .. "/closure.json",
-        },
-        ai_design_loop_state_ref = {
-          artifact_pointer = custom_root .. "/design-state.json",
-          artifact_digest = "design-state-digest",
         },
       },
     })
@@ -493,8 +518,9 @@ return {
     t.eq(action.request.cdp_execution.ai_generation.ai_agent_generation_path, custom_root .. "/generation-review.json")
     t.eq(action.request.cdp_execution.ai_generation.generated_case_agent_review_path, custom_root .. "/execution-review.json")
     t.eq(action.request.cdp_execution.ai_generation.ai_test_design_loop_path, custom_root .. "/closure.json")
-    t.eq(action.request.cdp_execution.ai_design_loop_state_ref.artifact_pointer, custom_root .. "/design-state.json")
-    t.eq(action.request.cdp_execution.ai_design_loop_state_ref.artifact_digest, "design-state-digest")
+    t.eq(action.request.ai_design_loop_state_ref.artifact_pointer, custom_root .. "/design-state.json")
+    t.eq(action.request.ai_design_loop_state_ref.artifact_digest, "design-state-digest")
+    t.eq(design_loop.transport(action.request).location, "top-level")
     t.eq(model.writes[custom_root .. "/context.json"] ~= nil, true)
     t.eq(model.writes[custom_root .. "/generated.json"] ~= nil, true)
     t.eq(model.writes[custom_root .. "/gate.json"] ~= nil, true)
@@ -543,7 +569,7 @@ return {
   test_existing_consensus_review_authors_patch_before_review_and_resumes_after_stored_rounds = function()
     local model = memory_io()
     local start_payload = module_start()
-    start_payload.cdp_execution.ai_design_loop_request = design_fixture(model, 3, true)
+    start_payload.ai_design_loop_request = design_fixture(model, 3, true)
     model.queue_patch(function(design_state, _, _, round_plan)
       return {
         schema = design_loop.schemas.patch,
@@ -587,14 +613,15 @@ return {
 
     local resumed = ai.handle_consensus_reached(consensus_reached(next_round.proposal), model.ports)
     t.eq(resumed.kind, "module-loop-request")
-    t.eq(resumed.request.cdp_execution.ai_design_loop_request, nil)
-    t.eq(resumed.request.cdp_execution.ai_design_loop_state_ref.artifact_pointer, artifact_root .. "/design/ai-design-loop-state.json")
+    t.eq(resumed.request.ai_design_loop_request, nil)
+    t.eq(resumed.request.ai_design_loop_state_ref.artifact_pointer, artifact_root .. "/design/ai-design-loop-state.json")
+    t.eq(design_loop.transport(resumed.request).location, "top-level")
   end,
 
   test_design_consensus_rejection_fails_closed = function()
     local model = memory_io()
     local start_payload = module_start()
-    start_payload.cdp_execution.ai_design_loop_request = design_fixture(model)
+    start_payload.ai_design_loop_request = design_fixture(model)
     model.queue_patch(function(design_state, _, _, round_plan)
       return {
         schema = design_loop.schemas.patch,
@@ -785,7 +812,7 @@ return {
   test_design_patch_author_failures_and_findings_are_persisted = function()
     local function design_review(model)
       local start_payload = module_start()
-      start_payload.cdp_execution.ai_design_loop_request = design_fixture(model)
+      start_payload.ai_design_loop_request = design_fixture(model)
       local started = ai.start(start_payload, model.ports)
       local generated = ai.generate(started.request, model.ports)
       return ai.handle_consensus_reached(consensus_reached(generated.proposal), model.ports).proposal

@@ -85,29 +85,26 @@ local function canonical_request()
       source_ref = { kind = "workflow-qa", ref = "local-qa-walking-skeleton" },
       trace_id = "trace-local-qa-walking-skeleton",
       dedup_key = "dedup-local-qa-walking-skeleton",
-      cdp_execution = {
-        schema = "testing-runner.module-cdp-execution.v1",
-        ai_design_loop_request = {
-          schema = "testing-runner.ai-design-loop.request.v1",
-          artifact_root = root .. "/design/loop",
-          seed_cases_ref = {
-            artifact_pointer = root .. "/design/seed.json",
-            artifact_digest = "seed",
-          },
-          deterministic_cases_ref = {
-            artifact_pointer = root .. "/design/deterministic.json",
-            artifact_digest = "deterministic",
-          },
-          coverage_scope_ref = {
-            artifact_pointer = root .. "/design/coverage.json",
-            artifact_digest = "coverage",
-          },
-          max_rounds = 3,
-          case_budget = 16,
-          action_budget = 32,
-          trace_id = "trace-local-qa-walking-skeleton",
-          dedup_key = "dedup-local-qa-walking-skeleton",
+      ai_design_loop_request = {
+        schema = "testing-runner.ai-design-loop.request.v1",
+        artifact_root = root .. "/design/loop",
+        seed_cases_ref = {
+          artifact_pointer = root .. "/design/seed.json",
+          artifact_digest = "seed",
         },
+        deterministic_cases_ref = {
+          artifact_pointer = root .. "/design/deterministic.json",
+          artifact_digest = "deterministic",
+        },
+        coverage_scope_ref = {
+          artifact_pointer = root .. "/design/coverage.json",
+          artifact_digest = "coverage",
+        },
+        max_rounds = 3,
+        case_budget = 16,
+        action_budget = 32,
+        trace_id = "trace-local-qa-walking-skeleton",
+        dedup_key = "dedup-local-qa-walking-skeleton",
       },
     },
     structured_execution = {
@@ -151,6 +148,8 @@ return {
     t.eq(#trace.raises, 1)
     t.eq(trace.raises[1].queue, "workflow-qa.qa_run_request")
     t.is_true(rawequal(trace.raises[1].payload, request))
+    t.is_true(rawequal(trace.raises[1].payload.design_module_start.ai_design_loop_request,
+      request.design_module_start.ai_design_loop_request))
 
     local direct = adapter.qa_run_event(request)
     t.eq(direct.source_ref.kind, "external")
