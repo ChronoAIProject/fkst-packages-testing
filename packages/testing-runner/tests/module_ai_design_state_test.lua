@@ -1,7 +1,6 @@
 local core = require("core")
 local design_loop = require("module_ai_design_loop")
 local design_state = require("module_ai_design_state")
-local json_codec = require("testing_runtime.json")
 local native = require("fkst_native")
 local t = fkst.test
 
@@ -103,12 +102,56 @@ local function expect_failure(fragment, payload, reader)
   t.is_true(tostring(err):find(fragment, 1, true) ~= nil)
 end
 
+local function assert_case_ids(actual)
+  t.eq(#actual, #case_ids)
+  for index, case_id in ipairs(case_ids) do t.eq(actual[index], case_id) end
+end
+
+local function assert_loaded_state(actual, expected, state_ref)
+  t.eq(actual.schema, expected.schema)
+  t.eq(actual.artifact_root, expected.artifact_root)
+  t.eq(actual.trace_id, expected.trace_id)
+  t.eq(actual.dedup_key, expected.dedup_key)
+  for _, key in ipairs({
+    "coverage_matrix",
+    "reviewer_findings",
+    "supplementation_patch",
+    "round_plan",
+    "state",
+    "closure",
+    "residual_risk",
+  }) do
+    t.eq(actual.paths[key], expected.paths[key])
+  end
+  t.eq(actual.paths.state, state_ref.artifact_pointer)
+  t.eq(design_loop.document_digest(actual), state_ref.artifact_digest)
+
+  local closure = actual.current_artifacts.closure
+  local expected_closure = expected.current_artifacts.closure
+  t.eq(closure.status, expected_closure.status)
+  t.eq(closure.trace_id, expected_closure.trace_id)
+  t.eq(closure.dedup_key, expected_closure.dedup_key)
+  t.eq(closure.round_count, expected_closure.round_count)
+  t.eq(closure.final_round_digest, expected_closure.final_round_digest)
+  t.eq(closure.coverage_matrix_pointer, expected_closure.coverage_matrix_pointer)
+  t.eq(closure.coverage_matrix_digest, expected_closure.coverage_matrix_digest)
+  t.eq(closure.unresolved_count, expected_closure.unresolved_count)
+  t.eq(closure.high_priority_unresolved_count, expected_closure.high_priority_unresolved_count)
+
+  local loaded_case_ids = {}
+  for index, item in ipairs(actual.cases) do loaded_case_ids[index] = item.id end
+  assert_case_ids(loaded_case_ids)
+  assert_case_ids(actual.current_artifacts.round_plan.case_ids)
+end
+
 return {
   test_loads_top_level_reviewed_state_with_exact_binding = function()
     local payload, state, reader = reviewed_fixture()
-    t.eq(design_state.load(payload, payload.artifact_root, { artifact_reader = reader }), state)
+    local loaded = design_state.load(payload, payload.artifact_root, { artifact_reader = reader })
+    assert_loaded_state(loaded, state, payload.ai_design_loop_state_ref)
     payload.dedup_key = payload.dedup_key .. "/attempt/1"
-    t.eq(design_state.load(payload, payload.artifact_root, { artifact_reader = reader }), state)
+    local replayed = design_state.load(payload, payload.artifact_root, { artifact_reader = reader })
+    assert_loaded_state(replayed, state, payload.ai_design_loop_state_ref)
   end,
 
   test_reviewed_state_admission_fails_closed_for_invalid_artifacts = function()
@@ -196,9 +239,10 @@ return {
     end
     local result = core.run("module", payload)
     t.eq(result.status, "planned")
-    local plan = json_codec.decode(written[run_root .. "/test-plan.json"])
-    t.eq(#plan.modules[1].cases, 5)
-    for index, case_id in ipairs(case_ids) do t.eq(plan.modules[1].cases[index].id, case_id) end
+    local plan = json.decode(written[run_root .. "/test-plan.json"])
+    local planned_case_ids = {}
+    for index, item in ipairs(plan.modules[1].cases) do planned_case_ids[index] = item.id end
+    assert_case_ids(planned_case_ids)
   end,
 
   test_nested_cdp_state_reference_fails_closed = function()

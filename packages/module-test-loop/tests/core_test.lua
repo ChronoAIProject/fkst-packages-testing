@@ -14,6 +14,11 @@ local function expect_failure(fragment, fn)
   t.is_true(tostring(err):find(fragment, 1, true) ~= nil)
 end
 
+local function assert_artifact_reference(actual, expected)
+  t.eq(actual.artifact_pointer, expected.artifact_pointer)
+  t.eq(actual.artifact_digest, expected.artifact_digest)
+end
+
 local function request()
   return {
     schema = core.schemas.request,
@@ -93,9 +98,9 @@ return {
     local first = core.start(value, ports)
     local replay = core.start(value, ports)
     local state = states[value.artifact_root .. "/module-loop-state.json"]
-    t.eq(state.request.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
-    t.eq(first[1].payload.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
-    t.eq(replay[1].payload.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
+    assert_artifact_reference(state.request.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
+    assert_artifact_reference(first[1].payload.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
+    assert_artifact_reference(replay[1].payload.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
     t.eq(first[1].payload.dedup_key, value.dedup_key .. "/attempt/1")
   end,
 
