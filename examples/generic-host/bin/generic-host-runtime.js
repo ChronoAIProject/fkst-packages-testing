@@ -566,6 +566,27 @@ function structuredReplayKey(grantId) {
   return `testing-runner/replay/${sha256(stable(grantId))}`;
 }
 
+function structuredExecutionArtifacts(projectRoot, resultRef) {
+  const execution = artifactRead(projectRoot, resultRef);
+  const value = execution && execution.value;
+  const executionRoot = path.posix.dirname(resultRef);
+  if (!value || value.schema !== 'testing-structured-execution.v1'
+    || value.execution_path !== resultRef
+    || value.test_plan_path !== `${executionRoot}/test-plan.json`
+    || value.case_results_path !== `${executionRoot}/case-results.json`) {
+    fail('structured execution result binding is invalid');
+  }
+  const testPlan = artifactRead(projectRoot, value.test_plan_path);
+  const caseResults = artifactRead(projectRoot, value.case_results_path);
+  if (!testPlan || testPlan.digest !== value.plan_sha256
+    || !caseResults || !caseResults.value
+    || caseResults.value.plan_sha256 !== value.plan_sha256
+    || !Array.isArray(caseResults.value.cases)) {
+    fail('structured execution referenced artifacts are unavailable');
+  }
+  return { execution, testPlan, caseResults };
+}
+
 function structuredAuthorizationKey(receiptId) {
   return `testing-runner/cli-effect-authorizations/${sha256(stable(receiptId))}`;
 }
@@ -590,9 +611,14 @@ function localHttpRequest(request, timeoutSeconds) {
 
 function inventoryAcceptanceReport(projectRoot, config, terminal) {
   if (config.fixture_name !== 'downstream-inventory') return;
-  const executionRoot = config.request.structured_execution.artifact_root;
-  const results = artifactRead(projectRoot, `${executionRoot}/case-results.json`);
-  if (!results || !results.value || !Array.isArray(results.value.cases)) fail('inventory case results are unavailable');
+  const completed = recordList(runRoot(config.run_id), 'testing-runner/replay')
+    .filter((entry) => entry.value && entry.value.status === 'completed');
+  if (completed.length !== 1) fail('inventory completed replay is unavailable');
+  const artifacts = structuredExecutionArtifacts(projectRoot, completed[0].value.result_ref);
+  if (artifacts.execution.digest !== completed[0].value.result_sha256) {
+    fail('inventory completed replay result differs');
+  }
+  const results = artifacts.caseResults;
   const effects = new Map();
   for (const entry of recordList(runRoot(config.run_id), 'testing-runner/target-effects')) {
     const binding = entry.value && entry.value.binding;
@@ -1383,15 +1409,17 @@ function dispatch(name, payload, projectRoot) {
         || binding.trace_id !== payload.trace_id || binding.dedup_key !== payload.dedup_key) {
         return { completed: false };
       }
-      const artifact = artifactRead(projectRoot, payload.result_ref);
-      if (!artifact) return { completed: false };
-      const completion = { ...payload, result_sha256: artifact.digest };
+      const artifacts = structuredExecutionArtifacts(projectRoot, payload.result_ref);
+      const completion = { ...payload, result_sha256: artifacts.execution.digest };
       delete completion.claim;
       const completed = storeExecute({ root, operation: 'replay-complete', key: current.key,
         claim_id: payload.claim.claim_id, completion });
       if (!completed.completed) return completed;
-      const verified = artifactRead(projectRoot, payload.result_ref);
-      if (!verified || verified.digest !== artifact.digest || completed.value.result_sha256 !== artifact.digest) {
+      const verified = structuredExecutionArtifacts(projectRoot, payload.result_ref);
+      if (verified.execution.digest !== artifacts.execution.digest
+        || verified.testPlan.digest !== artifacts.testPlan.digest
+        || verified.caseResults.digest !== artifacts.caseResults.digest
+        || completed.value.result_sha256 !== artifacts.execution.digest) {
         fail('completed replay result artifact is unavailable or changed');
       }
       const config = loadConfig(projectRoot, runId);
@@ -1402,7 +1430,11 @@ function dispatch(name, payload, projectRoot) {
         const witness = recordImmutable(root, 'generic-host/barriers/post-replay-complete', {
           schema: 'generic-host.completed-replay-barrier.v1', run_id: runId,
           failpoint: arm.name, arm_token_sha256: sha256(arm.token),
-          result_ref: payload.result_ref, result_sha256: artifact.digest,
+          result_ref: payload.result_ref, result_sha256: artifacts.execution.digest,
+          test_plan_ref: artifacts.execution.value.test_plan_path,
+          test_plan_sha256: artifacts.testPlan.digest,
+          case_results_ref: artifacts.execution.value.case_results_path,
+          case_results_sha256: artifacts.caseResults.digest,
           replay_status: completed.value.status,
         });
         if (!witness.written && !witness.replayed) fail('completed replay barrier witness differs');
