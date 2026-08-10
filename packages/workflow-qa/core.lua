@@ -143,6 +143,7 @@ end
 
 local function source_identity(state, payload, kind)
   if payload.trace_id ~= state.request.trace_id or type(payload.source_ref) ~= "table"
+    or payload.dedup_key ~= state.request.dedup_key
     or payload.source_ref.kind ~= kind or payload.source_ref.ref ~= state.request.run_id then
     error("workflow-qa: foreign-result: source or trace identity differs")
   end
@@ -569,13 +570,13 @@ function M.handle_execution_result(payload, request, supplied_ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: execution result has no durable run") end
   source_identity(state, payload, "workflow-qa")
+  local expected_phase = state.execution_mode == "agentic-browser"
+    and "browser-control-pending" or "structured-execution-pending"
+  if state.phase ~= expected_phase then return copy(state.pending_actions or {}) end
   if type(payload) ~= "table" or payload.schema ~= "testing-runner.result.v1"
     or payload.job ~= state.execution_job then
     error("workflow-qa: foreign-execution-result: selected execution binding differs")
   end
-  local expected_phase = state.execution_mode == "agentic-browser"
-    and "browser-control-pending" or "structured-execution-pending"
-  if state.phase ~= expected_phase then return copy(state.pending_actions or {}) end
   state.execution_result = copy(payload)
   set_pending(state, "artifact-summary-pending", {
     action("test-artifacts.testing_result", copy(payload)),
@@ -853,30 +854,32 @@ function M.handle_publication_receipt(payload, request, supplied_ports)
     or payload.run_id ~= request.run_id then
     error("workflow-qa: foreign-publication-receipt: publication binding differs")
   end
-  local released = checkpoints.release(state, payload, ports)
-  if released ~= nil then
+  if state.phase == "checkpoint-pending" then
+    local released = checkpoints.release(state, payload, ports)
+    if released == nil then
+      error("workflow-qa: foreign-publication-receipt: no matching checkpoint lease exists")
+    end
     save(ports, state)
     return copy(released)
   end
+  if state.phase ~= "publication-pending" then return copy(state.pending_actions or {}) end
   if payload.stage ~= "aggregate-report" then
     error("workflow-qa: foreign-publication-receipt: no matching checkpoint lease exists")
   end
-  if state.phase == "publication-pending" then
-    if type(state.finalization_request) ~= "table"
-      or state.finalization_request.aggregate_report_ref ~= request.publication.aggregate_report_ref then
-      error("workflow-qa: aggregate-finalization-unavailable: pending finalization binding is missing")
-    end
-    local aggregate_sha256 = digest(ports, request.publication.aggregate_report_ref)
-    local expected = checkpoints.aggregate_expectation(state, aggregate_sha256)
-    state.aggregate_receipt_sha256 = checkpoints.validate_receipt(state, payload, expected, ports)
-    state.digests[request.publication.aggregate_report_ref] = aggregate_sha256
-    state.aggregate_receipt = copy(payload)
-    set_pending(state, "terminal", {
-      action("workflow_qa_terminal_request",
-        M.terminal_request(state, state.terminal_status or "passed", payload)),
-    })
-    save(ports, state)
+  if type(state.finalization_request) ~= "table"
+    or state.finalization_request.aggregate_report_ref ~= request.publication.aggregate_report_ref then
+    error("workflow-qa: aggregate-finalization-unavailable: pending finalization binding is missing")
   end
+  local aggregate_sha256 = digest(ports, request.publication.aggregate_report_ref)
+  local expected = checkpoints.aggregate_expectation(state, aggregate_sha256)
+  state.aggregate_receipt_sha256 = checkpoints.validate_receipt(state, payload, expected, ports)
+  state.digests[request.publication.aggregate_report_ref] = aggregate_sha256
+  state.aggregate_receipt = copy(payload)
+  set_pending(state, "terminal", {
+    action("workflow_qa_terminal_request",
+      M.terminal_request(state, state.terminal_status or "passed", payload)),
+  })
+  save(ports, state)
   return copy(state.pending_actions or {})
 end
 
