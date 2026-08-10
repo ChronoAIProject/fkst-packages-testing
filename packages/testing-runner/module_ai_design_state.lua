@@ -29,11 +29,11 @@ local function read_artifact_json(path, opts)
 end
 
 function M.load(payload, artifact_root, opts)
-  local transport = design_loop.transport(payload)
-  if transport.request ~= nil then
+  design_loop.validate_authority_fields(payload)
+  if payload.ai_design_loop_request ~= nil then
     error("testing-runner: ai-design-loop-incomplete: request must be replaced by reviewed state")
   end
-  local state_ref = transport.state_ref
+  local state_ref = payload.ai_design_loop_state_ref
   if state_ref == nil then return nil end
   if type(artifact_root) ~= "string" or not within(state_ref.artifact_pointer, artifact_root) then
     error("testing-runner: ai-artifact-mismatch: design loop run binding")

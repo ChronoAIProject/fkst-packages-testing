@@ -85,6 +85,9 @@ local function canonical_request()
       source_ref = { kind = "workflow-qa", ref = "local-qa-walking-skeleton" },
       trace_id = "trace-local-qa-walking-skeleton",
       dedup_key = "dedup-local-qa-walking-skeleton",
+      cdp_execution = {
+        schema = "testing-runner.module-cdp-execution.v1",
+      },
       ai_design_loop_request = {
         schema = "testing-runner.ai-design-loop.request.v1",
         artifact_root = root .. "/design/loop",

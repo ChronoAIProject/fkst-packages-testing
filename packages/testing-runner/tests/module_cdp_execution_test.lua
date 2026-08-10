@@ -322,6 +322,14 @@ return {
     end)
   end,
 
+  test_rejects_nested_reviewed_design_fields = function()
+    for _, field in ipairs({ "ai_design_loop_request", "ai_design_loop_state_ref" }) do
+      local value = { schema = "testing-runner.module-cdp-execution.v1" }
+      value[field] = {}
+      t.raises(function() cdp.validate_request(value) end)
+    end
+  end,
+
   test_records_fixture_gap_when_lifecycle_descriptor_is_missing = function()
     local value = payload()
     value.ui_loop.mutation_policy = "host-approved"

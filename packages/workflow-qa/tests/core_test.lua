@@ -82,6 +82,7 @@ end
 local tests = {
   test_top_level_design_request_receives_persisted_seed_reference = function()
     local request = fixture()
+    request.design_module_start.cdp_execution = nil
     request.design_module_start.module_discovery = { schema = "testing-runner.module-discovery.v1", observations = {} }
     local ports, state, put = runtime(request)
     drive_to_browser_pending(request, ports, state, put)
@@ -90,7 +91,7 @@ local tests = {
     local module_start = actions[1].payload
     t.eq(module_start.cdp_execution, nil)
     t.eq(module_start.ai_design_loop_request.seed_cases_ref.artifact_pointer,
-      request.artifact_root .. "/ai-seed-cases.json")
+      state().artifacts.seed_cases_ref.artifact_pointer)
     t.eq(module_start.ai_design_loop_request.seed_cases_ref.artifact_digest,
       state().artifacts.seed_cases_ref.artifact_digest)
   end,
@@ -219,6 +220,34 @@ local tests = {
     request = fixture()
     request.environment_start.repository.commit_sha = string.rep("c", 40)
     t.raises(function() contract.validate_request(request) end)
+  end,
+
+  test_contract_rejects_nested_reviewed_design_fields = function()
+    local nested_request = fixture()
+    nested_request.design_module_start.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_request = copy(nested_request.design_module_start.ai_design_loop_request),
+    }
+    nested_request.design_module_start.ai_design_loop_request = nil
+    t.raises(function() contract.validate_request(nested_request) end)
+
+    local nested_state = fixture()
+    nested_state.design_module_start.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_state_ref = {
+        artifact_pointer = nested_state.artifact_root .. "/design/ai-design-loop-state.json",
+        artifact_digest = "design-state-digest",
+      },
+    }
+    nested_state.design_module_start.ai_design_loop_request = nil
+    t.raises(function() contract.validate_request(nested_state) end)
+
+    local duplicated = fixture()
+    duplicated.design_module_start.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_request = copy(duplicated.design_module_start.ai_design_loop_request),
+    }
+    t.raises(function() contract.validate_request(duplicated) end)
   end,
 
   test_contract_rejects_malformed_closed_inputs = function()

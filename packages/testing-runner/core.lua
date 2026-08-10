@@ -222,11 +222,11 @@ function M.validate_request(job, payload)
     error("testing-runner: malformed-request: ui_loop is only supported for module jobs")
   end
   validate_ui_loop(payload.ui_loop)
-  local design_transport = module_ai_design_loop.transport(payload)
-  if design_transport.request ~= nil then
+  module_ai_design_loop.validate_authority_fields(payload)
+  if payload.ai_design_loop_request ~= nil then
     error("testing-runner: ai-design-loop-incomplete: request must be replaced by reviewed state")
   end
-  if design_transport.state_ref ~= nil and job ~= "module" then
+  if payload.ai_design_loop_state_ref ~= nil and job ~= "module" then
     error("testing-runner: malformed-request: ai_design_loop_state_ref is only supported for module jobs")
   end
   if payload.cdp_execution ~= nil then

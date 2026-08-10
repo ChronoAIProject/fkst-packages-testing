@@ -201,13 +201,13 @@ return {
     for index, case_id in ipairs(case_ids) do t.eq(plan.modules[1].cases[index].id, case_id) end
   end,
 
-  test_nested_cdp_state_reference_uses_same_admission_path = function()
-    local payload, state, reader = reviewed_fixture()
+  test_nested_cdp_state_reference_fails_closed = function()
+    local payload, _, reader = reviewed_fixture()
     payload.cdp_execution = {
       schema = "testing-runner.module-cdp-execution.v1",
       ai_design_loop_state_ref = copy(payload.ai_design_loop_state_ref),
     }
     payload.ai_design_loop_state_ref = nil
-    t.eq(design_state.load(payload, payload.artifact_root, { artifact_reader = reader }), state)
+    expect_failure("reviewed design fields must be top-level", payload, reader)
   end,
 }

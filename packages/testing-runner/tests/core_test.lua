@@ -36,6 +36,18 @@ return {
     end)
   end,
 
+  test_module_request_rejects_nested_reviewed_design_fields = function()
+    for _, field in ipairs({ "ai_design_loop_request", "ai_design_loop_state_ref" }) do
+      local payload = {
+        schema = "testing-runner.module-test-loop.request.v1",
+        module = "sample_module",
+        cdp_execution = { schema = "testing-runner.module-cdp-execution.v1" },
+      }
+      payload.cdp_execution[field] = {}
+      t.raises(function() core.validate_request("module", payload) end)
+    end
+  end,
+
   test_command_does_not_synthesize_legacy_cli = function()
     local command = core.command("module", {
       schema = "testing-runner.module-test-loop.request.v1",

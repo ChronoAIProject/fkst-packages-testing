@@ -99,6 +99,33 @@ return {
     t.eq(first[1].payload.dedup_key, value.dedup_key .. "/attempt/1")
   end,
 
+  test_nested_reviewed_design_fields_and_top_level_coexistence_fail_closed = function()
+    local nested_request = request()
+    nested_request.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_request = {},
+    }
+    expect_failure("reviewed design fields must be top-level", function()
+      core.validate_request(nested_request)
+    end)
+
+    local nested_state = request()
+    nested_state.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_state_ref = {},
+    }
+    expect_failure("reviewed design fields must be top-level", function()
+      core.validate_request(nested_state)
+    end)
+
+    local coexistence = request()
+    coexistence.ai_design_loop_request = {}
+    coexistence.ai_design_loop_state_ref = {}
+    expect_failure("design request and state reference cannot coexist", function()
+      core.validate_request(coexistence)
+    end)
+  end,
+
   test_start_persists_attempt_and_replay_returns_same_action = function()
     local ports, states = runtime()
     local first = core.start(request(), ports)

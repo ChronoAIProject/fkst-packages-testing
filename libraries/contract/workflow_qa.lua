@@ -176,10 +176,8 @@ function M.validate_request(value)
   local module_start = value.design_module_start
   local cdp = type(module_start) == "table" and type(module_start.cdp_execution) == "table"
     and module_start.cdp_execution or nil
-  local top_request = type(module_start) == "table" and module_start.ai_design_loop_request or nil
-  local top_state_ref = type(module_start) == "table" and module_start.ai_design_loop_state_ref or nil
-  local nested_request = cdp and cdp.ai_design_loop_request or nil
-  local nested_state_ref = cdp and cdp.ai_design_loop_state_ref or nil
+  local design_request = type(module_start) == "table" and module_start.ai_design_loop_request or nil
+  local design_state_ref = type(module_start) == "table" and module_start.ai_design_loop_state_ref or nil
   if type(module_start) ~= "table" or module_start.schema ~= "module-testing-pipeline.module-start.v1"
     or not safe_pointer(module_start.artifact_root, value.artifact_root)
     or type(module_start.source_ref) ~= "table" or module_start.source_ref.kind ~= "workflow-qa"
@@ -188,12 +186,12 @@ function M.validate_request(value)
     or (type(module_start.cdp_execution) ~= "table" and type(module_start.module_discovery) ~= "table") then
     fail("foreign-design", "design module start differs from the closed run identity")
   end
-  if (top_request ~= nil or top_state_ref ~= nil) and (nested_request ~= nil or nested_state_ref ~= nil)
-    or top_request ~= nil and top_state_ref ~= nil or nested_request ~= nil and nested_state_ref ~= nil then
+  if cdp ~= nil and (cdp.ai_design_loop_request ~= nil or cdp.ai_design_loop_state_ref ~= nil) then
+    fail("foreign-design", "reviewed design fields must be top-level")
+  end
+  if design_request ~= nil and design_state_ref ~= nil then
     fail("foreign-design", "design module start has ambiguous reviewed-state authority")
   end
-  local design_request = top_request or nested_request
-  local design_state_ref = top_state_ref or nested_state_ref
   if design_request ~= nil then
     validate_design_request(design_request)
     if design_request.trace_id ~= value.trace_id or design_request.dedup_key ~= value.dedup_key
