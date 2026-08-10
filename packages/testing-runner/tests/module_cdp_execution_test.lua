@@ -210,7 +210,7 @@ local function reviewed_design_state(value)
     trace_id = "trace-cdp-design",
     dedup_key = "dedup-cdp-design",
   }, documents)
-  value.cdp_execution.ai_design_loop_state_ref = {
+  value.ai_design_loop_state_ref = {
     artifact_pointer = state.paths.state,
     artifact_digest = design_loop.document_digest(state),
   }
@@ -438,7 +438,7 @@ return {
   test_design_loop_state_digest_mismatch_blocks_before_execution = function()
     local value = payload()
     local reader = reviewed_design_state(value)
-    value.cdp_execution.ai_design_loop_state_ref.artifact_digest = "wrong-digest"
+    value.ai_design_loop_state_ref.artifact_digest = "wrong-digest"
     local artifact = cdp.build(value, ".testing/runs/module-a-cdp", {
       readiness = { status = "ready" },
       artifact_reader = reader,
