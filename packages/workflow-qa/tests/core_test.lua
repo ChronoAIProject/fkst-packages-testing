@@ -603,7 +603,8 @@ local workflow_core_coverage_cases = require("tests.workflow_core_coverage_helpe
   artifact_summary = artifact_summary, checkpoint_receipt = checkpoint_receipt, checkpoints = checkpoints,
   contract = contract, core = core, digest = digest, drive_to_grant = drive_to_grant,
   execution_result = execution_result, expect_failure = expect_failure, finalized = finalized, fixture = fixture,
-  grant_result = grant_result, pointer = pointer, ready_result = ready_result,
+  grant_result = grant_result, module_terminal = module_terminal, plan_result = plan_result, pointer = pointer,
+  ready_result = ready_result,
   release_checkpoint = release_checkpoint, runtime = runtime, t = t,
 })
 tests.test_blocked_environment_summary_cleanup_and_publication_fail_closed =

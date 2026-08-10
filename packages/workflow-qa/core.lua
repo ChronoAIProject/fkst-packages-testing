@@ -141,9 +141,9 @@ local function exact_identity(state, payload)
   end
 end
 
-local function source_identity(state, payload, kind)
+local function source_identity(state, payload, kind, expected_dedup_key)
   if payload.trace_id ~= state.request.trace_id or type(payload.source_ref) ~= "table"
-    or payload.dedup_key ~= state.request.dedup_key
+    or payload.dedup_key ~= expected_dedup_key
     or payload.source_ref.kind ~= kind or payload.source_ref.ref ~= state.request.run_id then
     error("workflow-qa: foreign-result: source or trace identity differs")
   end
@@ -385,7 +385,7 @@ function M.handle_module_terminal(payload, request, supplied_ports)
   request = resolve_request(payload, request, ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: module terminal has no durable run") end
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key .. "/terminal")
   if state.phase ~= "module-pending" then return copy(state.pending_actions or {}) end
   local runner = runner_from_module_terminal(payload)
   if type(runner) ~= "table" or runner.schema ~= "testing-runner.result.v1"
@@ -435,8 +435,7 @@ function M.handle_plan_result(payload, request, supplied_ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: plan result has no durable run") end
   execution_contract.validate_plan_result(payload)
-  exact_identity(state, payload)
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key)
   if state.phase ~= "structured-plan-pending" then return copy(state.pending_actions or {}) end
   if state.interruption_requested ~= nil then return begin_cleanup(state, state.interruption_requested, ports) end
   if payload.status ~= "compiled" or payload.plan_ref ~= request.structured_execution.structured_plan_ref then
@@ -483,8 +482,7 @@ function M.handle_grant_result(payload, request, supplied_ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: grant result has no durable run") end
   execution_contract.validate_grant_result(payload)
-  exact_identity(state, payload)
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key)
   if state.phase ~= "execution-grant-pending" then return copy(state.pending_actions or {}) end
   if state.interruption_requested ~= nil then return begin_cleanup(state, state.interruption_requested, ports) end
   if payload.status ~= "granted" or payload.grant_ref ~= request.structured_execution.grant_ref then
@@ -569,7 +567,7 @@ function M.handle_execution_result(payload, request, supplied_ports)
   request = resolve_request(payload, request, ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: execution result has no durable run") end
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key)
   local expected_phase = state.execution_mode == "agentic-browser"
     and "browser-control-pending" or "structured-execution-pending"
   if state.phase ~= expected_phase then return copy(state.pending_actions or {}) end
@@ -613,7 +611,7 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
   request = resolve_request(payload, request, ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: artifact summary has no durable run") end
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key)
   if payload.schema ~= "test-artifacts.summary.v1" or payload.job ~= state.execution_job
     or payload.artifact_root ~= request.structured_execution.artifact_root then
     error("workflow-qa: foreign-artifact-summary: summary binding differs")
