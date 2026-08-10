@@ -8,7 +8,8 @@ local function normalized_closed_world_roots()
   end
   local names = { "generic-host" }
   for root in configured:gmatch("%S+") do
-    table.insert(names, root:gsub("^@platform/", ""))
+    local normalized_root = root:gsub("^@platform/", "")
+    table.insert(names, normalized_root)
   end
   return names
 end
