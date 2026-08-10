@@ -95,9 +95,41 @@ local tests = {
     local cleanup_checkpoint = core.handle_cleanup_result(finalized(request, put), request, ports)
     t.eq(cleanup_checkpoint[1].queue, "test-publication.qa_checkpoint_request")
     t.eq(cleanup_checkpoint[1].payload.channel, "filesystem-dry-run-v1")
+    local wrong_stage_receipt = checkpoint_receipt(request, state().active_checkpoint)
     local finalization = release_checkpoint(request, ports, state, "test-publication.qa_finalize_request")
     t.eq(finalization[1].payload.channel, "filesystem-dry-run-v1")
     t.eq(state().request.publication.channel, "filesystem-dry-run-v1")
+    t.eq(state().phase, "publication-pending")
+    t.is_true(type(state().finalization_request) == "table")
+    t.eq(state().finalization_request.aggregate_report_ref, request.publication.aggregate_report_ref)
+    t.eq(wrong_stage_receipt.schema, "test-publication.qa-publication-receipt.v2")
+    t.eq(wrong_stage_receipt.run_id, request.run_id)
+    t.eq(wrong_stage_receipt.repository.slug, request.repository.slug)
+    t.eq(wrong_stage_receipt.trace_id, request.trace_id)
+    t.eq(wrong_stage_receipt.dedup_key, request.dedup_key)
+    t.is_true(wrong_stage_receipt.stage ~= "aggregate-report")
+    local publication_snapshot = {
+      phase = state().phase,
+      version = state().version,
+      finalization_request = copy(state().finalization_request),
+      aggregate_receipt = copy(state().aggregate_receipt),
+      aggregate_receipt_sha256 = state().aggregate_receipt_sha256,
+      aggregate_report_sha256 = state().digests[request.publication.aggregate_report_ref],
+      pending_actions = copy(state().pending_actions),
+    }
+    expect_failure("foreign-publication-receipt: no matching checkpoint lease exists", function()
+      core.handle_publication_receipt(wrong_stage_receipt, request, ports)
+    end)
+    t.eq(state().phase, publication_snapshot.phase)
+    t.eq(state().version, publication_snapshot.version)
+    t.eq(execution_contract.equal(state().finalization_request,
+      publication_snapshot.finalization_request), true)
+    t.eq(execution_contract.equal(state().aggregate_receipt,
+      publication_snapshot.aggregate_receipt), true)
+    t.eq(state().aggregate_receipt_sha256, publication_snapshot.aggregate_receipt_sha256)
+    t.eq(state().digests[request.publication.aggregate_report_ref],
+      publication_snapshot.aggregate_report_sha256)
+    t.eq(execution_contract.equal(state().pending_actions, publication_snapshot.pending_actions), true)
     put(request.publication.aggregate_report_ref, {
       schema = "test-publication.qa-aggregate-report.v1", run_id = request.run_id,
       trace_id = request.trace_id, dedup_key = request.dedup_key,
@@ -106,8 +138,10 @@ local tests = {
     local aggregate_receipt = checkpoint_receipt(request, aggregate)
     t.eq(ports.write_artifact(aggregate_receipt.receipt_ref, aggregate_receipt), true)
     local terminal = core.handle_publication_receipt(aggregate_receipt, request, ports)
+    t.eq(#terminal, 1)
     t.eq(terminal[1].queue, "workflow_qa_terminal_request")
     t.eq(state().phase, "terminal")
+    t.eq(state().version, publication_snapshot.version + 1)
   end,
 
   test_agentic_browser_plan_routes_only_to_browser_controller = function()
