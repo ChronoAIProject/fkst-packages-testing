@@ -83,6 +83,8 @@ function M.runner_request(payload)
     ui_loop = payload.ui_loop,
     module_discovery = payload.module_discovery,
     cdp_execution = payload.cdp_execution,
+    ai_design_loop_request = payload.ai_design_loop_request,
+    ai_design_loop_state_ref = copy(payload.ai_design_loop_state_ref),
     testing_design_context = payload.testing_design_context,
     browser_readiness_ref = payload.browser_readiness_ref,
     browser_readiness_sha256 = payload.browser_readiness_sha256,

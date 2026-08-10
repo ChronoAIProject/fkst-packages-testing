@@ -83,6 +83,22 @@ return {
     t.eq(runner.testing_design_context.analysis_key, value.testing_design_context.analysis_key)
   end,
 
+  test_reviewed_state_reference_survives_persistence_replay_and_attempt_request = function()
+    local value = request()
+    value.ai_design_loop_state_ref = {
+      artifact_pointer = value.artifact_root .. "/design/ai-design-loop-state.json",
+      artifact_digest = "design-state-digest",
+    }
+    local ports, states = runtime()
+    local first = core.start(value, ports)
+    local replay = core.start(value, ports)
+    local state = states[value.artifact_root .. "/module-loop-state.json"]
+    t.eq(state.request.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
+    t.eq(first[1].payload.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
+    t.eq(replay[1].payload.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
+    t.eq(first[1].payload.dedup_key, value.dedup_key .. "/attempt/1")
+  end,
+
   test_start_persists_attempt_and_replay_returns_same_action = function()
     local ports, states = runtime()
     local first = core.start(request(), ports)

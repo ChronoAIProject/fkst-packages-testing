@@ -1,4 +1,5 @@
 local ai = require("ai_orchestration")
+local core = require("core")
 local design_loop = require("testing_ai.module_ai_design_loop")
 local t = fkst.test
 
@@ -271,6 +272,43 @@ local function approve_generation(model, generation_proposal)
 end
 
 return {
+  test_top_level_design_request_closes_without_generation_or_consensus = function()
+    local model = memory_io()
+    local design_request = design_fixture(model)
+    local coverage = decode(model, design_request.coverage_scope_ref.artifact_pointer)
+    coverage.subjects = { coverage.subjects[1] }
+    model.writes[design_request.coverage_scope_ref.artifact_pointer] = ai.json_encode(coverage)
+    design_request.coverage_scope_ref.artifact_digest = design_loop.document_digest(coverage)
+    local payload = module_start()
+    payload.cdp_execution = nil
+    payload.ai_design_loop_request = design_request
+    design_request.trace_id = payload.trace_id
+    design_request.dedup_key = payload.dedup_key
+    local action = core.start_module(payload, model.ports)
+    t.eq(action.kind, "module-loop-request")
+    t.eq(action.design.kind, "design-closure")
+    t.eq(action.request.ai_design_loop_request, nil)
+    t.eq(action.request.cdp_execution, nil)
+    t.eq(action.request.ai_design_loop_state_ref.artifact_pointer,
+      design_request.artifact_root .. "/ai-design-loop-state.json")
+    t.eq(decode(model, design_request.artifact_root .. "/ai-design-closure.json").status,
+      "reviewed-complete")
+    t.eq(model.writes[artifact_root .. "/ai-context-manifest.json"], nil)
+  end,
+
+  test_design_transport_rejects_simultaneous_top_level_and_nested_authorities = function()
+    local model = memory_io()
+    local payload = module_start()
+    payload.ai_design_loop_request = design_fixture(model)
+    payload.ai_design_loop_request.trace_id = payload.trace_id
+    payload.ai_design_loop_request.dedup_key = payload.dedup_key
+    payload.cdp_execution.ai_design_loop_state_ref = {
+      artifact_pointer = artifact_root .. "/design/ai-design-loop-state.json",
+      artifact_digest = "design-state-digest",
+    }
+    t.raises(function() core.validate_module_start(payload) end)
+  end,
+
   test_start_writes_sanitized_context_and_authoring_request = function()
     local model = memory_io()
     local action = ai.start(module_start(), model.ports)
