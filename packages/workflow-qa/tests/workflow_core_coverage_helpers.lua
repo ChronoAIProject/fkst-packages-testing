@@ -13,6 +13,8 @@ function M.build(deps)
   local finalized = deps.finalized
   local fixture = deps.fixture
   local grant_result = deps.grant_result
+  local module_terminal = deps.module_terminal
+  local plan_result = deps.plan_result
   local pointer = deps.pointer
   local ready_result = deps.ready_result
   local release_checkpoint = deps.release_checkpoint
@@ -73,6 +75,15 @@ function M.build(deps)
   end
 
   cases.remaining_workflow_identity_grant_and_publication_boundaries = function()
+    local function expect_dedup_rejection(handler, payload, request, ports, invalid_keys)
+      for _, dedup_key in ipairs(invalid_keys) do
+        local rejected = {}
+        for key, value in pairs(payload) do rejected[key] = value end
+        rejected.dedup_key = dedup_key == false and nil or dedup_key
+        t.eq(pcall(handler, rejected, request, ports), false)
+      end
+    end
+
     do
       local request = fixture()
       local ports, state, put = runtime(request)
@@ -94,6 +105,24 @@ function M.build(deps)
       local result = ready_result(request, put)
       result.dedup_key = "foreign"
       expect_failure("foreign-result", function() core.handle_environment_result(result, request, ports) end)
+    end
+    do
+      local request = fixture()
+      local ports, state, put = runtime(request)
+      drive_to_grant(request, ports, state, put)
+      local root_invalid = {
+        false, "foreign", request.dedup_key .. "/terminal", request.dedup_key .. "/other",
+      }
+      expect_dedup_rejection(core.handle_plan_result, plan_result(request, put),
+        request, ports, root_invalid)
+      expect_dedup_rejection(core.handle_grant_result, grant_result(request, put),
+        request, ports, root_invalid)
+      expect_dedup_rejection(core.handle_execution_result, execution_result(request, 0),
+        request, ports, root_invalid)
+      expect_dedup_rejection(core.handle_artifact_summary, artifact_summary(request, 0, put),
+        request, ports, root_invalid)
+      expect_dedup_rejection(core.handle_module_terminal, module_terminal(request, put), request, ports,
+        { false, "foreign", request.dedup_key, request.dedup_key .. "/other" })
     end
     do
       local request = fixture()
