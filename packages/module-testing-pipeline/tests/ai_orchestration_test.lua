@@ -296,42 +296,43 @@ return {
     t.eq(model.writes[artifact_root .. "/ai-context-manifest.json"], nil)
   end,
 
-  test_legacy_nested_design_request_emits_nested_state_reference = function()
+  test_nested_design_fields_fail_closed = function()
     local model = memory_io()
     local design_request = design_fixture(model)
-    local coverage = decode(model, design_request.coverage_scope_ref.artifact_pointer)
-    coverage.subjects = { coverage.subjects[1] }
-    model.writes[design_request.coverage_scope_ref.artifact_pointer] = ai.json_encode(coverage)
-    design_request.coverage_scope_ref.artifact_digest = design_loop.document_digest(coverage)
-    local payload = module_start({
+    local nested_request = module_start({
       cdp_execution = {
         schema = "testing-runner.module-cdp-execution.v1",
         ai_design_loop_request = design_request,
       },
     })
-    design_request.trace_id = payload.trace_id
-    design_request.dedup_key = payload.dedup_key
-    local action = core.start_module(payload, model.ports)
-    t.eq(action.kind, "module-loop-request")
-    t.eq(action.design.kind, "design-closure")
-    t.eq(action.request.ai_design_loop_request, nil)
-    t.eq(action.request.ai_design_loop_state_ref, nil)
-    t.eq(action.request.cdp_execution.ai_design_loop_request, nil)
-    t.eq(action.request.cdp_execution.ai_design_loop_state_ref.artifact_pointer,
-      design_request.artifact_root .. "/ai-design-loop-state.json")
-  end,
+    design_request.trace_id = nested_request.trace_id
+    design_request.dedup_key = nested_request.dedup_key
+    t.raises(function() core.validate_module_start(nested_request) end)
+    t.eq(ai.start(nested_request, model.ports).kind, "blocked-result")
 
-  test_design_transport_rejects_simultaneous_top_level_and_nested_authorities = function()
-    local model = memory_io()
-    local payload = module_start()
-    payload.ai_design_loop_request = design_fixture(model)
-    payload.ai_design_loop_request.trace_id = payload.trace_id
-    payload.ai_design_loop_request.dedup_key = payload.dedup_key
-    payload.cdp_execution.ai_design_loop_state_ref = {
+    local nested_state = module_start()
+    nested_state.cdp_execution.ai_design_loop_state_ref = {
       artifact_pointer = artifact_root .. "/design/ai-design-loop-state.json",
       artifact_digest = "design-state-digest",
     }
-    t.raises(function() core.validate_module_start(payload) end)
+    t.raises(function() core.validate_module_start(nested_state) end)
+
+    local duplicated = module_start()
+    duplicated.ai_design_loop_request = design_fixture(model)
+    duplicated.ai_design_loop_request.trace_id = duplicated.trace_id
+    duplicated.ai_design_loop_request.dedup_key = duplicated.dedup_key
+    duplicated.cdp_execution.ai_design_loop_request = duplicated.ai_design_loop_request
+    t.raises(function() core.validate_module_start(duplicated) end)
+
+    local coexistence = module_start()
+    coexistence.ai_design_loop_request = design_fixture(model)
+    coexistence.ai_design_loop_request.trace_id = coexistence.trace_id
+    coexistence.ai_design_loop_request.dedup_key = coexistence.dedup_key
+    coexistence.ai_design_loop_state_ref = {
+      artifact_pointer = artifact_root .. "/design/ai-design-loop-state.json",
+      artifact_digest = "design-state-digest",
+    }
+    t.raises(function() core.validate_module_start(coexistence) end)
   end,
 
   test_start_writes_sanitized_context_and_authoring_request = function()
@@ -520,7 +521,6 @@ return {
     t.eq(action.request.cdp_execution.ai_generation.ai_test_design_loop_path, custom_root .. "/closure.json")
     t.eq(action.request.ai_design_loop_state_ref.artifact_pointer, custom_root .. "/design-state.json")
     t.eq(action.request.ai_design_loop_state_ref.artifact_digest, "design-state-digest")
-    t.eq(design_loop.transport(action.request).location, "top-level")
     t.eq(model.writes[custom_root .. "/context.json"] ~= nil, true)
     t.eq(model.writes[custom_root .. "/generated.json"] ~= nil, true)
     t.eq(model.writes[custom_root .. "/gate.json"] ~= nil, true)
@@ -615,7 +615,6 @@ return {
     t.eq(resumed.kind, "module-loop-request")
     t.eq(resumed.request.ai_design_loop_request, nil)
     t.eq(resumed.request.ai_design_loop_state_ref.artifact_pointer, artifact_root .. "/design/ai-design-loop-state.json")
-    t.eq(design_loop.transport(resumed.request).location, "top-level")
   end,
 
   test_design_consensus_rejection_fails_closed = function()

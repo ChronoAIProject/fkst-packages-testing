@@ -57,14 +57,14 @@ local function workflow_request()
       trace_id = "trace-host-adapter-workflow", dedup_key = "dedup-host-adapter-workflow",
       cdp_execution = {
         schema = "testing-runner.module-cdp-execution.v1",
-        ai_design_loop_request = {
-          schema = design_loop.schemas.request, artifact_root = root .. "/design/loop",
-          seed_cases_ref = { artifact_pointer = root .. "/design/seed.json", artifact_digest = "seed" },
-          deterministic_cases_ref = { artifact_pointer = root .. "/design/deterministic.json", artifact_digest = "deterministic" },
-          coverage_scope_ref = { artifact_pointer = root .. "/design/coverage.json", artifact_digest = "coverage" },
-          max_rounds = 3, case_budget = 16, action_budget = 32,
-          trace_id = "trace-host-adapter-workflow", dedup_key = "dedup-host-adapter-workflow",
-        },
+      },
+      ai_design_loop_request = {
+        schema = design_loop.schemas.request, artifact_root = root .. "/design/loop",
+        seed_cases_ref = { artifact_pointer = root .. "/design/seed.json", artifact_digest = "seed" },
+        deterministic_cases_ref = { artifact_pointer = root .. "/design/deterministic.json", artifact_digest = "deterministic" },
+        coverage_scope_ref = { artifact_pointer = root .. "/design/coverage.json", artifact_digest = "coverage" },
+        max_rounds = 3, case_budget = 16, action_budget = 32,
+        trace_id = "trace-host-adapter-workflow", dedup_key = "dedup-host-adapter-workflow",
       },
     },
     structured_execution = {

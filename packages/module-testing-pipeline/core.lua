@@ -31,14 +31,14 @@ function M.validate_module_start(payload)
   if payload.testing_design_context ~= nil then
     testing_design.validate_context_reference(payload.testing_design_context)
   end
-  local design_transport = ai_design_loop.transport(payload)
-  if design_transport.request ~= nil then
-    if design_transport.request.trace_id ~= payload.trace_id
-      or design_transport.request.dedup_key ~= payload.dedup_key then
+  ai_design_loop.validate_authority_fields(payload)
+  if payload.ai_design_loop_request ~= nil then
+    if payload.ai_design_loop_request.trace_id ~= payload.trace_id
+      or payload.ai_design_loop_request.dedup_key ~= payload.dedup_key then
       error("module-testing-pipeline: foreign-design: design request identity differs")
     end
-    if payload.artifact_root ~= nil and design_transport.request.artifact_root ~= payload.artifact_root
-      and design_transport.request.artifact_root:sub(1, #payload.artifact_root + 1) ~= payload.artifact_root .. "/" then
+    if payload.artifact_root ~= nil and payload.ai_design_loop_request.artifact_root ~= payload.artifact_root
+      and payload.ai_design_loop_request.artifact_root:sub(1, #payload.artifact_root + 1) ~= payload.artifact_root .. "/" then
       error("module-testing-pipeline: foreign-design: design request artifact root differs")
     end
   end
@@ -100,22 +100,17 @@ end
 function M.start_module(payload, io)
   payload = M.validate_module_start(payload)
   if M.requires_ai_consensus(payload) then return M.start_ai_orchestration(payload, io) end
-  local transport = ai_design_loop.transport(payload)
-  if transport.request == nil then
+  local design_request = payload.ai_design_loop_request
+  if design_request == nil then
     return { kind = "module-loop-request", request = M.module_loop_request(payload) }
   end
-  local result = ai_orchestration.start_design_loop(transport.request, io)
+  local result = ai_orchestration.start_design_loop(design_request, io)
   if result.kind ~= "design-closure" then
     error("module-testing-pipeline: ai-design-loop-incomplete: reviewed closure is required before delegation")
   end
   local resume = copy(payload)
-  if transport.location == "top-level" then
-    resume.ai_design_loop_request = nil
-    resume.ai_design_loop_state_ref = ai_design_loop.copy_artifact_reference(result.refs.state_ref)
-  else
-    resume.cdp_execution.ai_design_loop_request = nil
-    resume.cdp_execution.ai_design_loop_state_ref = ai_design_loop.copy_artifact_reference(result.refs.state_ref)
-  end
+  resume.ai_design_loop_request = nil
+  resume.ai_design_loop_state_ref = ai_design_loop.copy_artifact_reference(result.refs.state_ref)
   return { kind = "module-loop-request", request = M.module_loop_request(resume), design = result }
 end
 

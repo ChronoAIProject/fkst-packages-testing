@@ -45,6 +45,13 @@ function M.validate_request(payload)
   if not testing_contract.is_bounded_id(payload.trace_id) or not testing_contract.is_bounded_id(payload.dedup_key) then
     error("module-test-loop: malformed-request: trace and dedup identity are required")
   end
+  local cdp = type(payload.cdp_execution) == "table" and payload.cdp_execution or nil
+  if cdp ~= nil and (cdp.ai_design_loop_request ~= nil or cdp.ai_design_loop_state_ref ~= nil) then
+    error("module-test-loop: malformed-request: reviewed design fields must be top-level")
+  end
+  if payload.ai_design_loop_request ~= nil and payload.ai_design_loop_state_ref ~= nil then
+    error("module-test-loop: malformed-request: design request and state reference cannot coexist")
+  end
   local readiness_digest_valid = type(payload.browser_readiness_sha256) == "string"
     and #payload.browser_readiness_sha256 == 64 and payload.browser_readiness_sha256:match("^[0-9a-f]+$") ~= nil
   if (payload.browser_readiness_ref == nil) ~= (payload.browser_readiness_sha256 == nil)

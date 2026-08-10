@@ -1,7 +1,6 @@
 local M = {}
 
 local module_ai_generation = require("module_ai_generation")
-local module_ai_design_loop = require("module_ai_design_loop")
 local module_ai_design_state = require("module_ai_design_state")
 local module_inventory = require("module_inventory")
 local module_planning = require("module_planning")
@@ -21,7 +20,6 @@ local request_fields = {
   stop_conditions = true,
   mutation_fixtures = true,
   ai_generation = true,
-  ai_design_loop_state_ref = true,
 }
 
 local default_priorities = { "P0", "P1" }
@@ -234,7 +232,6 @@ function M.validate_request(value)
   copy_list(value.stop_conditions, default_stop_conditions, stop_condition_ok)
   validate_mutation_fixtures(value.mutation_fixtures)
   module_ai_generation.validate_request(value.ai_generation)
-  if value.ai_design_loop_state_ref ~= nil then module_ai_design_loop.validate_artifact_reference(value.ai_design_loop_state_ref) end
   return value
 end
 
