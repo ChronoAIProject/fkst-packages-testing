@@ -6,6 +6,7 @@ local spec = {
   consumes = { "environment-factory.environment_result" },
   produces = {
     "test-publication.qa_checkpoint_request", "testing-design.analysis_request",
+    "workflow_qa_execution_grant_request", "testing-runner.structured_execution_request",
     "test-publication.qa_finalize_request", "environment-factory.environment_finalize",
     "environment-factory.environment_interrupt", "workflow_qa_terminal_request",
   },
