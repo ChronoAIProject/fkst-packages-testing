@@ -213,6 +213,7 @@ return {
     local written = {}
     payload.dedup_key = payload.dedup_key .. "/attempt/1"
     payload.dry_run = true
+    payload.preflight_result = { status = "ready" }
     payload.ui_loop = {
       base_url = "http://127.0.0.1:8080/inventory/SKU-001",
       allowed_origins = { "http://127.0.0.1:8080" },
