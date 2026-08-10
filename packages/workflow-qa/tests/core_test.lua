@@ -80,6 +80,23 @@ local function drive_to_grant(request, ports, state, put, execution_mode)
 end
 
 local tests = {
+  test_non_cdp_design_request_receives_persisted_seed_reference = function()
+    local request = fixture()
+    request.design_module_start.ai_design_loop_request = request.design_module_start.cdp_execution.ai_design_loop_request
+    request.design_module_start.cdp_execution = nil
+    request.design_module_start.module_discovery = { schema = "testing-runner.module-discovery.v1", observations = {} }
+    local ports, state, put = runtime(request)
+    drive_to_browser_pending(request, ports, state, put)
+    core.handle_browser_readiness_result(workflow_readiness_result(request), request, ports)
+    local actions = release_checkpoint(request, ports, state, "module-testing-pipeline.module_start")
+    local module_start = actions[1].payload
+    t.eq(module_start.cdp_execution, nil)
+    t.eq(module_start.ai_design_loop_request.seed_cases_ref.artifact_pointer,
+      request.artifact_root .. "/ai-seed-cases.json")
+    t.eq(module_start.ai_design_loop_request.seed_cases_ref.artifact_digest,
+      state().artifacts.seed_cases_ref.artifact_digest)
+  end,
+
   test_run_traverses_plan_grant_execution_cleanup_and_terminal = function()
     local request = fixture()
     request.publication.channel = "filesystem-dry-run-v1"

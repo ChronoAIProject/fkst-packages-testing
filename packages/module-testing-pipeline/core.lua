@@ -4,6 +4,7 @@ local strings = require("contract.strings")
 local testing_contract = require("contract.testing")
 local testing_design = require("contract.testing_design")
 local ai_orchestration = require("ai_orchestration")
+local ai_design_loop = require("testing_ai.module_ai_design_loop")
 
 local statuses = {
   planned = true,
@@ -30,6 +31,17 @@ function M.validate_module_start(payload)
   if payload.testing_design_context ~= nil then
     testing_design.validate_context_reference(payload.testing_design_context)
   end
+  local design_transport = ai_design_loop.transport(payload)
+  if design_transport.request ~= nil then
+    if design_transport.request.trace_id ~= payload.trace_id
+      or design_transport.request.dedup_key ~= payload.dedup_key then
+      error("module-testing-pipeline: foreign-design: design request identity differs")
+    end
+    if payload.artifact_root ~= nil and design_transport.request.artifact_root ~= payload.artifact_root
+      and design_transport.request.artifact_root:sub(1, #payload.artifact_root + 1) ~= payload.artifact_root .. "/" then
+      error("module-testing-pipeline: foreign-design: design request artifact root differs")
+    end
+  end
   if (payload.browser_readiness_ref == nil) ~= (payload.browser_readiness_sha256 == nil)
     or (payload.browser_readiness_ref ~= nil and (not strings.is_artifact_root(payload.browser_readiness_ref)
       or type(payload.browser_readiness_sha256) ~= "string" or #payload.browser_readiness_sha256 ~= 64
@@ -55,6 +67,8 @@ function M.module_loop_request(payload)
     ui_loop = payload.ui_loop,
     module_discovery = payload.module_discovery,
     cdp_execution = payload.cdp_execution,
+    ai_design_loop_request = payload.ai_design_loop_request,
+    ai_design_loop_state_ref = ai_design_loop.copy_artifact_reference(payload.ai_design_loop_state_ref),
     testing_design_context = payload.testing_design_context ~= nil
       and testing_design.copy_context_reference(payload.testing_design_context) or nil,
     browser_readiness_ref = payload.browser_readiness_ref,
@@ -72,6 +86,37 @@ function M.module_loop_request(payload)
       payload.artifact_root or "artifact",
     }),
   }
+end
+
+local function copy(value)
+  if type(value) ~= "table" then return value end
+  local out = {}
+  for key, item in pairs(value) do
+    out[key] = type(item) == "table" and copy(item) or item
+  end
+  return out
+end
+
+function M.start_module(payload, io)
+  payload = M.validate_module_start(payload)
+  if M.requires_ai_consensus(payload) then return M.start_ai_orchestration(payload, io) end
+  local transport = ai_design_loop.transport(payload)
+  if transport.request == nil then
+    return { kind = "module-loop-request", request = M.module_loop_request(payload) }
+  end
+  local result = ai_orchestration.start_design_loop(transport.request, io)
+  if result.kind ~= "design-closure" then
+    error("module-testing-pipeline: ai-design-loop-incomplete: reviewed closure is required before delegation")
+  end
+  local resume = copy(payload)
+  if transport.location == "top-level" then
+    resume.ai_design_loop_request = nil
+    resume.ai_design_loop_state_ref = ai_design_loop.copy_artifact_reference(result.refs.state_ref)
+  else
+    resume.cdp_execution.ai_design_loop_request = nil
+    resume.cdp_execution.ai_design_loop_state_ref = ai_design_loop.copy_artifact_reference(result.refs.state_ref)
+  end
+  return { kind = "module-loop-request", request = M.module_loop_request(resume), design = result }
 end
 
 function M.requires_ai_consensus(payload)

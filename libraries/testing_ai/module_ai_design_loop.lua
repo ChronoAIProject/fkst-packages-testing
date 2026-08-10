@@ -228,6 +228,44 @@ function M.validate_request(value)
   return value
 end
 
+function M.transport(value)
+  if type(value) ~= "table" then fail("malformed-transport", "transport must be a table") end
+  local cdp = type(value.cdp_execution) == "table" and value.cdp_execution or nil
+  local top_request = value.ai_design_loop_request
+  local top_state_ref = value.ai_design_loop_state_ref
+  local nested_request = cdp and cdp.ai_design_loop_request or nil
+  local nested_state_ref = cdp and cdp.ai_design_loop_state_ref or nil
+  local top_present = top_request ~= nil or top_state_ref ~= nil
+  local nested_present = nested_request ~= nil or nested_state_ref ~= nil
+  if top_present and nested_present then
+    fail("ambiguous-transport", "top-level and nested CDP design authorities cannot coexist")
+  end
+  if top_request ~= nil and top_state_ref ~= nil then
+    fail("ambiguous-transport", "design request and state reference cannot coexist")
+  end
+  if nested_request ~= nil and nested_state_ref ~= nil then
+    fail("ambiguous-transport", "design request and state reference cannot coexist")
+  end
+  local request = top_request or nested_request
+  local state_ref = top_state_ref or nested_state_ref
+  if request ~= nil then M.validate_request(request) end
+  if state_ref ~= nil then M.validate_artifact_reference(state_ref) end
+  return {
+    location = top_present and "top-level" or (nested_present and "cdp_execution" or nil),
+    request = request,
+    state_ref = state_ref,
+  }
+end
+
+function M.copy_artifact_reference(value)
+  if value == nil then return nil end
+  M.validate_artifact_reference(value)
+  return {
+    artifact_pointer = value.artifact_pointer,
+    artifact_digest = value.artifact_digest,
+  }
+end
+
 function M.paths(root)
   if not strings.is_artifact_root(root, 4096) then fail("malformed-request", "artifact root is unsafe") end
   return {

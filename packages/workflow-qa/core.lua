@@ -365,8 +365,13 @@ function M.handle_browser_readiness_result(payload, request, supplied_ports)
   state.digests[readiness_ref] = digest(ports, readiness_ref)
 
   local module_start = copy(request.design_module_start)
-  if type(module_start.cdp_execution) == "table" then
-    module_start.cdp_execution.ai_design_loop_request.seed_cases_ref = copy(state.artifacts.seed_cases_ref)
+  local design_transport = design_loop.transport(module_start)
+  if design_transport.request ~= nil then
+    if design_transport.location == "top-level" then
+      module_start.ai_design_loop_request.seed_cases_ref = copy(state.artifacts.seed_cases_ref)
+    else
+      module_start.cdp_execution.ai_design_loop_request.seed_cases_ref = copy(state.artifacts.seed_cases_ref)
+    end
   end
   module_start.testing_design_context = copy(state.analysis_result.context)
   module_start.browser_readiness_ref = readiness_ref

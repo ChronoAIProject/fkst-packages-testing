@@ -3,6 +3,7 @@ local execution = require("contract.structured_execution")
 local environment_factory = require("contract.environment_factory")
 local json_codec = require("testing_runtime.json")
 local project_profile = require("contract.project_profile")
+local design_loop = require("testing_ai.module_ai_design_loop")
 local workflow_qa = require("contract.workflow_qa")
 
 local M = {}
@@ -261,11 +262,12 @@ function Context:_testing_design_runtime()
         return replay
       end
       local root = request.artifact_root
+      local module_id = context.fixture_name == "downstream-inventory" and "inventory" or "service"
       local docs = {
         repository_analysis = {
           path = root .. "/repository-analysis.v1.json",
           schema = "testing-design.repository-analysis.v1",
-          value = { schema = "testing-design.repository-analysis.v1", repository = copy(request.repository), modules = { "service" } },
+          value = { schema = "testing-design.repository-analysis.v1", repository = copy(request.repository), modules = { module_id } },
         },
         requirements_index = {
           path = root .. "/requirements-index.v1.json",
@@ -275,7 +277,7 @@ function Context:_testing_design_runtime()
         traceability_seed = {
           path = root .. "/traceability-seed.v1.json",
           schema = "testing-design.traceability-seed.v1",
-          value = { schema = "testing-design.traceability-seed.v1", links = { { requirement = "REQ-HEALTH", module = "service" } } },
+          value = { schema = "testing-design.traceability-seed.v1", links = { { requirement = "REQ-HEALTH", module = module_id } } },
         },
       }
       local refs = {}
@@ -848,7 +850,7 @@ function M.new(options)
   if inventory then
     catalog_cases = {
       {
-      design_case_id = "inventory:initial-state",
+      design_case_id = "inventory-initial-state",
       case_id = "inventory-initial-state",
       kind = "http",
       request = { method = "GET", url = base_url, headers = {} },
@@ -862,7 +864,7 @@ function M.new(options)
       },
       },
       {
-        design_case_id = "inventory:reserve-three",
+        design_case_id = "inventory-reserve-three",
         case_id = "inventory-reserve-three",
         kind = "cli",
         argv = { "node", "cli.js", "reserve", "SKU-001", "3" },
@@ -870,7 +872,7 @@ function M.new(options)
         assertions = { { type = "exit-code", expected = 0 } },
       },
       {
-        design_case_id = "inventory:state-after-reserve",
+        design_case_id = "inventory-state-after-reserve",
         case_id = "inventory-state-after-reserve",
         kind = "http",
         request = { method = "GET", url = base_url, headers = {} },
@@ -884,7 +886,7 @@ function M.new(options)
         },
       },
       {
-        design_case_id = "inventory:over-reserve-rejected",
+        design_case_id = "inventory-over-reserve-rejected",
         case_id = "inventory-over-reserve-rejected",
         kind = "cli",
         argv = { "node", "cli.js", "reserve", "SKU-001", "3" },
@@ -892,7 +894,7 @@ function M.new(options)
         assertions = { { type = "exit-code", expected = 4 } },
       },
       {
-        design_case_id = "inventory:state-after-rejection",
+        design_case_id = "inventory-state-after-rejection",
         case_id = "inventory-state-after-rejection",
         kind = "http",
         request = { method = "GET", url = base_url, headers = {} },
@@ -965,6 +967,55 @@ function M.new(options)
     dedup_key = dedup_key,
   }
   assert(store:write(preauthorization_ref, preauthorization))
+
+  local inventory_design_request
+  if inventory then
+    local design_input_root = artifact_root .. "/design/design-loop-inputs"
+    local deterministic_cases = {
+      schema = design_loop.schemas.deterministic_cases,
+      cases = {},
+    }
+    local coverage_scope = {
+      schema = design_loop.schemas.coverage_scope,
+      subjects = {
+        { id = "inventory:initial-state", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-initial-state.json" },
+        { id = "inventory:reserve-three", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-reserve-three.json" },
+        { id = "inventory:state-after-reserve", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-state-after-reserve.json" },
+        { id = "inventory:over-reserve-rejected", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-over-reserve-rejected.json" },
+        { id = "inventory:state-after-rejection", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-state-after-rejection.json" },
+      },
+    }
+    local deterministic_ref = design_input_root .. "/deterministic-cases.json"
+    local coverage_ref = design_input_root .. "/coverage-scope.json"
+    assert(store:write(deterministic_ref, deterministic_cases))
+    assert(store:write(coverage_ref, coverage_scope))
+    inventory_design_request = {
+      schema = design_loop.schemas.request,
+      artifact_root = artifact_root .. "/design/design-loop",
+      seed_cases_ref = {
+        artifact_pointer = artifact_root .. "/ai-seed-cases.json",
+        artifact_digest = "pending-workflow-seed-reference",
+      },
+      coverage_scope_ref = {
+        artifact_pointer = coverage_ref,
+        artifact_digest = design_loop.document_digest(coverage_scope),
+      },
+      deterministic_cases_ref = {
+        artifact_pointer = deterministic_ref,
+        artifact_digest = design_loop.document_digest(deterministic_cases),
+      },
+      max_rounds = 3,
+      case_budget = 16,
+      action_budget = 32,
+      trace_id = trace_id,
+      dedup_key = dedup_key,
+    }
+  end
 
   local request = {
     schema = workflow_qa.schemas.request,
@@ -1052,7 +1103,7 @@ function M.new(options)
     },
     design_module_start = {
       schema = "module-testing-pipeline.module-start.v1",
-      module = "service",
+      module = inventory and "inventory" or "service",
       backend = "fkst-native",
       no_browser = false,
       dry_run = false,
@@ -1062,20 +1113,26 @@ function M.new(options)
       dedup_key = dedup_key,
       ui_loop = {
         allowed_origins = { origin },
-        mutation_policy = "read-only",
+        mutation_policy = inventory and "host-approved" or "read-only",
         cdp_readiness_ref = "canonical-cdp-ready",
       },
       module_discovery = {
         schema = "testing-runner.module-discovery.v1",
         observations = {
           {
-            id = "service", name = "Canonical Service", entry_url = base_url,
-            visible_label = "Canonical Service", discovery_source = "navigation", confidence = "high",
-            evidence_pointer = artifact_root .. "/design/evidence/service.json",
+            id = inventory and "inventory" or "service",
+            name = inventory and "Inventory" or "Canonical Service", entry_url = base_url,
+            visible_label = inventory and "Inventory" or "Canonical Service",
+            discovery_source = "navigation", confidence = "high",
+            evidence_pointer = artifact_root .. "/design/evidence/" .. (inventory and "inventory" or "service") .. ".json",
           },
         },
-        limitations = { "The canonical fixture exposes one local service surface." },
+        limitations = {
+          inventory and "The inventory fixture exposes one local inventory surface."
+            or "The canonical fixture exposes one local service surface.",
+        },
       },
+      ai_design_loop_request = inventory_design_request,
     },
     structured_execution = {
       artifact_root = artifact_root .. "/execution",

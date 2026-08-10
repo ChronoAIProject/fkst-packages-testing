@@ -2,6 +2,7 @@ local M = {}
 
 local module_cdp_execution = require("module_cdp_execution")
 local module_cdp_runtime = require("module_cdp_runtime")
+local module_ai_design_state = require("module_ai_design_state")
 local module_inventory = require("module_inventory")
 local module_planning = require("module_planning")
 local outcome = require("outcome")
@@ -591,6 +592,14 @@ local function write_module_inventory(result, payload, context, opts)
     return nil, "unsafe artifact_root for fkst-native module inventory"
   end
   local writer = writer_for(payload, context)
+  local ai_design_loop_state = opts.ai_design_loop_state
+  if opts.planning == nil then
+    local loaded, load_result = pcall(module_ai_design_state.load, payload, result.artifact_root, {
+      artifact_reader = payload.artifact_reader,
+    })
+    if not loaded then return nil, tostring(load_result) end
+    ai_design_loop_state = load_result
+  end
   local inventory = module_inventory.inventory(payload.module_discovery, payload.ui_loop, result.artifact_root, {
     readiness = readiness_summary(payload.preflight_result),
   })
@@ -600,7 +609,8 @@ local function write_module_inventory(result, payload, context, opts)
     ai_agent_generation = ((payload.cdp_execution or {}).ai_agent_generation),
     generated_cases = ((payload.cdp_execution or {}).generated_cases),
     generated_case_agent_review = ((payload.cdp_execution or {}).generated_case_agent_review),
-    ai_design_loop_state = opts.ai_design_loop_state,
+    ai_design_loop_state = ai_design_loop_state,
+    ai_design_loop_authoritative = ai_design_loop_state ~= nil,
     step_budget = ((payload.cdp_execution or {}).step_budget),
     case_priorities = ((payload.cdp_execution or {}).case_priorities),
   }

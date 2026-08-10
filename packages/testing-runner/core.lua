@@ -2,6 +2,7 @@ local M = {}
 
 local fkst_native = require("fkst_native")
 local module_cdp_execution = require("module_cdp_execution")
+local module_ai_design_loop = require("module_ai_design_loop")
 local module_inventory = require("module_inventory")
 local testing_contract = require("contract.testing")
 
@@ -221,6 +222,13 @@ function M.validate_request(job, payload)
     error("testing-runner: malformed-request: ui_loop is only supported for module jobs")
   end
   validate_ui_loop(payload.ui_loop)
+  local design_transport = module_ai_design_loop.transport(payload)
+  if design_transport.request ~= nil then
+    error("testing-runner: ai-design-loop-incomplete: request must be replaced by reviewed state")
+  end
+  if design_transport.state_ref ~= nil and job ~= "module" then
+    error("testing-runner: malformed-request: ai_design_loop_state_ref is only supported for module jobs")
+  end
   if payload.cdp_execution ~= nil then
     if job ~= "module" then
       error("testing-runner: malformed-request: cdp_execution is only supported for module jobs")
