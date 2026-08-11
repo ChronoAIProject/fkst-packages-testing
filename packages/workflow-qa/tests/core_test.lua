@@ -250,6 +250,57 @@ local tests = {
     t.raises(function() contract.validate_request(duplicated) end)
   end,
 
+  test_contract_rejects_invalid_reviewed_design_authority = function()
+    local invalid_references = {
+      { artifact_pointer = "unsafe/state.json", artifact_digest = "design-state-digest" },
+      { artifact_pointer = ".testing/runs/workflow-qa-fixture/design/state.json", artifact_digest = "" },
+    }
+    for _, state_ref in ipairs(invalid_references) do
+      local request = fixture()
+      request.design_module_start.ai_design_loop_request = nil
+      request.design_module_start.ai_design_loop_state_ref = state_ref
+      expect_failure("malformed-design: ai-design-loop-state-reference is invalid", function()
+        contract.validate_request(request)
+      end)
+    end
+
+    local invalid_requests = {
+      function(value) value.schema = "foreign" end,
+      function(value) value.case_budget = 0 end,
+    }
+    for _, mutate in ipairs(invalid_requests) do
+      local request = fixture()
+      mutate(request.design_module_start.ai_design_loop_request)
+      expect_failure("malformed-design: ai design loop request is invalid", function()
+        contract.validate_request(request)
+      end)
+    end
+
+    local ambiguous = fixture()
+    ambiguous.design_module_start.ai_design_loop_state_ref = {
+      artifact_pointer = ambiguous.design_module_start.artifact_root .. "/loop/ai-design-loop-state.json",
+      artifact_digest = "design-state-digest",
+    }
+    expect_failure("foreign-design: design module start has ambiguous reviewed-state authority", function()
+      contract.validate_request(ambiguous)
+    end)
+
+    local foreign_mutations = {
+      function(request) request.design_module_start.ai_design_loop_request.trace_id = "foreign-trace" end,
+      function(request) request.design_module_start.ai_design_loop_request.dedup_key = "foreign-dedup" end,
+      function(request)
+        request.design_module_start.ai_design_loop_request.artifact_root = request.artifact_root .. "/foreign-loop"
+      end,
+    }
+    for _, mutate in ipairs(foreign_mutations) do
+      local request = fixture()
+      mutate(request)
+      expect_failure("foreign-design: design loop request differs from the closed run identity", function()
+        contract.validate_request(request)
+      end)
+    end
+  end,
+
   test_contract_rejects_malformed_closed_inputs = function()
     local mutations = {
       function(value) value.repository.url = "https://user@example.invalid/repo.git" end,

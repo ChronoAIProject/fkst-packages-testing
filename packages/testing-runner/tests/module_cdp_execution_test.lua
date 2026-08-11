@@ -1,5 +1,6 @@
 local ai = require("module_ai_generation")
 local design_loop = require("module_ai_design_loop")
+local design_state = require("module_ai_design_state")
 local cdp = require("module_cdp_execution")
 local inventory_module = require("module_inventory")
 local native = require("fkst_native")
@@ -453,6 +454,26 @@ return {
     })
     t.eq(artifact.execution_status, "blocked")
     t.eq(artifact.classification, "ai-design-loop-artifact-invalid")
+    t.eq(artifact.action_count, 0)
+    t.is_true(artifact.limitations[1]:find("design loop state digest", 1, true) ~= nil)
+  end,
+
+  test_reviewed_state_loader_failure_blocks_with_exact_classification = function()
+    local value = payload()
+    value.ai_design_loop_state_ref = {
+      artifact_pointer = ".testing/runs/module-a-cdp/design/ai-design-loop-state.json",
+      artifact_digest = "reviewed-state-digest",
+    }
+    local original = design_state.load
+    design_state.load = function() error("forced reviewed state rejection", 0) end
+    local ok, artifact = pcall(cdp.build, value, ".testing/runs/module-a-cdp", {
+      readiness = { status = "ready" },
+    })
+    design_state.load = original
+    t.eq(ok, true)
+    t.eq(artifact.execution_status, "blocked")
+    t.eq(artifact.classification, "ai-design-loop-artifact-invalid")
+    t.eq(artifact.limitations[1], "forced reviewed state rejection")
     t.eq(artifact.action_count, 0)
   end,
 }
