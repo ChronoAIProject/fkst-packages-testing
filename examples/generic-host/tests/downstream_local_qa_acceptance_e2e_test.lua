@@ -7,10 +7,6 @@ local CASE_IDS = {
   "inventory-initial-state", "inventory-reserve-three", "inventory-state-after-reserve",
   "inventory-over-reserve-rejected", "inventory-state-after-rejection",
 }
-local DESIGN_IDS = {
-  "inventory:initial-state", "inventory:reserve-three", "inventory:state-after-reserve",
-  "inventory:over-reserve-rejected", "inventory:state-after-rejection",
-}
 local INITIAL = "{\"sku\":\"SKU-001\",\"on_hand\":5,\"reserved\":0,\"available\":5}\n"
 local RESERVED = "{\"sku\":\"SKU-001\",\"on_hand\":5,\"reserved\":3,\"available\":2}\n"
 local REJECTED = "{\"error\":\"insufficient-available\",\"sku\":\"SKU-001\",\"requested\":3,\"available\":2}\n"
@@ -22,11 +18,11 @@ end
 local function adapter_marker_counts(context, label)
   local root = adapter_log_root(context, label)
   return {
-    intake = process.count_child_text(root, "local-qa-host-adapter.intake-",
+    intake = process.count_child_logs(root, "local-qa-host-adapter.intake-",
       "local-qa-host dept=intake tag=ROUTED run_id=" .. context.run_id),
-    execution_grant = process.count_child_text(root, "local-qa-host-adapter.execution_grant-",
+    execution_grant = process.count_child_logs(root, "local-qa-host-adapter.execution_grant-",
       "local-qa-host dept=execution_grant tag=GRANTED"),
-    terminal = process.count_child_text(root, "local-qa-host-adapter.terminal-",
+    terminal = process.count_child_logs(root, "local-qa-host-adapter.terminal-",
       "local-qa-host dept=terminal tag=RECORDED run_id=" .. context.run_id),
   }
 end
@@ -175,7 +171,7 @@ return {
       t.eq(#results.cases, 5)
       for index, expected in ipairs(CASE_IDS) do
         t.eq(catalog.cases[index].case_id, expected)
-        t.eq(catalog.cases[index].design_case_id, DESIGN_IDS[index])
+        t.eq(catalog.cases[index].design_case_id, expected)
         t.eq(plan.cases[index].case_id, expected)
         t.eq(results.cases[index].case_id, expected)
         t.eq(results.cases[index].status, "passed")
