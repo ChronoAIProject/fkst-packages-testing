@@ -157,6 +157,25 @@ return {
     local direct = adapter.qa_run_event(request)
     t.eq(direct.source_ref.kind, "external")
     t.eq(direct.source_ref.reference, "local-qa-walking-skeleton")
+
+    local claims = 0
+    local ports = {
+      claim_qa_run_intake = function(value)
+        claims = claims + 1
+        t.is_true(rawequal(value.design_module_start.ai_design_loop_request,
+          request.design_module_start.ai_design_loop_request) == false)
+        return {
+          status = "claimed", claim_id = "local-qa-walking-skeleton-intake", replayed = claims > 1,
+        }
+      end,
+    }
+    local accepted = adapter.qa_run_event(request, ports)
+    local replayed = adapter.qa_run_event(request, ports)
+    t.eq(accepted.accepted, true)
+    t.eq(replayed.accepted, false)
+    t.is_true(rawequal(accepted.payload, request))
+    t.is_true(rawequal(replayed.payload, request))
+    t.eq(claims, 2)
   end,
 
   test_malformed_local_qa_request_fails_without_raise = function()

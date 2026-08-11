@@ -857,6 +857,15 @@ function Context:_generic_host_runtime()
     load_artifact = function(path) return context.store:load(path) end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
     artifact_digest = function(path) return context.store:digest(path) end,
+    claim_qa_run_intake = function(value)
+      local claimed = context.records:claim("generic-host/local-qa-intake/" .. context.run_id, {
+        binding = copy(value), claim_id = context.run_id .. "-local-qa-intake",
+      })
+      if claimed.claimed ~= true then return { status = "blocked" } end
+      return {
+        status = "claimed", claim_id = claimed.value.claim_id, replayed = claimed.replayed == true,
+      }
+    end,
     claim_preauthorization = function(value)
       local claimed = context.records:claim("generic-host/preauthorization/" .. context:_key(value.authorization_id), {
         binding = copy(value), claim_id = context.run_id .. "-preauthorization",
@@ -1100,6 +1109,25 @@ function M.list_pending(project_root, durable_root, limit)
     end
   end
   return pending
+end
+
+function M.supervisor_action(context)
+  local state = context.workflow_runtime.load_state(context.request.state_ref)
+  if state == nil and context.use_local_qa_departments == true then
+    local outbox = context.records:immutable("generic-host/local-qa-startup-outbox/" .. context.run_id, {
+      schema = "generic-host.local-qa-startup-outbox.v1",
+      queue = "qa_run_request",
+      payload = copy(context.request),
+    })
+    if outbox.written ~= true and outbox.replayed ~= true then
+      error("generic-host durable Local QA startup outbox binding differs")
+    end
+    return { queue = outbox.value.queue, payload = outbox.value.payload }, "intake"
+  end
+  return {
+    queue = "workflow-qa.workflow_qa_tick",
+    payload = { run_id = context.run_id, limit = 1 },
+  }, "redrive"
 end
 
 M.copy = copy

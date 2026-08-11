@@ -1017,6 +1017,15 @@ function dispatch(name, payload, projectRoot) {
       const written = artifactWrite(projectRoot, payload.path, payload.value);
       return { status: 'written', digest: written.digest };
     }
+    case 'host-claim-qa-run-intake': {
+      const runId = runIdFor(payload);
+      loadConfig(projectRoot, runId);
+      const claimed = recordClaim(runRoot(runId), `generic-host/local-qa-intake/${runId}`, {
+        binding: payload, claim_id: `${runId}-local-qa-intake`,
+      });
+      if (!claimed.claimed) return { status: 'blocked' };
+      return { status: 'claimed', claim_id: claimed.value.claim_id, replayed: claimed.replayed === true };
+    }
     case 'host-claim-preauthorization': {
       const runId = runIdFor(payload);
       loadConfig(projectRoot, runId);

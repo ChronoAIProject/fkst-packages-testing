@@ -99,12 +99,23 @@ function M.new(options)
     return grant
   end
 
-  function adapter.qa_run_event(request)
+  function adapter.qa_run_event(request, supplied_ports)
     workflow_qa.validate_request(request)
+    local accepted = true
+    local ports = supplied_ports or default_ports()
+    if type(ports) == "table" and type(ports.claim_qa_run_intake) == "function" then
+      local claim = ports.claim_qa_run_intake(copy(request))
+      if type(claim) ~= "table" or claim.status ~= "claimed"
+        or type(claim.claim_id) ~= "string" or claim.claim_id == "" then
+        fail("Local QA intake claim failed")
+      end
+      accepted = claim.replayed ~= true
+    end
     return {
       queue = "workflow-qa.qa_run_request",
       payload = request,
       source_ref = { kind = "external", reference = request.run_id },
+      accepted = accepted,
     }
   end
 

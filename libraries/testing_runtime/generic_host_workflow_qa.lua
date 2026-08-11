@@ -33,6 +33,9 @@ function M.production(options)
       local result = cli.call("artifact-digest", { path = path }, run_root(path), path, 15)
       return type(result) == "table" and result.digest or nil
     end,
+    claim_qa_run_intake = function(value)
+      return cli.call("host-claim-qa-run-intake", value, nil, value.run_id, 15)
+    end,
     claim_preauthorization = function(value)
       return cli.call("host-claim-preauthorization", value, nil, value.dedup_key, 15)
     end,

@@ -541,11 +541,20 @@ end
 
 function Context:_generic_host_runtime()
   local context = self
+  local intake_claim
   local preauthorization_claim
   return {
     load_artifact = function(path) return context.store:load(path) end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
     artifact_digest = function(path) return context.store:digest(path) end,
+    claim_qa_run_intake = function(value)
+      if intake_claim ~= nil then
+        if not equal(intake_claim.value, value) then return { status = "blocked" } end
+        return { status = "claimed", claim_id = intake_claim.claim_id, replayed = true }
+      end
+      intake_claim = { value = copy(value), claim_id = context.run_id .. "-local-qa-intake" }
+      return { status = "claimed", claim_id = intake_claim.claim_id }
+    end,
     claim_preauthorization = function(value)
       if preauthorization_claim ~= nil then
         if not equal(preauthorization_claim.value, value) then return { status = "blocked" } end

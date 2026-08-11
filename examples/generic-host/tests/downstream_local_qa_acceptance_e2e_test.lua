@@ -234,6 +234,8 @@ return {
       end
       process.stop_live(noop_pid, live_pids)
       add_marker_counts(adapter_calls, adapter_marker_counts(context, "inventory-noop"))
+      t.eq(#durable.load(context.project_root, context.durable_root, context.run_id).records:list(
+        "generic-host/local-qa-intake"), 1)
       t.eq(adapter_calls.intake, 1)
       t.eq(adapter_calls.execution_grant, 1)
       t.eq(adapter_calls.terminal, 1)
