@@ -15,6 +15,33 @@ local function assert_payload(actual, expected)
   end
 end
 
+local function design_request(root)
+  local function ref(name)
+    return {
+      artifact_pointer = root .. "/" .. name .. ".json",
+      artifact_digest = name .. "-digest",
+    }
+  end
+  return {
+    schema = "testing-runner.ai-design-loop.request.v1",
+    artifact_root = root,
+    seed_cases_ref = ref("seed-cases"),
+    coverage_scope_ref = ref("coverage-scope"),
+    deterministic_cases_ref = ref("deterministic-cases"),
+    max_rounds = 3,
+    case_budget = 16,
+    action_budget = 32,
+    trace_id = "trace-reviewed-design",
+    dedup_key = "dedup-reviewed-design",
+  }
+end
+
+local function expect_failure(fragment, fn)
+  local ok, err = pcall(fn)
+  t.eq(ok, false)
+  t.is_true(tostring(err):find(fragment, 1, true) ~= nil)
+end
+
 return {
   test_module_argv_uses_supplied_native_argv = function()
     local argv = core.argv("module", {
@@ -46,6 +73,38 @@ return {
       payload.cdp_execution[field] = {}
       t.raises(function() core.validate_request("module", payload) end)
     end
+  end,
+
+  test_request_validation_rejects_malformed_or_unconsumed_reviewed_state_fields = function()
+    expect_failure("ui_loop.gap_ref must be a bounded pointer", function()
+      core.validate_request("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        module = "sample_module",
+        ui_loop = {
+          base_url = "http://localhost:8080/app",
+          allowed_origins = { "http://localhost:8080" },
+          gap_ref = "gap\nref",
+        },
+      })
+    end)
+
+    expect_failure("ai-design-loop-incomplete: request must be replaced by reviewed state", function()
+      core.validate_request("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        module = "sample_module",
+        ai_design_loop_request = design_request(".testing/runs/reviewed-design"),
+      })
+    end)
+
+    expect_failure("ai_design_loop_state_ref is only supported for module jobs", function()
+      core.validate_request("online_regression", {
+        schema = "testing-runner.online-regression.request.v1",
+        ai_design_loop_state_ref = {
+          artifact_pointer = ".testing/runs/reviewed-design/ai-design-loop-state.json",
+          artifact_digest = "reviewed-state-digest",
+        },
+      })
+    end)
   end,
 
   test_command_does_not_synthesize_legacy_cli = function()

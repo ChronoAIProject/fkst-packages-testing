@@ -144,6 +144,27 @@ local function assert_loaded_state(actual, expected, state_ref)
   assert_case_ids(actual.current_artifacts.round_plan.case_ids)
 end
 
+local function design_request()
+  local function ref(name)
+    return {
+      artifact_pointer = loop_root .. "/" .. name .. ".json",
+      artifact_digest = name .. "-digest",
+    }
+  end
+  return {
+    schema = design_loop.schemas.request,
+    artifact_root = loop_root,
+    seed_cases_ref = ref("seed-cases"),
+    coverage_scope_ref = ref("coverage-scope"),
+    deterministic_cases_ref = ref("deterministic-cases"),
+    max_rounds = 3,
+    case_budget = 16,
+    action_budget = 32,
+    trace_id = "trace-inventory-reviewed",
+    dedup_key = "dedup-inventory-reviewed",
+  }
+end
+
 return {
   test_loads_top_level_reviewed_state_with_exact_binding = function()
     local payload, state, reader = reviewed_fixture()
@@ -152,6 +173,105 @@ return {
     payload.dedup_key = payload.dedup_key .. "/attempt/1"
     local replayed = design_state.load(payload, payload.artifact_root, { artifact_reader = reader })
     assert_loaded_state(replayed, state, payload.ai_design_loop_state_ref)
+  end,
+
+  test_default_artifact_readers_and_decoder_fail_closed = function()
+    do
+      local payload, state = reviewed_fixture()
+      local original_file = file
+      local read_path
+      file = {
+        read = function(path)
+          read_path = path
+          return native.json_encode(state)
+        end,
+      }
+      local ok, loaded = pcall(design_state.load, payload, payload.artifact_root)
+      file = original_file
+      t.eq(ok, true)
+      t.eq(read_path, payload.ai_design_loop_state_ref.artifact_pointer)
+      assert_loaded_state(loaded, state, payload.ai_design_loop_state_ref)
+    end
+
+    do
+      local payload, state = reviewed_fixture()
+      local original_file, original_io = file, io
+      local read_mode, closed
+      file = nil
+      io = {
+        open = function(path, mode)
+          t.eq(path, payload.ai_design_loop_state_ref.artifact_pointer)
+          t.eq(mode, "r")
+          return {
+            read = function(_, requested)
+              read_mode = requested
+              return native.json_encode(state)
+            end,
+            close = function() closed = true end,
+          }
+        end,
+      }
+      local ok, loaded = pcall(design_state.load, payload, payload.artifact_root)
+      file, io = original_file, original_io
+      t.eq(ok, true)
+      t.eq(read_mode, "*a")
+      t.eq(closed, true)
+      assert_loaded_state(loaded, state, payload.ai_design_loop_state_ref)
+    end
+
+    do
+      local payload = reviewed_fixture()
+      local original_file, original_io = file, io
+      file = nil
+      io = { open = function() return nil, "missing reviewed state" end }
+      local ok, err = pcall(design_state.load, payload, payload.artifact_root)
+      file, io = original_file, original_io
+      t.eq(ok, false)
+      t.is_true(tostring(err):find("missing reviewed state", 1, true) ~= nil)
+    end
+
+    do
+      local payload, state = reviewed_fixture()
+      local original_json = json
+      json = nil
+      local ok, err = pcall(design_state.load, payload, payload.artifact_root, {
+        artifact_reader = function() return native.json_encode(state) end,
+      })
+      json = original_json
+      t.eq(ok, false)
+      t.is_true(tostring(err):find("ai-artifact-decoder-unavailable", 1, true) ~= nil)
+    end
+  end,
+
+  test_unconsumed_foreign_and_mutated_reviewed_state_fails_closed = function()
+    local request_payload = {
+      ai_design_loop_request = design_request(),
+      trace_id = "trace-inventory-reviewed",
+      dedup_key = "dedup-inventory-reviewed",
+    }
+    expect_failure("ai-design-loop-incomplete: request must be replaced by reviewed state", request_payload, function()
+      error("artifact reader must not run")
+    end)
+
+    local foreign_payload = reviewed_fixture()
+    foreign_payload.ai_design_loop_state_ref.artifact_pointer =
+      ".testing/runs/foreign/design-loop/ai-design-loop-state.json"
+    local read = false
+    expect_failure("design loop run binding", foreign_payload, function()
+      read = true
+      error("artifact reader must not run")
+    end)
+    t.eq(read, false)
+
+    local path_payload, path_state = reviewed_fixture()
+    path_state.paths.coverage_matrix = loop_root .. "/mutated-coverage-matrix.json"
+    path_payload.ai_design_loop_state_ref.artifact_digest = design_loop.document_digest(path_state)
+    expect_failure("design loop path binding", path_payload, function() return native.json_encode(path_state) end)
+
+    local closure_payload, closure_state = reviewed_fixture()
+    closure_state.current_artifacts.closure.final_round_digest = "mutated-round-digest"
+    closure_payload.ai_design_loop_state_ref.artifact_digest = design_loop.document_digest(closure_state)
+    expect_failure("design loop closure binding", closure_payload, function() return native.json_encode(closure_state) end)
   end,
 
   test_reviewed_state_admission_fails_closed_for_invalid_artifacts = function()
