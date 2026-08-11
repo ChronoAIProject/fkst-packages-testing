@@ -148,11 +148,11 @@ function M.wait_for_child_text(root, prefix, fragment, timeout_seconds)
     tostring(timeout_seconds or 45) }).exit_code == 0
 end
 
-function M.count_child_text(root, prefix, fragment)
+function M.count_child_logs(root, prefix, fragment)
   local script = table.concat({
     "const fs=require('fs'),root=process.argv[1],prefix=process.argv[2],fragment=process.argv[3];let count=0;",
     "try{for(const name of fs.readdirSync(root)){if(!name.startsWith(prefix))continue;",
-    "const body=fs.readFileSync(root+'/'+name,'utf8');let offset=0;while((offset=body.indexOf(fragment,offset))!==-1){count++;offset+=fragment.length}}}catch(_error){}",
+    "if(fs.readFileSync(root+'/'+name,'utf8').includes(fragment))count++}}catch(_error){}",
     "process.stdout.write(String(count));",
   })
   return tonumber(M.exec({ "node", "-e", script, root, prefix, fragment }).stdout)

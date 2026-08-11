@@ -3,6 +3,7 @@ local execution = require("contract.structured_execution")
 local environment_factory = require("contract.environment_factory")
 local json_codec = require("testing_runtime.json")
 local project_profile = require("contract.project_profile")
+local ai_design_loop = require("testing_ai.module_ai_design_loop")
 local Store = require("host_durable_store")
 
 local M = {}
@@ -62,6 +63,54 @@ end
 local function bounded_text(value, limit)
   local text = tostring(value or ""):gsub("[%z\1-\31\127]", " "):gsub("%s+", " ")
   return text:sub(1, limit or 1024)
+end
+
+local design_input_fields = { "coverage_scope_ref", "deterministic_cases_ref" }
+
+local function design_input_materialization_error(message)
+  error("generic-host durable design input materialization failed: " .. message, 0)
+end
+
+local function design_inputs(request)
+  local design_module_start = type(request) == "table" and request.design_module_start or nil
+  local design_request = type(design_module_start) == "table"
+    and design_module_start.ai_design_loop_request or nil
+  if design_request == nil then return {} end
+  if type(design_request) ~= "table" then
+    design_input_materialization_error("ai_design_loop_request must be a table")
+  end
+  local inputs = {}
+  for _, field in ipairs(design_input_fields) do
+    local reference = design_request[field]
+    local ok, err = pcall(ai_design_loop.validate_artifact_reference, reference)
+    if not ok then
+      design_input_materialization_error(field .. " reference is invalid: " .. bounded_text(err))
+    end
+    table.insert(inputs, { field = field, reference = reference })
+  end
+  return inputs
+end
+
+local function verify_design_input(project_root, input)
+  local path = input.reference.artifact_pointer
+  local body = read_file(project_root .. "/" .. path)
+  if body == nil then design_input_materialization_error(input.field .. " is missing: " .. path) end
+  local ok, document = pcall(json.decode, body)
+  if not ok or type(document) ~= "table" then
+    design_input_materialization_error(input.field .. " is not a JSON document: " .. path)
+  end
+  if ai_design_loop.document_digest(document) ~= input.reference.artifact_digest then
+    design_input_materialization_error(input.field .. " digest mismatch: " .. path)
+  end
+end
+
+local function require_design_input_sources(context, inputs)
+  for _, input in ipairs(inputs) do
+    local path = input.reference.artifact_pointer
+    if context.store:load(path) == nil then
+      design_input_materialization_error(input.field .. " is missing: " .. path)
+    end
+  end
 end
 
 local function safe_label(value)
@@ -931,6 +980,8 @@ end
 function M.initialize(context, durable_root)
   local root = run_root(durable_root, context.run_id)
   local records = Store.new(root, runtime_cli(context.project_root))
+  local immutable_design_inputs = design_inputs(context.request)
+  require_design_input_sources(context, immutable_design_inputs)
   local config = {
     schema = "generic-host.durable-workflow-qa.v1",
     project_root = context.project_root,
@@ -972,6 +1023,9 @@ function M.initialize(context, durable_root)
     context.request.structured_execution.case_catalog_ref,
     context.request.structured_execution.preauthorization_ref,
   }
+  for _, input in ipairs(immutable_design_inputs) do
+    table.insert(initial_paths, input.reference.artifact_pointer)
+  end
   for _, path in ipairs(initial_paths) do
     if type(path) ~= "string" or path:sub(1, 14) ~= ".testing/runs/"
       or path:find("..", 1, true) or path:find("\\", 1, true) then
@@ -983,6 +1037,7 @@ function M.initialize(context, durable_root)
     end
     write_file(context.project_root .. "/" .. path, artifact.raw)
   end
+  for _, input in ipairs(immutable_design_inputs) do verify_design_input(context.project_root, input) end
   local request = records:immutable("workflow-qa/requests/" .. context.run_id, copy(context.request))
   if request.written ~= true and request.replayed ~= true then error("generic-host durable run request binding differs") end
   local index = Store.new(host_root(durable_root), runtime_cli(context.project_root))
