@@ -192,10 +192,7 @@ function M.saga_conformance_errors()
     dedup_key = "conformance-module-run",
   })
   local errors = {}
-  if not ok then
-    add_error(errors, "module-testing-pipeline.saga.module-loop-request", tostring(request))
-    return errors
-  end
+  if not ok then add_error(errors, "module-testing-pipeline.saga.module-loop-request", tostring(request)); return errors end
   expect_equal(errors, "module-testing-pipeline.saga.schema", request.schema, "module-test-loop.start.v1")
   expect_equal(errors, "module-testing-pipeline.saga.module", request.module, "conformance-module")
   expect_equal(errors, "module-testing-pipeline.saga.backend", request.backend, "fkst-native")
