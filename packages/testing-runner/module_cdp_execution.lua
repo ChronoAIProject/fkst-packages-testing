@@ -518,9 +518,7 @@ function M.build(payload, artifact_root, opts)
 
   local ai_design_loop_state
   local design_ok, design_loaded = pcall(module_ai_design_state.load, payload, artifact_root, opts)
-  if not design_ok then
-    return blocked_artifact(payload, artifact_root, request, "ai-design-loop-artifact-invalid", tostring(design_loaded):sub(1, max_string), readiness)
-  end
+  if not design_ok then return blocked_artifact(payload, artifact_root, request, "ai-design-loop-artifact-invalid", tostring(design_loaded):sub(1, max_string), readiness) end
   ai_design_loop_state = design_loaded
 
   local inventory, planning = planning_for(payload, artifact_root, readiness, request, ai_artifacts, ai_design_loop_state)

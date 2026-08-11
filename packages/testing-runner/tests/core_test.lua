@@ -88,6 +88,17 @@ return {
       })
     end)
 
+    expect_failure("ui_loop.allowed_origins must contain http origins", function()
+      core.validate_request("module", {
+        schema = "testing-runner.module-test-loop.request.v1",
+        module = "sample_module",
+        ui_loop = {
+          base_url = "http://localhost:8080/app",
+          allowed_origins = { "ftp://localhost:8080" },
+        },
+      })
+    end)
+
     expect_failure("ai-design-loop-incomplete: request must be replaced by reviewed state", function()
       core.validate_request("module", {
         schema = "testing-runner.module-test-loop.request.v1",
