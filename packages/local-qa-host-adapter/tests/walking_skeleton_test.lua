@@ -187,4 +187,43 @@ return {
     t.eq(#trace.raises, 0)
     t.is_true(tostring(trace.failure.error):find("contract.workflow-qa:", 1, true) ~= nil)
   end,
+
+  test_invalid_intake_claims_fail_closed_without_mutating_or_routing = function()
+    local cases = {
+      { name = "missing", result = nil },
+      { name = "blocked", result = { status = "blocked" } },
+      { name = "missing-claim-id", result = { status = "claimed" } },
+      { name = "empty-claim-id", result = { status = "claimed", claim_id = "" } },
+    }
+
+    for _, case in ipairs(cases) do
+      local request = canonical_request()
+      local original_run_id = request.run_id
+      local original_issue_number = request.issue.number
+      local messages = {}
+      local previous_log_info = log.info
+      log.info = function(message) table.insert(messages, message) end
+      local ok, trace = pcall(testing.run_fake_expecting_failure, intake, {
+        queue = "qa_run_request",
+        payload = request,
+        test_ports = {
+          claim_qa_run_intake = function(value)
+            value.run_id = "mutated-" .. case.name
+            value.issue.number = 0
+            return case.result
+          end,
+        },
+      })
+      log.info = previous_log_info
+      if not ok then error(trace) end
+
+      t.eq(#trace.raises, 0)
+      t.eq(#messages, 0)
+      t.eq(trace.result, nil)
+      t.is_true(tostring(trace.failure.error):find(
+        "local-qa-host: Local QA intake claim failed", 1, true) ~= nil)
+      t.eq(request.run_id, original_run_id)
+      t.eq(request.issue.number, original_issue_number)
+    end
+  end,
 }
