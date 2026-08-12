@@ -3,7 +3,7 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "durable_workflow_qa_start" },
-  produces = { "qa_run_request", "workflow-qa.workflow_qa_tick" },
+  produces = { "local-qa-host-adapter.qa_run_request", "workflow-qa.workflow_qa_tick" },
   stall_window = "2m",
   retry = false,
 }
