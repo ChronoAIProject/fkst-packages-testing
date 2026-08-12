@@ -28,7 +28,11 @@ return {
       t.is_true(support.equal(repeated.payload, action.payload))
       t.eq(#recovered.records:list("generic-host/local-qa-startup-outbox"), 1)
 
-      supervisor_support.prepare(recovered, context.project_root)
+      local preparation = supervisor_support.prepare_phase(
+        recovered, context.project_root, "intake-checkpoint")
+      t.is_true(preparation.prepared)
+      t.eq(preparation.stop_at, "intake-checkpoint")
+      t.is_true(type(preparation.state) == "table")
       local redrive, redrive_route = durable.supervisor_action(
         durable.load(context.project_root, context.durable_root, context.run_id))
       t.eq(redrive_route, "redrive")

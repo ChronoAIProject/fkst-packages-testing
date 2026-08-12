@@ -68,6 +68,16 @@ local function assert_same_counts(before, after)
   for name, value in pairs(before) do t.eq(after[name], value) end
 end
 
+local function publication_stage_count(context, stage)
+  local count = 0
+  for _, entry in ipairs(context.records:list("test-publication/effects")) do
+    if type(entry.value.binding) == "table" and entry.value.binding.stage == stage then
+      count = count + 1
+    end
+  end
+  return count
+end
+
 return {
   test_stateful_inventory_reservation_survives_whole_plan_recovery = function()
     process.with_context({
@@ -246,7 +256,9 @@ return {
       t.eq(before.authorization, 2)
       t.eq(before.consumption, 2)
       t.eq(before.effects, 5)
-      t.eq(before.publication, 1)
+      t.eq(before.publication, 14)
+      t.eq(publication_stage_count(durable.load(
+        context.project_root, context.durable_root, context.run_id), "aggregate-report"), 1)
       t.eq(before.terminal, 1)
     end)
   end,
