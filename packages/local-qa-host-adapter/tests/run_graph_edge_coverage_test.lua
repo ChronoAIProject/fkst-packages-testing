@@ -10,7 +10,8 @@ end
 
 return {
   test_declared_cross_package_edges_are_routable = function()
-    graph.assert_covers(trace("workflow-qa.qa_run_request"), {
+    graph.assert_covers(trace("local-qa-host-adapter.qa_run_request"), {
+      "local-qa-host-adapter.qa_run_request -> local-qa-host-adapter.intake",
       "workflow-qa.qa_run_request -> workflow-qa.start",
     })
     graph.assert_covers(trace("workflow-qa.execution_grant_result"), {

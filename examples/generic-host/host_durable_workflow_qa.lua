@@ -1116,7 +1116,7 @@ function M.supervisor_action(context)
   if state == nil and context.use_local_qa_departments == true then
     local outbox = context.records:immutable("generic-host/local-qa-startup-outbox/" .. context.run_id, {
       schema = "generic-host.local-qa-startup-outbox.v1",
-      queue = "qa_run_request",
+      queue = "local-qa-host-adapter.qa_run_request",
       payload = copy(context.request),
     })
     if outbox.written ~= true and outbox.replayed ~= true then
