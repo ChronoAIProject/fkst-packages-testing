@@ -168,7 +168,11 @@ function M.run(context, project_root, options)
 
   local actions
   if context.workflow_runtime.load_state(context.request.state_ref) == nil then
-    actions = workflow.start(context.request, context.workflow_runtime)
+    local intake = adapter.qa_run_event(context.request)
+    if intake.queue ~= "workflow-qa.qa_run_request" then
+      error("canonical lifecycle Local QA intake did not target workflow-qa.qa_run_request")
+    end
+    actions = workflow.start(intake.payload, context.workflow_runtime)
     local stopped = prepared("intake-checkpoint", actions)
     if stopped ~= nil then return stopped end
     actions = release_checkpoint("intake", actions)
@@ -178,6 +182,7 @@ function M.run(context, project_root, options)
     local environment_ready = environment.handle_browser_readiness(
       readiness.result(environment_pending.readiness_check), context.environment_runtime).result
     actions = workflow.handle_environment_result(environment_ready, context.request, context.workflow_runtime)
+    if type(context.after_environment_ready) == "function" then context:after_environment_ready() end
     stopped = prepared("environment-ready-checkpoint", actions)
     if stopped ~= nil then return stopped end
     actions = release_checkpoint("environment-ready", actions)

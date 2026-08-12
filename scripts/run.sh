@@ -812,26 +812,30 @@ cmd_live_cdp_smoke() {
   return "$rc"
 }
 
-generic_host_closed_world_roots() {
-  printf '%s\n' "environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/consensus @platform/github-proxy"
+GENERIC_HOST_CLOSED_WORLD_ROOTS="local-qa-host-adapter environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/consensus @platform/github-proxy"
+generic_host_test_args() {
+  local work="$1" host_name="$2" root
+  GENERIC_HOST_TEST_ARGS=(--project-root "$work" --package-root "$work/packages/$host_name")
+  for root in $GENERIC_HOST_CLOSED_WORLD_ROOTS; do GENERIC_HOST_TEST_ARGS+=(--package-root "$work/packages/${root#@platform/}"); done
 }
 
 cmd_example() {
-  local name="${1:-generic-host}" example roots work args t
+  local name="${1:-generic-host}" example roots work
   example="$ROOT/examples/$name"
   [ -d "$example" ] || { echo "error: no example named '$name' under examples/" >&2; exit 1; }
   resolve_testing_bin
-  roots="$(generic_host_closed_world_roots)"
+  roots="$GENERIC_HOST_CLOSED_WORLD_ROOTS"
   work="$(composed_test_workspace "$name" "$roots" "$example")" || return 1
-  args=(--project-root "$work" --package-root "$work/packages/$name")
-  for t in $roots; do args+=(--package-root "$work/packages/${t#@platform/}"); done
+  generic_host_test_args "$work" "$name"
   echo "example $name (closed-world: $roots)"
   ( trap 'rm -rf "$work"' EXIT; mkdir -p "$work/.fkst/run/runtime" "$work/.fkst/run/durable"; \
-    FKST_RUNTIME_ROOT="$work/.fkst/run/runtime" FKST_DURABLE_ROOT="$work/.fkst/run/durable" FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 run_engine "$BIN" test "${args[@]}" )
+    FKST_GENERIC_HOST_CLOSED_WORLD_ROOTS="$roots" FKST_RUNTIME_ROOT="$work/.fkst/run/runtime" \
+      FKST_DURABLE_ROOT="$work/.fkst/run/durable" FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 \
+      run_engine "$BIN" test "${GENERIC_HOST_TEST_ARGS[@]}" )
 }
 
 cmd_external_host() {
-  local requested_host_root="${1:-}" host_root repo_root roots work args t
+  local requested_host_root="${1:-}" host_root repo_root roots work
   [ "$#" -eq 1 ] || { echo "usage: scripts/run.sh external-host <absolute-host-root>" >&2; return 2; }
   case "$requested_host_root" in
     /*) ;;
@@ -850,19 +854,15 @@ cmd_external_host() {
     echo "error: external host root must contain fkst.toml: $host_root" >&2
     return 1
   }
-
   resolve_testing_bin
-  roots="$(generic_host_closed_world_roots)"
+  roots="$GENERIC_HOST_CLOSED_WORLD_ROOTS"
   work="$(composed_test_workspace "external-host" "$roots" "$host_root")" || return 1
-  args=(--project-root "$work" --package-root "$work/packages/external-host")
-  for t in $roots; do
-    args+=(--package-root "$work/packages/${t#@platform/}")
-  done
+  generic_host_test_args "$work" "external-host"
   echo "external host $host_root (closed-world: $roots)"
   (
     trap 'rm -rf "$work"' EXIT
     FKST_EXTERNAL_HOST_PROJECT_ROOT="$work" FKST_EXTERNAL_HOST_PACKAGE_ROOT="$work/packages/external-host" \
-      FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 run_engine "$BIN" test "${args[@]}"
+      FKST_MODULE_TEST_LOOP_TEST_RUNTIME=1 run_engine "$BIN" test "${GENERIC_HOST_TEST_ARGS[@]}"
   )
 }
 

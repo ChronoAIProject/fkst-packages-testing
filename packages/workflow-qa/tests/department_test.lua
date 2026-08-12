@@ -157,4 +157,9 @@ return {
     t.eq(start.spec.produces[1], "test-publication.qa_checkpoint_request")
     t.eq(start.spec.produces[2], "environment-factory.environment_start")
   end,
+
+  test_environment_department_can_redrive_persisted_structured_progression = function()
+    t.is_true(includes(environment.spec.produces, "workflow_qa_execution_grant_request"))
+    t.is_true(includes(environment.spec.produces, "testing-runner.structured_execution_request"))
+  end,
 }

@@ -3,6 +3,7 @@ local execution = require("contract.structured_execution")
 local environment_factory = require("contract.environment_factory")
 local json_codec = require("testing_runtime.json")
 local project_profile = require("contract.project_profile")
+local design_loop = require("testing_ai.module_ai_design_loop")
 local workflow_qa = require("contract.workflow_qa")
 
 local M = {}
@@ -261,11 +262,12 @@ function Context:_testing_design_runtime()
         return replay
       end
       local root = request.artifact_root
+      local module_id = context.fixture_name == "downstream-inventory" and "inventory" or "service"
       local docs = {
         repository_analysis = {
           path = root .. "/repository-analysis.v1.json",
           schema = "testing-design.repository-analysis.v1",
-          value = { schema = "testing-design.repository-analysis.v1", repository = copy(request.repository), modules = { "service" } },
+          value = { schema = "testing-design.repository-analysis.v1", repository = copy(request.repository), modules = { module_id } },
         },
         requirements_index = {
           path = root .. "/requirements-index.v1.json",
@@ -275,7 +277,7 @@ function Context:_testing_design_runtime()
         traceability_seed = {
           path = root .. "/traceability-seed.v1.json",
           schema = "testing-design.traceability-seed.v1",
-          value = { schema = "testing-design.traceability-seed.v1", links = { { requirement = "REQ-HEALTH", module = "service" } } },
+          value = { schema = "testing-design.traceability-seed.v1", links = { { requirement = "REQ-HEALTH", module = module_id } } },
         },
       }
       local refs = {}
@@ -539,11 +541,20 @@ end
 
 function Context:_generic_host_runtime()
   local context = self
+  local intake_claim
   local preauthorization_claim
   return {
     load_artifact = function(path) return context.store:load(path) end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
     artifact_digest = function(path) return context.store:digest(path) end,
+    claim_qa_run_intake = function(value)
+      if intake_claim ~= nil then
+        if not equal(intake_claim.value, value) then return { status = "blocked" } end
+        return { status = "claimed", claim_id = intake_claim.claim_id, replayed = true }
+      end
+      intake_claim = { value = copy(value), claim_id = context.run_id .. "-local-qa-intake" }
+      return { status = "claimed", claim_id = intake_claim.claim_id }
+    end,
     claim_preauthorization = function(value)
       if preauthorization_claim ~= nil then
         if not equal(preauthorization_claim.value, value) then return { status = "blocked" } end
@@ -618,6 +629,7 @@ function Context:with_globals(fn)
     structured_execution_runtime = self.structured_runtime,
     qa_publication_runtime = self.publication_runtime,
     generic_host_workflow_qa_runtime = self.generic_host_runtime,
+    local_qa_workflow_qa_runtime = self.generic_host_runtime,
   }
   local previous = {}
   for name, value in pairs(values) do
@@ -661,15 +673,18 @@ function Context:cleanup()
       end
     end
   end
-  remove_tree(self.temp_root, "/tmp/fkst-generic-host-canonical-")
-  remove_tree(absolute(self.artifact_root), project_root .. "/.testing/runs/canonical-workflow-qa-")
+  remove_tree(self.temp_root, self.temp_root_prefix)
+  remove_tree(absolute(self.artifact_root), self.artifact_root_prefix)
 end
 
 function M.new(options)
   options = options or {}
+  local inventory = options.scenario == "downstream-inventory"
   local port = reserve_port()
   local cdp_port = reserve_port()
-  local run_id = "canonical-workflow-qa-" .. tostring(port)
+  local run_prefix = inventory and "inventory-initial-state-" or "canonical-workflow-qa-"
+  local fixture_name = inventory and "downstream-inventory" or "canonical-qa"
+  local run_id = run_prefix .. tostring(port)
   local artifact_root = ".testing/runs/" .. run_id
   local temp_root = "/tmp/fkst-generic-host-" .. run_id
   local source_root = temp_root .. "/source"
@@ -686,33 +701,34 @@ function M.new(options)
   require_exec({
     "node", "-e",
     "const fs=require('fs');fs.cpSync(process.argv[1],process.argv[2],{recursive:true});",
-    absolute("examples/generic-host/fixtures/canonical-qa"), source_root,
+    absolute("examples/generic-host/fixtures/" .. fixture_name), source_root,
   })
   require_exec({ "git", "init", "--quiet" }, source_root)
   require_exec({ "git", "config", "user.email", "fixture@example.invalid" }, source_root)
-  require_exec({ "git", "config", "user.name", "Canonical QA Fixture" }, source_root)
+  require_exec({ "git", "config", "user.name", "Generic Host Fixture" }, source_root)
   require_exec({ "git", "add", "." }, source_root)
-  require_exec({ "git", "commit", "--quiet", "-m", "canonical qa fixture" }, source_root)
+  require_exec({ "git", "commit", "--quiet", "-m", fixture_name .. " fixture" }, source_root)
   write_file(source_root .. "/source-only-uncommitted.txt", "must not enter the detached test checkout\n")
   local commit_sha = require_exec({ "git", "rev-parse", "HEAD" }, source_root):match("([0-9a-f]+)")
   local store = Store.new()
   local repository = {
-    slug = "owner/canonical-qa",
-    url = "https://example.invalid/generic/canonical-qa.git",
+    slug = inventory and "fixture/downstream-inventory" or "owner/canonical-qa",
+    url = inventory and "https://example.invalid/fixtures/downstream-inventory.git"
+      or "https://example.invalid/generic/canonical-qa.git",
     commit_sha = commit_sha,
   }
   local trace_id = "trace-" .. run_id
   local dedup_key = run_id
   local origin = "http://127.0.0.1:" .. tostring(port)
-  local base_url = origin .. "/health"
+  local base_url = origin .. (inventory and "/inventory/SKU-001" or "/health")
   local profile_ref = ref(artifact_root .. "/authorization/profile.json")
   local approval_ref = ref(artifact_root .. "/authorization/approval.json")
   local validation_ref = ref(artifact_root .. "/authorization/profile-validation.json")
-  local authority = { kind = "host-policy", ref = "fixtures/canonical-qa" }
-  local evidence = { kind = "signed-attestation", ref = "fixtures/canonical-qa-approval" }
+  local authority = { kind = "host-policy", ref = "fixtures/" .. fixture_name }
+  local evidence = { kind = "signed-attestation", ref = "fixtures/" .. fixture_name .. "-approval" }
   local profile = {
     schema = project_profile.schemas.profile,
-    revision = "canonical-qa-profile-v1",
+    revision = fixture_name .. "-profile-v1",
     repository = { url = repository.url, commit_sha = repository.commit_sha },
     working_directory = ".",
     commands = {
@@ -724,7 +740,9 @@ function M.new(options)
     application_listener_mode = project_profile.listener_mode,
     readiness_checks = { { type = "http", url = base_url, expected_status = 200 } },
     allowed_origins = { origin },
-    mutation_policy = { mode = "read-only" },
+    mutation_policy = inventory and {
+      mode = "fixture-scoped", allowed_operations = { "update" }, cleanup_required = true,
+    } or { mode = "read-only" },
     timeouts = {
       install_seconds = 20, build_seconds = 10, migrate_seconds = 5, seed_seconds = 5,
       start_seconds = 10, readiness_seconds = 10, cleanup_seconds = 10,
@@ -737,7 +755,7 @@ function M.new(options)
   }
   local trusted = {
     source_ref = authority,
-    policy_revision = "canonical-qa-policy-v1",
+    policy_revision = fixture_name .. "-policy-v1",
     verify = function(request)
       return {
         authenticated = true,
@@ -755,7 +773,7 @@ function M.new(options)
     profile_sha256 = project_profile.profile_sha256(profile, sha256_bytes),
     repository = { url = repository.url, commit_sha = repository.commit_sha },
     authority = authority,
-    policy_revision = "canonical-qa-policy-v1",
+    policy_revision = fixture_name .. "-policy-v1",
     evidence_ref = evidence,
     issued_at = "2026-07-22T00:00:00Z",
     expires_at = "2026-07-22T01:00:00Z",
@@ -837,28 +855,90 @@ function M.new(options)
       token = sha256_bytes(run_id .. "\0fixture-cli-effect-denial"),
     }
   end
-  local catalog_cases = {
-    {
+  local catalog_cases = {}
+  if inventory then
+    catalog_cases = {
+      {
+      design_case_id = "inventory-initial-state",
+      case_id = "inventory-initial-state",
+      kind = "http",
+      request = { method = "GET", url = base_url, headers = {} },
+      timeout_seconds = 10,
+      assertions = {
+        { type = "status-code", expected = 200 },
+        { type = "body-contains", expected = "\"sku\":\"SKU-001\"" },
+        { type = "body-contains", expected = "\"on_hand\":5" },
+        { type = "body-contains", expected = "\"reserved\":0" },
+        { type = "body-contains", expected = "\"available\":5" },
+      },
+      },
+      {
+        design_case_id = "inventory-reserve-three",
+        case_id = "inventory-reserve-three",
+        kind = "cli",
+        argv = { "node", "cli.js", "reserve", "SKU-001", "3" },
+        timeout_seconds = 10,
+        assertions = { { type = "exit-code", expected = 0 } },
+      },
+      {
+        design_case_id = "inventory-state-after-reserve",
+        case_id = "inventory-state-after-reserve",
+        kind = "http",
+        request = { method = "GET", url = base_url, headers = {} },
+        timeout_seconds = 10,
+        assertions = {
+          { type = "status-code", expected = 200 },
+          { type = "body-contains", expected = "\"sku\":\"SKU-001\"" },
+          { type = "body-contains", expected = "\"on_hand\":5" },
+          { type = "body-contains", expected = "\"reserved\":3" },
+          { type = "body-contains", expected = "\"available\":2" },
+        },
+      },
+      {
+        design_case_id = "inventory-over-reserve-rejected",
+        case_id = "inventory-over-reserve-rejected",
+        kind = "cli",
+        argv = { "node", "cli.js", "reserve", "SKU-001", "3" },
+        timeout_seconds = 10,
+        assertions = { { type = "exit-code", expected = 4 } },
+      },
+      {
+        design_case_id = "inventory-state-after-rejection",
+        case_id = "inventory-state-after-rejection",
+        kind = "http",
+        request = { method = "GET", url = base_url, headers = {} },
+        timeout_seconds = 10,
+        assertions = {
+          { type = "status-code", expected = 200 },
+          { type = "body-contains", expected = "\"sku\":\"SKU-001\"" },
+          { type = "body-contains", expected = "\"on_hand\":5" },
+          { type = "body-contains", expected = "\"reserved\":3" },
+          { type = "body-contains", expected = "\"available\":2" },
+        },
+      },
+    }
+  else
+    table.insert(catalog_cases, {
       design_case_id = "service:reachability",
       case_id = "cli-version",
       kind = "cli",
       argv = cli_argv,
       timeout_seconds = 10,
       assertions = { { type = "exit-code", expected = 0 } },
-    },
-  }
-  if options.cli_only ~= true then
-    table.insert(catalog_cases, {
-      design_case_id = "service:page-load",
-      case_id = "health",
-      kind = "http",
-      request = { method = "GET", url = base_url, headers = {} },
-      timeout_seconds = 10,
-      assertions = {
-        { type = "status-code", expected = 200 },
-        { type = "body-contains", expected = "healthy" },
-      },
     })
+    if options.cli_only ~= true then
+      table.insert(catalog_cases, {
+        design_case_id = "service:page-load",
+        case_id = "health",
+        kind = "http",
+        request = { method = "GET", url = base_url, headers = {} },
+        timeout_seconds = 10,
+        assertions = {
+          { type = "status-code", expected = 200 },
+          { type = "body-contains", expected = "healthy" },
+        },
+      })
+    end
   end
   local catalog = {
     schema = execution.schemas.case_catalog,
@@ -876,14 +956,19 @@ function M.new(options)
     profile_sha256 = approval.profile_sha256,
     case_catalog_sha256 = store:digest(catalog_ref),
     capabilities = {
-      cli = { { argv_prefix = { "node", "cli.js" } } },
+      cli = inventory and {
+        { argv_prefix = { "node", "cli.js", "reserve", "SKU-001", "3" } },
+      } or { { argv_prefix = { "node", "cli.js" } } },
       http = options.cli_only == true and {} or {
-        { origin = origin, methods = { "GET" }, path_prefixes = { "/health" } },
+        { origin = origin, methods = { "GET" },
+          path_prefixes = { inventory and "/inventory/" or "/health" } },
       },
     },
-    authority = { kind = "host-policy", ref = "fixtures/canonical-qa-execution" },
-    policy_revision = "canonical-qa-execution-v1",
-    evidence_ref = { kind = "signed-attestation", ref = "fixtures/canonical-qa-execution-approval" },
+    authority = { kind = "host-policy", ref = "fixtures/" .. fixture_name .. "-execution" },
+    policy_revision = fixture_name .. "-execution-v1",
+    evidence_ref = {
+      kind = "signed-attestation", ref = "fixtures/" .. fixture_name .. "-execution-approval",
+    },
     issued_at = "2026-07-22T00:00:00Z",
     expires_at = "2026-07-22T01:00:00Z",
     max_uses = 1,
@@ -892,6 +977,55 @@ function M.new(options)
   }
   assert(store:write(preauthorization_ref, preauthorization))
 
+  local inventory_design_request
+  if inventory then
+    local design_input_root = artifact_root .. "/design/design-loop-inputs"
+    local deterministic_cases = {
+      schema = design_loop.schemas.deterministic_cases,
+      cases = {},
+    }
+    local coverage_scope = {
+      schema = design_loop.schemas.coverage_scope,
+      subjects = {
+        { id = "inventory:initial-state", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-initial-state.json" },
+        { id = "inventory:reserve-three", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-reserve-three.json" },
+        { id = "inventory:state-after-reserve", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-state-after-reserve.json" },
+        { id = "inventory:over-reserve-rejected", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-over-reserve-rejected.json" },
+        { id = "inventory:state-after-rejection", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/inventory-state-after-rejection.json" },
+      },
+    }
+    local deterministic_ref = design_input_root .. "/deterministic-cases.json"
+    local coverage_ref = design_input_root .. "/coverage-scope.json"
+    assert(store:write(deterministic_ref, deterministic_cases))
+    assert(store:write(coverage_ref, coverage_scope))
+    inventory_design_request = {
+      schema = design_loop.schemas.request,
+      artifact_root = artifact_root .. "/design/design-loop",
+      seed_cases_ref = {
+        artifact_pointer = artifact_root .. "/ai-seed-cases.json",
+        artifact_digest = "pending-workflow-seed-reference",
+      },
+      coverage_scope_ref = {
+        artifact_pointer = coverage_ref,
+        artifact_digest = design_loop.document_digest(coverage_scope),
+      },
+      deterministic_cases_ref = {
+        artifact_pointer = deterministic_ref,
+        artifact_digest = design_loop.document_digest(deterministic_cases),
+      },
+      max_rounds = 3,
+      case_budget = 16,
+      action_budget = 32,
+      trace_id = trace_id,
+      dedup_key = dedup_key,
+    }
+  end
+
   local request = {
     schema = workflow_qa.schemas.request,
     issue = { repository = repository.slug, number = 101, state = "open", labels = { "fkst-qa" } },
@@ -899,7 +1033,44 @@ function M.new(options)
     repository = copy(repository),
     artifact_root = artifact_root,
     state_ref = artifact_root .. "/workflow-state.json",
-    proposed_cases = {
+    proposed_cases = inventory and {
+      {
+        id = "inventory-initial-state", module_id = "inventory", priority = "P0",
+        title = "Initial inventory state",
+        objective = "Verify the durable initial inventory state for SKU-001.", case_kind = "api",
+        actions = { { action = "http", target = "/inventory/SKU-001", expected = "HTTP 200" } },
+        expected_observable = "SKU-001 has on-hand 5, reserved 0, and available 5.",
+        coverage_subject_ids = { "inventory:initial-state" }, review_status = "executable",
+      },
+      {
+        id = "inventory-reserve-three", module_id = "inventory", priority = "P0",
+        title = "Reserve three units", objective = "Reserve three available SKU-001 units.", case_kind = "cli",
+        actions = { { action = "cli", target = "node cli.js reserve SKU-001 3", expected = "exit 0" } },
+        expected_observable = "SKU-001 has reserved 3 and available 2.",
+        coverage_subject_ids = { "inventory:reserve-three" }, review_status = "executable",
+      },
+      {
+        id = "inventory-state-after-reserve", module_id = "inventory", priority = "P0",
+        title = "Inventory after reservation", objective = "Observe the successful reservation.", case_kind = "api",
+        actions = { { action = "http", target = "/inventory/SKU-001", expected = "HTTP 200" } },
+        expected_observable = "SKU-001 has on-hand 5, reserved 3, and available 2.",
+        coverage_subject_ids = { "inventory:state-after-reserve" }, review_status = "executable",
+      },
+      {
+        id = "inventory-over-reserve-rejected", module_id = "inventory", priority = "P0",
+        title = "Reject over-reservation", objective = "Reject reserving more than available.", case_kind = "cli",
+        actions = { { action = "cli", target = "node cli.js reserve SKU-001 3", expected = "exit 4" } },
+        expected_observable = "The reservation is rejected without mutation.",
+        coverage_subject_ids = { "inventory:over-reserve-rejected" }, review_status = "executable",
+      },
+      {
+        id = "inventory-state-after-rejection", module_id = "inventory", priority = "P0",
+        title = "Inventory after rejection", objective = "Observe unchanged state after rejection.", case_kind = "api",
+        actions = { { action = "http", target = "/inventory/SKU-001", expected = "HTTP 200" } },
+        expected_observable = "SKU-001 remains on-hand 5, reserved 3, and available 2.",
+        coverage_subject_ids = { "inventory:state-after-rejection" }, review_status = "executable",
+      },
+    } or {
       {
         id = "seed-health", module_id = "service", priority = "P0", title = "Health endpoint",
         objective = "Verify the canonical fixture health endpoint.", case_kind = "api",
@@ -941,7 +1112,7 @@ function M.new(options)
     },
     design_module_start = {
       schema = "module-testing-pipeline.module-start.v1",
-      module = "service",
+      module = inventory and "inventory" or "service",
       backend = "fkst-native",
       no_browser = false,
       dry_run = false,
@@ -951,20 +1122,26 @@ function M.new(options)
       dedup_key = dedup_key,
       ui_loop = {
         allowed_origins = { origin },
-        mutation_policy = "read-only",
+        mutation_policy = inventory and "host-approved" or "read-only",
         cdp_readiness_ref = "canonical-cdp-ready",
       },
       module_discovery = {
         schema = "testing-runner.module-discovery.v1",
         observations = {
           {
-            id = "service", name = "Canonical Service", entry_url = base_url,
-            visible_label = "Canonical Service", discovery_source = "navigation", confidence = "high",
-            evidence_pointer = artifact_root .. "/design/evidence/service.json",
+            id = inventory and "inventory" or "service",
+            name = inventory and "Inventory" or "Canonical Service", entry_url = base_url,
+            visible_label = inventory and "Inventory" or "Canonical Service",
+            discovery_source = "navigation", confidence = "high",
+            evidence_pointer = artifact_root .. "/design/evidence/" .. (inventory and "inventory" or "service") .. ".json",
           },
         },
-        limitations = { "The canonical fixture exposes one local service surface." },
+        limitations = {
+          inventory and "The inventory fixture exposes one local inventory surface."
+            or "The canonical fixture exposes one local service surface.",
+        },
       },
+      ai_design_loop_request = inventory_design_request,
     },
     structured_execution = {
       artifact_root = artifact_root .. "/execution",
@@ -1023,6 +1200,12 @@ function M.new(options)
     crash_barrier = crash_barrier,
     runtime_pep_denial = runtime_pep_denial,
     pep_mutate_plan_binding = options.pep_mutate_plan_binding == true,
+    fixture_name = fixture_name,
+    fixture_source_root = absolute("examples/generic-host/fixtures/" .. fixture_name),
+    use_local_qa_departments = inventory,
+    local_qa_department_calls = {},
+    temp_root_prefix = "/tmp/fkst-generic-host-" .. run_prefix,
+    artifact_root_prefix = project_root .. "/.testing/runs/" .. run_prefix,
   }, Context)
   context.environment_runtime = context:_environment_runtime()
   context.workflow_runtime = context:_workflow_runtime()

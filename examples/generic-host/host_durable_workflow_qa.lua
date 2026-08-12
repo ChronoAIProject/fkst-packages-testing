@@ -3,6 +3,7 @@ local execution = require("contract.structured_execution")
 local environment_factory = require("contract.environment_factory")
 local json_codec = require("testing_runtime.json")
 local project_profile = require("contract.project_profile")
+local ai_design_loop = require("testing_ai.module_ai_design_loop")
 local Store = require("host_durable_store")
 
 local M = {}
@@ -62,6 +63,54 @@ end
 local function bounded_text(value, limit)
   local text = tostring(value or ""):gsub("[%z\1-\31\127]", " "):gsub("%s+", " ")
   return text:sub(1, limit or 1024)
+end
+
+local design_input_fields = { "coverage_scope_ref", "deterministic_cases_ref" }
+
+local function design_input_materialization_error(message)
+  error("generic-host durable design input materialization failed: " .. message, 0)
+end
+
+local function design_inputs(request)
+  local design_module_start = type(request) == "table" and request.design_module_start or nil
+  local design_request = type(design_module_start) == "table"
+    and design_module_start.ai_design_loop_request or nil
+  if design_request == nil then return {} end
+  if type(design_request) ~= "table" then
+    design_input_materialization_error("ai_design_loop_request must be a table")
+  end
+  local inputs = {}
+  for _, field in ipairs(design_input_fields) do
+    local reference = design_request[field]
+    local ok, err = pcall(ai_design_loop.validate_artifact_reference, reference)
+    if not ok then
+      design_input_materialization_error(field .. " reference is invalid: " .. bounded_text(err))
+    end
+    table.insert(inputs, { field = field, reference = reference })
+  end
+  return inputs
+end
+
+local function verify_design_input(project_root, input)
+  local path = input.reference.artifact_pointer
+  local body = read_file(project_root .. "/" .. path)
+  if body == nil then design_input_materialization_error(input.field .. " is missing: " .. path) end
+  local ok, document = pcall(json.decode, body)
+  if not ok or type(document) ~= "table" then
+    design_input_materialization_error(input.field .. " is not a JSON document: " .. path)
+  end
+  if ai_design_loop.document_digest(document) ~= input.reference.artifact_digest then
+    design_input_materialization_error(input.field .. " digest mismatch: " .. path)
+  end
+end
+
+local function require_design_input_sources(context, inputs)
+  for _, input in ipairs(inputs) do
+    local path = input.reference.artifact_pointer
+    if context.store:load(path) == nil then
+      design_input_materialization_error(input.field .. " is missing: " .. path)
+    end
+  end
 end
 
 local function safe_label(value)
@@ -133,7 +182,7 @@ local function http_request(request, timeout_seconds)
   local script = table.concat({
     "const http=require('http'),u=new URL(process.argv[1]);",
     "const req=http.request({hostname:u.hostname,port:u.port,path:u.pathname+u.search,method:process.argv[2],timeout:Number(process.argv[3])*1000},res=>{",
-    "let body='';res.setEncoding('utf8');res.on('data',c=>body+=c);res.on('end',()=>process.stdout.write(JSON.stringify({status:res.statusCode,body})));",
+    "let body='';res.setEncoding('utf8');res.on('data',c=>body+=c);res.on('end',()=>process.stdout.write(JSON.stringify({status:res.statusCode,headers:res.headers,body})));",
     "});req.on('timeout',()=>req.destroy(new Error('timeout')));req.on('error',error=>{process.stderr.write(error.message);process.exit(48)});req.end();",
   })
   local result = direct_exec({ "node", "-e", script, request.url, request.method, tostring(timeout_seconds or 10) })
@@ -808,6 +857,15 @@ function Context:_generic_host_runtime()
     load_artifact = function(path) return context.store:load(path) end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
     artifact_digest = function(path) return context.store:digest(path) end,
+    claim_qa_run_intake = function(value)
+      local claimed = context.records:claim("generic-host/local-qa-intake/" .. context.run_id, {
+        binding = copy(value), claim_id = context.run_id .. "-local-qa-intake",
+      })
+      if claimed.claimed ~= true then return { status = "blocked" } end
+      return {
+        status = "claimed", claim_id = claimed.value.claim_id, replayed = claimed.replayed == true,
+      }
+    end,
     claim_preauthorization = function(value)
       local claimed = context.records:claim("generic-host/preauthorization/" .. context:_key(value.authorization_id), {
         binding = copy(value), claim_id = context.run_id .. "-preauthorization",
@@ -931,6 +989,8 @@ end
 function M.initialize(context, durable_root)
   local root = run_root(durable_root, context.run_id)
   local records = Store.new(root, runtime_cli(context.project_root))
+  local immutable_design_inputs = design_inputs(context.request)
+  require_design_input_sources(context, immutable_design_inputs)
   local config = {
     schema = "generic-host.durable-workflow-qa.v1",
     project_root = context.project_root,
@@ -954,6 +1014,12 @@ function M.initialize(context, durable_root)
     completed_replay_failpoint = copy(context.completed_replay_failpoint),
     crash_barrier = copy(context.crash_barrier),
     runtime_pep_denial = copy(context.runtime_pep_denial),
+    fixture_name = context.fixture_name,
+    fixture_source_root = context.fixture_source_root,
+    use_local_qa_departments = context.use_local_qa_departments == true,
+    local_qa_department_calls = {},
+    temp_root_prefix = context.temp_root_prefix,
+    artifact_root_prefix = context.artifact_root_prefix,
     request = copy(context.request),
   }
   local stored = records:immutable("generic-host/config", config)
@@ -966,6 +1032,9 @@ function M.initialize(context, durable_root)
     context.request.structured_execution.case_catalog_ref,
     context.request.structured_execution.preauthorization_ref,
   }
+  for _, input in ipairs(immutable_design_inputs) do
+    table.insert(initial_paths, input.reference.artifact_pointer)
+  end
   for _, path in ipairs(initial_paths) do
     if type(path) ~= "string" or path:sub(1, 14) ~= ".testing/runs/"
       or path:find("..", 1, true) or path:find("\\", 1, true) then
@@ -977,6 +1046,7 @@ function M.initialize(context, durable_root)
     end
     write_file(context.project_root .. "/" .. path, artifact.raw)
   end
+  for _, input in ipairs(immutable_design_inputs) do verify_design_input(context.project_root, input) end
   local request = records:immutable("workflow-qa/requests/" .. context.run_id, copy(context.request))
   if request.written ~= true and request.replayed ~= true then error("generic-host durable run request binding differs") end
   local index = Store.new(host_root(durable_root), runtime_cli(context.project_root))
@@ -1039,6 +1109,25 @@ function M.list_pending(project_root, durable_root, limit)
     end
   end
   return pending
+end
+
+function M.supervisor_action(context)
+  local state = context.workflow_runtime.load_state(context.request.state_ref)
+  if state == nil and context.use_local_qa_departments == true then
+    local outbox = context.records:immutable("generic-host/local-qa-startup-outbox/" .. context.run_id, {
+      schema = "generic-host.local-qa-startup-outbox.v1",
+      queue = "local-qa-host-adapter.qa_run_request",
+      payload = copy(context.request),
+    })
+    if outbox.written ~= true and outbox.replayed ~= true then
+      error("generic-host durable Local QA startup outbox binding differs")
+    end
+    return { queue = outbox.value.queue, payload = outbox.value.payload }, "intake"
+  end
+  return {
+    queue = "workflow-qa.workflow_qa_tick",
+    payload = { run_id = context.run_id, limit = 1 },
+  }, "redrive"
 end
 
 M.copy = copy

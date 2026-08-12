@@ -35,10 +35,16 @@ return {
   end,
 
   test_generic_host_runtime_maps_every_adapter_port = function()
+    local intake_claim = {
+      status = "claimed",
+      claim_id = "local-qa-intake-claim",
+      replayed = false,
+    }
     local configured, fixture = options({
       ["artifact-load"] = { value = "artifact" },
       ["artifact-write"] = { written = true },
       ["artifact-digest"] = { digest = string.rep("b", 64) },
+      ["host-claim-qa-run-intake"] = intake_claim,
       ["host-claim-preauthorization"] = { claimed = true },
       ["host-grant-values"] = { grant = "value" },
       ["host-record-terminal"] = { recorded = true },
@@ -49,9 +55,27 @@ return {
     t.eq(ports.load_artifact(root .. "/artifact.json").value, "artifact")
     t.eq(ports.write_artifact(root .. "/artifact.json", {}), true)
     t.eq(ports.artifact_digest(root .. "/artifact.json"), string.rep("b", 64))
+    local intake_request = { run_id = "local-qa-intake-runtime" }
+    local claim = ports.claim_qa_run_intake(intake_request)
+    t.eq(claim.status, intake_claim.status)
+    t.eq(claim.claim_id, intake_claim.claim_id)
+    t.eq(claim.replayed, intake_claim.replayed)
+    t.eq(intake_request.run_id, "local-qa-intake-runtime")
+    t.eq(intake_request.request_id, nil)
+    t.eq(intake_request.runtime_config_ref, nil)
     t.eq(ports.claim_preauthorization({ dedup_key = "dedup" }).claimed, true)
     t.eq(ports.grant_values({ dedup_key = "dedup" }, {}).grant, "value")
     t.eq(ports.record_terminal({ run_id = "run" }), true)
-    t.eq(#fixture.effect_calls(), 6)
+    local effects = fixture.effect_calls()
+    t.eq(#effects, 7)
+    local intake_effects = 0
+    for _, effect in ipairs(effects) do
+      if effect.name == "host-claim-qa-run-intake" then intake_effects = intake_effects + 1 end
+    end
+    t.eq(intake_effects, 1)
+    t.eq(effects[4].name, "host-claim-qa-run-intake")
+    t.eq(effects[4].payload.run_id, intake_request.run_id)
+    t.is_true(effects[4].request.argv[7]:find(
+      "host-claim-qa-run-intake-local-qa-intake-runtime-", 1, true) ~= nil)
   end,
 }

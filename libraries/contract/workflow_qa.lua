@@ -102,6 +102,34 @@ local function validate_proposed_case(value)
   end
 end
 
+local function validate_design_reference(value, label)
+  only_fields(value, { artifact_pointer = true, artifact_digest = true }, label)
+  if not safe_pointer(value.artifact_pointer) or not bounded(value.artifact_digest, 180) then
+    fail("malformed-design", label .. " is invalid")
+  end
+end
+
+local function validate_design_request(value)
+  only_fields(value, {
+    schema = true, artifact_root = true, seed_cases_ref = true, coverage_scope_ref = true,
+    deterministic_cases_ref = true, max_rounds = true, case_budget = true,
+    action_budget = true, trace_id = true, dedup_key = true,
+  }, "ai-design-loop-request")
+  if value.schema ~= "testing-runner.ai-design-loop.request.v1" or not safe_pointer(value.artifact_root)
+    or type(value.max_rounds) ~= "number" or value.max_rounds < 1 or value.max_rounds > 8
+    or math.floor(value.max_rounds) ~= value.max_rounds
+    or type(value.case_budget) ~= "number" or value.case_budget < 1 or value.case_budget > 32
+    or math.floor(value.case_budget) ~= value.case_budget
+    or type(value.action_budget) ~= "number" or value.action_budget < 1 or value.action_budget > 64
+    or math.floor(value.action_budget) ~= value.action_budget
+    or not bounded(value.trace_id, 180) or not bounded(value.dedup_key, 180) then
+    fail("malformed-design", "ai design loop request is invalid")
+  end
+  validate_design_reference(value.seed_cases_ref, "seed-cases-reference")
+  validate_design_reference(value.coverage_scope_ref, "coverage-scope-reference")
+  validate_design_reference(value.deterministic_cases_ref, "deterministic-cases-reference")
+end
+
 function M.validate_request(value)
   only_fields(value, {
     schema = true, issue = true, run_id = true, repository = true, artifact_root = true,
@@ -146,16 +174,32 @@ function M.validate_request(value)
   end
 
   local module_start = value.design_module_start
+  local cdp = type(module_start) == "table" and type(module_start.cdp_execution) == "table"
+    and module_start.cdp_execution or nil
+  local design_request = type(module_start) == "table" and module_start.ai_design_loop_request or nil
+  local design_state_ref = type(module_start) == "table" and module_start.ai_design_loop_state_ref or nil
   if type(module_start) ~= "table" or module_start.schema ~= "module-testing-pipeline.module-start.v1"
     or not safe_pointer(module_start.artifact_root, value.artifact_root)
     or type(module_start.source_ref) ~= "table" or module_start.source_ref.kind ~= "workflow-qa"
     or module_start.source_ref.ref ~= value.run_id or module_start.trace_id ~= value.trace_id
     or module_start.dedup_key ~= value.dedup_key
-    or (type(module_start.cdp_execution) ~= "table" and type(module_start.module_discovery) ~= "table")
-    or (type(module_start.cdp_execution) == "table"
-      and type(module_start.cdp_execution.ai_design_loop_request) ~= "table") then
+    or (type(module_start.cdp_execution) ~= "table" and type(module_start.module_discovery) ~= "table") then
     fail("foreign-design", "design module start differs from the closed run identity")
   end
+  if cdp ~= nil and (cdp.ai_design_loop_request ~= nil or cdp.ai_design_loop_state_ref ~= nil) then
+    fail("foreign-design", "reviewed design fields must be top-level")
+  end
+  if design_request ~= nil and design_state_ref ~= nil then
+    fail("foreign-design", "design module start has ambiguous reviewed-state authority")
+  end
+  if design_request ~= nil then
+    validate_design_request(design_request)
+    if design_request.trace_id ~= value.trace_id or design_request.dedup_key ~= value.dedup_key
+      or not safe_pointer(design_request.artifact_root, module_start.artifact_root) then
+      fail("foreign-design", "design loop request differs from the closed run identity")
+    end
+  end
+  if design_state_ref ~= nil then validate_design_reference(design_state_ref, "ai-design-loop-state-reference") end
 
   only_fields(value.structured_execution, {
     artifact_root = true, preauthorization_ref = true, preauthorization_sha256 = true,

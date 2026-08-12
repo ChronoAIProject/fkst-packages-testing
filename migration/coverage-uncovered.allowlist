@@ -4891,7 +4891,6 @@
 {"file":"packages/testing-runner/core.lua","line":79,"normalized_line_hash":"fffc652c60460e15","reason":"baseline"}
 {"file":"packages/testing-runner/core.lua","line":97,"normalized_line_hash":"4c66c27cfe2eea66","reason":"baseline"}
 {"file":"packages/testing-runner/core.lua","line":114,"normalized_line_hash":"ea25ca7680190567","reason":"baseline"}
-{"file":"packages/testing-runner/core.lua","line":118,"normalized_line_hash":"294a905d87ed3e79","reason":"baseline"}
 {"file":"packages/testing-runner/core.lua","line":125,"normalized_line_hash":"1c8317ca14ce7f6d","reason":"baseline"}
 {"file":"packages/testing-runner/core.lua","line":126,"normalized_line_hash":"edeb4c6f24428c07","reason":"baseline"}
 {"file":"packages/testing-runner/core.lua","line":128,"normalized_line_hash":"14854478d494283e","reason":"baseline"}
@@ -5038,7 +5037,6 @@
 {"file":"packages/testing-runner/outcome.lua","line":138,"normalized_line_hash":"d4b3cf21275a925f","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":157,"normalized_line_hash":"19921ccfad14c1de","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":183,"normalized_line_hash":"d32048de53ad3484","reason":"baseline"}
-{"file":"packages/testing-runner/outcome.lua","line":188,"normalized_line_hash":"c17d04693eef891b","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":204,"normalized_line_hash":"49cd927169b2d97b","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":222,"normalized_line_hash":"4fd12e02656fa673","reason":"baseline"}
 {"file":"packages/testing-runner/outcome.lua","line":224,"normalized_line_hash":"48f820eb1d3e0997","reason":"baseline"}
@@ -5046,12 +5044,3 @@
 {"file":"packages/testing-runner/raisers/seam_keepalive.lua","line":2,"normalized_line_hash":"13b99f4c503db3af","reason":"baseline"}
 {"file":"packages/testing-runner/raisers/seam_keepalive.lua","line":3,"normalized_line_hash":"eb5ed158fe092da6","reason":"baseline"}
 {"file":"packages/testing-runner/raisers/seam_keepalive.lua","line":4,"normalized_line_hash":"e797016e99afec4d","reason":"baseline"}
-{"file":"packages/testing-runner/reporting.lua","line":201,"normalized_line_hash":"b2230536110613b4","reason":"baseline"}
-{"file":"packages/testing-runner/reporting.lua","line":202,"normalized_line_hash":"76157f4bbddceb93","reason":"baseline"}
-{"file":"packages/testing-runner/reporting.lua","line":203,"normalized_line_hash":"e336176b029105f1","reason":"baseline"}
-{"file":"packages/testing-runner/reporting.lua","line":204,"normalized_line_hash":"c106314cdd784017","reason":"baseline"}
-{"file":"packages/testing-runner/reporting.lua","line":205,"normalized_line_hash":"3d8219b6a61a0c1a","reason":"baseline"}
-{"file":"packages/testing-runner/reporting.lua","line":206,"normalized_line_hash":"3c5e84ecffc16e14","reason":"baseline"}
-{"file":"packages/testing-runner/reporting.lua","line":207,"normalized_line_hash":"2292cf583363d322","reason":"baseline"}
-{"file":"packages/testing-runner/reporting.lua","line":208,"normalized_line_hash":"d717ba5e7df5ad60","reason":"baseline"}
-{"file":"packages/testing-runner/reporting.lua","line":209,"normalized_line_hash":"eaa4e4074efcf6b7","reason":"baseline"}

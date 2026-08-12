@@ -7,6 +7,7 @@ local M = {}
 
 local PACKAGE_NAMES = {
   "generic-host",
+  "local-qa-host-adapter",
   "environment-factory",
   "testing-design",
   "browser-readiness",
@@ -19,6 +20,12 @@ local PACKAGE_NAMES = {
   "consensus",
   "github-proxy",
 }
+
+function M.package_names()
+  local names = {}
+  for index, name in ipairs(PACKAGE_NAMES) do names[index] = name end
+  return names
+end
 
 local function shell_quote(value)
   return "'" .. tostring(value):gsub("'", "'\\''") .. "'"
@@ -139,6 +146,16 @@ function M.wait_for_child_text(root, prefix, fragment, timeout_seconds)
   })
   return M.exec({ "node", "-e", script, root, prefix, fragment,
     tostring(timeout_seconds or 45) }).exit_code == 0
+end
+
+function M.count_child_logs(root, prefix, fragment)
+  local script = table.concat({
+    "const fs=require('fs'),root=process.argv[1],prefix=process.argv[2],fragment=process.argv[3];let count=0;",
+    "try{for(const name of fs.readdirSync(root)){if(!name.startsWith(prefix))continue;",
+    "if(fs.readFileSync(root+'/'+name,'utf8').includes(fragment))count++}}catch(_error){}",
+    "process.stdout.write(String(count));",
+  })
+  return tonumber(M.exec({ "node", "-e", script, root, prefix, fragment }).stdout)
 end
 
 function M.assert_log_markers(path, label, markers)

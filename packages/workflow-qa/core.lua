@@ -141,8 +141,9 @@ local function exact_identity(state, payload)
   end
 end
 
-local function source_identity(state, payload, kind)
+local function source_identity(state, payload, kind, expected_dedup_key)
   if payload.trace_id ~= state.request.trace_id or type(payload.source_ref) ~= "table"
+    or payload.dedup_key ~= expected_dedup_key
     or payload.source_ref.kind ~= kind or payload.source_ref.ref ~= state.request.run_id then
     error("workflow-qa: foreign-result: source or trace identity differs")
   end
@@ -364,9 +365,9 @@ function M.handle_browser_readiness_result(payload, request, supplied_ports)
   state.digests[readiness_ref] = digest(ports, readiness_ref)
 
   local module_start = copy(request.design_module_start)
-  if type(module_start.cdp_execution) == "table" then
-    module_start.cdp_execution.ai_design_loop_request.seed_cases_ref = copy(state.artifacts.seed_cases_ref)
-  end
+    if module_start.ai_design_loop_request ~= nil then
+      module_start.ai_design_loop_request.seed_cases_ref = copy(state.artifacts.seed_cases_ref)
+    end
   module_start.testing_design_context = copy(state.analysis_result.context)
   module_start.browser_readiness_ref = readiness_ref
   module_start.browser_readiness_sha256 = state.digests[readiness_ref]
@@ -384,7 +385,7 @@ function M.handle_module_terminal(payload, request, supplied_ports)
   request = resolve_request(payload, request, ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: module terminal has no durable run") end
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key .. "/terminal")
   if state.phase ~= "module-pending" then return copy(state.pending_actions or {}) end
   local runner = runner_from_module_terminal(payload)
   if type(runner) ~= "table" or runner.schema ~= "testing-runner.result.v1"
@@ -434,8 +435,7 @@ function M.handle_plan_result(payload, request, supplied_ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: plan result has no durable run") end
   execution_contract.validate_plan_result(payload)
-  exact_identity(state, payload)
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key)
   if state.phase ~= "structured-plan-pending" then return copy(state.pending_actions or {}) end
   if state.interruption_requested ~= nil then return begin_cleanup(state, state.interruption_requested, ports) end
   if payload.status ~= "compiled" or payload.plan_ref ~= request.structured_execution.structured_plan_ref then
@@ -482,8 +482,7 @@ function M.handle_grant_result(payload, request, supplied_ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: grant result has no durable run") end
   execution_contract.validate_grant_result(payload)
-  exact_identity(state, payload)
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key)
   if state.phase ~= "execution-grant-pending" then return copy(state.pending_actions or {}) end
   if state.interruption_requested ~= nil then return begin_cleanup(state, state.interruption_requested, ports) end
   if payload.status ~= "granted" or payload.grant_ref ~= request.structured_execution.grant_ref then
@@ -568,14 +567,14 @@ function M.handle_execution_result(payload, request, supplied_ports)
   request = resolve_request(payload, request, ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: execution result has no durable run") end
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key)
+  local expected_phase = state.execution_mode == "agentic-browser"
+    and "browser-control-pending" or "structured-execution-pending"
+  if state.phase ~= expected_phase then return copy(state.pending_actions or {}) end
   if type(payload) ~= "table" or payload.schema ~= "testing-runner.result.v1"
     or payload.job ~= state.execution_job then
     error("workflow-qa: foreign-execution-result: selected execution binding differs")
   end
-  local expected_phase = state.execution_mode == "agentic-browser"
-    and "browser-control-pending" or "structured-execution-pending"
-  if state.phase ~= expected_phase then return copy(state.pending_actions or {}) end
   state.execution_result = copy(payload)
   set_pending(state, "artifact-summary-pending", {
     action("test-artifacts.testing_result", copy(payload)),
@@ -612,7 +611,7 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
   request = resolve_request(payload, request, ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: state-unavailable: artifact summary has no durable run") end
-  source_identity(state, payload, "workflow-qa")
+  source_identity(state, payload, "workflow-qa", state.request.dedup_key)
   if payload.schema ~= "test-artifacts.summary.v1" or payload.job ~= state.execution_job
     or payload.artifact_root ~= request.structured_execution.artifact_root then
     error("workflow-qa: foreign-artifact-summary: summary binding differs")
@@ -853,30 +852,32 @@ function M.handle_publication_receipt(payload, request, supplied_ports)
     or payload.run_id ~= request.run_id then
     error("workflow-qa: foreign-publication-receipt: publication binding differs")
   end
-  local released = checkpoints.release(state, payload, ports)
-  if released ~= nil then
+  if state.phase == "checkpoint-pending" then
+    local released = checkpoints.release(state, payload, ports)
+    if released == nil then
+      error("workflow-qa: foreign-publication-receipt: no matching checkpoint lease exists")
+    end
     save(ports, state)
     return copy(released)
   end
+  if state.phase ~= "publication-pending" then return copy(state.pending_actions or {}) end
   if payload.stage ~= "aggregate-report" then
     error("workflow-qa: foreign-publication-receipt: no matching checkpoint lease exists")
   end
-  if state.phase == "publication-pending" then
-    if type(state.finalization_request) ~= "table"
-      or state.finalization_request.aggregate_report_ref ~= request.publication.aggregate_report_ref then
-      error("workflow-qa: aggregate-finalization-unavailable: pending finalization binding is missing")
-    end
-    local aggregate_sha256 = digest(ports, request.publication.aggregate_report_ref)
-    local expected = checkpoints.aggregate_expectation(state, aggregate_sha256)
-    state.aggregate_receipt_sha256 = checkpoints.validate_receipt(state, payload, expected, ports)
-    state.digests[request.publication.aggregate_report_ref] = aggregate_sha256
-    state.aggregate_receipt = copy(payload)
-    set_pending(state, "terminal", {
-      action("workflow_qa_terminal_request",
-        M.terminal_request(state, state.terminal_status or "passed", payload)),
-    })
-    save(ports, state)
+  if type(state.finalization_request) ~= "table"
+    or state.finalization_request.aggregate_report_ref ~= request.publication.aggregate_report_ref then
+    error("workflow-qa: aggregate-finalization-unavailable: pending finalization binding is missing")
   end
+  local aggregate_sha256 = digest(ports, request.publication.aggregate_report_ref)
+  local expected = checkpoints.aggregate_expectation(state, aggregate_sha256)
+  state.aggregate_receipt_sha256 = checkpoints.validate_receipt(state, payload, expected, ports)
+  state.digests[request.publication.aggregate_report_ref] = aggregate_sha256
+  state.aggregate_receipt = copy(payload)
+  set_pending(state, "terminal", {
+    action("workflow_qa_terminal_request",
+      M.terminal_request(state, state.terminal_status or "passed", payload)),
+  })
+  save(ports, state)
   return copy(state.pending_actions or {})
 end
 

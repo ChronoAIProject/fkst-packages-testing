@@ -87,27 +87,27 @@ local function canonical_request()
       dedup_key = "dedup-local-qa-walking-skeleton",
       cdp_execution = {
         schema = "testing-runner.module-cdp-execution.v1",
-        ai_design_loop_request = {
-          schema = "testing-runner.ai-design-loop.request.v1",
-          artifact_root = root .. "/design/loop",
-          seed_cases_ref = {
-            artifact_pointer = root .. "/design/seed.json",
-            artifact_digest = "seed",
-          },
-          deterministic_cases_ref = {
-            artifact_pointer = root .. "/design/deterministic.json",
-            artifact_digest = "deterministic",
-          },
-          coverage_scope_ref = {
-            artifact_pointer = root .. "/design/coverage.json",
-            artifact_digest = "coverage",
-          },
-          max_rounds = 3,
-          case_budget = 16,
-          action_budget = 32,
-          trace_id = "trace-local-qa-walking-skeleton",
-          dedup_key = "dedup-local-qa-walking-skeleton",
+      },
+      ai_design_loop_request = {
+        schema = "testing-runner.ai-design-loop.request.v1",
+        artifact_root = root .. "/design/loop",
+        seed_cases_ref = {
+          artifact_pointer = root .. "/design/seed.json",
+          artifact_digest = "seed",
         },
+        deterministic_cases_ref = {
+          artifact_pointer = root .. "/design/deterministic.json",
+          artifact_digest = "deterministic",
+        },
+        coverage_scope_ref = {
+          artifact_pointer = root .. "/design/coverage.json",
+          artifact_digest = "coverage",
+        },
+        max_rounds = 3,
+        case_budget = 16,
+        action_budget = 32,
+        trace_id = "trace-local-qa-walking-skeleton",
+        dedup_key = "dedup-local-qa-walking-skeleton",
       },
     },
     structured_execution = {
@@ -151,10 +151,31 @@ return {
     t.eq(#trace.raises, 1)
     t.eq(trace.raises[1].queue, "workflow-qa.qa_run_request")
     t.is_true(rawequal(trace.raises[1].payload, request))
+    t.is_true(rawequal(trace.raises[1].payload.design_module_start.ai_design_loop_request,
+      request.design_module_start.ai_design_loop_request))
 
     local direct = adapter.qa_run_event(request)
     t.eq(direct.source_ref.kind, "external")
     t.eq(direct.source_ref.reference, "local-qa-walking-skeleton")
+
+    local claims = 0
+    local ports = {
+      claim_qa_run_intake = function(value)
+        claims = claims + 1
+        t.is_true(rawequal(value.design_module_start.ai_design_loop_request,
+          request.design_module_start.ai_design_loop_request) == false)
+        return {
+          status = "claimed", claim_id = "local-qa-walking-skeleton-intake", replayed = claims > 1,
+        }
+      end,
+    }
+    local accepted = adapter.qa_run_event(request, ports)
+    local replayed = adapter.qa_run_event(request, ports)
+    t.eq(accepted.accepted, true)
+    t.eq(replayed.accepted, false)
+    t.is_true(rawequal(accepted.payload, request))
+    t.is_true(rawequal(replayed.payload, request))
+    t.eq(claims, 2)
   end,
 
   test_malformed_local_qa_request_fails_without_raise = function()
@@ -165,5 +186,44 @@ return {
 
     t.eq(#trace.raises, 0)
     t.is_true(tostring(trace.failure.error):find("contract.workflow-qa:", 1, true) ~= nil)
+  end,
+
+  test_invalid_intake_claims_fail_closed_without_mutating_or_routing = function()
+    local cases = {
+      { name = "missing", result = nil },
+      { name = "blocked", result = { status = "blocked" } },
+      { name = "missing-claim-id", result = { status = "claimed" } },
+      { name = "empty-claim-id", result = { status = "claimed", claim_id = "" } },
+    }
+
+    for _, case in ipairs(cases) do
+      local request = canonical_request()
+      local original_run_id = request.run_id
+      local original_issue_number = request.issue.number
+      local messages = {}
+      local previous_log_info = log.info
+      log.info = function(message) table.insert(messages, message) end
+      local ok, trace = pcall(testing.run_fake_expecting_failure, intake, {
+        queue = "qa_run_request",
+        payload = request,
+        test_ports = {
+          claim_qa_run_intake = function(value)
+            value.run_id = "mutated-" .. case.name
+            value.issue.number = 0
+            return case.result
+          end,
+        },
+      })
+      log.info = previous_log_info
+      if not ok then error(trace) end
+
+      t.eq(#trace.raises, 0)
+      t.eq(#messages, 0)
+      t.eq(trace.result, nil)
+      t.is_true(tostring(trace.failure.error):find(
+        "local-qa-host: Local QA intake claim failed", 1, true) ~= nil)
+      t.eq(request.run_id, original_run_id)
+      t.eq(request.issue.number, original_issue_number)
+    end
   end,
 }

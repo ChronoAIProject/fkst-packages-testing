@@ -29,6 +29,8 @@ The downstream Host must configure `_G.local_qa_workflow_qa_runtime` or supply t
 
 Missing, malformed, or partial ports fail closed with the `local-qa-host:` error prefix. The shared adapter validates immutable artifact bindings before emitting `workflow-qa.execution_grant_result` and validates the terminal payload, aggregate publication receipt, aggregate report, and cleanup receipt before calling `record_terminal`.
 
+Hosts may additionally provide `claim_qa_run_intake`. When present, intake uses that durable Host write boundary to identify the first accepted public request while still forwarding redelivery unchanged. This keeps the adapter stateless and lets a durable producer retry its startup outbox without creating a second accepted intake transition.
+
 The downstream Host owns durable SQLite state, process lifecycle and process groups, cancellation and timeout enforcement, Chrome/CDP, workspace ownership, Evidence quarantine and redaction, cleanup execution, and restart recovery. It must durably implement the six ports and read its own durable terminal record after `record_terminal`; those responsibilities are intentionally outside this package.
 
 ## Verification Map

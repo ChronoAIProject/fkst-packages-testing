@@ -21,6 +21,8 @@ The run request binds the repository slug and credential-free URL, immutable com
 
 After Environment Factory publishes a ready receipt-v2, workflow-QA runs repository analysis and the reviewed design loop. It then revalidates the exact browser session through `browser-readiness`, persists the result as a digest-bound artifact, and only then dispatches `module-testing-pipeline`. This post-design gate prevents a stale environment-time session proof from authorizing module execution.
 
+The design module start may carry `ai_design_loop_request` and `ai_design_loop_state_ref` only as top-level siblings of `module_discovery` and `cdp_execution`. At browser readiness, workflow-QA attaches its persisted seed artifact reference to `design_module_start.ai_design_loop_request.seed_cases_ref`. The fields are mutually exclusive and use the bounded pointer/digest request grammar; reviewed-design fields inside `cdp_execution` fail closed.
+
 A terminal module plan is sent to `testing-runner.structured_plan_request`. The compiled `testing-structured-plan.v2` is loaded and digest-checked before workflow-QA requests an external grant. The Host signer derives that grant from the one-use preauthorization supplied before `qa_run_request`; the grant request carries the plan execution mode and immutable preauthorization, plan, and environment bindings.
 
 No executor request is emitted before a granted result points to a digest-bound single-use grant artifact.

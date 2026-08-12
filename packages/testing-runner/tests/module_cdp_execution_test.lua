@@ -1,5 +1,6 @@
 local ai = require("module_ai_generation")
 local design_loop = require("module_ai_design_loop")
+local design_state = require("module_ai_design_state")
 local cdp = require("module_cdp_execution")
 local inventory_module = require("module_inventory")
 local native = require("fkst_native")
@@ -210,7 +211,7 @@ local function reviewed_design_state(value)
     trace_id = "trace-cdp-design",
     dedup_key = "dedup-cdp-design",
   }, documents)
-  value.cdp_execution.ai_design_loop_state_ref = {
+  value.ai_design_loop_state_ref = {
     artifact_pointer = state.paths.state,
     artifact_digest = design_loop.document_digest(state),
   }
@@ -320,6 +321,14 @@ return {
         screenshot = "inline-browser-state",
       })
     end)
+  end,
+
+  test_rejects_nested_reviewed_design_fields = function()
+    for _, field in ipairs({ "ai_design_loop_request", "ai_design_loop_state_ref" }) do
+      local value = { schema = "testing-runner.module-cdp-execution.v1" }
+      value[field] = {}
+      t.raises(function() cdp.validate_request(value) end)
+    end
   end,
 
   test_records_fixture_gap_when_lifecycle_descriptor_is_missing = function()
@@ -438,13 +447,33 @@ return {
   test_design_loop_state_digest_mismatch_blocks_before_execution = function()
     local value = payload()
     local reader = reviewed_design_state(value)
-    value.cdp_execution.ai_design_loop_state_ref.artifact_digest = "wrong-digest"
+    value.ai_design_loop_state_ref.artifact_digest = "wrong-digest"
     local artifact = cdp.build(value, ".testing/runs/module-a-cdp", {
       readiness = { status = "ready" },
       artifact_reader = reader,
     })
     t.eq(artifact.execution_status, "blocked")
     t.eq(artifact.classification, "ai-design-loop-artifact-invalid")
+    t.eq(artifact.action_count, 0)
+    t.is_true(artifact.limitations[1]:find("design loop state digest", 1, true) ~= nil)
+  end,
+
+  test_reviewed_state_loader_failure_blocks_with_exact_classification = function()
+    local value = payload()
+    value.ai_design_loop_state_ref = {
+      artifact_pointer = ".testing/runs/module-a-cdp/design/ai-design-loop-state.json",
+      artifact_digest = "reviewed-state-digest",
+    }
+    local original = design_state.load
+    design_state.load = function() error("forced reviewed state rejection", 0) end
+    local ok, artifact = pcall(cdp.build, value, ".testing/runs/module-a-cdp", {
+      readiness = { status = "ready" },
+    })
+    design_state.load = original
+    t.eq(ok, true)
+    t.eq(artifact.execution_status, "blocked")
+    t.eq(artifact.classification, "ai-design-loop-artifact-invalid")
+    t.eq(artifact.limitations[1], "forced reviewed state rejection")
     t.eq(artifact.action_count, 0)
   end,
 }

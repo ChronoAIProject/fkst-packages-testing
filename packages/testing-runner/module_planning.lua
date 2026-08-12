@@ -181,6 +181,9 @@ function M.build(inventory, ui_loop, artifact_root, opts)
   local ai_design_case_count = 0
   if opts.ai_design_loop_state ~= nil then
     ai_design_loop.validate_state(opts.ai_design_loop_state)
+    if opts.ai_design_loop_authoritative == true then
+      for _, module in ipairs(plan_modules) do module.cases = {} end
+    end
     ai_design_case_count = ai_design_loop.merge_into_plan(plan_modules, opts.ai_design_loop_state)
   end
 

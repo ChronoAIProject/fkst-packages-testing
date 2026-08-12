@@ -1,7 +1,7 @@
 local M = {}
 
 local module_ai_generation = require("module_ai_generation")
-local module_ai_design_loop = require("module_ai_design_loop")
+local module_ai_design_state = require("module_ai_design_state")
 local module_inventory = require("module_inventory")
 local module_planning = require("module_planning")
 
@@ -20,7 +20,6 @@ local request_fields = {
   stop_conditions = true,
   mutation_fixtures = true,
   ai_generation = true,
-  ai_design_loop_state_ref = true,
 }
 
 local default_priorities = { "P0", "P1" }
@@ -233,7 +232,6 @@ function M.validate_request(value)
   copy_list(value.stop_conditions, default_stop_conditions, stop_condition_ok)
   validate_mutation_fixtures(value.mutation_fixtures)
   module_ai_generation.validate_request(value.ai_generation)
-  if value.ai_design_loop_state_ref ~= nil then module_ai_design_loop.validate_artifact_reference(value.ai_design_loop_state_ref) end
   return value
 end
 
@@ -455,18 +453,6 @@ local function load_ai_artifacts(request, opts)
   }
 end
 
-local function load_ai_design_loop_state(request, opts)
-  local state_ref = request.ai_design_loop_state_ref
-  if state_ref == nil then return nil end
-  module_ai_design_loop.validate_artifact_reference(state_ref)
-  local state = module_ai_design_loop.validate_state(read_artifact_json(state_ref.artifact_pointer, opts))
-  if module_ai_design_loop.document_digest(state) ~= state_ref.artifact_digest then
-    error("testing-runner: ai-artifact-mismatch: design loop state digest")
-  end
-  if state.current_artifacts.closure == nil then error("testing-runner: ai-artifact-incomplete: design loop closure") end
-  return state
-end
-
 local function planning_for(payload, artifact_root, readiness, request, ai_artifacts, ai_design_loop_state)
   if payload.module_discovery == nil then return nil, nil end
   local inventory = module_inventory.inventory(payload.module_discovery, payload.ui_loop, artifact_root, {
@@ -480,6 +466,7 @@ local function planning_for(payload, artifact_root, readiness, request, ai_artif
     generated_case_gate = ai_artifacts and ai_artifacts.gate or nil,
     generated_case_agent_review = ai_artifacts and ai_artifacts.agent_review or nil,
     ai_design_loop_state = ai_design_loop_state,
+    ai_design_loop_authoritative = ai_design_loop_state ~= nil,
     step_budget = (request or {}).step_budget,
     case_priorities = (request or {}).case_priorities,
   })
@@ -530,10 +517,8 @@ function M.build(payload, artifact_root, opts)
   end
 
   local ai_design_loop_state
-  local design_ok, design_loaded = pcall(load_ai_design_loop_state, request, opts)
-  if not design_ok then
-    return blocked_artifact(payload, artifact_root, request, "ai-design-loop-artifact-invalid", tostring(design_loaded):sub(1, max_string), readiness)
-  end
+  local design_ok, design_loaded = pcall(module_ai_design_state.load, payload, artifact_root, opts)
+  if not design_ok then return blocked_artifact(payload, artifact_root, request, "ai-design-loop-artifact-invalid", tostring(design_loaded):sub(1, max_string), readiness) end
   ai_design_loop_state = design_loaded
 
   local inventory, planning = planning_for(payload, artifact_root, readiness, request, ai_artifacts, ai_design_loop_state)

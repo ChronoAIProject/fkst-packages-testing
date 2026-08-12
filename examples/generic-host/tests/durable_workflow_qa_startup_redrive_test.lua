@@ -26,7 +26,7 @@ local CASES = {
   { name = "structured-plan-pending", phase = "structured-plan-pending",
     queue = "testing-runner.structured_plan_request", marker = "testing-runner dept=compile_structured_plan " },
   { name = "execution-grant-pending", phase = "execution-grant-pending",
-    queue = "workflow_qa_execution_grant_request", marker = "generic-host dept=workflow_qa_grant " },
+    queue = "workflow_qa_execution_grant_request", marker = "local-qa-host dept=execution_grant " },
   { name = "structured-execution-pending", phase = "structured-execution-pending",
     queue = "testing-runner.structured_execution_request", marker = "testing-runner dept=run_structured_execution " },
   { name = "artifact-summary-pending", phase = "artifact-summary-pending",
@@ -40,7 +40,7 @@ local CASES = {
   { name = "publication-pending", phase = "publication-pending",
     queue = "test-publication.qa_finalize_request", marker = "test-publication dept=finalize_qa_run " },
   { name = "terminal-without-host-record", phase = "terminal",
-    queue = "workflow_qa_terminal_request", marker = "generic-host dept=workflow_qa_terminal " },
+    queue = "workflow_qa_terminal_request", marker = "local-qa-host dept=terminal " },
 }
 
 local function record_counts(context)
@@ -153,8 +153,8 @@ local function run_case(case)
     assert_child_marker(child_root, "workflow-qa.seam-",
       "workflow-qa dept=seam tag=REDRIVE actions=1 queue=" .. case.queue, case.name)
     assert_child_marker(child_root, "", case.marker, case.name)
-    assert_child_marker(child_root, "generic-host.workflow_qa_terminal-",
-      "generic-host dept=workflow_qa_terminal tag=RECORDED run_id=" .. context.run_id, case.name)
+    assert_child_marker(child_root, "local-qa-host-adapter.terminal-",
+      "local-qa-host dept=terminal tag=RECORDED run_id=" .. context.run_id, case.name)
 
     local recovered, terminal_state = assert_terminal(context)
     t.is_true(support.equal(recovered.request, request_binding))

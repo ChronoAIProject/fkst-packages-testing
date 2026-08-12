@@ -19,6 +19,7 @@ SOURCE_CI_CONTRACT = SOURCE_ROOT / "scripts" / "check_ci_contract.py"
 SOURCE_CI_WORKFLOW = SOURCE_ROOT / ".github" / "workflows" / "ci.yml"
 SUBSTRATE_PIN = "1" * 40
 GENERIC_HOST_CLOSED_WORLD_ROOTS = (
+    "local-qa-host-adapter",
     "environment-factory",
     "testing-design",
     "browser-readiness",
@@ -30,6 +31,11 @@ GENERIC_HOST_CLOSED_WORLD_ROOTS = (
     "workflow-qa",
     "consensus",
     "github-proxy",
+)
+GENERIC_HOST_CLOSED_WORLD_ENV = (
+    "local-qa-host-adapter environment-factory testing-design browser-readiness "
+    "module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication "
+    "workflow-qa @platform/consensus @platform/github-proxy"
 )
 
 
@@ -291,8 +297,18 @@ class RunnerWorkspace:
                     "package_roots": package_roots,
                     "test_files": test_files,
                     "forge_marker": forge_marker,
+                    "generic_host_closed_world_roots": os.environ.get(
+                        "FKST_GENERIC_HOST_CLOSED_WORLD_ROOTS"
+                    ),
                     "runtime_root": os.environ.get("FKST_RUNTIME_ROOT"),
                     "durable_root": os.environ.get("FKST_DURABLE_ROOT"),
+                    "module_test_loop_test_runtime": os.environ.get(
+                        "FKST_MODULE_TEST_LOOP_TEST_RUNTIME"
+                    ),
+                    "runtime_root_exists": bool(os.environ.get("FKST_RUNTIME_ROOT"))
+                    and Path(os.environ["FKST_RUNTIME_ROOT"]).is_dir(),
+                    "durable_root_exists": bool(os.environ.get("FKST_DURABLE_ROOT"))
+                    and Path(os.environ["FKST_DURABLE_ROOT"]).is_dir(),
                     "github_write": os.environ.get("FKST_GITHUB_WRITE"),
                     "supervisor_pid": os.environ.get("FKST_SUPERVISOR_PID"),
                 }}
@@ -575,6 +591,65 @@ class RunnerContractTest(unittest.TestCase):
         self.assert_failure(result)
         self.assertIn("failed to create hermetic host check root", result.stdout)
         self.assertEqual(fixture.records("conformance"), [])
+
+    def test_generic_host_pins_engine_arguments_environment_and_workspace_lifetime(self) -> None:
+        fixture = self.workspace()
+        fixture.add_generic_host_composition()
+        ambient_runtime = fixture.root / "ambient-runtime"
+        ambient_durable = fixture.root / "ambient-durable"
+
+        result = fixture.run(
+            "example",
+            "generic-host",
+            extra_env={
+                "FKST_GENERIC_HOST_CLOSED_WORLD_ROOTS": "ambient-wrong-roots",
+                "FKST_RUNTIME_ROOT": str(ambient_runtime),
+                "FKST_DURABLE_ROOT": str(ambient_durable),
+                "FKST_MODULE_TEST_LOOP_TEST_RUNTIME": "ambient-wrong-flag",
+            },
+        )
+        self.assert_success(result)
+
+        records = fixture.records("test")
+        self.assertEqual(len(records), 1)
+        record = records[0]
+        self.assertEqual(record["subcommand"], "test")
+        work = Path(record["project_root"])
+        package_roots = [
+            work / "packages" / "generic-host",
+            *(work / "packages" / name for name in GENERIC_HOST_CLOSED_WORLD_ROOTS),
+        ]
+        expected_argv = ["test", "--project-root", str(work)]
+        for package_root in package_roots:
+            expected_argv.extend(("--package-root", str(package_root)))
+
+        self.assertTrue(work.is_absolute())
+        self.assertEqual(record["argv"], expected_argv)
+        self.assertEqual(record["package_roots"], [str(path) for path in package_roots])
+        self.assertEqual(Path(record["package_roots"][1]).name, "local-qa-host-adapter")
+        self.assertEqual(
+            record["generic_host_closed_world_roots"], GENERIC_HOST_CLOSED_WORLD_ENV
+        )
+        self.assertNotEqual(
+            record["generic_host_closed_world_roots"], "ambient-wrong-roots"
+        )
+        runtime_root = work / ".fkst" / "run" / "runtime"
+        durable_root = work / ".fkst" / "run" / "durable"
+        self.assertEqual(record["runtime_root"], str(runtime_root))
+        self.assertEqual(record["durable_root"], str(durable_root))
+        self.assertNotEqual(record["runtime_root"], str(ambient_runtime))
+        self.assertNotEqual(record["durable_root"], str(ambient_durable))
+        self.assertEqual(record["module_test_loop_test_runtime"], "1")
+        self.assertNotEqual(
+            record["module_test_loop_test_runtime"], "ambient-wrong-flag"
+        )
+        self.assertTrue(record["runtime_root_exists"])
+        self.assertTrue(record["durable_root_exists"])
+        self.assertFalse(work.exists())
+        self.assertFalse(runtime_root.exists())
+        self.assertFalse(durable_root.exists())
+        self.assertFalse(ambient_runtime.exists())
+        self.assertFalse(ambient_durable.exists())
 
     def test_external_host_reuses_generic_composition_and_cleans_copied_workspace(self) -> None:
         fixture = self.workspace()

@@ -64,6 +64,11 @@ local function run_to_barrier(context, live_pids, label)
   t.eq(barrier.result_ref, replay[1].value.result_ref)
   t.eq(barrier.result_sha256, replay[1].value.result_sha256)
   t.eq(barrier.result_sha256, recovered.store:digest(barrier.result_ref))
+  local execution = recovered.store:load(barrier.result_ref).value
+  t.eq(barrier.test_plan_ref, execution.test_plan_path)
+  t.eq(barrier.test_plan_sha256, recovered.store:digest(barrier.test_plan_ref))
+  t.eq(barrier.case_results_ref, execution.case_results_path)
+  t.eq(barrier.case_results_sha256, recovered.store:digest(barrier.case_results_ref))
   t.eq(barrier.replay_status, "completed")
   t.eq(effect_count(context), 1)
   t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
@@ -90,7 +95,7 @@ local function run_to_barrier(context, live_pids, label)
   assert_log_markers(stdout_path, "first supervisor", {
     "dept=generic-host.workflow_qa_supervisor ",
     "dept=workflow-qa.seam ",
-    "dept=generic-host.workflow_qa_grant ",
+    "dept=local-qa-host-adapter.execution_grant ",
   })
   return recovered, stdout_path, stderr_path
 end
@@ -222,7 +227,7 @@ return {
         "dept=environment-factory.finalize ",
         "dept=test-publication.finalize_qa_run ",
         "dept=workflow-qa.terminal ",
-        "dept=generic-host.workflow_qa_terminal ",
+        "dept=local-qa-host-adapter.terminal ",
       })
       local recovered = assert_terminal(context)
       local before = record_counts(recovered)
@@ -298,7 +303,7 @@ return {
       assert_log_markers(stdout_path, "production PEP denial supervisor", {
         "dept=generic-host.workflow_qa_supervisor ",
         "dept=testing-runner.run_structured_execution ",
-        "dept=generic-host.workflow_qa_terminal ",
+        "dept=local-qa-host-adapter.terminal ",
       })
       local before = record_counts(recovered)
       t.eq(before.replay_claims, 1)

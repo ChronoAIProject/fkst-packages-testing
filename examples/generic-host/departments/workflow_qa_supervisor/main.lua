@@ -3,7 +3,7 @@ local saga = require("workflow.saga")
 
 local spec = {
   consumes = { "durable_workflow_qa_start" },
-  produces = { "workflow-qa.workflow_qa_tick" },
+  produces = { "local-qa-host-adapter.qa_run_request", "workflow-qa.workflow_qa_tick" },
   stall_window = "2m",
   retry = false,
 }
@@ -55,10 +55,16 @@ local function act(event)
     log.info("generic-host dept=workflow_qa_supervisor tag=NOOP pending_runs=0")
     return
   end
-  log.info("generic-host dept=workflow_qa_supervisor tag=REDRIVE pending_runs=" .. tostring(#pending))
+  log.info("generic-host dept=workflow_qa_supervisor tag=DISPATCH pending_runs=" .. tostring(#pending))
   for _, context in ipairs(pending) do
-    log.info("generic-host dept=workflow_qa_supervisor tag=REDRIVE_RUN run_id=" .. context.run_id)
-    raise("workflow-qa.workflow_qa_tick", { run_id = context.run_id, limit = 1 })
+    local action, route = durable.supervisor_action(context)
+    if action ~= nil then
+      log.info("generic-host dept=workflow_qa_supervisor tag=" .. string.upper(route)
+        .. "_RUN run_id=" .. context.run_id)
+      raise(action.queue, action.payload)
+    else
+      log.info("generic-host dept=workflow_qa_supervisor tag=INTAKE_PENDING run_id=" .. context.run_id)
+    end
   end
 end
 

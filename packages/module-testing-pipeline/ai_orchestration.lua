@@ -525,11 +525,6 @@ local function copy_cdp_execution(value)
     stop_conditions = copy_string_list(value.stop_conditions, 16, max_string),
     mutation_fixtures = copy_table_list(value.mutation_fixtures, copy_mutation_fixture, 16),
     ai_generation = copy_ai_request(value.ai_generation),
-    ai_design_loop_request = ai_design_consensus.copy_request(value.ai_design_loop_request),
-    ai_design_loop_state_ref = type(value.ai_design_loop_state_ref) == "table" and {
-      artifact_pointer = safe_artifact_pointer(value.ai_design_loop_state_ref.artifact_pointer) and value.ai_design_loop_state_ref.artifact_pointer or nil,
-      artifact_digest = copy_string(value.ai_design_loop_state_ref.artifact_digest, nil, max_id),
-    } or nil,
   }
 end
 local function sanitize_module_start(payload)
@@ -537,6 +532,7 @@ local function sanitize_module_start(payload)
     error("module-testing-pipeline: malformed-ai-orchestration: expected module-start payload")
   end
   if not bounded(payload.module, 256) then error("module-testing-pipeline: malformed-ai-orchestration: module is required") end
+  ai_design_loop.validate_authority_fields(payload)
   local root = artifact_root_for(payload)
   return {
     schema = "module-testing-pipeline.module-start.v1",
@@ -551,6 +547,8 @@ local function sanitize_module_start(payload)
     ui_loop = copy_ui_loop(payload.ui_loop),
     module_discovery = copy_module_discovery(payload.module_discovery),
     cdp_execution = copy_cdp_execution(payload.cdp_execution),
+    ai_design_loop_request = ai_design_consensus.copy_request(payload.ai_design_loop_request),
+    ai_design_loop_state_ref = ai_design_loop.copy_artifact_reference(payload.ai_design_loop_state_ref),
     testing_design_context = payload.testing_design_context ~= nil
       and testing_design.copy_context_reference(payload.testing_design_context) or nil,
     preflight_result = copy_preflight(payload.preflight_result),
@@ -575,6 +573,8 @@ local function module_loop_request(payload)
     ui_loop = payload.ui_loop,
     module_discovery = payload.module_discovery,
     cdp_execution = payload.cdp_execution,
+    ai_design_loop_request = payload.ai_design_loop_request,
+    ai_design_loop_state_ref = ai_design_loop.copy_artifact_reference(payload.ai_design_loop_state_ref),
     testing_design_context = payload.testing_design_context,
     preflight_result = payload.preflight_result,
     artifact_root = payload.artifact_root,
@@ -634,6 +634,7 @@ end
 local function validate_state(state)
   if type(state) ~= "table" or state.schema ~= M.state_schema then error("module-testing-pipeline: malformed-ai-state: invalid state schema") end
   if not strings.is_artifact_root(state.artifact_root) then error("module-testing-pipeline: malformed-ai-state: unsafe artifact root") end
+  ai_design_loop.validate_authority_fields(state.module_start)
   return state
 end
 local function read_state(root, ports)
@@ -818,16 +819,17 @@ local function read_generated_stage(state, context, ports)
 end
 local function resume_after_design(state, context, state_ref, ports)
   local resume = sanitize_module_start(state.module_start)
-  resume.cdp_execution = resume.cdp_execution or { schema = "testing-runner.module-cdp-execution.v1" }
-  resume.cdp_execution.ai_design_loop_request = nil
-  resume.cdp_execution.ai_design_loop_state_ref = state_ref
-  resume.cdp_execution.ai_generation = resume.cdp_execution.ai_generation or { schema = ai_generation.request_schema, mode = "autonomous-reviewed" }
-  resume.cdp_execution.ai_generation.context_manifest_path = context.context_manifest_path
-  resume.cdp_execution.ai_generation.generated_cases_path = context.generated_cases_path
-  resume.cdp_execution.ai_generation.generated_case_gate_path = context.generated_case_gate_path
-  resume.cdp_execution.ai_generation.ai_agent_generation_path = context.ai_agent_generation_path
-  resume.cdp_execution.ai_generation.generated_case_agent_review_path = context.generated_case_agent_review_path
-  resume.cdp_execution.ai_generation.ai_test_design_loop_path = context.ai_test_design_loop_path
+  resume.ai_design_loop_request = nil
+  resume.ai_design_loop_state_ref = ai_design_loop.copy_artifact_reference(state_ref)
+  if resume.cdp_execution ~= nil then
+    resume.cdp_execution.ai_generation = resume.cdp_execution.ai_generation or { schema = ai_generation.request_schema, mode = "autonomous-reviewed" }
+    resume.cdp_execution.ai_generation.context_manifest_path = context.context_manifest_path
+    resume.cdp_execution.ai_generation.generated_cases_path = context.generated_cases_path
+    resume.cdp_execution.ai_generation.generated_case_gate_path = context.generated_case_gate_path
+    resume.cdp_execution.ai_generation.ai_agent_generation_path = context.ai_agent_generation_path
+    resume.cdp_execution.ai_generation.generated_case_agent_review_path = context.generated_case_agent_review_path
+    resume.cdp_execution.ai_generation.ai_test_design_loop_path = context.ai_test_design_loop_path
+  end
   state.phase = "resumed"
   state.design.status = "closed"
   write_state(state, ports)
@@ -844,7 +846,7 @@ local function handle_review_reached(payload, state, ports)
   local closure = ai_generation.build_review_closure(context, generated, gate, agent_generation, agent_review)
   write_json(context.generated_case_agent_review_path, agent_review, ports)
   write_json(context.ai_test_design_loop_path, closure, ports)
-  local design_request = state.module_start.cdp_execution and state.module_start.cdp_execution.ai_design_loop_request
+  local design_request = state.module_start.ai_design_loop_request
   if design_request ~= nil then
     local result = M.start_design_loop(design_request, ports)
     state.review.status = agent_review.status
@@ -880,7 +882,7 @@ local function handle_design_round_reached(payload, state, ports)
   if payload.decision ~= "approve" then return fail_closed(state, payload, "design", ports) end
   local patch_ref = state.design and state.design.patch_ref
   if type(patch_ref) ~= "table" then return fail_closed(state, payload, "design", ports) end
-  local request = state.module_start.cdp_execution.ai_design_loop_request
+  local request = state.module_start.ai_design_loop_request
   local result = M.apply_design_round({
     schema = M.design_round_request_schema,
     state_ref = state.design.state_ref,

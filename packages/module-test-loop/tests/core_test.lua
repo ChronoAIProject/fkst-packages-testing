@@ -14,6 +14,11 @@ local function expect_failure(fragment, fn)
   t.is_true(tostring(err):find(fragment, 1, true) ~= nil)
 end
 
+local function assert_artifact_reference(actual, expected)
+  t.eq(actual.artifact_pointer, expected.artifact_pointer)
+  t.eq(actual.artifact_digest, expected.artifact_digest)
+end
+
 local function request()
   return {
     schema = core.schemas.request,
@@ -81,6 +86,49 @@ return {
     t.eq(runner.dry_run, false)
     t.eq(runner.no_browser, true)
     t.eq(runner.testing_design_context.analysis_key, value.testing_design_context.analysis_key)
+  end,
+
+  test_reviewed_state_reference_survives_persistence_replay_and_attempt_request = function()
+    local value = request()
+    value.ai_design_loop_state_ref = {
+      artifact_pointer = value.artifact_root .. "/design/ai-design-loop-state.json",
+      artifact_digest = "design-state-digest",
+    }
+    local ports, states = runtime()
+    local first = core.start(value, ports)
+    local replay = core.start(value, ports)
+    local state = states[value.artifact_root .. "/module-loop-state.json"]
+    assert_artifact_reference(state.request.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
+    assert_artifact_reference(first[1].payload.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
+    assert_artifact_reference(replay[1].payload.ai_design_loop_state_ref, value.ai_design_loop_state_ref)
+    t.eq(first[1].payload.dedup_key, value.dedup_key .. "/attempt/1")
+  end,
+
+  test_nested_reviewed_design_fields_and_top_level_coexistence_fail_closed = function()
+    local nested_request = request()
+    nested_request.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_request = {},
+    }
+    expect_failure("reviewed design fields must be top-level", function()
+      core.validate_request(nested_request)
+    end)
+
+    local nested_state = request()
+    nested_state.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_state_ref = {},
+    }
+    expect_failure("reviewed design fields must be top-level", function()
+      core.validate_request(nested_state)
+    end)
+
+    local coexistence = request()
+    coexistence.ai_design_loop_request = {}
+    coexistence.ai_design_loop_state_ref = {}
+    expect_failure("design request and state reference cannot coexist", function()
+      core.validate_request(coexistence)
+    end)
   end,
 
   test_start_persists_attempt_and_replay_returns_same_action = function()

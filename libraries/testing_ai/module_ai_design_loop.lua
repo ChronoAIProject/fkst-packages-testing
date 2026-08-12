@@ -228,6 +228,29 @@ function M.validate_request(value)
   return value
 end
 
+function M.validate_authority_fields(value)
+  if type(value) ~= "table" then fail("malformed-transport", "transport must be a table") end
+  local cdp = type(value.cdp_execution) == "table" and value.cdp_execution or nil
+  if cdp ~= nil and (cdp.ai_design_loop_request ~= nil or cdp.ai_design_loop_state_ref ~= nil) then
+    fail("malformed-transport", "reviewed design fields must be top-level")
+  end
+  if value.ai_design_loop_request ~= nil and value.ai_design_loop_state_ref ~= nil then
+    fail("ambiguous-transport", "design request and state reference cannot coexist")
+  end
+  if value.ai_design_loop_request ~= nil then M.validate_request(value.ai_design_loop_request) end
+  if value.ai_design_loop_state_ref ~= nil then M.validate_artifact_reference(value.ai_design_loop_state_ref) end
+  return value
+end
+
+function M.copy_artifact_reference(value)
+  if value == nil then return nil end
+  M.validate_artifact_reference(value)
+  return {
+    artifact_pointer = value.artifact_pointer,
+    artifact_digest = value.artifact_digest,
+  }
+end
+
 function M.paths(root)
   if not strings.is_artifact_root(root, 4096) then fail("malformed-request", "artifact root is unsafe") end
   return {

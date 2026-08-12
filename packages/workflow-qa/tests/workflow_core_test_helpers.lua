@@ -91,15 +91,15 @@ function M.build(deps)
         dedup_key = "dedup-qa-100",
         cdp_execution = {
           schema = "testing-runner.module-cdp-execution.v1",
-          ai_design_loop_request = {
-            schema = design_loop.schemas.request,
-            artifact_root = design_root .. "/loop",
-            seed_cases_ref = { artifact_pointer = design_root .. "/placeholder.json", artifact_digest = "placeholder" },
-            deterministic_cases_ref = { artifact_pointer = design_root .. "/deterministic.json", artifact_digest = "deterministic" },
-            coverage_scope_ref = { artifact_pointer = design_root .. "/coverage.json", artifact_digest = "coverage" },
-            max_rounds = 3, case_budget = 16, action_budget = 32,
-            trace_id = "trace-qa-100", dedup_key = "dedup-qa-100",
-          },
+        },
+        ai_design_loop_request = {
+          schema = design_loop.schemas.request,
+          artifact_root = design_root .. "/loop",
+          seed_cases_ref = { artifact_pointer = design_root .. "/placeholder.json", artifact_digest = "placeholder" },
+          deterministic_cases_ref = { artifact_pointer = design_root .. "/deterministic.json", artifact_digest = "deterministic" },
+          coverage_scope_ref = { artifact_pointer = design_root .. "/coverage.json", artifact_digest = "coverage" },
+          max_rounds = 3, case_budget = 16, action_budget = 32,
+          trace_id = "trace-qa-100", dedup_key = "dedup-qa-100",
         },
       },
       structured_execution = {

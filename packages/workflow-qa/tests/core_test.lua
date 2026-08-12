@@ -80,6 +80,22 @@ local function drive_to_grant(request, ports, state, put, execution_mode)
 end
 
 local tests = {
+  test_top_level_design_request_receives_persisted_seed_reference = function()
+    local request = fixture()
+    request.design_module_start.cdp_execution = nil
+    request.design_module_start.module_discovery = { schema = "testing-runner.module-discovery.v1", observations = {} }
+    local ports, state, put = runtime(request)
+    drive_to_browser_pending(request, ports, state, put)
+    core.handle_browser_readiness_result(workflow_readiness_result(request), request, ports)
+    local actions = release_checkpoint(request, ports, state, "module-testing-pipeline.module_start")
+    local module_start = actions[1].payload
+    t.eq(module_start.cdp_execution, nil)
+    t.eq(module_start.ai_design_loop_request.seed_cases_ref.artifact_pointer,
+      state().artifacts.seed_cases_ref.artifact_pointer)
+    t.eq(module_start.ai_design_loop_request.seed_cases_ref.artifact_digest,
+      state().artifacts.seed_cases_ref.artifact_digest)
+  end,
+
   test_run_traverses_plan_grant_execution_cleanup_and_terminal = function()
     local request = fixture()
     request.publication.channel = "filesystem-dry-run-v1"
@@ -95,9 +111,41 @@ local tests = {
     local cleanup_checkpoint = core.handle_cleanup_result(finalized(request, put), request, ports)
     t.eq(cleanup_checkpoint[1].queue, "test-publication.qa_checkpoint_request")
     t.eq(cleanup_checkpoint[1].payload.channel, "filesystem-dry-run-v1")
+    local wrong_stage_receipt = checkpoint_receipt(request, state().active_checkpoint)
     local finalization = release_checkpoint(request, ports, state, "test-publication.qa_finalize_request")
     t.eq(finalization[1].payload.channel, "filesystem-dry-run-v1")
     t.eq(state().request.publication.channel, "filesystem-dry-run-v1")
+    t.eq(state().phase, "publication-pending")
+    t.is_true(type(state().finalization_request) == "table")
+    t.eq(state().finalization_request.aggregate_report_ref, request.publication.aggregate_report_ref)
+    t.eq(wrong_stage_receipt.schema, "test-publication.qa-publication-receipt.v2")
+    t.eq(wrong_stage_receipt.run_id, request.run_id)
+    t.eq(wrong_stage_receipt.repository.slug, request.repository.slug)
+    t.eq(wrong_stage_receipt.trace_id, request.trace_id)
+    t.eq(wrong_stage_receipt.dedup_key, request.dedup_key)
+    t.is_true(wrong_stage_receipt.stage ~= "aggregate-report")
+    local publication_snapshot = {
+      phase = state().phase,
+      version = state().version,
+      finalization_request = copy(state().finalization_request),
+      aggregate_receipt = copy(state().aggregate_receipt),
+      aggregate_receipt_sha256 = state().aggregate_receipt_sha256,
+      aggregate_report_sha256 = state().digests[request.publication.aggregate_report_ref],
+      pending_actions = copy(state().pending_actions),
+    }
+    expect_failure("foreign-publication-receipt: no matching checkpoint lease exists", function()
+      core.handle_publication_receipt(wrong_stage_receipt, request, ports)
+    end)
+    t.eq(state().phase, publication_snapshot.phase)
+    t.eq(state().version, publication_snapshot.version)
+    t.eq(execution_contract.equal(state().finalization_request,
+      publication_snapshot.finalization_request), true)
+    t.eq(execution_contract.equal(state().aggregate_receipt,
+      publication_snapshot.aggregate_receipt), true)
+    t.eq(state().aggregate_receipt_sha256, publication_snapshot.aggregate_receipt_sha256)
+    t.eq(state().digests[request.publication.aggregate_report_ref],
+      publication_snapshot.aggregate_report_sha256)
+    t.eq(execution_contract.equal(state().pending_actions, publication_snapshot.pending_actions), true)
     put(request.publication.aggregate_report_ref, {
       schema = "test-publication.qa-aggregate-report.v1", run_id = request.run_id,
       trace_id = request.trace_id, dedup_key = request.dedup_key,
@@ -106,8 +154,10 @@ local tests = {
     local aggregate_receipt = checkpoint_receipt(request, aggregate)
     t.eq(ports.write_artifact(aggregate_receipt.receipt_ref, aggregate_receipt), true)
     local terminal = core.handle_publication_receipt(aggregate_receipt, request, ports)
+    t.eq(#terminal, 1)
     t.eq(terminal[1].queue, "workflow_qa_terminal_request")
     t.eq(state().phase, "terminal")
+    t.eq(state().version, publication_snapshot.version + 1)
   end,
 
   test_agentic_browser_plan_routes_only_to_browser_controller = function()
@@ -170,6 +220,85 @@ local tests = {
     request = fixture()
     request.environment_start.repository.commit_sha = string.rep("c", 40)
     t.raises(function() contract.validate_request(request) end)
+  end,
+
+  test_contract_rejects_nested_reviewed_design_fields = function()
+    local nested_request = fixture()
+    nested_request.design_module_start.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_request = copy(nested_request.design_module_start.ai_design_loop_request),
+    }
+    nested_request.design_module_start.ai_design_loop_request = nil
+    t.raises(function() contract.validate_request(nested_request) end)
+
+    local nested_state = fixture()
+    nested_state.design_module_start.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_state_ref = {
+        artifact_pointer = nested_state.artifact_root .. "/design/ai-design-loop-state.json",
+        artifact_digest = "design-state-digest",
+      },
+    }
+    nested_state.design_module_start.ai_design_loop_request = nil
+    t.raises(function() contract.validate_request(nested_state) end)
+
+    local duplicated = fixture()
+    duplicated.design_module_start.cdp_execution = {
+      schema = "testing-runner.module-cdp-execution.v1",
+      ai_design_loop_request = copy(duplicated.design_module_start.ai_design_loop_request),
+    }
+    t.raises(function() contract.validate_request(duplicated) end)
+  end,
+
+  test_contract_rejects_invalid_reviewed_design_authority = function()
+    local invalid_references = {
+      { artifact_pointer = "unsafe/state.json", artifact_digest = "design-state-digest" },
+      { artifact_pointer = ".testing/runs/workflow-qa-fixture/design/state.json", artifact_digest = "" },
+    }
+    for _, state_ref in ipairs(invalid_references) do
+      local request = fixture()
+      request.design_module_start.ai_design_loop_request = nil
+      request.design_module_start.ai_design_loop_state_ref = state_ref
+      expect_failure("malformed-design: ai-design-loop-state-reference is invalid", function()
+        contract.validate_request(request)
+      end)
+    end
+
+    local invalid_requests = {
+      function(value) value.schema = "foreign" end,
+      function(value) value.case_budget = 0 end,
+    }
+    for _, mutate in ipairs(invalid_requests) do
+      local request = fixture()
+      mutate(request.design_module_start.ai_design_loop_request)
+      expect_failure("malformed-design: ai design loop request is invalid", function()
+        contract.validate_request(request)
+      end)
+    end
+
+    local ambiguous = fixture()
+    ambiguous.design_module_start.ai_design_loop_state_ref = {
+      artifact_pointer = ambiguous.design_module_start.artifact_root .. "/loop/ai-design-loop-state.json",
+      artifact_digest = "design-state-digest",
+    }
+    expect_failure("foreign-design: design module start has ambiguous reviewed-state authority", function()
+      contract.validate_request(ambiguous)
+    end)
+
+    local foreign_mutations = {
+      function(request) request.design_module_start.ai_design_loop_request.trace_id = "foreign-trace" end,
+      function(request) request.design_module_start.ai_design_loop_request.dedup_key = "foreign-dedup" end,
+      function(request)
+        request.design_module_start.ai_design_loop_request.artifact_root = request.artifact_root .. "/foreign-loop"
+      end,
+    }
+    for _, mutate in ipairs(foreign_mutations) do
+      local request = fixture()
+      mutate(request)
+      expect_failure("foreign-design: design loop request differs from the closed run identity", function()
+        contract.validate_request(request)
+      end)
+    end
   end,
 
   test_contract_rejects_malformed_closed_inputs = function()
@@ -603,7 +732,8 @@ local workflow_core_coverage_cases = require("tests.workflow_core_coverage_helpe
   artifact_summary = artifact_summary, checkpoint_receipt = checkpoint_receipt, checkpoints = checkpoints,
   contract = contract, core = core, digest = digest, drive_to_grant = drive_to_grant,
   execution_result = execution_result, expect_failure = expect_failure, finalized = finalized, fixture = fixture,
-  grant_result = grant_result, pointer = pointer, ready_result = ready_result,
+  grant_result = grant_result, module_terminal = module_terminal, plan_result = plan_result, pointer = pointer,
+  ready_result = ready_result,
   release_checkpoint = release_checkpoint, runtime = runtime, t = t,
 })
 tests.test_blocked_environment_summary_cleanup_and_publication_fail_closed =
