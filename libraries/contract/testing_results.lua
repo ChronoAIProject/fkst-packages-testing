@@ -203,7 +203,7 @@ end
 local function canonical_json(value)
   local kind = type(value); if kind == "boolean" then return value and "true" or "false" end; if kind == "number" then if value ~= math.floor(value) then fail("canonicalization", "only integers are supported") end; return tostring(value) end; if kind == "string" then return strings.json_string(value) end; if kind ~= "table" then fail("canonicalization", "unsupported value type " .. kind) end
   local numeric, keys = 0, {}; for key in pairs(value) do if type(key) == "number" then numeric = numeric + 1 else table.insert(keys, key) end end
-  if numeric > 0 then local parts = {}; for _, item in ipairs(value) do table.insert(parts, canonical_json(item)) end; return "[" .. table.concat(parts, ",") .. "]" end
+  if numeric > 0 or next(value) == nil then local parts = {}; for _, item in ipairs(value) do table.insert(parts, canonical_json(item)) end; return "[" .. table.concat(parts, ",") .. "]" end
   table.sort(keys); local parts = {}; for _, key in ipairs(keys) do table.insert(parts, strings.json_string(key) .. ":" .. canonical_json(value[key])) end; return "{" .. table.concat(parts, ",") .. "}"
 end
 function R.canonicalize(value)
