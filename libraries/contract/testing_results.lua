@@ -96,12 +96,12 @@ local function validate_case(value, expected_plan)
   if value.error ~= nil then fields(value.error, { code=true, message=true }, "error"); bounded(value.error.code, "error.code", 96); bounded(value.error.message, "error.message") end
   if value.non_execution_reason ~= nil then bounded(value.non_execution_reason, "non_execution_reason", 96) end
   bounded(value.trace_id, "trace_id", 180); bounded(value.dedup_key, "dedup_key", 180)
-  local required, passed, failed = 0, 0, 0; for _, assertion in ipairs(value.assertions) do if assertion.required then required = required + 1; if assertion.status == "passed" then passed = passed + 1 elseif assertion.status == "failed" then failed = failed + 1 end end end
+  local required, passed, failed, any_failed = 0, 0, 0, 0; for _, assertion in ipairs(value.assertions) do if assertion.status == "failed" then any_failed = any_failed + 1 end; if assertion.required then required = required + 1; if assertion.status == "passed" then passed = passed + 1 elseif assertion.status == "failed" then failed = failed + 1 end end end
   if value.execution_status == "passed" and (required == 0 or passed ~= required or value.classification ~= "deterministic") then fail("contradictory-status", "passed requires every required assertion to pass") end
   if value.execution_status == "failed" and failed == 0 then fail("contradictory-status", "failed requires a failed required assertion") end
   if (value.execution_status == "lost" or value.execution_status == "blocked" or value.execution_status == "error") then
     if value.non_execution_reason == nil and value.error == nil then fail("contradictory-status", "uncertain execution requires an error or non-execution reason") end
-    if failed > 0 then fail("contradictory-status", "uncertain execution cannot contain failed assertions") end
+    if any_failed > 0 then fail("contradictory-status", "uncertain execution cannot contain failed assertions") end
   end
   return value
 end
