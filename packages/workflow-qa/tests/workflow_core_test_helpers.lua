@@ -326,6 +326,12 @@ function M.build(deps)
     local cases = execution_mode == "agentic-browser" and { {
       case_id = "browser-login", kind = "browser", goal = "Authenticate the existing user.",
       success_conditions = { "Exact loopback callback", "Authenticated CLI status" },
+      completion_assertions = {
+        { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+        { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+        { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+        { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+      },
     } } or { {
       case_id = "health", kind = "http", timeout_seconds = 10,
       request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },

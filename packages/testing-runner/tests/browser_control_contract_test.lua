@@ -98,6 +98,12 @@ return {
       case_catalog_sha256 = digest("8"), module_plan_sha256 = digest("7"), cases = { {
         case_id = "login", kind = "browser", goal = "Authenticate the existing user.",
         success_conditions = { "Exact callback", "Authenticated status" },
+        completion_assertions = {
+          { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+          { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+          { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+          { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+        },
       } }, residual_risk_case_ids = {}, trace_id = "trace-browser", dedup_key = "dedup-browser",
     }
     local request = {
@@ -157,11 +163,23 @@ return {
       cases = { {
         case_id = "login", kind = "browser", goal = "Authenticate the existing user.",
         success_conditions = { "Exact loopback callback", "Authenticated CLI status" },
+        completion_assertions = {
+          { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+          { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+          { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+          { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+        },
       } },
       residual_risk_case_ids = {},
       trace_id = "trace-browser", dedup_key = "dedup-browser",
     }
     structured.validate_plan(plan)
+    local no_required = structured.copy(plan)
+    for _, assertion in ipairs(no_required.cases[1].completion_assertions) do assertion.required = false end
+    t.raises(function() structured.validate_plan(no_required) end)
+    local duplicate_field = structured.copy(plan)
+    duplicate_field.cases[1].completion_assertions[2].completion_field = "callback_observed"
+    t.raises(function() structured.validate_plan(duplicate_field) end)
     table.insert(plan.cases, {
       case_id = "health", kind = "http", timeout_seconds = 10,
       request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
