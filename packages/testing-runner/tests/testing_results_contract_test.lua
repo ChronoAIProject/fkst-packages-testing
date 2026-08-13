@@ -110,6 +110,7 @@ return {
   test_manifest_digest_is_deterministic = function()
     local case=valid_case("passed"); case.evidence_refs={{kind="evidence",ref="evidence-log"}}; case.assertions[1].evidence_refs={{kind="evidence",ref="evidence-log"}}
     local manifest=evidence_manifest(case); local reordered=copy(manifest); reordered.entries[1]=copy(manifest.entries[1]); t.eq(manifest_contract.canonicalize(manifest), manifest_contract.canonicalize(reordered)); t.eq(manifest_contract.sha256(manifest, real_sha256), manifest.canonical_sha256)
+    local foreign_case=copy(case); foreign_case.case_id="foreign-case"; local foreign_set=result_set(foreign_case, manifest); t.raises(function() manifest_contract.validate(manifest, foreign_set) end)
   end,
   test_matches_independent_golden_bytes_and_sha256 = function()
     local canonical=results.canonicalize(golden.case); t.eq(canonical, golden.canonical_json); t.eq(real_sha256(canonical), golden.sha256); t.eq(results.sha256(golden.case, real_sha256), golden.sha256)

@@ -61,12 +61,15 @@ local function canonical_json(value)
   return "{" .. table.concat(parts, ",") .. "}"
 end
 
-local function validate_entry(entry, run_id, case_ids, assertion_ids, seen)
+local function validate_entry(entry, run_id, case_ids, assertion_ids, seen, enforce_result_refs)
   fields(entry, { evidence_id=true, case_id=true, assertion_id=true, role=true, artifact_ref=true, sha256=true, media_type=true, size_bytes=true, producer=true, producer_version=true, created_at=true, sensitivity=true, redaction_classification=true, policy_version=true, policy_status=true, provenance=true }, "manifest-entry")
   bounded(entry.evidence_id, "entry.evidence_id", 180); bounded(entry.case_id, "entry.case_id", 180)
   if seen[entry.evidence_id] then fail("duplicate-evidence-id", entry.evidence_id) end; seen[entry.evidence_id] = true
-  if not case_ids[entry.case_id] then fail("foreign-case", entry.case_id) end
-  if entry.assertion_id ~= nil then bounded(entry.assertion_id, "entry.assertion_id", 180); if not assertion_ids[entry.case_id] or not assertion_ids[entry.case_id][entry.assertion_id] then fail("foreign-assertion", entry.assertion_id) end end
+  if enforce_result_refs and not case_ids[entry.case_id] then fail("foreign-case", entry.case_id) end
+  if entry.assertion_id ~= nil then
+    bounded(entry.assertion_id, "entry.assertion_id", 180)
+    if enforce_result_refs and (not assertion_ids[entry.case_id] or not assertion_ids[entry.case_id][entry.assertion_id]) then fail("foreign-assertion", entry.assertion_id) end
+  end
   bounded(entry.role, "entry.role", 64); if not M.roles[entry.role] then fail("unsupported-role", entry.role) end
   relative_run_pointer(entry.artifact_ref, run_id, "entry.artifact_ref"); digest(entry.sha256, "entry.sha256")
   bounded(entry.media_type, "entry.media_type", 120); if not M.media_types[entry.media_type] or not M.role_media[entry.role][entry.media_type] then fail("unsupported-media", entry.media_type) end
@@ -94,7 +97,7 @@ function M.validate(value, result_set, sha256_fn)
       if case.repository.id ~= value.repository.id or case.repository.source_sha256 ~= value.repository.source_sha256 then fail("foreign-repository", case.case_id) end
     end
   end
-  local seen = {}; for _, entry in ipairs(value.entries) do validate_entry(entry, value.run_id, case_ids, assertion_ids, seen) end
+  local seen = {}; for _, entry in ipairs(value.entries) do validate_entry(entry, value.run_id, case_ids, assertion_ids, seen, result_set ~= nil) end
   if result_set ~= nil then
     local referenced = {}
     local function check_refs(refs, owner)
