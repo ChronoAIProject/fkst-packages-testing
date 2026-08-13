@@ -1,4 +1,5 @@
 local results = require("contract.testing_results")
+local manifest_contract = require("contract.testing_evidence_manifest")
 local golden = require("tests.fixtures.testing_results_golden_helpers")
 local t = fkst.test
 local digest = string.rep("a", 64)
@@ -43,6 +44,24 @@ local function real_sha256(bytes)
   return computed
 end
 
+local function evidence_manifest(case)
+  local manifest = {
+    schema=manifest_contract.schema, manifest_id="manifest-1", canonicalization=manifest_contract.canonicalization,
+    canonical_sha256=digest, repository=case.repository, run_id="run-1", plan_ref=case.plan_ref, plan_sha256=case.plan_sha256,
+    entries={
+      {evidence_id="evidence-log", case_id=case.case_id, assertion_id="assert-1", role="runner-log", artifact_ref=ref("artifact", ".testing/runs/run-1/evidence/runner.log"), sha256=digest, media_type="text/plain", size_bytes=12, producer="testing-runner", producer_version="1.0.0", created_at="2026-08-13T00:00:01Z", sensitivity="public", redaction_classification="none", policy_version="evidence-policy-v1", policy_status="approved", provenance={source_kind="runner", source_ref="runner/execution", source_sha256=digest}},
+      {evidence_id="evidence-shot", case_id=case.case_id, role="screenshot", artifact_ref=ref("artifact", ".testing/runs/run-1/evidence/screenshot.png"), sha256=digest, media_type="image/png", size_bytes=24, producer="browser-runner", producer_version="1.0.0", created_at="2026-08-13T00:00:01Z", sensitivity="internal", redaction_classification="none", policy_version="evidence-policy-v1", policy_status="approved", provenance={source_kind="browser", source_ref="browser/execution", source_sha256=digest}},
+      {evidence_id="evidence-json", case_id=case.case_id, role="sanitized-json", artifact_ref=ref("artifact", ".testing/runs/run-1/evidence/result.json"), sha256=digest, media_type="application/json", size_bytes=18, producer="testing-runner", producer_version="1.0.0", created_at="2026-08-13T00:00:01Z", sensitivity="public", redaction_classification="sanitized", policy_version="evidence-policy-v1", policy_status="redacted", provenance={source_kind="runner", source_ref="runner/sanitized-result", source_sha256=digest}},
+    },
+  }
+  manifest.canonical_sha256=real_sha256(manifest_contract.canonicalize(manifest))
+  return manifest
+end
+
+local function result_set(case, manifest)
+  return {schema=results.schemas.case_result_set,set_id="set-1",run_id="run-1",plan_ref=case.plan_ref,plan_sha256=case.plan_sha256,cases={case},evidence_manifest_ref=ref("artifact", ".testing/runs/run-1/evidence-manifest.json"),evidence_manifest_sha256=manifest.canonical_sha256,trace_id="trace-set",dedup_key="dedup-set"}
+end
+
 return {
   test_validates_cli_http_browser = function()
     for _, mode in ipairs({"cli", "http", "browser"}) do local value=valid_case("passed"); value.execution_mode=mode; t.eq(results.validate_case_result(value, authority()), value) end
@@ -73,10 +92,24 @@ return {
     for _, status in ipairs({"blocked","lost"}) do local value=valid_case(status); value.non_execution_reason=nil; t.raises(function() results.validate_case_result(value, authority()) end) end
   end,
   test_validates_set_and_plan_authorities = function()
-    local value={schema=results.schemas.case_result_set,set_id="set-1",plan_ref=ref("plan","plans/1"),plan_sha256=digest,cases={valid_case("passed")},trace_id="trace-set",dedup_key="dedup-set"}
-    t.eq(results.validate_case_result_set(value, {authority()}), value)
-    t.raises(function() results.validate_case_result_set(copy(value), {}) end)
-    local foreign=authority(); foreign.plan_ref=ref("plan","foreign"); t.raises(function() results.validate_case_result_set(value, {foreign}) end)
+    local case=valid_case("passed"); case.evidence_refs={{kind="evidence",ref="evidence-log"}}; case.assertions[1].evidence_refs={{kind="evidence",ref="evidence-log"}}
+    local manifest=evidence_manifest(case); local value=result_set(case, manifest)
+    t.eq(results.validate_case_result_set(value, {authority()}, manifest), value)
+    t.raises(function() results.validate_case_result_set(copy(value), {}, manifest) end)
+    local foreign=authority(); foreign.plan_ref=ref("plan","foreign"); t.raises(function() results.validate_case_result_set(value, {foreign}, manifest) end)
+  end,
+  test_rejects_manifest_integrity_and_reference_failures = function()
+    local case=valid_case("passed"); case.evidence_refs={{kind="evidence",ref="evidence-log"}}; case.assertions[1].evidence_refs={{kind="evidence",ref="evidence-log"}}
+    local manifest=evidence_manifest(case); local set=result_set(case, manifest)
+    local bad=copy(manifest); bad.entries[1].evidence_id="evidence-duplicate"; table.insert(bad.entries, copy(bad.entries[1])); t.raises(function() results.validate_case_result_set(set, nil, bad) end)
+    bad=copy(manifest); bad.entries[1].case_id="foreign-case"; t.raises(function() results.validate_case_result_set(set, nil, bad) end)
+    bad=copy(manifest); bad.entries[1].media_type="application/json"; t.raises(function() results.validate_case_result_set(set, nil, bad) end)
+    bad=copy(manifest); bad.entries[1].artifact_ref=ref("artifact", ".testing/runs/foreign-run/evidence/runner.log"); t.raises(function() results.validate_case_result_set(set, nil, bad) end)
+    local missing=copy(set); missing.cases[1].evidence_refs={{kind="evidence",ref="missing"}}; t.raises(function() results.validate_case_result_set(missing, nil, manifest) end)
+  end,
+  test_manifest_digest_is_deterministic = function()
+    local case=valid_case("passed"); case.evidence_refs={{kind="evidence",ref="evidence-log"}}; case.assertions[1].evidence_refs={{kind="evidence",ref="evidence-log"}}
+    local manifest=evidence_manifest(case); local reordered=copy(manifest); reordered.entries[1]=copy(manifest.entries[1]); t.eq(manifest_contract.canonicalize(manifest), manifest_contract.canonicalize(reordered)); t.eq(manifest_contract.sha256(manifest, real_sha256), manifest.canonical_sha256)
   end,
   test_matches_independent_golden_bytes_and_sha256 = function()
     local canonical=results.canonicalize(golden.case); t.eq(canonical, golden.canonical_json); t.eq(real_sha256(canonical), golden.sha256); t.eq(results.sha256(golden.case, real_sha256), golden.sha256)
@@ -85,8 +118,9 @@ return {
   test_rejects_unknown_fields_bad_digest_duplicates_foreign_plan_and_unsupported_major = function()
     local value=valid_case("passed"); value.extra=true; t.raises(function() results.validate_case_result(value, authority()) end)
     value=valid_case("passed"); value.plan_sha256="bad"; t.raises(function() results.validate_case_result(value, authority()) end)
-    local set={schema=results.schemas.case_result_set,set_id="set",plan_ref=ref("plan","plans/1"),plan_sha256=digest,cases={valid_case("passed"),valid_case("passed")},trace_id="trace",dedup_key="dedup"}; t.raises(function() results.validate_case_result_set(set) end)
-    set.cases={valid_case("passed")}; set.cases[1].plan_ref=ref("plan","foreign"); t.raises(function() results.validate_case_result_set(set) end)
+    local duplicate_case=valid_case("passed"); duplicate_case.evidence_refs={{kind="evidence",ref="evidence-log"}}; duplicate_case.assertions[1].evidence_refs={{kind="evidence",ref="evidence-log"}}
+    local duplicate_manifest=evidence_manifest(duplicate_case); local set=result_set(duplicate_case, duplicate_manifest); set.cases={duplicate_case,copy(duplicate_case)}; t.raises(function() results.validate_case_result_set(set, nil, duplicate_manifest) end)
+    set.cases={duplicate_case}; set.cases[1].plan_ref=ref("plan","foreign"); t.raises(function() results.validate_case_result_set(set, nil, duplicate_manifest) end)
     t.raises(function() results.negotiate("testing-case-result.v9",{[2]=true}) end); t.eq(results.negotiate(results.schemas.case_result,{[2]=true}),2)
   end,
 }

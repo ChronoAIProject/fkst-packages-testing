@@ -1,6 +1,7 @@
 -- contract.testing_results: canonical, execution-only testing result contracts.
 local strings = require("contract.strings")
 local time = require("contract.time")
+local evidence_manifest = require("contract.testing_evidence_manifest")
 
 local R = {}
 R.schemas = {
@@ -167,10 +168,10 @@ end
 function R.validate_observation(value) return validate_observation(value) end
 function R.validate_assertion_result(value) return validate_assertion(value) end
 function R.validate_case_result(value, assertion_authority) return validate_case(value, nil, assertion_authority) end
-function R.validate_case_result_set(value, assertion_authorities)
-  fields(value, { schema=true, set_id=true, plan_ref=true, plan_sha256=true, cases=true, trace_id=true, dedup_key=true }, "case-result-set")
+function R.validate_case_result_set(value, assertion_authorities, manifest, sha256_fn)
+  fields(value, { schema=true, set_id=true, run_id=true, plan_ref=true, plan_sha256=true, cases=true, evidence_manifest_ref=true, evidence_manifest_sha256=true, trace_id=true, dedup_key=true }, "case-result-set")
   if value.schema ~= R.schemas.case_result_set then fail("unknown-schema", "case result set schema") end
-  bounded(value.set_id, "set_id", 180); reference(value.plan_ref, "plan_ref"); digest(value.plan_sha256, "plan_sha256"); list(value.cases, "cases", 64, true); local seen = {}; local plan = { plan_ref=value.plan_ref, plan_sha256=value.plan_sha256 }
+  bounded(value.set_id, "set_id", 180); bounded(value.run_id, "run_id", 180); reference(value.plan_ref, "plan_ref"); digest(value.plan_sha256, "plan_sha256"); reference(value.evidence_manifest_ref, "evidence_manifest_ref"); digest(value.evidence_manifest_sha256, "evidence_manifest_sha256"); list(value.cases, "cases", 64, true); local seen = {}; local plan = { plan_ref=value.plan_ref, plan_sha256=value.plan_sha256 }
   local authorities = {}
   if assertion_authorities ~= nil then
     list(assertion_authorities, "assertion-authorities", 64, true)
@@ -194,6 +195,9 @@ function R.validate_case_result_set(value, assertion_authorities)
       if not found then fail("foreign-assertion-authority", reviewed_case_id) end
     end
   end
+  if type(manifest) ~= "table" then fail("missing-evidence-manifest", "case result set requires a bound evidence manifest") end
+  evidence_manifest.validate(manifest, value, sha256_fn)
+  if manifest.canonical_sha256 ~= value.evidence_manifest_sha256 then fail("digest-mismatch", "evidence manifest digest does not match the result-set binding") end
   bounded(value.trace_id, "trace_id", 180); bounded(value.dedup_key, "dedup_key", 180); return value
 end
 function R.negotiate(schema, supported)
@@ -206,12 +210,12 @@ local function canonical_json(value)
   if numeric > 0 or next(value) == nil then local parts = {}; for _, item in ipairs(value) do table.insert(parts, canonical_json(item)) end; return "[" .. table.concat(parts, ",") .. "]" end
   table.sort(keys); local parts = {}; for _, key in ipairs(keys) do table.insert(parts, strings.json_string(key) .. ":" .. canonical_json(value[key])) end; return "{" .. table.concat(parts, ",") .. "}"
 end
-function R.canonicalize(value)
-  if value.schema == R.schemas.observation then validate_observation(value) elseif value.schema == R.schemas.assertion_result then validate_assertion(value) elseif value.schema == R.schemas.case_result then validate_case(value) elseif value.schema == R.schemas.case_result_set then R.validate_case_result_set(value) else fail("unknown-schema", "unsupported result schema") end
+function R.canonicalize(value, manifest, sha256_fn)
+  if value.schema == R.schemas.observation then validate_observation(value) elseif value.schema == R.schemas.assertion_result then validate_assertion(value) elseif value.schema == R.schemas.case_result then validate_case(value) elseif value.schema == R.schemas.case_result_set then R.validate_case_result_set(value, nil, manifest, sha256_fn) else fail("unknown-schema", "unsupported result schema") end
   return canonical_json(value)
 end
-function R.sha256(value, sha256_fn)
+function R.sha256(value, sha256_fn, manifest)
   if type(sha256_fn) ~= "function" then fail("missing-sha256", "a host-supplied SHA-256 function is required") end
-  local ok, result = pcall(sha256_fn, R.canonicalize(value)); if not ok then fail("sha256-failed", "the host SHA-256 function failed") end; return digest(result, "sha256 result")
+  local ok, result = pcall(sha256_fn, R.canonicalize(value, manifest)); if not ok then fail("sha256-failed", "the host SHA-256 function failed") end; return digest(result, "sha256 result")
 end
 return R
