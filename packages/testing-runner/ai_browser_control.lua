@@ -137,8 +137,8 @@ local function artifact_ref(path, sha256)
   return { kind = "artifact", ref = path, sha256 = sha256 }
 end
 
-local function evidence_ref(evidence_id, sha256)
-  return { kind = "evidence", ref = evidence_id, sha256 = sha256 }
+local function evidence_ref(evidence_id)
+  return { kind = "evidence", ref = evidence_id }
 end
 
 local function repository_result(request, ports)
@@ -146,7 +146,10 @@ local function repository_result(request, ports)
   local source_sha256 = ports.sha256(source)
   return {
     id = "repository-" .. source_sha256:sub(1, 32),
-    source_ref = { kind = "git", ref = request.repository.url .. "@" .. request.repository.commit_sha },
+    source_ref = {
+      kind = results_contract.repository_source_kinds.git,
+      ref = request.repository.url .. "@" .. request.repository.commit_sha,
+    },
     source_sha256 = source_sha256,
   }
 end
@@ -172,14 +175,16 @@ local function normalize_outcome(outcome)
   if normalized == nil then error("testing-runner: ai-browser-control: unknown terminal outcome") end
   local message = tostring(outcome.message or outcome.reason or outcome.kind)
     :gsub("[%z\1-\31\127]", " "):sub(1, 512)
+  local reason = normalized.reason or outcome.reason
   local requires_reason = normalized.execution_status == "blocked"
     or normalized.execution_status == "lost" or normalized.execution_status == "skipped"
   return {
     execution_status = normalized.execution_status,
     classification = normalized.classification,
-    non_execution_reason = requires_reason and (normalized.reason or outcome.reason) or nil,
+    public_classification = reason or normalized.classification,
+    non_execution_reason = requires_reason and reason or nil,
     error = normalized.execution_status == "error" and {
-      code = outcome.reason or outcome.kind,
+      code = reason or outcome.kind,
       message = message,
     } or nil,
   }
@@ -238,7 +243,7 @@ local function collect_observations(request, raw_observations, receipt_ref, port
     local path = request.artifact_root .. "/evidence/browser-observation-" .. tostring(index) .. ".json"
     local sha256, size_bytes = write_json_evidence(path, item.value, ports)
     local evidence_id = "browser-observation-" .. tostring(index)
-    local ref = evidence_ref(evidence_id, sha256)
+    local ref = evidence_ref(evidence_id)
     table.insert(entries, {
       evidence_id = evidence_id,
       case_id = item.case_id,
@@ -263,7 +268,7 @@ local function collect_observations(request, raw_observations, receipt_ref, port
       subject = "browser-target",
       value = table.concat({
         "turn=" .. tostring(item.value.turn), item.phase, item.value.ready_state,
-        "document=" .. item.value.document_token,
+        "document=" .. browser_contract.document_digest(item.value),
         "callback=" .. tostring(item.value.signals.callback_detected),
         "console=" .. tostring(item.value.console_count),
         "network=" .. tostring(item.value.network_count),
@@ -323,7 +328,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
   local receipt = {
     schema = browser_contract.schemas.receipt,
     status = receipt_status,
-    classification = outcome.reason or outcome.kind,
+    classification = normalized.public_classification,
     repository = copy(request.repository),
     environment_receipt_sha256 = request.environment_receipt_sha256,
     reviewed_plan_sha256 = request.reviewed_plan_sha256,
@@ -345,7 +350,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
   local receipt_sha256 = ports.artifact_digest(receipt_path)
   if type(receipt_sha256) ~= "string" then error("testing-runner: ai-browser-control: receipt digest unavailable") end
   local receipt_evidence_id = "browser-execution-receipt"
-  local receipt_evidence_ref = evidence_ref(receipt_evidence_id, receipt_sha256)
+  local receipt_evidence_ref = evidence_ref(receipt_evidence_id)
   local created_at = ports.now()
   local entries = { {
     evidence_id = receipt_evidence_id,
@@ -429,7 +434,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
   end
   local native = summary(request, {
     status = normalized.execution_status,
-    classification = outcome.reason or outcome.kind,
+    classification = normalized.public_classification,
     turn_count = #steps,
   }, false)
   if ports.write_artifact(request.artifact_root .. "/metadata.json", {

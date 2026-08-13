@@ -319,6 +319,11 @@ function M.validate_observation(value)
   return value
 end
 
+function M.document_digest(observation)
+  M.validate_observation(observation)
+  return observation.document_token
+end
+
 function M.validate_action(value, allowed_actions, approved_secret_refs)
   only_fields(value, {
     schema = true, turn = true, kind = true, handle = true,

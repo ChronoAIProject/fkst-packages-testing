@@ -232,9 +232,14 @@ return {
     t.eq(receipt.steps[1].action.kind, "click")
     local case_result = canonical_case(request, writes)
     t.eq(case_result.execution_status, "passed")
+    t.eq(case_result.repository.source_ref.kind, "git")
+    t.eq(case_result.evidence_refs[1].sha256, nil)
     t.eq(#case_result.assertions, 4)
     t.eq(case_result.assertions[1].status, "passed")
     t.is_true(#case_result.observations > 0)
+    local manifest = writes[request.artifact_root .. "/evidence-manifest.json"]
+    t.eq(manifest.entries[1].sha256, runtime.artifact_digest(
+      request.artifact_root .. "/browser-agent-execution.json"))
     local encoded = json_codec.encode(writes)
     t.eq(encoded:find("raw provider body", 1, true), nil)
     t.eq(encoded:find("password=", 1, true), nil)

@@ -135,7 +135,12 @@ return {
   end,
 
   test_observation_and_selector_free_action_contracts_are_closed = function()
-    browser.validate_observation(observation())
+    local observed = observation()
+    browser.validate_observation(observed)
+    t.eq(browser.document_digest(observed), digest("5"))
+    local malformed = structured.copy(observed)
+    malformed.turn = 0
+    t.raises(function() browser.document_digest(malformed) end)
     browser.validate_action({
       schema = browser.schemas.action, turn = 1, kind = "type",
       handle = "abcdef12", secret_ref = "primary-secret",
