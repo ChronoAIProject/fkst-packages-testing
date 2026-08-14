@@ -204,7 +204,7 @@ function M.validate_request(value)
   only_fields(value.structured_execution, {
     artifact_root = true, preauthorization_ref = true, preauthorization_sha256 = true,
     case_catalog_ref = true, case_catalog_sha256 = true, structured_plan_ref = true,
-    grant_ref = true,
+    grant_ref = true, external_case_mapping_ref = true, external_case_mapping_sha256 = true,
   }, "structured-execution")
   local execution = value.structured_execution
   if not safe_pointer(execution.artifact_root, value.artifact_root)
@@ -214,6 +214,12 @@ function M.validate_request(value)
     or not safe_pointer(execution.grant_ref, execution.artifact_root)
     or not digest(execution.preauthorization_sha256) or not digest(execution.case_catalog_sha256) then
     fail("malformed-execution", "structured execution configuration is invalid")
+  end
+  if (execution.external_case_mapping_ref == nil) ~= (execution.external_case_mapping_sha256 == nil)
+    or (execution.external_case_mapping_ref ~= nil
+      and (not safe_pointer(execution.external_case_mapping_ref, value.artifact_root)
+        or not digest(execution.external_case_mapping_sha256))) then
+    fail("malformed-execution", "external case mapping binding is invalid")
   end
 
   only_fields(value.publication, {

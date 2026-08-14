@@ -6,6 +6,7 @@ local M = {}
 M.schemas = {
   preauthorization = "testing-structured-execution-authorization.v1",
   case_catalog = "testing-structured-case-catalog.v1",
+  external_case_mapping = "testing-external-case-mapping.v1",
   plan = "testing-structured-plan.v2",
   grant = "testing-structured-execution-grant.v1",
   plan_request = "testing-runner.structured-plan.request.v1",
@@ -279,7 +280,11 @@ function M.validate_preauthorization(value, now)
 end
 
 function M.validate_catalog(value)
-  only_fields(value, { schema = true, repository = true, cases = true, trace_id = true, dedup_key = true }, "case-catalog")
+  only_fields(value, {
+    schema = true, repository = true, cases = true,
+    external_case_mapping_ref = true, external_case_mapping_sha256 = true,
+    trace_id = true, dedup_key = true,
+  }, "case-catalog")
   if value.schema ~= M.schemas.case_catalog then fail("unknown-schema", "case catalog schema") end
   validate_repository(value.repository, "catalog-repository")
   if not dense(value.cases, max_cases, true) then fail("malformed-catalog", "catalog cases must be bounded") end
@@ -298,7 +303,59 @@ function M.validate_catalog(value)
     executable_case.design_case_id = nil
     validate_case(executable_case, seen, false)
   end
+  if (value.external_case_mapping_ref == nil) ~= (value.external_case_mapping_sha256 == nil) then
+    fail("malformed-catalog", "external case mapping pointer and digest must be paired")
+  end
+  if value.external_case_mapping_ref ~= nil then
+    pointer(value.external_case_mapping_ref, "external_case_mapping_ref")
+    digest(value.external_case_mapping_sha256, "external_case_mapping_sha256")
+  end
   if not bounded(value.trace_id, 180) or not bounded(value.dedup_key, 180) then fail("malformed-catalog", "catalog identity is invalid") end
+  return value
+end
+
+function M.validate_external_case_mapping(value)
+  only_fields(value, {
+    schema = true, repository = true, source_intake_ref = true, source_intake_sha256 = true,
+    entries = true, trace_id = true, dedup_key = true,
+  }, "external-case-mapping")
+  if value.schema ~= M.schemas.external_case_mapping then fail("unknown-schema", "external case mapping schema") end
+  validate_repository(value.repository, "external-case-mapping-repository")
+  pointer(value.source_intake_ref, "source_intake_ref")
+  digest(value.source_intake_sha256, "source_intake_sha256")
+  if not dense(value.entries, max_cases, true) then
+    fail("malformed-external-case-mapping", "mapping entries must be bounded and non-empty")
+  end
+  local proposed_seen, catalog_seen = {}, {}
+  for _, entry in ipairs(value.entries) do
+    only_fields(entry, {
+      proposed_case_id = true, proposed_case_sha256 = true, status = true,
+      catalog_case_id = true, catalog_case_sha256 = true, rejection_reason = true,
+    }, "external-case-mapping-entry")
+    if not bounded(entry.proposed_case_id, 180) or proposed_seen[entry.proposed_case_id] then
+      fail("malformed-external-case-mapping", "proposed case identity must be unique and bounded")
+    end
+    proposed_seen[entry.proposed_case_id] = true
+    digest(entry.proposed_case_sha256, "proposed_case_sha256")
+    if entry.status == "mapped" then
+      if not bounded(entry.catalog_case_id, 180) or catalog_seen[entry.catalog_case_id]
+        or entry.rejection_reason ~= nil then
+        fail("malformed-external-case-mapping", "mapped entries require a unique catalog case")
+      end
+      digest(entry.catalog_case_sha256, "catalog_case_sha256")
+      catalog_seen[entry.catalog_case_id] = true
+    elseif entry.status == "rejected" then
+      if entry.catalog_case_id ~= nil or entry.catalog_case_sha256 ~= nil
+        or not bounded(entry.rejection_reason, 512) then
+        fail("malformed-external-case-mapping", "rejected entries require an explicit reason")
+      end
+    else
+      fail("malformed-external-case-mapping", "mapping status is unsupported")
+    end
+  end
+  if not bounded(value.trace_id, 180) or not bounded(value.dedup_key, 180) then
+    fail("malformed-external-case-mapping", "mapping identity is invalid")
+  end
   return value
 end
 
@@ -306,7 +363,8 @@ function M.validate_plan(value)
   only_fields(value, {
     schema = true, execution_mode = true, repository = true, environment_receipt_sha256 = true,
     browser_readiness_sha256 = true, case_catalog_sha256 = true, module_plan_sha256 = true, cases = true,
-    residual_risk_case_ids = true, trace_id = true, dedup_key = true,
+    residual_risk_case_ids = true, external_case_mapping_ref = true,
+    external_case_mapping_sha256 = true, trace_id = true, dedup_key = true,
   }, "plan")
   if value.schema ~= M.schemas.plan then fail("unknown-schema", "structured plan schema") end
   if value.execution_mode ~= "structured-api-cli" and value.execution_mode ~= "agentic-browser" then
@@ -332,6 +390,13 @@ function M.validate_plan(value)
   end
   if not dense(value.residual_risk_case_ids or {}, max_cases, false) then fail("malformed-plan", "residual risks must be bounded") end
   for _, case_id in ipairs(value.residual_risk_case_ids or {}) do if not bounded(case_id, 180) then fail("malformed-plan", "residual risk case ID is invalid") end end
+  if (value.external_case_mapping_ref == nil) ~= (value.external_case_mapping_sha256 == nil) then
+    fail("malformed-plan", "external case mapping pointer and digest must be paired")
+  end
+  if value.external_case_mapping_ref ~= nil then
+    pointer(value.external_case_mapping_ref, "external_case_mapping_ref")
+    digest(value.external_case_mapping_sha256, "external_case_mapping_sha256")
+  end
   if not bounded(value.trace_id, 180) or not bounded(value.dedup_key, 180) then fail("malformed-plan", "plan identity is invalid") end
   return value
 end

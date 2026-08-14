@@ -359,6 +359,7 @@ local finalize_fields = {
   browser_readiness_ref = true, browser_readiness_sha256 = true,
   cleanup_receipt_ref = true, cleanup_receipt_sha256 = true, aggregate_report_ref = true,
   terminal_summary_ref = true, terminal_summary_sha256 = true,
+  external_case_mapping_ref = true, external_case_mapping_sha256 = true,
   defect_publication_receipt_ref = true, defect_publication_receipt_sha256 = true,
   trace_id = true, dedup_key = true, channel = true,
 }
@@ -392,6 +393,13 @@ local function validate_finalize_request(request)
   end
   for _, field in ipairs({ "terminal_summary_sha256", "environment_receipt_sha256", "cleanup_receipt_sha256" }) do
     if not digest(request[field]) then error("test-publication: qa: invalid finalize digest " .. field) end
+  end
+  if (request.external_case_mapping_ref == nil) ~= (request.external_case_mapping_sha256 == nil)
+    or (request.external_case_mapping_ref ~= nil
+      and (not safe_pointer(request.external_case_mapping_ref)
+        or request.external_case_mapping_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/"
+        or not digest(request.external_case_mapping_sha256))) then
+    error("test-publication: qa: malformed external case mapping pointer")
   end
   local has_readiness = request.browser_readiness_ref ~= nil or request.browser_readiness_sha256 ~= nil
   if has_readiness ~= (request.browser_readiness_ref ~= nil and request.browser_readiness_sha256 ~= nil) then
@@ -476,6 +484,7 @@ local function validate_terminal_summary(summary, request, full)
     counts = true, environment_receipt_ref = true, cleanup_receipt_ref = true,
     browser_readiness_ref = true, browser_readiness_sha256 = true,
     module_plan_ref = true, structured_plan_ref = true, case_results_ref = true,
+    external_case_mapping_ref = true, external_case_mapping_sha256 = true,
     interruption = true, trace_id = true, dedup_key = true,
   }, "terminal summary")
   only_fields(summary.repository, { slug = true, url = true, commit_sha = true }, "terminal summary repository")
@@ -497,6 +506,8 @@ local function validate_terminal_summary(summary, request, full)
     or summary.cleanup_receipt_ref ~= request.cleanup_receipt_ref
     or summary.browser_readiness_ref ~= request.browser_readiness_ref
     or summary.browser_readiness_sha256 ~= request.browser_readiness_sha256
+    or summary.external_case_mapping_ref ~= request.external_case_mapping_ref
+    or summary.external_case_mapping_sha256 ~= request.external_case_mapping_sha256
     or summary.trace_id ~= request.trace_id or summary.dedup_key ~= request.dedup_key then
     error("test-publication: qa: terminal summary binding is invalid")
   end
@@ -557,11 +568,18 @@ local function reconcile(plan, results, request, repository)
   local plan_ok = pcall(structured_contract.validate_plan, plan)
   local malformed = not plan_ok or results.schema ~= "testing-structured-case-results.v1" or not dense_list(results.cases)
   if malformed then error("test-publication: qa: malformed plan or case results") end
+  if #(plan.residual_risk_case_ids or {}) > 0 then
+    error("test-publication: qa: full finalization cannot contain residual plan risk")
+  end
   if not same_repository(plan.repository, repository)
     or plan.environment_receipt_sha256 ~= request.environment_receipt_sha256
     or plan.browser_readiness_sha256 ~= request.browser_readiness_sha256
     or plan.trace_id ~= request.trace_id or plan.dedup_key ~= request.dedup_key
-    or results.plan_sha256 ~= request.test_plan_sha256 then
+    or results.plan_sha256 ~= request.test_plan_sha256
+    or plan.external_case_mapping_ref ~= request.external_case_mapping_ref
+    or plan.external_case_mapping_sha256 ~= request.external_case_mapping_sha256
+    or results.external_case_mapping_ref ~= request.external_case_mapping_ref
+    or results.external_case_mapping_sha256 ~= request.external_case_mapping_sha256 then
     error("test-publication: qa: case results do not belong to the immutable plan")
   end
   local planned = {}
@@ -587,6 +605,39 @@ local function reconcile(plan, results, request, repository)
   end
   if counts.executed ~= counts.planned then error("test-publication: qa: planned cases lack terminal dispositions") end
   return counts, classifications, evidence_refs
+end
+
+local function external_case_traceability(mapping, request, plan, results, aggregate_status)
+  if mapping == nil then return {} end
+  local planned, completed = {}, {}
+  for _, case in ipairs((plan and plan.cases) or {}) do planned[case.case_id] = true end
+  for _, result in ipairs((results and results.cases) or {}) do completed[result.case_id] = result end
+  local traceability = {}
+  for _, entry in ipairs(mapping.entries) do
+    local result = entry.catalog_case_id and completed[entry.catalog_case_id] or nil
+    local item = {
+      proposed_case_id = entry.proposed_case_id,
+      proposed_case_sha256 = entry.proposed_case_sha256,
+      source_intake_ref = mapping.source_intake_ref,
+      source_intake_sha256 = mapping.source_intake_sha256,
+      mapping_status = entry.status,
+      catalog_case_id = entry.catalog_case_id,
+      catalog_case_sha256 = entry.catalog_case_sha256,
+      structured_plan_case_id = entry.catalog_case_id and planned[entry.catalog_case_id]
+        and entry.catalog_case_id or nil,
+      structured_plan_sha256 = entry.catalog_case_id and planned[entry.catalog_case_id]
+        and request.test_plan_sha256 or nil,
+      case_results_ref = result and request.case_results_ref or nil,
+      case_results_sha256 = result and request.case_results_sha256 or nil,
+      evidence_ref = result and result.evidence_ref or nil,
+      final_status = entry.status == "rejected" and "rejected"
+        or (result and result.status or "not-executed"),
+      aggregate_status = aggregate_status,
+      rejection_reason = entry.rejection_reason,
+    }
+    table.insert(traceability, item)
+  end
+  return traceability
 end
 
 local function publish_source(request, ports, ref, source_digest, stage)
@@ -685,14 +736,27 @@ function M.prepare_final_report(request, ports)
     end
   end
   local counts, classifications, evidence_refs = summary_counts, {}, {}
-  local execution_mode
+  local execution_mode, plan, results
   if full then
-    local plan = load_bound(ports, request.test_plan_ref, request.test_plan_sha256, "test plan")
-    local results = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+    plan = load_bound(ports, request.test_plan_ref, request.test_plan_sha256, "test plan")
+    results = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
     execution_mode = plan.execution_mode
     counts, classifications, evidence_refs = reconcile(plan, results, request, repository)
     if not structured_contract.equal(counts, summary_counts) then
       error("test-publication: qa: terminal summary counts differ from reconciled results")
+    end
+  end
+  local external_mapping
+  if request.external_case_mapping_ref ~= nil then
+    external_mapping = load_bound(ports, request.external_case_mapping_ref,
+      request.external_case_mapping_sha256, "external case mapping")
+    structured_contract.validate_external_case_mapping(external_mapping)
+    load_bound(ports, external_mapping.source_intake_ref,
+      external_mapping.source_intake_sha256, "external case intake")
+    if not structured_contract.same_repository(external_mapping.repository, repository)
+      or external_mapping.trace_id ~= request.trace_id
+      or external_mapping.dedup_key ~= request.dedup_key then
+      error("test-publication: qa: external case mapping does not belong to the run")
     end
   end
   local channel = request_channel(request)
@@ -719,6 +783,11 @@ function M.prepare_final_report(request, ports)
     links.test_plan = publication_location(plan_publication, channel)
     links.case_results = publication_location(results_publication, channel)
   end
+  if external_mapping ~= nil then
+    local mapping_publication = publish_source(request, ports, request.external_case_mapping_ref,
+      request.external_case_mapping_sha256, "aggregate-source-external-case-mapping")
+    links.external_case_mapping = publication_location(mapping_publication, channel)
+  end
   local status
   if full then
     status = counts.failed > 0 and "failed"
@@ -741,6 +810,10 @@ function M.prepare_final_report(request, ports)
     classifications = classifications,
     defect_issue_links = defect_links(request, ports),
     evidence_refs = evidence_refs,
+    external_case_mapping_ref = request.external_case_mapping_ref,
+    external_case_mapping_sha256 = request.external_case_mapping_sha256,
+    external_case_traceability = external_case_traceability(
+      external_mapping, request, plan, results, status),
     artifact_links = links,
     residual_risks = counts.skipped + counts.error + counts.blocked,
     environment_receipt_ref = request.environment_receipt_ref,

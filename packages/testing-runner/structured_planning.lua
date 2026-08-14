@@ -61,6 +61,35 @@ local function compile_inner(request, ports)
     or catalog.trace_id ~= request.trace_id or catalog.dedup_key ~= request.dedup_key then
     error("testing-runner: structured-planning: case catalog does not belong to this run")
   end
+  local external_mapping
+  if catalog.external_case_mapping_ref ~= nil then
+    external_mapping = load_bound(ports, catalog.external_case_mapping_ref,
+      catalog.external_case_mapping_sha256, "external case mapping")
+    contract.validate_external_case_mapping(external_mapping)
+    load_bound(ports, external_mapping.source_intake_ref,
+      external_mapping.source_intake_sha256, "external case intake")
+    if not contract.same_repository(external_mapping.repository, request.repository)
+      or external_mapping.trace_id ~= request.trace_id
+      or external_mapping.dedup_key ~= request.dedup_key then
+      error("testing-runner: structured-planning: external case mapping does not belong to this run")
+    end
+    local catalog_by_id, catalog_by_design_id = {}, {}
+    for _, case in ipairs(catalog.cases) do
+      catalog_by_id[case.case_id] = case
+      catalog_by_design_id[case.design_case_id] = case
+    end
+    for _, entry in ipairs(external_mapping.entries) do
+      local mapped_case = catalog_by_design_id[entry.proposed_case_id]
+      if entry.status == "mapped" then
+        if mapped_case == nil or mapped_case.case_id ~= entry.catalog_case_id
+          or catalog_by_id[entry.catalog_case_id] ~= mapped_case then
+          error("testing-runner: structured-planning: external case mapping differs from catalog")
+        end
+      elseif mapped_case ~= nil then
+        error("testing-runner: structured-planning: rejected external case appears in catalog")
+      end
+    end
+  end
   environment_contract.validate_receipt(environment)
   if environment.status ~= "ready"
     or not contract.same_repository(environment.repository, request.repository)
@@ -111,6 +140,8 @@ local function compile_inner(request, ports)
     module_plan_sha256 = request.module_plan_sha256,
     cases = cases,
     residual_risk_case_ids = residual,
+    external_case_mapping_ref = catalog.external_case_mapping_ref,
+    external_case_mapping_sha256 = catalog.external_case_mapping_sha256,
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }

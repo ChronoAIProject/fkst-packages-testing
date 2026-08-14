@@ -479,6 +479,8 @@ function M.run(request, ports)
     if ports.write_artifact(case_results_path, {
       schema = "testing-structured-case-results.v1",
       plan_sha256 = plan.digest,
+      external_case_mapping_ref = plan.value.external_case_mapping_ref,
+      external_case_mapping_sha256 = plan.value.external_case_mapping_sha256,
       cases = case_results,
     }) ~= true then error("testing-runner: structured-execution: case results write failed") end
     local execution = {
