@@ -145,7 +145,6 @@ local function run_case(case)
       error("generic-host startup redrive test: " .. case.name .. " did not reach terminal\nstdout="
         .. tostring(process.read_file(stdout_path)) .. "\nstderr=" .. tostring(process.read_file(stderr_path)))
     end
-    process.stop_live(pid, live_pids)
     local child_root = context.host_root .. "/framework-runtime-startup-" .. case.name
       .. "/logs/framework-child"
     assert_child_marker(child_root, "generic-host.workflow_qa_supervisor-",
@@ -155,6 +154,7 @@ local function run_case(case)
     assert_child_marker(child_root, "", case.marker, case.name)
     assert_child_marker(child_root, "local-qa-host-adapter.terminal-",
       "local-qa-host dept=terminal tag=RECORDED run_id=" .. context.run_id, case.name)
+    process.stop_live(pid, live_pids)
 
     local recovered, terminal_state = assert_terminal(context)
     t.is_true(support.equal(recovered.request, request_binding))

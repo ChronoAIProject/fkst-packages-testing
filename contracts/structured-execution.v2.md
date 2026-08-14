@@ -8,6 +8,9 @@ The plan declares exactly one execution mode:
 - `agentic-browser`: exactly one bounded `browser` case.
 
 Mixed browser and API/CLI execution is invalid. Browser plans never enter the fixed API/CLI executor.
+Browser cases carry bounded `completion_assertions` that bind reviewed assertion IDs, types,
+requiredness, and exact supported Host completion fields. The runner evaluates this explicit
+authority and never interprets prose success conditions as executable assertions.
 
 ## Planning
 

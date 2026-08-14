@@ -191,8 +191,7 @@ function M.validate_grant(value, now)
   return value
 end
 
-function M.derive_grant(preauthorization, preauthorization_sha256, plan, plan_sha256,
-  environment_receipt_sha256, request, values)
+function M.derive_grant(preauthorization, preauthorization_sha256, plan, plan_sha256, environment_receipt_sha256, request, values)
   structured.validate_preauthorization(preauthorization, values and values.now)
   structured.validate_plan(plan)
   structured.validate_grant_request(request)
@@ -317,6 +316,11 @@ function M.validate_observation(value)
       or value[field] ~= math.floor(value[field]) then fail("malformed-observation", field .. " is invalid") end
   end
   return value
+end
+
+function M.document_digest(observation)
+  M.validate_observation(observation)
+  return observation.document_token
 end
 
 function M.validate_action(value, allowed_actions, approved_secret_refs)

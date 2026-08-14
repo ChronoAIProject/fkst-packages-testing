@@ -10,6 +10,7 @@ R.schemas = {
   case_result = "testing-case-result.v2",
   case_result_set = "testing-case-result-set.v2",
 }
+R.repository_source_kinds = { git = "git" }
 R.canonicalization = "fkst-testing-results-canonical-json.v1"
 R.execution_modes = { cli = true, http = true, browser = true }
 R.execution_statuses = { passed = true, failed = true, skipped = true, error = true, blocked = true, lost = true }
