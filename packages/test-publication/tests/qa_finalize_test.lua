@@ -11,6 +11,8 @@ local report_sha = string.rep("f", 64)
 local terminal_sha = string.rep("6", 64)
 local catalog_sha = string.rep("7", 64)
 local module_plan_sha = string.rep("8", 64)
+local external_mapping_sha = string.rep("2", 64)
+local external_intake_sha = string.rep("3", 64)
 
 local function request(channel)
   local root = ".testing/runs/qa-run-final"
@@ -135,6 +137,8 @@ local function plan(value)
       { case_id = "version", kind = "cli", argv = { "fixture", "--version" }, timeout_seconds = 10, assertions = { { type = "exit-code", expected = 0 } } },
     },
     residual_risk_case_ids = {},
+    external_case_mapping_ref = value.external_case_mapping_ref,
+    external_case_mapping_sha256 = value.external_case_mapping_sha256,
     trace_id = value.trace_id,
     dedup_key = value.dedup_key,
   }
@@ -158,6 +162,8 @@ local function terminal_summary(value, status, terminal_counts)
     browser_readiness_sha256 = value.browser_readiness_sha256,
     structured_plan_ref = value.test_plan_ref,
     case_results_ref = value.case_results_ref,
+    external_case_mapping_ref = value.external_case_mapping_ref,
+    external_case_mapping_sha256 = value.external_case_mapping_sha256,
     trace_id = value.trace_id,
     dedup_key = value.dedup_key,
   }
@@ -181,6 +187,8 @@ local function runtime(mutate, supplied, options)
   if value.case_results_ref ~= nil then
     artifacts[value.case_results_ref] = { digest = results_sha, value = {
       schema = "testing-structured-case-results.v1", plan_sha256 = plan_sha,
+      external_case_mapping_ref = value.external_case_mapping_ref,
+      external_case_mapping_sha256 = value.external_case_mapping_sha256,
       cases = {
         { case_id = "health", kind = "http", status = "passed", classification = "passed", evidence_ref = value.artifact_root .. "/evidence/health.json" },
         { case_id = "version", kind = "cli", status = "failed", classification = "product-defect", evidence_ref = value.artifact_root .. "/evidence/version.json" },
@@ -241,6 +249,40 @@ local function runtime(mutate, supplied, options)
   }
 end
 
+local function add_external_mapping(artifacts, value)
+  local intake_ref = value.artifact_root .. "/external-case-intake.json"
+  artifacts[intake_ref] = {
+    digest = external_intake_sha,
+    value = { cases = { { id = "external-health" }, { id = "external-unsupported" } } },
+  }
+  artifacts[value.external_case_mapping_ref] = {
+    digest = value.external_case_mapping_sha256,
+    value = {
+      schema = "testing-external-case-mapping.v1",
+      repository = { url = repository().url, commit_sha = commit_sha },
+      source_intake_ref = intake_ref,
+      source_intake_sha256 = external_intake_sha,
+      entries = {
+        {
+          proposed_case_id = "external-health",
+          proposed_case_sha256 = string.rep("4", 64),
+          status = "mapped",
+          catalog_case_id = "health",
+          catalog_case_sha256 = string.rep("5", 64),
+        },
+        {
+          proposed_case_id = "external-unsupported",
+          proposed_case_sha256 = string.rep("6", 64),
+          status = "rejected",
+          rejection_reason = "host-has-no-authorized-execution-mapping",
+        },
+      },
+      trace_id = value.trace_id,
+      dedup_key = value.dedup_key,
+    },
+  }
+end
+
 local function terminal_request()
   local value = request()
   rawset(value, "test" .. "_plan_ref", nil)
@@ -266,6 +308,14 @@ return {
     local unsafe_pointer = request()
     unsafe_pointer.terminal_summary_ref = ".testing/runs/foreign/terminal-summary.json"
     t.raises(function() qa_publication.prepare_final_report(unsafe_pointer, runtime()) end)
+
+    local invalid_mapping_digest = request()
+    invalid_mapping_digest.external_case_mapping_ref = invalid_mapping_digest.artifact_root
+      .. "/external-case-mapping.json"
+    invalid_mapping_digest.external_case_mapping_sha256 = "bad"
+    t.raises(function()
+      qa_publication.prepare_final_report(invalid_mapping_digest, runtime(nil, invalid_mapping_digest))
+    end)
 
     local digest_mismatch = runtime(function(artifacts, value)
       artifacts[value.terminal_summary_ref].digest = string.rep("0", 64)
@@ -293,20 +343,65 @@ return {
       artifacts[value.environment_receipt_ref].value.repository.commit_sha = string.rep("2", 40)
     end)
     t.raises(function() qa_publication.prepare_final_report(request(), foreign_environment) end)
+
+    local residual_plan = runtime(function(artifacts, value)
+      artifacts[value.test_plan_ref].value.residual_risk_case_ids = { "external-unmapped" }
+    end)
+    t.raises(function() qa_publication.prepare_final_report(request(), residual_plan) end)
+  end,
+
+  test_external_case_mapping_is_published_with_terminal_traceability = function()
+    local value = request()
+    value.external_case_mapping_ref = value.artifact_root .. "/external-case-mapping.json"
+    value.external_case_mapping_sha256 = external_mapping_sha
+    local ports = runtime(add_external_mapping, value)
+    local prepared = qa_publication.prepare_final_report(value, ports)
+
+    t.eq(prepared.report.external_case_mapping_ref, value.external_case_mapping_ref)
+    t.eq(prepared.report.external_case_mapping_sha256, value.external_case_mapping_sha256)
+    t.is_true(prepared.report.artifact_links.external_case_mapping ~= nil)
+    t.eq(#prepared.report.external_case_traceability, 2)
+    local mapped = prepared.report.external_case_traceability[1]
+    t.eq(mapped.proposed_case_id, "external-health")
+    t.eq(mapped.mapping_status, "mapped")
+    t.eq(mapped.structured_plan_case_id, "health")
+    t.eq(mapped.case_results_ref, value.case_results_ref)
+    t.eq(mapped.evidence_ref, value.artifact_root .. "/evidence/health.json")
+    t.eq(mapped.final_status, "passed")
+    local rejected = prepared.report.external_case_traceability[2]
+    t.eq(rejected.mapping_status, "rejected")
+    t.eq(rejected.final_status, "rejected")
+    t.eq(rejected.case_results_ref, nil)
+    t.eq(rejected.rejection_reason, "host-has-no-authorized-execution-mapping")
+  end,
+
+  test_external_case_mapping_from_a_foreign_run_fails_closed = function()
+    local value = request()
+    value.external_case_mapping_ref = value.artifact_root .. "/external-case-mapping.json"
+    value.external_case_mapping_sha256 = external_mapping_sha
+    local ports = runtime(function(artifacts, supplied)
+      add_external_mapping(artifacts, supplied)
+      artifacts[supplied.external_case_mapping_ref].value.dedup_key = "foreign-dedup"
+    end, value)
+    t.raises(function() qa_publication.prepare_final_report(value, ports) end)
   end,
 
   test_final_report_rejects_malformed_environment_receipt = function()
     local ports = runtime(function(artifacts, value)
       artifacts[value.environment_receipt_ref].value.schema = "unknown"
     end)
-    t.raises(function() qa_publication.prepare_final_report(request(), ports) end)
+    local ok, err = pcall(qa_publication.prepare_final_report, request(), ports)
+    t.eq(ok, false)
+    t.is_true(tostring(err):find("environment or cleanup receipt is malformed", 1, true) ~= nil)
   end,
 
   test_final_report_rejects_malformed_cleanup_receipt = function()
     local ports = runtime(function(artifacts, value)
       artifacts[value.cleanup_receipt_ref].value.schema = "unknown"
     end)
-    t.raises(function() qa_publication.prepare_final_report(request(), ports) end)
+    local ok, err = pcall(qa_publication.prepare_final_report, request(), ports)
+    t.eq(ok, false)
+    t.is_true(tostring(err):find("environment or cleanup receipt is malformed", 1, true) ~= nil)
   end,
 
   test_full_finalization_rejects_valid_non_ready_environment = function()

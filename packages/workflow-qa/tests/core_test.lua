@@ -745,6 +745,18 @@ local tests = {
       end
       expect_failure("compiled plan binding differs", function() core.handle_plan_result(result, request, ports) end)
     end
+    do
+      local request, ports, state, put, artifacts = module_pending()
+      core.handle_module_terminal(module_terminal(request, put), request, ports)
+      release_checkpoint(request, ports, state, "testing-runner.structured_plan_request")
+      local result = plan_result(request, put)
+      local plan = artifacts[result.plan_ref].value
+      plan.external_case_mapping_ref = request.artifact_root .. "/external-case-mapping.json"
+      plan.external_case_mapping_sha256 = digest("9")
+      expect_failure("external case mapping binding differs", function()
+        core.handle_plan_result(result, request, ports)
+      end)
+    end
   end,
 
 }
