@@ -179,6 +179,9 @@ return {
       trace_id = "trace-browser", dedup_key = "dedup-browser",
     }
     structured.validate_plan(plan)
+    local wrong_mode = structured.copy(plan)
+    wrong_mode.execution_mode = "structured-api-cli"
+    t.raises(function() structured.validate_plan(wrong_mode) end)
     local no_required = structured.copy(plan)
     for _, assertion in ipairs(no_required.cases[1].completion_assertions) do assertion.required = false end
     t.raises(function() structured.validate_plan(no_required) end)

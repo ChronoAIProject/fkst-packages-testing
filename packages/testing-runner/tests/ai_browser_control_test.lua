@@ -429,6 +429,124 @@ return {
     t.eq(roles["runner-log"], true)
   end,
 
+  test_evidence_and_canonical_result_write_failures_are_fail_closed = function()
+    for _, suffix in ipairs({
+      "/evidence/browser-observation-1.json",
+      "/evidence-manifest.json",
+    }) do
+      local request, artifacts, grant = fixture()
+      local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
+      local write_artifact = runtime.write_artifact
+      runtime.write_artifact = function(path, value)
+        if path == request.artifact_root .. suffix then return false end
+        return write_artifact(path, value)
+      end
+      local result = controller.run(request, runtime)
+      t.eq(result.status, "blocked")
+      t.is_true(result.message:find("artifact write failed", 1, true) ~= nil)
+    end
+  end,
+
+  test_optional_evidence_rejects_missing_and_mismatched_metadata = function()
+    do
+      local request, artifacts, grant = fixture()
+      local screenshot_path = request.artifact_root .. "/browser-runtime/turn-1-screenshot.png"
+      local runtime = ports(request, artifacts, grant, {
+        observe = function(turn)
+          return observation(turn, { callback = true }), { screenshot = screenshot_path }
+        end,
+      })
+      local result = controller.run(request, runtime)
+      t.eq(result.status, "blocked")
+      t.is_true(result.message:find("optional evidence metadata is unavailable", 1, true) ~= nil)
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local screenshot_path = request.artifact_root .. "/browser-runtime/turn-1-screenshot.png"
+      artifacts[screenshot_path] = { digest = digest("a") }
+      local runtime = ports(request, artifacts, grant, {
+        observe = function(turn)
+          return observation(turn, { callback = true }), {
+            screenshot = screenshot_path,
+            artifact_metadata = { screenshot = { sha256 = digest("b"), size_bytes = 24 } },
+          }
+        end,
+      })
+      local result = controller.run(request, runtime)
+      t.eq(result.status, "blocked")
+      t.is_true(result.message:find("optional evidence metadata differs", 1, true) ~= nil)
+    end
+  end,
+
+  test_malformed_observation_is_terminal_without_ai_or_effect = function()
+    local request, artifacts, grant = fixture()
+    local ai_calls = 0
+    local runtime, writes = ports(request, artifacts, grant, {
+      observe = function(turn)
+        local value = observation(turn)
+        value.turn = 0
+        return value, {}
+      end,
+      ai_turn = function() ai_calls = ai_calls + 1 end,
+    })
+    local result = controller.run(request, runtime)
+    t.eq(result.status, "blocked")
+    t.eq(result.classification, "unsafe-browser-observation")
+    t.eq(ai_calls, 0)
+    t.eq(canonical_case(request, writes).non_execution_reason, "unsafe-browser-observation")
+  end,
+
+  test_observation_interruptions_before_and_after_an_action_are_distinct = function()
+    do
+      local request, artifacts, grant = fixture()
+      local runtime, writes = ports(request, artifacts, grant, {
+        observe = function() error("observation unavailable") end,
+      })
+      controller.run(request, runtime)
+      local case_result = canonical_case(request, writes)
+      t.eq(case_result.execution_status, "error")
+      t.eq(case_result.error.code, "browser-observation-failed")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local runtime, writes = ports(request, artifacts, grant, {
+        observe = function(turn)
+          if turn == 2 then error("observation lost after action") end
+          return observation(turn), {}
+        end,
+      })
+      controller.run(request, runtime)
+      local case_result = canonical_case(request, writes)
+      t.eq(case_result.execution_status, "lost")
+      t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
+    end
+  end,
+
+  test_invalid_completion_before_and_after_an_action_is_fail_closed = function()
+    do
+      local request, artifacts, grant = fixture()
+      local runtime, writes = ports(request, artifacts, grant, {
+        observe = function(turn) return observation(turn, { callback = true }), {} end,
+        completion = { callback_observed = true },
+      })
+      controller.run(request, runtime)
+      local case_result = canonical_case(request, writes)
+      t.eq(case_result.execution_status, "error")
+      t.eq(case_result.error.code, "invalid-browser-completion")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local runtime, writes = ports(request, artifacts, grant, {
+        callback_turn = 1,
+        completion = { callback_observed = true },
+      })
+      controller.run(request, runtime)
+      local case_result = canonical_case(request, writes)
+      t.eq(case_result.execution_status, "lost")
+      t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
+    end
+  end,
+
   test_completed_grant_replay_performs_no_observation = function()
     local request, artifacts, grant = fixture()
     local replayed = {

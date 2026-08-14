@@ -97,9 +97,7 @@ local function compile_inner(request, ports)
   validate_local_http_cases(cases, environment.base_url)
   local browser_count = 0
   for _, case in ipairs(cases) do if case.kind == "browser" then browser_count = browser_count + 1 end end
-  if browser_count > 0 and (browser_count ~= 1 or #cases ~= 1) then
-    error("testing-runner: structured-planning: browser execution cannot be mixed with fixed execution")
-  end
+  if browser_count > 0 and (browser_count ~= 1 or #cases ~= 1) then error("testing-runner: structured-planning: browser execution cannot be mixed with fixed execution") end
 
   local plan = {
     schema = contract.schemas.plan,

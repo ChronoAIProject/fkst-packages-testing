@@ -191,8 +191,7 @@ function M.validate_grant(value, now)
   return value
 end
 
-function M.derive_grant(preauthorization, preauthorization_sha256, plan, plan_sha256,
-  environment_receipt_sha256, request, values)
+function M.derive_grant(preauthorization, preauthorization_sha256, plan, plan_sha256, environment_receipt_sha256, request, values)
   structured.validate_preauthorization(preauthorization, values and values.now)
   structured.validate_plan(plan)
   structured.validate_grant_request(request)

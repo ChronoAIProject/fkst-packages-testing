@@ -552,14 +552,9 @@ local function run_inner(request, ports)
       return terminal({ kind = "time_budget_exhausted" })
     end
     local observed, observation, runtime_paths = pcall(observe, context, turn)
-    if not observed then
-      return terminal({ kind = #steps > 0 and "assertion_lost" or "controller_interrupted",
-        reason = #steps > 0 and nil or "browser-observation-failed", message = observation })
-    end
+    if not observed then return terminal({ kind = #steps > 0 and "assertion_lost" or "controller_interrupted", reason = #steps > 0 and nil or "browser-observation-failed", message = observation }) end
     local valid_observation, observation_error = pcall(browser_contract.validate_observation, observation)
-    if not valid_observation then
-      return terminal({ kind = "unsafe_observation", reason = "unsafe-browser-observation", message = observation_error })
-    end
+    if not valid_observation then return terminal({ kind = "unsafe_observation", reason = "unsafe-browser-observation", message = observation_error }) end
     table.insert(raw_observations, {
       case_id = plan.cases[1].case_id, phase = "before-action", value = copy(observation),
       runtime_paths = copy(runtime_paths), artifact_metadata = copy(runtime_paths and runtime_paths.artifact_metadata),
@@ -570,15 +565,9 @@ local function run_inner(request, ports)
     end
     if observation.signals.callback_detected then
       local verified, verified_completion = pcall(ports.verify_completion, request)
-      if not verified then
-        return terminal({ kind = #steps > 0 and "assertion_lost" or "callback_detection_failed",
-          reason = #steps > 0 and nil or "callback-verification-failed", message = verified_completion })
-      end
+      if not verified then return terminal({ kind = #steps > 0 and "assertion_lost" or "callback_detection_failed", reason = #steps > 0 and nil or "callback-verification-failed", message = verified_completion }) end
       local valid_completion, completion_error = pcall(browser_contract.validate_completion, verified_completion)
-      if not valid_completion then
-        return terminal({ kind = #steps > 0 and "assertion_lost" or "callback_detection_failed",
-          reason = #steps > 0 and nil or "invalid-browser-completion", message = completion_error })
-      end
+      if not valid_completion then return terminal({ kind = #steps > 0 and "assertion_lost" or "callback_detection_failed", reason = #steps > 0 and nil or "invalid-browser-completion", message = completion_error }) end
       completion = verified_completion
       return terminal({ kind = required_completion_passed(plan.cases[1], completion)
         and "passed" or "deterministic_completion_failed", reason = "browser-completion-asserted" })
@@ -593,9 +582,7 @@ local function run_inner(request, ports)
     end
     seen_actions[key] = true
     local acted, step = pcall(act, context, turn, action, runtime_paths)
-    if not acted then
-      return terminal({ kind = "assertion_lost", message = step })
-    end
+    if not acted then return terminal({ kind = "assertion_lost", message = step }) end
     local valid_step, step_error = pcall(browser_contract.validate_step_receipt, step, grant)
     if not valid_step then return terminal({ kind = "assertion_lost", message = step_error }) end
     table.insert(steps, step)
