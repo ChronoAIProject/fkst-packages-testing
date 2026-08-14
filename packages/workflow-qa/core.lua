@@ -64,6 +64,8 @@ local function validate_authorization_chain(request, ports)
     or receipt.profile_revision ~= profile.revision
     or not execution_contract.same_repository(profile.repository, request.repository)
     or preauthorization.case_catalog_sha256 ~= execution.case_catalog_sha256
+    or catalog.external_case_mapping_ref ~= execution.external_case_mapping_ref
+    or catalog.external_case_mapping_sha256 ~= execution.external_case_mapping_sha256
     or preauthorization.trace_id ~= request.trace_id or preauthorization.dedup_key ~= request.dedup_key
     or catalog.trace_id ~= request.trace_id or catalog.dedup_key ~= request.dedup_key
     or receipt.trace_id ~= request.trace_id or receipt.dedup_key ~= request.dedup_key
@@ -80,6 +82,8 @@ local function validate_authorization_chain(request, ports)
     preauthorization_ref = execution.preauthorization_ref,
     preauthorization_sha256 = execution.preauthorization_sha256,
     case_catalog_sha256 = execution.case_catalog_sha256,
+    external_case_mapping_ref = execution.external_case_mapping_ref,
+    external_case_mapping_sha256 = execution.external_case_mapping_sha256,
   }
 end
 
@@ -193,6 +197,8 @@ local function terminal_summary(state, ports, status)
     module_plan_ref = state.artifacts.module_plan_ref,
     structured_plan_ref = state.artifacts.structured_plan_ref,
     case_results_ref = state.artifacts.case_results_ref,
+    external_case_mapping_ref = state.authorization.external_case_mapping_ref,
+    external_case_mapping_sha256 = state.authorization.external_case_mapping_sha256,
     interruption = state.interruption_requested,
     trace_id = state.request.trace_id,
     dedup_key = state.request.dedup_key,
@@ -454,6 +460,16 @@ function M.handle_plan_result(payload, request, supplied_ports)
   state.digests[payload.plan_ref] = payload.plan_sha256
   state.execution_mode = plan.execution_mode
   state.residual_risk_count = payload.residual_risk_count
+  if payload.residual_risk_count ~= #(plan.residual_risk_case_ids or {}) then
+    error("workflow-qa: foreign-plan-result: residual risk count differs from plan")
+  end
+  if plan.external_case_mapping_ref ~= state.authorization.external_case_mapping_ref
+    or plan.external_case_mapping_sha256 ~= state.authorization.external_case_mapping_sha256 then
+    error("workflow-qa: foreign-plan-result: external case mapping binding differs")
+  end
+  if payload.residual_risk_count > 0 then
+    return begin_cleanup(state, "blocked", ports)
+  end
   local grant_request = {
     schema = execution_contract.schemas.grant_request,
     execution_mode = plan.execution_mode,
@@ -744,6 +760,8 @@ prepare_finalization = function(state, ports)
     browser_readiness_sha256 = state.artifacts.browser_readiness_ref
       and state.digests[state.artifacts.browser_readiness_ref] or nil,
     aggregate_report_ref = request.publication.aggregate_report_ref,
+    external_case_mapping_ref = state.authorization.external_case_mapping_ref,
+    external_case_mapping_sha256 = state.authorization.external_case_mapping_sha256,
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }

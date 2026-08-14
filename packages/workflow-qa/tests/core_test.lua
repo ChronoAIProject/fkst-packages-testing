@@ -671,11 +671,11 @@ local tests = {
   test_module_plan_and_grant_blocked_paths_begin_owned_cleanup = function()
     local function module_pending()
       local request = fixture()
-      local ports, state, put = runtime(request)
+      local ports, state, put, artifacts = runtime(request)
       drive_to_browser_pending(request, ports, state, put)
       core.handle_browser_readiness_result(workflow_readiness_result(request), request, ports)
       release_checkpoint(request, ports, state, "module-testing-pipeline.module_start")
-      return request, ports, state, put
+      return request, ports, state, put, artifacts
     end
 
     do
@@ -711,6 +711,27 @@ local tests = {
       t.eq(actions[1].queue, "environment-factory.environment_finalize")
     end
     do
+      local request, ports, state, put, artifacts = module_pending()
+      core.handle_module_terminal(module_terminal(request, put), request, ports)
+      release_checkpoint(request, ports, state, "testing-runner.structured_plan_request")
+      local result = plan_result(request, put)
+      artifacts[result.plan_ref].value.residual_risk_case_ids = { "external-unmapped" }
+      result.residual_risk_count = 1
+      local actions = core.handle_plan_result(result, request, ports)
+      t.eq(actions[1].queue, "environment-factory.environment_finalize")
+      t.eq(state().phase, "cleanup-pending")
+    end
+    do
+      local request, ports, state, put = module_pending()
+      core.handle_module_terminal(module_terminal(request, put), request, ports)
+      release_checkpoint(request, ports, state, "testing-runner.structured_plan_request")
+      local result = plan_result(request, put)
+      result.residual_risk_count = 1
+      expect_failure("residual risk count differs", function()
+        core.handle_plan_result(result, request, ports)
+      end)
+    end
+    do
       local request, ports, state, put = module_pending()
       core.handle_module_terminal(module_terminal(request, put), request, ports)
       release_checkpoint(request, ports, state, "testing-runner.structured_plan_request")
@@ -723,6 +744,18 @@ local tests = {
         return artifact
       end
       expect_failure("compiled plan binding differs", function() core.handle_plan_result(result, request, ports) end)
+    end
+    do
+      local request, ports, state, put, artifacts = module_pending()
+      core.handle_module_terminal(module_terminal(request, put), request, ports)
+      release_checkpoint(request, ports, state, "testing-runner.structured_plan_request")
+      local result = plan_result(request, put)
+      local plan = artifacts[result.plan_ref].value
+      plan.external_case_mapping_ref = request.artifact_root .. "/external-case-mapping.json"
+      plan.external_case_mapping_sha256 = digest("9")
+      expect_failure("external case mapping binding differs", function()
+        core.handle_plan_result(result, request, ports)
+      end)
     end
   end,
 

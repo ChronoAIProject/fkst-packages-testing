@@ -29,6 +29,10 @@ local spawn_process = fixture_support.spawn_process
 local wait_http = fixture_support.wait_http
 local http_request = fixture_support.http_request
 
+local function document_sha256(value)
+  return sha256_bytes(json_codec.encode(value) .. "\n")
+end
+
 local Context = {}
 Context.__index = Context
 
@@ -855,6 +859,107 @@ function M.new(options)
       token = sha256_bytes(run_id .. "\0fixture-cli-effect-denial"),
     }
   end
+  local external_proposed_cases = copy(options.external_proposed_cases or {})
+  local configured_external_mappings = options.external_case_mappings or {}
+  if type(configured_external_mappings) == "function" then
+    configured_external_mappings = configured_external_mappings({
+      base_url = base_url,
+      cli_argv = copy(cli_argv),
+    })
+  end
+  local external_authorizations = {}
+  for _, authorization in ipairs(configured_external_mappings) do
+    if type(authorization) ~= "table" or type(authorization.proposed_case_id) ~= "string"
+      or external_authorizations[authorization.proposed_case_id] ~= nil then
+      error("canonical workflow external case authorization is invalid")
+    end
+    external_authorizations[authorization.proposed_case_id] = copy(authorization)
+  end
+  local reserved_design_case_ids, reserved_catalog_case_ids = {}, {}
+  if inventory then
+    for _, case_id in ipairs({
+      "inventory-initial-state", "inventory-reserve-three", "inventory-state-after-reserve",
+      "inventory-over-reserve-rejected", "inventory-state-after-rejection",
+    }) do
+      reserved_design_case_ids[case_id] = true
+      reserved_catalog_case_ids[case_id] = true
+    end
+  else
+    reserved_design_case_ids["service:reachability"] = true
+    reserved_catalog_case_ids["cli-version"] = true
+    if options.cli_only ~= true then
+      reserved_design_case_ids["service:page-load"] = true
+      reserved_catalog_case_ids["health"] = true
+    end
+  end
+  local external_catalog_cases = {}
+  local external_case_mapping_ref, external_case_mapping_sha256
+  if #external_proposed_cases > 0 then
+    local source_intake_ref = artifact_root .. "/external-case-intake.json"
+    local source_intake = {
+      schema = "generic-host.external-case-intake.v1",
+      repository = { url = repository.url, commit_sha = repository.commit_sha },
+      cases = copy(external_proposed_cases),
+      trace_id = trace_id,
+      dedup_key = dedup_key,
+    }
+    assert(store:write(source_intake_ref, source_intake))
+    local entries = {}
+    for _, proposed in ipairs(external_proposed_cases) do
+      local authorization = external_authorizations[proposed.id]
+      local entry = {
+        proposed_case_id = proposed.id,
+        proposed_case_sha256 = document_sha256(proposed),
+      }
+      if proposed.review_status ~= "executable" then
+        entry.status = "rejected"
+        entry.rejection_reason = "proposed-case-is-not-reviewed-executable"
+      elseif authorization == nil then
+        entry.status = "rejected"
+        entry.rejection_reason = "host-has-no-authorized-execution-mapping"
+      else
+        authorization.proposed_case_id = nil
+        authorization.design_case_id = nil
+        local executable = copy(authorization)
+        local valid = pcall(execution.validate_case, executable, {}, false)
+        local kind_matches = (proposed.case_kind == "cli" and executable.kind == "cli")
+          or ((proposed.case_kind == "api" or proposed.case_kind == "http")
+            and executable.kind == "http")
+        if not valid or not kind_matches then
+          entry.status = "rejected"
+          entry.rejection_reason = "host-execution-mapping-is-malformed-or-unsupported"
+        elseif reserved_design_case_ids[proposed.id]
+          or reserved_catalog_case_ids[executable.case_id] then
+          entry.status = "rejected"
+          entry.rejection_reason = "host-execution-mapping-conflicts-with-an-authorized-case"
+        else
+          local catalog_case = copy(executable)
+          catalog_case.design_case_id = proposed.id
+          table.insert(external_catalog_cases, catalog_case)
+          reserved_design_case_ids[proposed.id] = true
+          reserved_catalog_case_ids[catalog_case.case_id] = true
+          entry.status = "mapped"
+          entry.catalog_case_id = catalog_case.case_id
+          entry.catalog_case_sha256 = document_sha256(catalog_case)
+        end
+      end
+      table.insert(entries, entry)
+    end
+    external_case_mapping_ref = artifact_root .. "/external-case-mapping.json"
+    local external_case_mapping = {
+      schema = execution.schemas.external_case_mapping,
+      repository = { url = repository.url, commit_sha = repository.commit_sha },
+      source_intake_ref = source_intake_ref,
+      source_intake_sha256 = store:digest(source_intake_ref),
+      entries = entries,
+      trace_id = trace_id,
+      dedup_key = dedup_key,
+    }
+    execution.validate_external_case_mapping(external_case_mapping)
+    assert(store:write(external_case_mapping_ref, external_case_mapping))
+    external_case_mapping_sha256 = store:digest(external_case_mapping_ref)
+  end
+
   local catalog_cases = {}
   if inventory then
     catalog_cases = {
@@ -940,14 +1045,30 @@ function M.new(options)
       })
     end
   end
+  for _, case in ipairs(external_catalog_cases) do table.insert(catalog_cases, case) end
   local catalog = {
     schema = execution.schemas.case_catalog,
     repository = { url = repository.url, commit_sha = repository.commit_sha },
     cases = catalog_cases,
+    external_case_mapping_ref = external_case_mapping_ref,
+    external_case_mapping_sha256 = external_case_mapping_sha256,
     trace_id = trace_id,
     dedup_key = dedup_key,
   }
   assert(store:write(catalog_ref, catalog))
+  local cli_capabilities, http_capabilities = {}, {}
+  for _, case in ipairs(catalog_cases) do
+    if case.kind == "cli" then
+      table.insert(cli_capabilities, { argv_prefix = copy(case.argv) })
+    elseif case.kind == "http" then
+      local case_origin, case_path = execution.split_http_url(case.request.url)
+      table.insert(http_capabilities, {
+        origin = case_origin,
+        methods = { case.request.method },
+        path_prefixes = { case_path },
+      })
+    end
+  end
   local preauthorization_ref = artifact_root .. "/execution/preauthorization.json"
   local preauthorization = {
     schema = execution.schemas.preauthorization,
@@ -956,13 +1077,8 @@ function M.new(options)
     profile_sha256 = approval.profile_sha256,
     case_catalog_sha256 = store:digest(catalog_ref),
     capabilities = {
-      cli = inventory and {
-        { argv_prefix = { "node", "cli.js", "reserve", "SKU-001", "3" } },
-      } or { { argv_prefix = { "node", "cli.js" } } },
-      http = options.cli_only == true and {} or {
-        { origin = origin, methods = { "GET" },
-          path_prefixes = { inventory and "/inventory/" or "/health" } },
-      },
+      cli = cli_capabilities,
+      http = http_capabilities,
     },
     authority = { kind = "host-policy", ref = "fixtures/" .. fixture_name .. "-execution" },
     policy_revision = fixture_name .. "-execution-v1",
@@ -1149,6 +1265,8 @@ function M.new(options)
       preauthorization_sha256 = store:digest(preauthorization_ref),
       case_catalog_ref = catalog_ref,
       case_catalog_sha256 = store:digest(catalog_ref),
+      external_case_mapping_ref = external_case_mapping_ref,
+      external_case_mapping_sha256 = external_case_mapping_sha256,
       structured_plan_ref = artifact_root .. "/execution/structured-plan.json",
       grant_ref = artifact_root .. "/execution/execution-grant.json",
     },
@@ -1165,6 +1283,9 @@ function M.new(options)
     trace_id = trace_id,
     dedup_key = dedup_key,
   }
+  for _, proposed in ipairs(external_proposed_cases) do
+    table.insert(request.proposed_cases, copy(proposed))
+  end
   workflow_qa.validate_request(request)
 
   local context = setmetatable({

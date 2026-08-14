@@ -56,6 +56,50 @@ local function values()
   }
 end
 
+local function external_catalog(request)
+  return {
+    schema = contract.schemas.case_catalog,
+    repository = fixtures.copy(request.repository),
+    cases = { {
+      design_case_id = "external-cli-version",
+      case_id = "external-cli-version",
+      kind = "cli",
+      argv = { "fixture-cli", "--version" },
+      timeout_seconds = 10,
+      assertions = { { type = "exit-code", expected = 0 } },
+    } },
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }
+end
+
+local function external_mapping(request)
+  local root = ".testing/runs/structured"
+  return {
+    schema = contract.schemas.external_case_mapping,
+    repository = fixtures.copy(request.repository),
+    source_intake_ref = root .. "/external-case-intake.json",
+    source_intake_sha256 = string.rep("4", 64),
+    entries = {
+      {
+        proposed_case_id = "external-cli-version",
+        proposed_case_sha256 = string.rep("5", 64),
+        status = "mapped",
+        catalog_case_id = "external-cli-version",
+        catalog_case_sha256 = string.rep("6", 64),
+      },
+      {
+        proposed_case_id = "external-unsupported",
+        proposed_case_sha256 = string.rep("7", 64),
+        status = "rejected",
+        rejection_reason = "host-has-no-authorized-execution-mapping",
+      },
+    },
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }
+end
+
 return {
   test_cli_action_envelope_and_receipt_are_closed_and_versioned = function()
     local request = fixtures.request()
@@ -175,6 +219,40 @@ return {
         plan, request.test_plan_sha256, request.environment_receipt_sha256,
       grant_request(request), values())
     end)
+  end,
+
+  test_external_case_mapping_contract_rejects_partial_and_ambiguous_bindings = function()
+    local request = fixtures.request()
+    local catalog = external_catalog(request)
+    contract.validate_catalog(catalog)
+    catalog.external_case_mapping_ref = ".testing/runs/structured/external-case-mapping.json"
+    t.raises(function() contract.validate_catalog(catalog) end)
+
+    contract.validate_external_case_mapping(external_mapping(request))
+    for _, mutate in ipairs({
+      function(value) value.entries = {} end,
+      function(value) value.entries[2].proposed_case_id = value.entries[1].proposed_case_id end,
+      function(value)
+        value.entries[2] = {
+          proposed_case_id = "external-cli-version-copy",
+          proposed_case_sha256 = string.rep("8", 64),
+          status = "mapped",
+          catalog_case_id = value.entries[1].catalog_case_id,
+          catalog_case_sha256 = string.rep("9", 64),
+        }
+      end,
+      function(value) value.entries[2].rejection_reason = nil end,
+      function(value) value.entries[1].status = "unknown" end,
+      function(value) value.trace_id = nil end,
+    }) do
+      local value = fixtures.copy(external_mapping(request))
+      mutate(value)
+      t.raises(function() contract.validate_external_case_mapping(value) end)
+    end
+
+    local plan = fixtures.plan(request)
+    plan.external_case_mapping_ref = ".testing/runs/structured/external-case-mapping.json"
+    t.raises(function() contract.validate_plan(plan) end)
   end,
 
   test_contract_rejects_malformed_authorization_and_result_boundaries = function()

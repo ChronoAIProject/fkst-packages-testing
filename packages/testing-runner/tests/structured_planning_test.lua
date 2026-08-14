@@ -76,6 +76,28 @@ local function fixture()
   return request, artifacts, ports
 end
 
+local function bind_external_mapping(request, artifacts, entries)
+  local root = ".testing/runs/structured-planning"
+  local mapping_ref = root .. "/external-case-mapping.json"
+  local intake_ref = root .. "/external-case-intake.json"
+  local mapping_sha256, intake_sha256 = digest("5"), digest("6")
+  local catalog = artifacts[request.case_catalog_ref].value
+  catalog.external_case_mapping_ref = mapping_ref
+  catalog.external_case_mapping_sha256 = mapping_sha256
+  artifacts[intake_ref] = { digest = intake_sha256, value = { cases = { { id = "api:health" } } } }
+  local mapping = {
+    schema = contract.schemas.external_case_mapping,
+    repository = copy(request.repository),
+    source_intake_ref = intake_ref,
+    source_intake_sha256 = intake_sha256,
+    entries = entries,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }
+  artifacts[mapping_ref] = { digest = mapping_sha256, value = mapping }
+  return mapping
+end
+
 return {
   test_compiles_only_host_catalog_cases_selected_by_design = function()
     local request, artifacts, ports = fixture()
@@ -89,6 +111,83 @@ return {
     t.eq(#plan.cases, 1)
     t.eq(plan.cases[1].case_id, "api-health")
     t.eq(plan.residual_risk_case_ids[1], "api:unmapped")
+  end,
+
+  test_binds_host_external_case_reconciliation_into_plan = function()
+    local request, artifacts, ports = fixture()
+    local root = ".testing/runs/structured-planning"
+    local mapping_ref = root .. "/external-case-mapping.json"
+    local intake_ref = root .. "/external-case-intake.json"
+    local mapping_sha256, intake_sha256 = digest("5"), digest("6")
+    local catalog = artifacts[request.case_catalog_ref].value
+    catalog.external_case_mapping_ref = mapping_ref
+    catalog.external_case_mapping_sha256 = mapping_sha256
+    artifacts[intake_ref] = { digest = intake_sha256, value = { cases = { { id = "api:health" } } } }
+    artifacts[mapping_ref] = { digest = mapping_sha256, value = {
+      schema = contract.schemas.external_case_mapping,
+      repository = copy(request.repository),
+      source_intake_ref = intake_ref,
+      source_intake_sha256 = intake_sha256,
+      entries = {
+        {
+          proposed_case_id = "api:health", proposed_case_sha256 = digest("7"), status = "mapped",
+          catalog_case_id = "api-health", catalog_case_sha256 = digest("8"),
+        },
+        {
+          proposed_case_id = "api:unmapped", proposed_case_sha256 = digest("9"), status = "rejected",
+          rejection_reason = "host-has-no-authorized-execution-mapping",
+        },
+      },
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+    } }
+    local result = planning.compile(request, ports)
+    t.eq(result.status, "compiled")
+    t.eq(result.residual_risk_count, 1)
+    local plan = artifacts[request.plan_ref].value
+    t.eq(plan.external_case_mapping_ref, mapping_ref)
+    t.eq(plan.external_case_mapping_sha256, mapping_sha256)
+  end,
+
+  test_rejects_external_mapping_that_differs_from_catalog = function()
+    local request, artifacts, ports = fixture()
+    local root = ".testing/runs/structured-planning"
+    local mapping_ref = root .. "/external-case-mapping.json"
+    local intake_ref = root .. "/external-case-intake.json"
+    artifacts[request.case_catalog_ref].value.external_case_mapping_ref = mapping_ref
+    artifacts[request.case_catalog_ref].value.external_case_mapping_sha256 = digest("5")
+    artifacts[intake_ref] = { digest = digest("6"), value = { cases = { { id = "api:health" } } } }
+    artifacts[mapping_ref] = { digest = digest("5"), value = {
+      schema = contract.schemas.external_case_mapping,
+      repository = copy(request.repository), source_intake_ref = intake_ref,
+      source_intake_sha256 = digest("6"), entries = { {
+        proposed_case_id = "api:health", proposed_case_sha256 = digest("7"), status = "mapped",
+        catalog_case_id = "foreign-case", catalog_case_sha256 = digest("8"),
+      } }, trace_id = request.trace_id, dedup_key = request.dedup_key,
+    } }
+    t.eq(planning.compile(request, ports).status, "blocked")
+    t.eq(artifacts[request.plan_ref], nil)
+  end,
+
+  test_rejects_external_mapping_from_a_foreign_run = function()
+    local request, artifacts, ports = fixture()
+    local mapping = bind_external_mapping(request, artifacts, { {
+      proposed_case_id = "api:health", proposed_case_sha256 = digest("7"), status = "mapped",
+      catalog_case_id = "api-health", catalog_case_sha256 = digest("8"),
+    } })
+    mapping.dedup_key = "foreign-dedup"
+    t.eq(planning.compile(request, ports).status, "blocked")
+    t.eq(artifacts[request.plan_ref], nil)
+  end,
+
+  test_rejects_catalog_case_marked_rejected_by_external_mapping = function()
+    local request, artifacts, ports = fixture()
+    bind_external_mapping(request, artifacts, { {
+      proposed_case_id = "api:health", proposed_case_sha256 = digest("7"), status = "rejected",
+      rejection_reason = "host-has-no-authorized-execution-mapping",
+    } })
+    t.eq(planning.compile(request, ports).status, "blocked")
+    t.eq(artifacts[request.plan_ref], nil)
   end,
 
   test_rejects_shell_catalog_capability = function()

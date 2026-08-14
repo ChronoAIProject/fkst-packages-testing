@@ -58,6 +58,7 @@ pointers and digests for `workflow-qa.terminal-summary.v2`, the real
 `environment-factory.receipt.v2`, the `environment-factory.cleanup-receipt.v1`, aggregate report
 destination, and optional defect-publication receipt. Full finalization also requires the structured
 test plan and case results; early terminal finalization is the closed variant where both are absent.
+When present, the finalize request also binds the Host-owned external-case reconciliation ledger.
 
 Finalization:
 
@@ -66,12 +67,15 @@ Finalization:
 - requires `status=complete` on the digest-bound cleanup receipt for every path;
 - requires every planned `case_id` to have exactly one terminal `passed`, `failed`, `skipped`, or
   `error` result for full runs;
+- rejects full finalization when the structured plan still contains residual case risk;
 - publishes GitHub-visible immutable URLs for terminal summary, environment, cleanup, and full-run
   plan/results when `channel=github-comment-v1`, preserving legacy behavior;
 - materializes digest-bound local pointers for those artifacts when
   `channel=filesystem-dry-run-v1`, without constructing GitHub URLs;
 - records counts, classifications, evidence pointers, defect issue links, residual risks, trace ID,
-  and run dedup key in `test-publication.qa-aggregate-report.v1`; filesystem reports also record their
+  and run dedup key in `test-publication.qa-aggregate-report.v1`; when an external-case reconciliation
+  ledger is bound, the report also records its pointer/digest and per-proposed-case mapping, plan,
+  result, evidence, rejection reason, and final aggregate status; filesystem reports also record their
   channel and `github_publication_occurred=false` so terminal lifecycle consumers can state that no
   GitHub publication occurred;
 - writes and publishes the aggregate report as the terminal `aggregate-report` checkpoint on both

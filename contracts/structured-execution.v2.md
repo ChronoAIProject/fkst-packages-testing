@@ -18,6 +18,8 @@ authority and never interprets prose success conditions as executable assertions
 
 The compiler intersects reviewed executable design cases with host-authorized case mappings. Unmapped reviewed cases remain sorted residual risk. Shell execution, inline headers, credential-bearing URLs, unknown fields, and malformed receipt bindings fail closed.
 
+When a Host accepts external proposed cases, it owns an immutable `testing-external-case-mapping.v1` reconciliation ledger. The ledger digest-binds the source intake and records each proposed case digest as either `mapped` to one authorized catalog case and catalog-case digest or `rejected` with an explicit reason. The case catalog and compiled plan carry the ledger pointer and digest. A nonzero residual-risk count blocks workflow execution before grant issuance.
+
 The compiler emits `testing-runner.structured-plan.result.v1` with the immutable plan pointer, digest, and residual-risk count.
 
 ## Grant request
@@ -54,6 +56,8 @@ The runner writes:
 - `case-results.json`
 - `evidence/<case_id>.json`
 - `metadata.json`
+
+For externally mapped runs, `case-results.json` retains the reconciliation-ledger pointer and digest. Final publication loads that ledger and emits per-proposed-case traceability through catalog identity, structured-plan digest, case-results digest, evidence reference, and aggregate status. Rejected or otherwise residual external cases remain machine-readable and cannot produce a successful aggregate run.
 
 FKST events carry only aggregate status, counts, and artifact pointers through `testing-runner.result.v1`, `test-artifacts.summary.v1`, and publication contracts.
 

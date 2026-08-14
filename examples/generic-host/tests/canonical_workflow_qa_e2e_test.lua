@@ -9,6 +9,32 @@ local function count_checkpoints(ledger)
   return count
 end
 
+local function find_case(cases, case_id)
+  for _, case in ipairs(cases or {}) do
+    if case.case_id == case_id or case.proposed_case_id == case_id then return case end
+  end
+  return nil
+end
+
+local function external_cases()
+  return {
+    {
+      id = "external-cli-version", module_id = "service", priority = "P0",
+      title = "External CLI version", objective = "Verify the CLI version through external intake.",
+      case_kind = "cli", actions = { { action = "cli", target = "node cli.js --version", expected = "exit 0" } },
+      expected_observable = "The CLI prints its version.",
+      coverage_subject_ids = { "REQ-EXTERNAL-CLI" }, review_status = "executable",
+    },
+    {
+      id = "external-http-health", module_id = "service", priority = "P0",
+      title = "External HTTP health", objective = "Verify health through external intake.",
+      case_kind = "api", actions = { { action = "http", target = "/health", expected = "HTTP 200" } },
+      expected_observable = "The service reports healthy.",
+      coverage_subject_ids = { "REQ-EXTERNAL-HTTP" }, review_status = "executable",
+    },
+  }
+end
+
 return {
   test_canonical_workflow_qa_executes_real_fixture_and_replays_terminal = function()
     local context = support.new()
@@ -100,6 +126,136 @@ return {
       t.eq(receipt.value.schema, "testing-effect-authorization-receipt.v1")
       t.eq(receipt.value.decision, "deny")
       t.eq(receipt.value.reason_code, "foreign-binding")
+    end)
+    context:cleanup()
+    if not ok then error(err, 0) end
+  end,
+
+  test_external_cli_and_http_cases_reconcile_through_terminal_artifacts_and_replay = function()
+    local context = support.new({
+      publication_channel = "filesystem-dry-run-v1",
+      external_proposed_cases = external_cases(),
+      external_case_mappings = function(runtime)
+        return {
+          {
+            proposed_case_id = "external-cli-version", case_id = "external-cli-version", kind = "cli",
+            argv = runtime.cli_argv, timeout_seconds = 10,
+            assertions = { { type = "exit-code", expected = 0 } },
+          },
+          {
+            proposed_case_id = "external-http-health", case_id = "external-http-health", kind = "http",
+            request = { method = "GET", url = runtime.base_url, headers = {} },
+            timeout_seconds = 10, assertions = { { type = "status-code", expected = 200 } },
+          },
+        }
+      end,
+    })
+    local ok, err = pcall(function()
+      local lifecycle = context:run_lifecycle()
+      t.eq(context.terminal.status, "passed")
+      t.eq(context.terminal.counts.planned, 4)
+      t.eq(context.terminal.counts.executed, 4)
+      t.eq(context.terminal.counts.passed, 4)
+
+      local mapping_ref = context.request.structured_execution.external_case_mapping_ref
+      local mapping_sha256 = context.request.structured_execution.external_case_mapping_sha256
+      local mapping = context.store:load(
+        mapping_ref).value
+      local catalog = context.store:load(context.request.structured_execution.case_catalog_ref).value
+      local plan = context.store:load(context.request.structured_execution.structured_plan_ref).value
+      local results_ref = context.request.structured_execution.artifact_root .. "/case-results.json"
+      local results = context.store:load(results_ref).value
+      local aggregate = context.store:load(context.request.publication.aggregate_report_ref).value
+
+      t.eq(mapping.schema, "testing-external-case-mapping.v1")
+      t.eq(#mapping.entries, 2)
+      t.eq(find_case(mapping.entries, "external-cli-version").status, "mapped")
+      t.eq(find_case(mapping.entries, "external-http-health").status, "mapped")
+      t.is_true(find_case(catalog.cases, "external-cli-version") ~= nil)
+      t.is_true(find_case(catalog.cases, "external-http-health") ~= nil)
+      t.eq(catalog.external_case_mapping_sha256, mapping_sha256)
+      t.is_true(find_case(plan.cases, "external-cli-version") ~= nil)
+      t.is_true(find_case(plan.cases, "external-http-health") ~= nil)
+      t.eq(plan.external_case_mapping_sha256, mapping_sha256)
+      t.eq(find_case(results.cases, "external-cli-version").status, "passed")
+      t.eq(find_case(results.cases, "external-http-health").status, "passed")
+      t.eq(results.external_case_mapping_sha256, mapping_sha256)
+      local cli_trace = find_case(aggregate.external_case_traceability, "external-cli-version")
+      local http_trace = find_case(aggregate.external_case_traceability, "external-http-health")
+      t.eq(cli_trace.final_status, "passed")
+      t.eq(http_trace.final_status, "passed")
+      t.eq(cli_trace.case_results_ref, results_ref)
+      t.is_true(type(cli_trace.proposed_case_sha256) == "string")
+      t.is_true(type(cli_trace.catalog_case_sha256) == "string")
+      t.eq(aggregate.external_case_mapping_sha256, mapping_sha256)
+      t.eq(aggregate.artifact_links.external_case_mapping, mapping_ref)
+
+      local mapping_writes = context.store:write_count(mapping_ref)
+      local mapping_digest = context.store:digest(mapping_ref)
+      local terminal_actions = lifecycle.workflow.start(context.request, context.workflow_runtime)
+      t.eq(terminal_actions[1].queue, "workflow_qa_terminal_request")
+      adapter.handle_terminal(terminal_actions[1].payload, context.generic_host_runtime)
+      local replay = lifecycle.publication.prepare_final_report(
+        context.workflow_state.finalization_request, context.publication_runtime)
+      t.eq(replay.replayed, true)
+      t.eq(context.store:write_count(mapping_ref), mapping_writes)
+      t.eq(context.store:digest(mapping_ref), mapping_digest)
+    end)
+    context:cleanup()
+    if not ok then error(err, 0) end
+  end,
+
+  test_unsupported_external_case_fails_closed_with_rejection_traceability = function()
+    local proposed = external_cases()[1]
+    local context = support.new({ external_proposed_cases = { proposed } })
+    local ok, err = pcall(function()
+      context:run_lifecycle()
+      t.eq(context.terminal.status, "blocked")
+      t.eq(#context.target_effects, 0)
+      t.eq(context.preauthorization_claims, 0)
+      t.eq(context.execution_claims, 0)
+      local mapping = context.store:load(
+        context.request.structured_execution.external_case_mapping_ref).value
+      local entry = find_case(mapping.entries, proposed.id)
+      t.eq(entry.status, "rejected")
+      t.eq(entry.rejection_reason, "host-has-no-authorized-execution-mapping")
+      local aggregate = context.store:load(context.request.publication.aggregate_report_ref).value
+      t.eq(aggregate.status, "blocked")
+      local trace = find_case(aggregate.external_case_traceability, proposed.id)
+      t.eq(trace.mapping_status, "rejected")
+      t.eq(trace.final_status, "rejected")
+      t.eq(trace.aggregate_status, "blocked")
+      t.eq(trace.rejection_reason, "host-has-no-authorized-execution-mapping")
+    end)
+    context:cleanup()
+    if not ok then error(err, 0) end
+  end,
+
+  test_malformed_external_execution_mapping_fails_closed_with_explicit_reason = function()
+    local proposed = external_cases()[1]
+    local context = support.new({
+      external_proposed_cases = { proposed },
+      external_case_mappings = {
+        {
+          proposed_case_id = proposed.id, case_id = proposed.id, kind = "cli",
+          argv = { "bash", "-c", "node cli.js --version" }, timeout_seconds = 10,
+          assertions = { { type = "exit-code", expected = 0 } },
+        },
+      },
+    })
+    local ok, err = pcall(function()
+      context:run_lifecycle()
+      t.eq(context.terminal.status, "blocked")
+      t.eq(#context.target_effects, 0)
+      local mapping = context.store:load(
+        context.request.structured_execution.external_case_mapping_ref).value
+      local entry = find_case(mapping.entries, proposed.id)
+      t.eq(entry.status, "rejected")
+      t.eq(entry.rejection_reason, "host-execution-mapping-is-malformed-or-unsupported")
+      local aggregate = context.store:load(context.request.publication.aggregate_report_ref).value
+      local trace = find_case(aggregate.external_case_traceability, proposed.id)
+      t.eq(trace.final_status, "rejected")
+      t.eq(trace.aggregate_status, "blocked")
     end)
     context:cleanup()
     if not ok then error(err, 0) end

@@ -25,6 +25,8 @@ The design module start may carry `ai_design_loop_request` and `ai_design_loop_s
 
 A terminal module plan is sent to `testing-runner.structured_plan_request`. The compiled `testing-structured-plan.v2` is loaded and digest-checked before workflow-QA requests an external grant. The Host signer derives that grant from the one-use preauthorization supplied before `qa_run_request`; the grant request carries the plan execution mode and immutable preauthorization, plan, and environment bindings.
 
+If the Host binds an external-case reconciliation ledger, workflow-QA requires the catalog and plan to retain that exact pointer and digest. Any compiled residual risk blocks before grant issuance. Terminal summary and finalization preserve the reconciliation binding so publication can report explicit mapped, rejected, or not-executed status instead of silently dropping accepted external identities.
+
 No executor request is emitted before a granted result points to a digest-bound single-use grant artifact.
 
 ## Execution routing
