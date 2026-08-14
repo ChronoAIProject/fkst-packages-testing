@@ -205,6 +205,12 @@ return {
       artifacts[request.case_catalog_ref].value.cases[2] = {
         design_case_id = "api:browser", case_id = "api-browser", kind = "browser",
         goal = "Verify browser login", success_conditions = { "authenticated" },
+        completion_assertions = {
+          { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+          { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+          { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+          { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+        },
       }
       t.eq(planning.compile(request, ports).status, "blocked")
     end

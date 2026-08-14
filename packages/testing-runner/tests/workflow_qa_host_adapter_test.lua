@@ -159,6 +159,12 @@ local function browser_fixture()
   materials.plan.cases = { {
     case_id = "login", kind = "browser", goal = "Verify the approved login flow.",
     success_conditions = { "Authenticated status is visible" },
+    completion_assertions = {
+      { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+      { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+      { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+      { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+    },
   } }
   return request, materials
 end

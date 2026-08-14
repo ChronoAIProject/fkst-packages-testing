@@ -79,6 +79,15 @@ A pass requires all deterministic host completion signals:
 - identity CLI check succeeds;
 - status CLI check reports authenticated.
 
+The reviewed browser case binds these signals through explicit `completion_assertions`. Each entry
+declares the stable assertion ID, assertion type, requiredness, and exact Host completion field.
+The runner evaluates only that reviewed authority; it never infers assertion identity from prose.
+
 AI `finish=success` cannot satisfy or override these checks.
 
 The runner writes bounded `test-plan.json`, `case-results.json`, `browser-agent-execution.json`, and `metadata.json` artifacts. Step receipts contain sanitized before/after observations and typed actions only. Raw model prompts, responses, and transcripts are not persisted.
+Canonical evidence includes the browser receipt and per-observation sanitized JSON. When the browser
+runtime exposes a run-scoped screenshot or runner-output pointer, it must also provide exact digest
+and byte metadata; the controller emits the corresponding manifest entry or fails closed.
+The host runtime also supplies SHA-256 over bounded canonical bytes so result, repository, and
+manifest bindings are content-addressed rather than inferred from paths or process success.

@@ -21,6 +21,12 @@ local max_cases = 64
 local max_argv = 32
 local max_assertions = 16
 local max_capabilities = 64
+local browser_completion_fields = {
+  callback_observed = true,
+  process_exit_zero = true,
+  whoami_succeeded = true,
+  status_authenticated = true,
+}
 
 local function fail(classification, message)
   error("contract.structured-execution: " .. classification .. ": " .. message)
@@ -156,7 +162,7 @@ end
 local function validate_case(value, seen, allow_skip)
   only_fields(value, {
     case_id = true, kind = true, argv = true, request = true, timeout_seconds = true,
-    assertions = true, goal = true, success_conditions = true,
+    assertions = true, goal = true, success_conditions = true, completion_assertions = true,
     skip_reason = true, skip_classification = true,
   }, "case")
   if not bounded(value.case_id, 180) or value.case_id:match("^[%w%._%-]+$") == nil or seen[value.case_id] then
@@ -164,11 +170,38 @@ local function validate_case(value, seen, allow_skip)
   end
   seen[value.case_id] = true
   if value.kind == "browser" then
-    if not bounded(value.goal, 1000) or not dense(value.success_conditions, 8, true) then
+    if not bounded(value.goal, 1000) or not dense(value.success_conditions, 8, true)
+      or not dense(value.completion_assertions, 8, true) then
       fail("malformed-browser-case", "browser goal and success conditions must be bounded")
     end
     for _, condition in ipairs(value.success_conditions) do
       if not bounded(condition, 512) then fail("malformed-browser-case", "browser success condition is invalid") end
+    end
+    local assertion_ids, completion_fields, required_assertions = {}, {}, 0
+    for _, assertion in ipairs(value.completion_assertions) do
+      only_fields(assertion, {
+        assertion_id = true, type = true, required = true, completion_field = true,
+      }, "browser-completion-assertion")
+      if not bounded(assertion.assertion_id, 180)
+        or assertion.assertion_id:match("^[%w%._%-]+$") == nil
+        or assertion_ids[assertion.assertion_id]
+        or not bounded(assertion.type, 96)
+        or type(assertion.required) ~= "boolean"
+        or browser_completion_fields[assertion.completion_field] ~= true
+        or completion_fields[assertion.completion_field] then
+        fail("malformed-browser-case", "browser completion assertion authority is invalid")
+      end
+      assertion_ids[assertion.assertion_id] = true
+      completion_fields[assertion.completion_field] = true
+      if assertion.required then required_assertions = required_assertions + 1 end
+    end
+    if required_assertions == 0 then
+      fail("malformed-browser-case", "browser completion authority requires a required assertion")
+    end
+    for field in pairs(browser_completion_fields) do
+      if not completion_fields[field] then
+        fail("malformed-browser-case", "browser completion authority is incomplete")
+      end
     end
     if value.argv ~= nil or value.request ~= nil or value.timeout_seconds ~= nil or value.assertions ~= nil
       or value.skip_reason ~= nil or value.skip_classification ~= nil then
@@ -177,7 +210,7 @@ local function validate_case(value, seen, allow_skip)
     return value
   end
   if value.kind ~= "cli" and value.kind ~= "http" then fail("unsupported-case", tostring(value.kind)) end
-  if value.goal ~= nil or value.success_conditions ~= nil then
+  if value.goal ~= nil or value.success_conditions ~= nil or value.completion_assertions ~= nil then
     fail("malformed-case", "fixed cases cannot contain browser-control fields")
   end
   if type(value.timeout_seconds) ~= "number" or value.timeout_seconds ~= math.floor(value.timeout_seconds)
@@ -293,6 +326,7 @@ function M.validate_catalog(value)
     only_fields(case, {
       design_case_id = true, case_id = true, kind = true, argv = true, request = true,
       timeout_seconds = true, assertions = true, goal = true, success_conditions = true,
+      completion_assertions = true,
       skip_reason = true, skip_classification = true,
     }, "catalog-case")
     if not bounded(case.design_case_id, 180) or design_seen[case.design_case_id] then
