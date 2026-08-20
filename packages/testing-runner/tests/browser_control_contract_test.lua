@@ -179,6 +179,9 @@ return {
       trace_id = "trace-browser", dedup_key = "dedup-browser",
     }
     structured.validate_plan(plan)
+    local fixed_field = structured.copy(plan)
+    fixed_field.cases[1].timeout_seconds = 10
+    t.raises(function() structured.validate_plan(fixed_field) end)
     local wrong_mode = structured.copy(plan)
     wrong_mode.execution_mode = "structured-api-cli"
     t.raises(function() structured.validate_plan(wrong_mode) end)

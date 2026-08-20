@@ -4,6 +4,11 @@ local environment_contract = require("contract.environment_factory")
 local execution_contract = require("contract.structured_execution")
 local project_profile_contract = require("contract.project_profile")
 local testing_contract = require("contract.testing")
+local evidence_manifest_contract = require("contract.testing_evidence_manifest")
+local results_contract = require("contract.testing_results")
+local results_compat = require("contract.testing_results_compat")
+local strings = require("contract.strings")
+local time_contract = require("contract.time")
 local local_runtime = require("testing_runtime.structured_execution")
 
 local copy = execution_contract.copy
@@ -89,16 +94,16 @@ function M.validate_request(value)
   if not bounded(value.trace_id, 180) or not bounded(value.dedup_key, 180) then
     error("testing-runner: structured-execution: bounded trace and dedup identity are required")
   end
-  if type(value.source_ref) ~= "table" or not bounded(value.source_ref.kind, 80) or not bounded(value.source_ref.ref, 512) then
+  if type(value.source_ref) ~= "table" or not bounded(value.source_ref.kind, 80)
+    or not strings.is_path_safe_key(value.source_ref.ref, 180)
+    or value.source_ref.ref:find("/", 1, true) ~= nil then
     error("testing-runner: structured-execution: source_ref is required")
   end
+  local artifact_run_id = strings.artifact_run_id(value.artifact_root)
+  if artifact_run_id == nil or artifact_run_id ~= value.source_ref.ref then
+    error("testing-runner: structured-execution: artifact_root run identity differs from source_ref")
+  end
   return value
-end
-
-local function copy_list(value)
-  local out = {}
-  for _, item in ipairs(value or {}) do table.insert(out, item) end
-  return out
 end
 
 local function blocked(message)
@@ -110,8 +115,8 @@ local function blocked(message)
 end
 
 local required_ports = {
-  "load_artifact", "now", "verify_grant", "replay_guard", "authorize_cli_effect", "exec_argv", "http_request",
-  "write_artifact", "load_result", "complete_replay",
+  "sha256_bytes", "load_artifact", "now", "verify_grant", "replay_guard", "authorize_cli_effect",
+  "exec_argv", "http_request", "write_artifact", "load_result", "complete_replay",
 }
 
 function M.production_ports()
@@ -194,6 +199,17 @@ local function effect_error(case, value)
     assertions = {},
     evidence = { error_excerpt = tostring(value):sub(1, 600) },
   }
+end
+
+local function valid_effect_response(case, response)
+  if type(response) ~= "table" then return false end
+  if case.kind == "cli" then
+    return type(response.exit_code) == "number" and response.exit_code == math.floor(response.exit_code)
+      and type(response.stdout) == "string" and type(response.stderr) == "string"
+  end
+  return type(response.status) == "number" and response.status == math.floor(response.status)
+    and response.status >= 100 and response.status <= 599 and type(response.body) == "string"
+    and type(response.headers) == "table"
 end
 
 local function execute_case(case, grant, ports, context)
@@ -282,8 +298,8 @@ local function execute_case(case, grant, ports, context)
   end
   local case_result = not ok and effect_error(case, response) or nil
   if case_result == nil then
-    if type(response) ~= "table" then
-      case_result = { case_id = case.case_id, kind = case.kind, status = "error", classification = "environment-session-issue" }
+    if not valid_effect_response(case, response) then
+      case_result = effect_error(case, "effect returned a malformed response")
     else
       local assertions = {}
       local passed = true
@@ -338,6 +354,157 @@ local function load_bound(ports, path, digest, label)
   return artifact
 end
 
+local function equal(left, right)
+  if type(left) ~= type(right) then return false end
+  if type(left) ~= "table" then return left == right end
+  for key, value in pairs(left) do if not equal(value, right[key]) then return false end end
+  for key, _ in pairs(right) do if left[key] == nil then return false end end
+  return true
+end
+
+local function hash_bytes(ports, bytes)
+  local digest = ports.sha256_bytes(bytes)
+  if not sha256(digest) then error("testing-runner: structured-execution: malformed sha256_bytes result") end
+  return digest
+end
+
+local function write_reload(ports, path, value, label)
+  if ports.write_artifact(path, value) ~= true then
+    error("testing-runner: structured-execution: " .. label .. " write failed")
+  end
+  local artifact = ports.load_artifact(path)
+  if type(artifact) ~= "table" or type(artifact.raw) ~= "string" or not sha256(artifact.digest)
+    or hash_bytes(ports, artifact.raw) ~= artifact.digest
+    or type(artifact.value) ~= "table" or not equal(artifact.value, value) then
+    error("testing-runner: structured-execution: " .. label .. " reload mismatch")
+  end
+  return artifact
+end
+
+local function current_time(ports, request, environment)
+  return ports.now({
+    artifact_root = request.artifact_root,
+    operation_id = environment.operation_id,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  })
+end
+
+local function timing(started_at, completed_at)
+  local started = time_contract.iso_timestamp_epoch_seconds(started_at)
+  local completed = time_contract.iso_timestamp_epoch_seconds(completed_at)
+  if started == nil or completed == nil then
+    error("testing-runner: structured-execution: malformed case timestamp")
+  end
+  return {
+    started_at = started_at,
+    completed_at = completed_at,
+    duration_ms = math.min(86400000, math.max(0, (completed - started) * 1000)),
+  }
+end
+
+local function canonical_repository(request, ports)
+  return {
+    id = request.repository.commit_sha,
+    source_ref = {
+      kind = results_contract.repository_source_kinds.git,
+      ref = request.repository.url .. "@" .. request.repository.commit_sha,
+    },
+    source_sha256 = hash_bytes(ports, request.repository.url .. "\n" .. request.repository.commit_sha),
+  }
+end
+
+local outcome_pairs = {
+  ["passed\0passed"] = { status = "passed", classification = "deterministic" },
+  ["failed\0product-defect"] = { status = "failed", classification = "assertion_failure" },
+  ["skipped\0data-fixture-gap"] = { status = "skipped", classification = "not_applicable" },
+  ["skipped\0not-executed-risk"] = { status = "skipped", classification = "not_applicable" },
+  ["error\0environment-session-issue"] = { status = "error", classification = "execution_error" },
+  ["error\0harness-tooling-issue"] = { status = "error", classification = "execution_error" },
+}
+
+local function error_message(legacy)
+  local value = legacy.evidence and legacy.evidence.error_excerpt
+  if type(value) ~= "string" or value == "" then return "structured case execution error" end
+  value = value:gsub("[%z\1-\31\127]", " "):sub(1, 512)
+  return value ~= "" and value or "structured case execution error"
+end
+
+local function canonical_case(case, legacy, evidence_id, repository, plan_ref, plan_sha256, case_timing, trace_id, dedup_key)
+  local normalized = outcome_pairs[legacy.status .. "\0" .. legacy.classification]
+  if normalized == nil then error("testing-runner: structured-execution: unsupported legacy outcome") end
+  local assertions = {}
+  local executed = legacy.status == "passed" or legacy.status == "failed"
+  for index, planned in ipairs(case.assertions) do
+    local status, classification = "skipped", "skipped"
+    if executed then
+      local fact = legacy.assertions[index]
+      if type(fact) ~= "table" or type(fact.passed) ~= "boolean" or fact.type ~= planned.type then
+        error("testing-runner: structured-execution: assertion execution facts differ from plan")
+      end
+      status = fact.passed and "passed" or "failed"
+      classification = fact.passed and "deterministic" or "assertion_failure"
+    end
+    assertions[index] = {
+      schema = results_contract.schemas.assertion_result,
+      assertion_id = "assertion-" .. tostring(index),
+      type = planned.type,
+      required = true,
+      status = status,
+      classification = classification,
+      observation_ids = {},
+      evidence_refs = {},
+    }
+  end
+  local result = {
+    schema = results_contract.schemas.case_result,
+    case_id = case.case_id,
+    repository = copy(repository),
+    reviewed_case_id = case.case_id,
+    plan_ref = copy(plan_ref),
+    plan_sha256 = plan_sha256,
+    execution_mode = case.kind,
+    execution_status = normalized.status,
+    classification = normalized.classification,
+    observations = {},
+    assertions = assertions,
+    evidence_refs = { { kind = "evidence", ref = evidence_id } },
+    timing = case_timing,
+    trace_id = trace_id,
+    dedup_key = dedup_key,
+  }
+  if legacy.status == "skipped" then result.non_execution_reason = legacy.classification end
+  if legacy.status == "error" then
+    result.error = { code = legacy.classification, message = error_message(legacy) }
+  end
+  return result
+end
+
+local function evidence_entry(case, index, path, artifact, completed_at)
+  local evidence_id = "evidence-" .. tostring(index)
+  return evidence_id, {
+    evidence_id = evidence_id,
+    case_id = case.case_id,
+    role = "sanitized-json",
+    artifact_ref = { kind = "artifact", ref = path },
+    sha256 = artifact.digest,
+    media_type = "application/json",
+    size_bytes = #artifact.raw,
+    producer = "testing-runner",
+    producer_version = "structured-execution.v1",
+    created_at = completed_at,
+    sensitivity = "internal",
+    redaction_classification = "bounded-excerpts",
+    policy_version = "structured-evidence-policy.v1",
+    policy_status = "redacted",
+    provenance = {
+      source_kind = "artifact",
+      source_ref = path,
+      source_sha256 = artifact.digest,
+    },
+  }
+end
+
 function M.run(request, ports)
   local ok, result = pcall(function()
     M.validate_request(request)
@@ -361,6 +528,7 @@ function M.run(request, ports)
       or preauthorization.value.repository.url ~= request.repository.url
       or preauthorization.value.repository.commit_sha ~= request.repository.commit_sha
       or not environment_ok or environment.value.status ~= "ready"
+      or environment.value.operation_id ~= request.source_ref.ref
       or not same_repository(environment.value.repository, request.repository)
       or type(environment.value.browser_readiness) ~= "table"
       or environment.value.browser_readiness.status ~= "ready"
@@ -448,7 +616,21 @@ function M.run(request, ports)
       return blocked("replay guard did not claim execution")
     end
 
-    local case_results = {}
+    local run_id = request.source_ref.ref
+    local test_plan_path = request.artifact_root .. "/test-plan.json"
+    local evidence_manifest_path = request.artifact_root .. "/evidence-manifest.json"
+    local case_result_set_path = request.artifact_root .. "/case-result-set.json"
+    local case_results_path = request.artifact_root .. "/case-results.json"
+    local execution_path = request.artifact_root .. "/execution.json"
+    local plan_ref = { kind = "artifact", ref = test_plan_path }
+    local persisted_plan = write_reload(ports, test_plan_path, plan.value, "plan")
+    if persisted_plan.digest ~= plan.digest then
+      error("testing-runner: structured-execution: persisted plan digest differs from source plan")
+    end
+
+    local repository = canonical_repository(request, ports)
+    local case_results, canonical_cases, evidence_entries = {}, {}, {}
+    local authorities = results_contract.plan_assertion_authorities(plan.value, plan_ref, plan.digest)
     local execution_context = {
       request = request,
       profile = profile,
@@ -461,26 +643,70 @@ function M.run(request, ports)
       claim = claim,
       now = now,
     }
-    for _, case in ipairs(plan.value.cases) do
+    for index, case in ipairs(plan.value.cases) do
+      local started_at = current_time(ports, request, environment.value)
       local case_result = execute_case(case, grant.value, ports, execution_context)
+      local completed_at = current_time(ports, request, environment.value)
+      local case_timing = timing(started_at, completed_at)
       local evidence_path = request.artifact_root .. "/evidence/" .. case.case_id .. ".json"
-      if ports.write_artifact(evidence_path, case_result.evidence) ~= true then
-        error("testing-runner: structured-execution: evidence write failed")
-      end
+      local evidence_artifact = write_reload(ports, evidence_path, case_result.evidence, "evidence")
+      local evidence_id, entry = evidence_entry(case, index, evidence_path, evidence_artifact, completed_at)
+      local authority = authorities[index]
+      local canonical = canonical_case(case, case_result, evidence_id, repository, plan_ref,
+        plan.digest, case_timing, request.trace_id, request.dedup_key)
+      results_contract.validate_case_result(canonical, authority)
+      canonical_cases[index], evidence_entries[index] = canonical, entry
       case_result.evidence = nil
       case_result.evidence_ref = evidence_path
-      table.insert(case_results, case_result)
+      case_results[index] = case_result
     end
     local status, classification, counts = aggregate(case_results)
-    local case_results_path = request.artifact_root .. "/case-results.json"
-    local execution_path = request.artifact_root .. "/execution.json"
-    local test_plan_path = request.artifact_root .. "/test-plan.json"
-    if ports.write_artifact(test_plan_path, plan.value) ~= true then error("testing-runner: structured-execution: plan write failed") end
-    if ports.write_artifact(case_results_path, {
-      schema = "testing-structured-case-results.v1",
+    local root_context = { artifact_root = request.artifact_root }
+    local hash = function(bytes) return hash_bytes(ports, bytes) end
+    local manifest = {
+      schema = evidence_manifest_contract.schema,
+      manifest_id = run_id,
+      canonicalization = evidence_manifest_contract.canonicalization,
+      canonical_sha256 = string.rep("0", 64),
+      repository = copy(repository),
+      run_id = run_id,
+      plan_ref = copy(plan_ref),
       plan_sha256 = plan.digest,
-      cases = case_results,
-    }) ~= true then error("testing-runner: structured-execution: case results write failed") end
+      entries = evidence_entries,
+    }
+    manifest.canonical_sha256 = evidence_manifest_contract.sha256(manifest, hash, root_context)
+    evidence_manifest_contract.validate(manifest, nil, hash, root_context)
+    local persisted_manifest = write_reload(ports, evidence_manifest_path, manifest, "evidence manifest")
+    local result_set = {
+      schema = results_contract.schemas.case_result_set,
+      set_id = run_id,
+      run_id = run_id,
+      plan_ref = copy(plan_ref),
+      plan_sha256 = plan.digest,
+      cases = canonical_cases,
+      evidence_manifest_ref = { kind = "artifact", ref = evidence_manifest_path,
+        sha256 = persisted_manifest.digest },
+      evidence_manifest_sha256 = manifest.canonical_sha256,
+      evidence_manifest_artifact_sha256 = persisted_manifest.digest,
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+    }
+    results_contract.validate_case_result_set(result_set, authorities, manifest, hash, root_context)
+    local persisted_result_set = write_reload(ports, case_result_set_path, result_set, "case result set")
+    local compat_context = {
+      artifact_root = request.artifact_root,
+      plan_sha256 = plan.digest,
+      plan = plan.value,
+      repository = repository,
+      run_id = run_id,
+      plan_ref = plan_ref,
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+      sha256_bytes = hash,
+    }
+    local projected = results_compat.project_v1(result_set, manifest, compat_context)
+    results_compat.validate_v1(projected, compat_context)
+    write_reload(ports, case_results_path, projected, "case results")
     local execution = {
       schema = "testing-structured-execution.v1",
       operation_id = environment.value.operation_id,
@@ -500,6 +726,10 @@ function M.run(request, ports)
       error_count = counts.error,
       test_plan_path = test_plan_path,
       case_results_path = case_results_path,
+      case_result_set_path = case_result_set_path,
+      case_result_set_artifact_sha256 = persisted_result_set.digest,
+      evidence_manifest_path = evidence_manifest_path,
+      evidence_manifest_artifact_sha256 = persisted_manifest.digest,
       execution_path = execution_path,
     }
     if ports.write_artifact(execution_path, execution) ~= true then error("testing-runner: structured-execution: execution write failed") end
@@ -516,6 +746,10 @@ function M.run(request, ports)
       error_count = counts.error,
       test_plan_path = test_plan_path,
       case_results_path = case_results_path,
+      case_result_set_path = case_result_set_path,
+      case_result_set_artifact_sha256 = persisted_result_set.digest,
+      evidence_manifest_path = evidence_manifest_path,
+      evidence_manifest_artifact_sha256 = persisted_manifest.digest,
       execution_path = execution_path,
       replayed = false,
     }
@@ -555,15 +789,17 @@ function M.result_payload(request, ports)
     if ok then runtime = resolved end
   end
   local outcome = runtime and M.run(request, runtime) or blocked("host runtime capability is unavailable")
+  local artifact_root = safe_pointer(request.artifact_root)
+    and request.artifact_root or ".testing/runs/invalid-structured-execution"
   local summary = {
     schema = testing_contract.schemas.structured_execution_summary,
     status = outcome.status,
     classification = outcome.classification,
     mode = "structured-api-cli",
-    artifact_root = request.artifact_root,
-    test_plan_path = outcome.test_plan_path or (request.artifact_root .. "/test-plan.json"),
-    execution_path = outcome.execution_path or (request.artifact_root .. "/execution.json"),
-    case_results_path = outcome.case_results_path or (request.artifact_root .. "/case-results.json"),
+    artifact_root = artifact_root,
+    test_plan_path = outcome.test_plan_path or (artifact_root .. "/test-plan.json"),
+    execution_path = outcome.execution_path or (artifact_root .. "/execution.json"),
+    case_results_path = outcome.case_results_path or (artifact_root .. "/case-results.json"),
     case_count = outcome.case_count or 0,
     passed_count = outcome.passed_count or 0,
     failed_count = outcome.failed_count or 0,
@@ -571,11 +807,18 @@ function M.result_payload(request, ports)
     error_count = outcome.error_count or 0,
     replayed = outcome.replayed == true,
   }
+  if outcome.case_result_set_path ~= nil and outcome.case_result_set_artifact_sha256 ~= nil
+    and outcome.evidence_manifest_path ~= nil and outcome.evidence_manifest_artifact_sha256 ~= nil then
+    summary.case_result_set_path = outcome.case_result_set_path
+    summary.case_result_set_artifact_sha256 = outcome.case_result_set_artifact_sha256
+    summary.evidence_manifest_path = outcome.evidence_manifest_path
+    summary.evidence_manifest_artifact_sha256 = outcome.evidence_manifest_artifact_sha256
+  end
   return {
     schema = testing_contract.schemas.runner_result,
     job = "structured-execution",
     status = outcome.status,
-    artifact_root = request.artifact_root,
+    artifact_root = artifact_root,
     source_ref = request.source_ref,
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,

@@ -87,7 +87,7 @@ local function workflow_request()
 end
 
 local function fixture()
-  local root = ".testing/runs/host-adapter"
+  local root = ".testing/runs/host-adapter-run"
   local execution_request = fixtures.request(root, "host-adapter-run")
   execution_request.trace_id = "trace-host-adapter"
   execution_request.dedup_key = "dedup-host-adapter"

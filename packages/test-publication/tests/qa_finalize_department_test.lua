@@ -61,7 +61,11 @@ local function run_finalize(channel)
       } },
       [root .. "/case-results.json"] = { digest = results_sha, value = {
         schema = "testing-structured-case-results.v1", plan_sha256 = plan_sha,
-        cases = { { case_id = "health", kind = "http", status = "passed", classification = "passed", evidence_ref = root .. "/evidence/health.json" } },
+        cases = { {
+          case_id = "health", kind = "http", status = "passed", classification = "passed",
+          assertions = { { type = "status-code", passed = true } },
+          evidence_ref = root .. "/evidence/health.json",
+        } },
       } },
       [root .. "/environment-receipt-ready.json"] = { digest = environment_sha, value = {
         schema = "environment-factory.receipt.v2", operation_id = "qa-finalize-department", status = "ready",

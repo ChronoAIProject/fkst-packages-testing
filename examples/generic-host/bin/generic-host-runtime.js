@@ -566,26 +566,10 @@ function structuredReplayKey(grantId) {
   return `testing-runner/replay/${sha256(stable(grantId))}`;
 }
 
-function structuredExecutionArtifacts(projectRoot, resultRef) {
-  const execution = artifactRead(projectRoot, resultRef);
-  const value = execution && execution.value;
-  const executionRoot = path.posix.dirname(resultRef);
-  if (!value || value.schema !== 'testing-structured-execution.v1'
-    || value.execution_path !== resultRef
-    || value.test_plan_path !== `${executionRoot}/test-plan.json`
-    || value.case_results_path !== `${executionRoot}/case-results.json`) {
-    fail('structured execution result binding is invalid');
-  }
-  const testPlan = artifactRead(projectRoot, value.test_plan_path);
-  const caseResults = artifactRead(projectRoot, value.case_results_path);
-  if (!testPlan || testPlan.digest !== value.plan_sha256
-    || !caseResults || !caseResults.value
-    || caseResults.value.plan_sha256 !== value.plan_sha256
-    || !Array.isArray(caseResults.value.cases)) {
-    fail('structured execution referenced artifacts are unavailable');
-  }
-  return { execution, testPlan, caseResults };
-}
+const { structuredExecutionArtifacts } = require('./structured-execution-artifacts').create({
+  artifactRead, boundedString, exactKeys, fail, path, safeArtifactPath, samePointer,
+  sha256, stableStringify: stable, validDigest, validRepository,
+});
 
 function structuredAuthorizationKey(receiptId) {
   return `testing-runner/cli-effect-authorizations/${sha256(stable(receiptId))}`;
@@ -618,14 +602,6 @@ function inventoryAcceptanceReport(projectRoot, config, terminal) {
   if (artifacts.execution.digest !== completed[0].value.result_sha256) {
     fail('inventory completed replay result differs');
   }
-  const results = artifacts.caseResults;
-  const effects = new Map();
-  for (const entry of recordList(runRoot(config.run_id), 'testing-runner/target-effects')) {
-    const binding = entry.value && entry.value.binding;
-    const envelope = binding && binding.action_envelope;
-    const caseId = binding && (binding.case_id || (envelope && envelope.case && envelope.case.case_id));
-    if (caseId) effects.set(caseId, entry.value.result);
-  }
   const definitions = [
     ['inventory-initial-state', 'GET inventory', 'HTTP 200 with initial inventory'],
     ['inventory-reserve-three', 'Reserve three', 'Exit 0 with reserved inventory'],
@@ -633,7 +609,78 @@ function inventoryAcceptanceReport(projectRoot, config, terminal) {
     ['inventory-over-reserve-rejected', 'Reserve three again', 'Exit 4 with insufficient availability'],
     ['inventory-state-after-rejection', 'GET inventory', 'HTTP 200 with unchanged inventory'],
   ];
-  const byId = new Map(results.value.cases.map((value) => [value.case_id, value]));
+  if (!artifacts.caseResultSet || !artifacts.evidenceManifest) {
+    fail('inventory canonical execution artifacts are required');
+  }
+  const canonicalCases = artifacts.caseResultSet.value.cases;
+  const legacy = artifacts.caseResults.value;
+  if (legacy.schema !== 'testing-structured-case-results.v1'
+    || legacy.plan_sha256 !== artifacts.caseResultSet.value.plan_sha256
+    || !Array.isArray(legacy.cases) || legacy.cases.length !== canonicalCases.length
+    || canonicalCases.length !== definitions.length) {
+    fail('inventory canonical and legacy result sets differ');
+  }
+  const manifestEntries = new Map(artifacts.evidenceManifest.value.entries
+    .map((entry) => [entry.evidence_id, entry]));
+  const evidencePaths = new Map();
+  const byId = new Map();
+  for (let index = 0; index < canonicalCases.length; index += 1) {
+    const result = canonicalCases[index];
+    const projected = legacy.cases[index];
+    const expectedCaseId = definitions[index][0];
+    let expectedStatus;
+    let expectedClassification;
+    if (result.execution_status === 'passed' && result.classification === 'deterministic') {
+      expectedStatus = 'passed'; expectedClassification = 'passed';
+    } else if (result.execution_status === 'failed' && result.classification === 'assertion_failure') {
+      expectedStatus = 'failed'; expectedClassification = 'product-defect';
+    } else if (result.execution_status === 'skipped' && result.classification === 'not_applicable') {
+      expectedStatus = 'skipped'; expectedClassification = result.non_execution_reason;
+    } else if (result.execution_status === 'error' && result.classification === 'execution_error'
+      && result.error && boundedString(result.error.code, 96)) {
+      expectedStatus = 'error'; expectedClassification = result.error.code;
+    } else {
+      fail('inventory canonical result outcome is not compatible with v1');
+    }
+    if (result.case_id !== expectedCaseId || !projected || projected.case_id !== result.case_id
+      || projected.kind !== result.execution_mode || projected.status !== expectedStatus
+      || projected.classification !== expectedClassification
+      || !Array.isArray(projected.assertions) || projected.assertions.length !== result.assertions.length) {
+      fail('inventory canonical and legacy case result differ');
+    }
+    for (let assertionIndex = 0; assertionIndex < result.assertions.length; assertionIndex += 1) {
+      const assertion = result.assertions[assertionIndex];
+      const legacyAssertion = projected.assertions[assertionIndex];
+      if (!legacyAssertion || assertion.type !== legacyAssertion.type
+        || legacyAssertion.passed !== (assertion.status === 'passed')) {
+        fail('inventory canonical and legacy assertion result differ');
+      }
+    }
+    if (!Array.isArray(result.evidence_refs) || result.evidence_refs.length !== 1
+      || result.evidence_refs[0].kind !== 'evidence') {
+      fail('inventory canonical case evidence is ambiguous');
+    }
+    const manifestEntry = manifestEntries.get(result.evidence_refs[0].ref);
+    if (!manifestEntry || manifestEntry.case_id !== result.case_id
+      || projected.evidence_ref !== manifestEntry.artifact_ref.ref) {
+      fail('inventory canonical and legacy evidence pointer differ');
+    }
+    evidencePaths.set(result.case_id, manifestEntry.artifact_ref.ref);
+    byId.set(result.case_id, result);
+  }
+
+  const effects = new Map();
+  const effectEntries = recordList(runRoot(config.run_id), 'testing-runner/target-effects');
+  if (effectEntries.length !== definitions.length) fail('inventory target effects must occur exactly once');
+  for (const entry of effectEntries) {
+    const binding = entry.value && entry.value.binding;
+    const envelope = binding && binding.action_envelope;
+    const caseId = binding && (binding.case_id || (envelope && envelope.case && envelope.case.case_id));
+    if (!definitions.some(([expected]) => expected === caseId) || effects.has(caseId)) {
+      fail('inventory target effects must occur exactly once');
+    }
+    effects.set(caseId, entry.value.result);
+  }
   const lines = [
     '| Case ID | Action | Expected result | Actual result | Status | Evidence |',
     '| --- | --- | --- | --- | --- | --- |',
@@ -641,13 +688,15 @@ function inventoryAcceptanceReport(projectRoot, config, terminal) {
   for (const [caseId, action, expected] of definitions) {
     const result = byId.get(caseId);
     const effect = effects.get(caseId) || {};
-    const actual = result && result.kind === 'cli'
+    const actual = result && result.execution_mode === 'cli'
       ? `exit ${effect.exit_code}; stdout ${JSON.stringify(effect.stdout || '')}; stderr ${JSON.stringify(effect.stderr || '')}`
       : `HTTP ${effect.status}; body ${JSON.stringify(effect.body || '')}`;
-    lines.push(`| ${caseId} | ${action} | ${expected} | ${actual} | ${result && result.status || 'missing'} | ${result && result.evidence_ref || 'missing'} |`);
+    lines.push(`| ${caseId} | ${action} | ${expected} | ${actual} | ${result && result.execution_status || 'missing'} | ${evidencePaths.get(caseId) || 'missing'} |`);
   }
   const passed = terminal.status === 'passed' && terminal.counts && terminal.counts.planned === 5
-    && definitions.every(([caseId]) => byId.get(caseId) && byId.get(caseId).status === 'passed');
+    && definitions.every(([caseId]) => byId.get(caseId)
+      && byId.get(caseId).execution_status === 'passed'
+      && byId.get(caseId).classification === 'deterministic');
   lines.push('', passed ? 'Verdict: downstream business acceptance passed' : 'Verdict: not ready', '');
   artifactWriteRaw(projectRoot, `.testing/runs/${config.run_id}/acceptance-report.md`, lines.join('\n'));
 }
@@ -655,6 +704,16 @@ function inventoryAcceptanceReport(projectRoot, config, terminal) {
 function exactKeys(value, expected) {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
   return Object.keys(value).sort().join('\0') === [...expected].sort().join('\0');
+}
+
+function sha256Bytes(payload) {
+  const fields = payload && payload.runtime_config_ref === undefined
+    ? ['bytes'] : ['bytes', 'runtime_config_ref'];
+  if (!exactKeys(payload, fields)) fail('sha256-bytes payload fields are invalid');
+  if (typeof payload.bytes !== 'string' || Buffer.byteLength(payload.bytes, 'utf8') > 1024 * 1024) {
+    fail('sha256-bytes requires a string no larger than 1 MiB');
+  }
+  return { sha256: sha256(payload.bytes) };
 }
 
 function boundedString(value, limit) {
@@ -950,6 +1009,8 @@ function authorizeCliEffect(projectRoot, payload) {
 
 function dispatch(name, payload, projectRoot) {
   switch (name) {
+    case 'sha256-bytes':
+      return sha256Bytes(payload);
     case 'workflow-load-state': {
       const runId = runIdFor(payload);
       const config = loadConfig(projectRoot, runId);
@@ -1378,18 +1439,23 @@ function dispatch(name, payload, projectRoot) {
     case 'load-result': {
       const runId = runIdFor(payload);
       const config = loadConfig(projectRoot, runId);
-      const artifact = artifactRead(projectRoot, payload.result_ref);
-      if (!artifact || (payload.result_sha256 && artifact.digest !== payload.result_sha256)) return null;
-      const value = artifact.value;
-      if (value.operation_id !== payload.operation_id
+      if (!validDigest(payload.result_sha256)) fail('completed execution result digest is required');
+      const artifacts = structuredExecutionArtifacts(projectRoot, payload.result_ref);
+      if (artifacts.execution.digest !== payload.result_sha256) {
+        fail('completed execution result digest differs');
+      }
+      const value = artifacts.execution.value;
+      if (payload.result_ref !== `${payload.artifact_root}/execution.json`
+        || value.operation_id !== payload.operation_id
         || value.environment_receipt_sha256 !== payload.environment_receipt_sha256
+        || !sameRepository(value.repository, payload.repository)
         || value.trace_id !== payload.trace_id || value.dedup_key !== payload.dedup_key) return null;
       const recovered = recordImmutable(runRoot(runId), 'generic-host/recovery/execution', {
         schema: 'generic-host.completed-execution-recovery.v1', run_id: runId,
-        result_ref: payload.result_ref, result_sha256: artifact.digest, replayed: true,
+        result_ref: payload.result_ref, result_sha256: artifacts.execution.digest, replayed: true,
       });
       if (!recovered.written && !recovered.replayed) fail('execution recovery witness differs');
-      return {
+      const result = {
         schema: 'testing-runner.structured-execution-summary.v1', status: value.status,
         classification: value.classification, mode: 'structured-api-cli',
         artifact_root: config.request.structured_execution.artifact_root,
@@ -1398,6 +1464,13 @@ function dispatch(name, payload, projectRoot) {
         test_plan_path: value.test_plan_path, case_results_path: value.case_results_path,
         execution_path: value.execution_path, replayed: true,
       };
+      if (artifacts.caseResultSet) {
+        result.case_result_set_path = value.case_result_set_path;
+        result.case_result_set_artifact_sha256 = value.case_result_set_artifact_sha256;
+        result.evidence_manifest_path = value.evidence_manifest_path;
+        result.evidence_manifest_artifact_sha256 = value.evidence_manifest_artifact_sha256;
+      }
+      return result;
     }
     case 'complete-replay': {
       const runId = runIdFor(payload);
@@ -1419,16 +1492,27 @@ function dispatch(name, payload, projectRoot) {
         return { completed: false };
       }
       const artifacts = structuredExecutionArtifacts(projectRoot, payload.result_ref);
+      const execution = artifacts.execution.value;
+      if (payload.result_ref !== `${binding.artifact_root}/execution.json`
+        || execution.operation_id !== binding.operation_id
+        || execution.environment_receipt_sha256 !== binding.environment_receipt_sha256
+        || !sameRepository(execution.repository, binding.repository)
+        || execution.trace_id !== binding.trace_id || execution.dedup_key !== binding.dedup_key) {
+        return { completed: false };
+      }
       const completion = { ...payload, result_sha256: artifacts.execution.digest };
       delete completion.claim;
       const completed = storeExecute({ root, operation: 'replay-complete', key: current.key,
         claim_id: payload.claim.claim_id, completion });
       if (!completed.completed) return completed;
       const verified = structuredExecutionArtifacts(projectRoot, payload.result_ref);
+      const canonicalChanged = Boolean(verified.caseResultSet) !== Boolean(artifacts.caseResultSet)
+        || (artifacts.caseResultSet && (verified.caseResultSet.digest !== artifacts.caseResultSet.digest
+          || verified.evidenceManifest.digest !== artifacts.evidenceManifest.digest));
       if (verified.execution.digest !== artifacts.execution.digest
         || verified.testPlan.digest !== artifacts.testPlan.digest
         || verified.caseResults.digest !== artifacts.caseResults.digest
-        || completed.value.result_sha256 !== artifacts.execution.digest) {
+        || canonicalChanged || completed.value.result_sha256 !== artifacts.execution.digest) {
         fail('completed replay result artifact is unavailable or changed');
       }
       const config = loadConfig(projectRoot, runId);
@@ -1436,7 +1520,7 @@ function dispatch(name, payload, projectRoot) {
       if (completed.replayed !== true && arm && arm.name === 'post-completed-replay'
         && typeof arm.token === 'string'
         && process.env.FKST_DURABLE_COMPLETED_REPLAY_FAILPOINT === arm.token) {
-        const witness = recordImmutable(root, 'generic-host/barriers/post-replay-complete', {
+        const barrier = {
           schema: 'generic-host.completed-replay-barrier.v1', run_id: runId,
           failpoint: arm.name, arm_token_sha256: sha256(arm.token),
           result_ref: payload.result_ref, result_sha256: artifacts.execution.digest,
@@ -1445,7 +1529,14 @@ function dispatch(name, payload, projectRoot) {
           case_results_ref: artifacts.execution.value.case_results_path,
           case_results_sha256: artifacts.caseResults.digest,
           replay_status: completed.value.status,
-        });
+        };
+        if (artifacts.caseResultSet) {
+          barrier.case_result_set_ref = artifacts.execution.value.case_result_set_path;
+          barrier.case_result_set_artifact_sha256 = artifacts.caseResultSet.digest;
+          barrier.evidence_manifest_ref = artifacts.execution.value.evidence_manifest_path;
+          barrier.evidence_manifest_artifact_sha256 = artifacts.evidenceManifest.digest;
+        }
+        const witness = recordImmutable(root, 'generic-host/barriers/post-replay-complete', barrier);
         if (!witness.written && !witness.replayed) fail('completed replay barrier witness differs');
         while (true) sleep(1000);
       }

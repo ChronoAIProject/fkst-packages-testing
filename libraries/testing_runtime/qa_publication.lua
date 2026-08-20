@@ -1,6 +1,7 @@
 local runtime_client = require("testing_runtime.runtime_client")
 
 local M = {}
+local max_hash_bytes = 1024 * 1024
 
 local function run_root(path)
   return type(path) == "string" and path:match("^(.testing/runs/[^/]+)") or nil
@@ -22,6 +23,19 @@ function M.configured(options) return client(options).configured() end
 function M.production(options)
   local cli = client(options)
   return {
+    sha256_bytes = function(bytes, artifact_root)
+      local root = run_root(artifact_root)
+      if type(bytes) ~= "string" or #bytes > max_hash_bytes then
+        error("testing-runtime: qa-publication-sha256-bytes-invalid")
+      end
+      if root == nil then error("testing-runtime: qa-publication-run-root-missing") end
+      local result = cli.call("sha256-bytes", { bytes = bytes }, root, artifact_root, 15)
+      if type(result) ~= "table" or type(result.sha256) ~= "string"
+        or result.sha256:match("^[0-9a-f]+$") == nil or #result.sha256 ~= 64 then
+        error("testing-runtime: qa-publication-sha256-bytes-result-invalid")
+      end
+      return result.sha256
+    end,
     load_ledger = function(path) return cli.call("publication-load-ledger", { path = path }, run_root(path), path, 15) end,
     save_ledger = function(path, value, expected)
       local result = cli.call("publication-save-ledger", {

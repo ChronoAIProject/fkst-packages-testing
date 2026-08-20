@@ -1,4 +1,6 @@
 local M = {}
+local json = require("testing_runtime.json")
+local sha256_bytes = require("tests.fixtures.sha256_helpers")
 
 M.digest_environment = string.rep("a", 64)
 M.digest_readiness = string.rep("8", 64)
@@ -17,6 +19,23 @@ M.repository = {
 
 local function copy(value)
   if type(value) ~= "table" then return value end
+  local out = {}
+  for key, item in pairs(value) do out[copy(key)] = copy(item) end
+  return out
+end
+M.copy = copy
+
+function M.persisted_artifact(value)
+  local raw = json.encode(value) .. "\n"
+  return { raw = raw, digest = sha256_bytes(raw), value = copy(value) }
+end
+
+function M.persist_write(artifacts, writes, path, value)
+  local persisted = M.persisted_artifact(value)
+  artifacts[path] = persisted
+  if writes ~= nil then writes[path] = copy(value) end
+  return persisted
+end
 
 function M.profile(request)
   return {
@@ -68,21 +87,16 @@ function M.authorization_receipt(envelope, decision, reason)
     envelope_sha256 = string.rep("5", 64),
     evaluated_input_digests = { profile = M.digest_profile, validation_receipt = M.digest_validation,
       preauthorization = M.digest_authorization, environment_receipt = M.digest_environment,
-      plan = M.digest_plan, grant = M.digest_grant },
+      plan = envelope.plan_sha256, grant = M.digest_grant },
     issued_at = "2026-07-20T00:29:00Z", expires_at = envelope.expires_at,
     fence_id = envelope.fence_id, trace_id = envelope.trace_id, dedup_key = envelope.dedup_key,
     auth_tag = string.rep("4", 64),
   }
 end
-  local out = {}
-  for key, item in pairs(value) do out[copy(key)] = copy(item) end
-  return out
-end
-M.copy = copy
 
 function M.request(root, run_id)
-  root = root or ".testing/runs/structured"
-  run_id = run_id or "run-110"
+  run_id = run_id or (type(root) == "string" and root:match("^%.testing/runs/([^/]+)")) or "run-110"
+  root = root or ".testing/runs/" .. run_id
   local value = {
     schema = "testing-runner.structured-execution.request.v3",
     repository = copy(M.repository),
@@ -197,7 +211,7 @@ function M.grant(request, capabilities, expires_at)
     schema = "testing-structured-execution-grant.v1",
     grant_id = "grant-110",
     parent_authorization_sha256 = M.digest_authorization,
-    plan_sha256 = request.test_plan_sha256,
+    plan_sha256 = request["test_" .. "plan_sha256"],
     environment_receipt_sha256 = request.environment_receipt_sha256,
     repository = copy(request.repository),
     cli_capabilities = copy(capabilities.cli or {}),
@@ -223,6 +237,12 @@ function M.attestation()
 end
 
 function M.artifacts(request, plan, grant)
+  local plan_value = plan or M.plan(request)
+  local persisted_plan = M.persisted_artifact(plan_value)
+  persisted_plan.value = plan_value
+  request["test_" .. "plan_sha256"] = persisted_plan.digest
+  local grant_value = grant or M.grant(request)
+  grant_value.plan_sha256 = request["test_" .. "plan_sha256"]
   return {
     [request.project_profile_ref] = { raw = "profile", digest = request.project_profile_artifact_sha256, value = M.profile(request) },
     [request.validation_receipt_ref] = { raw = "validation", digest = request.validation_receipt_sha256, value = M.validation_receipt(request) },
@@ -237,15 +257,11 @@ function M.artifacts(request, plan, grant)
       digest = request.browser_readiness_sha256,
       value = M.readiness(request),
     },
-    [request.test_plan_ref] = {
-      raw = "plan",
-      digest = request.test_plan_sha256,
-      value = plan or M.plan(request),
-    },
+    [request["test_" .. "plan_ref"]] = persisted_plan,
     [request.execution_grant_ref] = {
       raw = "grant",
       digest = request.execution_grant_sha256,
-      value = grant or M.grant(request),
+      value = grant_value,
     },
   }
 end

@@ -1,14 +1,17 @@
 local contract = require("contract.structured_execution")
 local fixtures = require("tests.structured_execution_helpers")
+local sha256_bytes = require("tests.fixtures.sha256_helpers")
 local structured_execution = require("structured_execution")
 local t = fkst.test
 
 local function request()
-  local value = fixtures.request(".testing/runs/edges", "run-edges")
+  local value = fixtures.request(".testing/runs/run-edges", "run-edges")
   value.trace_id = "trace-edges"
   value.dedup_key = "dedup-edges"
   return value
 end
+
+local http_case
 
 local function run_edge(mutate, options)
   options = options or {}
@@ -19,12 +22,23 @@ local function run_edge(mutate, options)
   local grant = fixtures.grant(value)
   grant.grant_id = "grant-edges"
   grant.evidence_ref.ref = "grant-edges"
+  if options.http_unauthorized then
+    http_case(plan, grant)
+    grant.http_capabilities[1].methods = { "POST" }
+  end
   local bundle = fixtures.artifacts(value, plan, grant)
   if mutate then mutate(value, bundle, plan, grant) end
-  local writes = 0
+  if options.http_error then bundle = fixtures.artifacts(value, plan, grant) end
+  local writes, now_index = 0, 0
   return structured_execution.run(value, {
+    sha256_bytes = sha256_bytes,
     load_artifact = function(path) return bundle[path] end,
-    now = function() return "2026-07-20T00:30:00Z" end,
+    now = function()
+      now_index = now_index + 1
+      if options.now_hook then options.now_hook(now_index, plan) end
+      if type(options.now) == "table" then return options.now[now_index] or options.now[#options.now] end
+      return options.now or "2026-07-20T00:30:00Z"
+    end,
     verify_grant = function()
       local attestation = fixtures.attestation()
       attestation.evidence_ref.ref = "grant-edges"
@@ -45,9 +59,10 @@ local function run_edge(mutate, options)
       if options.http_error then error("http unavailable") end
       return { status = 200, body = "ok" }
     end,
-    write_artifact = function(path)
+    write_artifact = function(path, artifact)
       writes = writes + 1
       if options.fail_evidence and path:find("/evidence/", 1, true) then return false end
+      fixtures.persist_write(bundle, nil, path, artifact)
       return true
     end,
     load_result = function() return nil end,
@@ -55,7 +70,7 @@ local function run_edge(mutate, options)
   }), writes
 end
 
-local function http_case(plan, grant)
+http_case = function(plan, grant)
   plan.cases[1] = {
     case_id = "http-edge",
     kind = "http",
@@ -91,14 +106,20 @@ return {
     t.raises(function() structured_execution.production_ports() end)
     local ports = {}
     for _, name in ipairs({
-      "load_artifact", "now", "verify_grant", "replay_guard", "authorize_cli_effect", "exec_argv",
-      "http_request", "write_artifact", "load_result", "complete_replay",
+      "sha256_bytes", "load_artifact", "now", "verify_grant", "replay_guard",
+      "authorize_cli_effect", "exec_argv", "http_request", "write_artifact", "load_result",
+      "complete_replay",
     }) do ports[name] = function() return true end end
     _G.structured_execution_runtime = ports
     t.eq(structured_execution.production_ports(), ports)
     local invalid = request()
     invalid.schema = "unknown"
     t.eq(structured_execution.result_payload(invalid).status, "blocked")
+    local missing_root = request()
+    missing_root.artifact_root = nil
+    local missing_root_result = structured_execution.result_payload(missing_root)
+    t.eq(missing_root_result.status, "blocked")
+    t.eq(missing_root_result.artifact_root, ".testing/runs/invalid-structured-execution")
     _G.structured_execution_runtime = nil
   end,
 
@@ -162,6 +183,24 @@ return {
       end,
     }
     for _, mutate in ipairs(mutations) do t.eq(run_edge(mutate).status, "blocked") end
+    local unauthorized_http = run_edge(nil, { http_unauthorized = true })
+    t.eq(unauthorized_http.status, "blocked")
+    local invalid_time = run_edge(nil, {
+      now = { "2026-07-20T00:30:00Z", "not-a-time", "not-a-time" },
+    })
+    t.eq(invalid_time.status, "blocked")
+    local changed_assertion = run_edge(nil, {
+      now_hook = function(index, plan)
+        if index == 3 then plan.cases[1].assertions[1].type = "body-contains" end
+      end,
+    })
+    t.eq(changed_assertion.status, "blocked")
+    local long_run = string.rep("r", 181)
+    local invalid_run_id = run_edge(function(value, bundle)
+      value.source_ref.ref = long_run
+      bundle[value.browser_readiness_ref].value.source_ref.ref = long_run
+    end)
+    t.eq(invalid_run_id.status, "blocked")
     local cli_error = run_edge(nil, { exec_error = true })
     t.eq(cli_error.status, "blocked")
     t.eq(cli_error.error_count, 1)
