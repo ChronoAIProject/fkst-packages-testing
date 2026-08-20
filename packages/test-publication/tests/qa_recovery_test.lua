@@ -178,6 +178,21 @@ return {
     t.raises(function() qa_publication.prepare_checkpoint(changed_counts, ports) end)
   end,
 
+  test_checkpoint_replay_rejects_changed_finalization_identity = function()
+    local ports = runtime()
+    local value = request("aggregate-report")
+    qa_publication.prepare_checkpoint(value, ports, {
+      case_result_set_ref = value.artifact_root .. "/case-result-set.json",
+      evidence_manifest_ref = value.artifact_root .. "/evidence-manifest.json",
+    })
+    t.raises(function()
+      qa_publication.prepare_checkpoint(value, ports, {
+        case_result_set_ref = value.artifact_root .. "/case-result-set.json",
+        evidence_manifest_ref = value.artifact_root .. "/other-evidence-manifest.json",
+      })
+    end)
+  end,
+
   test_checkpoint_replay_compares_all_count_fields = function()
     local ports = runtime()
     local value = request("execution-batch")

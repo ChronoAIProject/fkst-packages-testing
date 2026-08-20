@@ -27,6 +27,23 @@ function listen() {
   });
 }
 
+function copy(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function persistJson(ref, value) {
+  const raw = `${stableStringify(value)}\n`;
+  fs.mkdirSync(path.dirname(ref), { recursive: true });
+  fs.writeFileSync(ref, raw);
+  return { raw, digest: sha256(Buffer.from(raw, 'utf8')), value };
+}
+
+function canonicalManifestDigest(value) {
+  const canonical = copy(value);
+  delete canonical.canonical_sha256;
+  return sha256(stableStringify(canonical));
+}
+
 async function main() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'structured-runtime-test-'));
   const previousDurable = process.env.FKST_DURABLE_ROOT;
@@ -124,7 +141,7 @@ async function main() {
       assertions: [{ type: 'exit-code', expected: 0 }],
     };
     const plan = writeAuthority('plan', {
-      schema: 'testing-structured-plan.v2', repository,
+      schema: 'testing-structured-plan.v2', execution_mode: 'structured-api-cli', repository,
       environment_receipt_sha256: environment.digest, cases: [cliCase],
       trace_id: traceId, dedup_key: dedupKey,
     });
@@ -155,7 +172,19 @@ async function main() {
       runtime_config_ref: { kind: 'artifact', ref: configRef },
     };
 
-    const currentTime = Date.parse((await dispatch('now', common)).now);
+    assert.strictEqual((await dispatch('sha256-bytes', { bytes: 'abc' })).sha256, sha256('abc'));
+    await assert.rejects(() => dispatch('sha256-bytes', { bytes: 'abc', extra: true }),
+      /payload fields are invalid/);
+    await assert.rejects(() => dispatch('sha256-bytes', {
+      bytes: String.fromCharCode(0xe9).repeat(524289),
+    }),
+      /no larger than 1 MiB/);
+    await assert.rejects(() => dispatch('sha256-bytes', { bytes: Buffer.from('abc') }),
+      /requires a string/);
+
+    const nowValue = (await dispatch('now', common)).now;
+    assert.match(nowValue, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    const currentTime = Date.parse(nowValue);
     assert.ok(Math.abs(currentTime - Date.now()) < 10_000);
     assert.strictEqual(localOrigin('http://[::1]:4173/health'), 'http://[::1]:4173');
     const attestation = await dispatch('verify-grant', {
@@ -188,6 +217,7 @@ async function main() {
       ...common, action_envelope: actionEnvelope,
     });
     assert.strictEqual(authorization.decision, 'allow');
+    assert.match(authorization.issued_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
     const cli = await dispatch('exec-argv', {
       ...common, action_envelope: actionEnvelope, authorization_receipt: authorization,
     });
@@ -232,47 +262,293 @@ async function main() {
     fs.rmSync(linkPath, { force: true });
 
     const resultRef = `${artifactRoot}/execution.json`;
+    const historicalExecution = {
+      schema: 'testing-structured-execution.v1', operation_id: operationId,
+      status: 'passed', classification: 'passed', repository,
+      environment_receipt_sha256: common.environment_receipt_sha256,
+      trace_id: common.trace_id, dedup_key: common.dedup_key,
+      case_count: 1, passed_count: 1, failed_count: 0, skipped_count: 0, error_count: 0,
+      test_plan_path: `${artifactRoot}/test-plan.json`,
+      case_results_path: `${artifactRoot}/case-results.json`, execution_path: resultRef,
+    };
     assert.strictEqual((await dispatch('write-artifact', {
       ...common,
       artifact_ref: { kind: 'artifact', ref: resultRef },
-      value: {
-        schema: 'testing-structured-execution.v1', operation_id: operationId,
-        status: 'passed', classification: 'passed', repository,
-        environment_receipt_sha256: common.environment_receipt_sha256,
-        trace_id: common.trace_id, dedup_key: common.dedup_key,
-        case_count: 1, passed_count: 1, failed_count: 0, skipped_count: 0, error_count: 0,
-        test_plan_path: `${artifactRoot}/test-plan.json`,
-        case_results_path: `${artifactRoot}/case-results.json`, execution_path: resultRef,
-      },
+      value: historicalExecution,
     })).written, true);
     assert.strictEqual((await dispatch('load-artifact', {
       ...common, artifact_ref: { kind: 'artifact', ref: resultRef },
     })).value.status, 'passed');
 
-    const claimRequest = {
+    const historicalClaimRequest = {
       ...common,
-      grant_id: `${runId}-grant`,
+      grant_id: `${runId}-historical-grant`,
       grant_sha256: grantSha256,
       parent_authorization_sha256: 'c'.repeat(64),
       plan_sha256: 'd'.repeat(64),
     };
-    const claim = await dispatch('replay-guard', claimRequest);
-    assert.strictEqual(claim.status, 'claimed');
-    assert.strictEqual((await dispatch('replay-guard', claimRequest)).status, 'in-progress');
+    const historicalClaim = await dispatch('replay-guard', historicalClaimRequest);
+    assert.strictEqual(historicalClaim.status, 'claimed');
+    assert.strictEqual((await dispatch('replay-guard', historicalClaimRequest)).status, 'in-progress');
     await assert.rejects(() => dispatch('replay-guard', {
-      ...claimRequest, artifact_root: `.testing/runs/${runId}-foreign/execution`,
+      ...historicalClaimRequest, artifact_root: `.testing/runs/${runId}-foreign/execution`,
     }), /replay binding differs/);
+    const historicalCompletion = await dispatch('complete-replay', {
+      ...common, claim: historicalClaim, result_ref: resultRef,
+    });
+    assert.strictEqual(historicalCompletion.completed, true);
+    const historicalReplay = await dispatch('replay-guard', historicalClaimRequest);
+    assert.strictEqual(historicalReplay.status, 'completed');
+    const historicalSummary = await dispatch('load-result', {
+      ...common, result_ref: resultRef, result_sha256: historicalReplay.result_sha256,
+    });
+    assert.strictEqual(historicalSummary.passed_count, 1);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(
+      historicalSummary, 'case_result_set_path'), false);
+    assert.strictEqual(Object.prototype.hasOwnProperty.call(
+      historicalSummary, 'evidence_manifest_path'), false);
+
+    const caseResultSetPath = `${artifactRoot}/case-result-set.json`;
+    const evidenceManifestPath = `${artifactRoot}/evidence-manifest.json`;
+    const evidencePath = `${artifactRoot}/evidence/not-written.json`;
+    const canonicalPlanSha256 = plan.digest;
+    const canonicalPlanArtifact = persistJson(historicalExecution.test_plan_path, plan.value);
+    assert.strictEqual(canonicalPlanArtifact.digest, canonicalPlanSha256);
+    const canonicalRepository = {
+      id: repository.commit_sha,
+      source_ref: { kind: 'git', ref: `${repository.url}@${repository.commit_sha}` },
+      source_sha256: sha256(`${repository.url}\n${repository.commit_sha}`),
+    };
+    const planRef = { kind: 'artifact', ref: historicalExecution.test_plan_path };
+    const evidencePointer = { kind: 'evidence', ref: 'evidence-cli-version' };
+    const manifest = {
+      schema: 'testing-evidence-manifest.v1', manifest_id: operationId,
+      canonicalization: 'fkst-testing-evidence-manifest-canonical-json.v1',
+      canonical_sha256: '0'.repeat(64), repository: copy(canonicalRepository),
+      run_id: operationId, plan_ref: copy(planRef), plan_sha256: canonicalPlanSha256,
+      entries: [{
+        evidence_id: evidencePointer.ref, case_id: cliCase.case_id, assertion_id: 'assertion-1',
+        role: 'runner-log', artifact_ref: { kind: 'artifact', ref: evidencePath },
+        sha256: sha256('not persisted'), media_type: 'text/plain', size_bytes: 13,
+        producer: 'testing-runner', producer_version: 'v1', created_at: '2026-07-24T00:00:00Z',
+        sensitivity: 'internal', redaction_classification: 'none', policy_version: 'v1',
+        policy_status: 'approved', provenance: {
+          source_kind: 'artifact', source_ref: evidencePath, source_sha256: sha256('not persisted'),
+        },
+      }],
+    };
+    manifest.canonical_sha256 = canonicalManifestDigest(manifest);
+    const resultSet = {
+      schema: 'testing-case-result-set.v2', set_id: operationId, run_id: operationId,
+      plan_ref: copy(planRef), plan_sha256: canonicalPlanSha256,
+      cases: [{
+        schema: 'testing-case-result.v2', case_id: cliCase.case_id,
+        repository: copy(canonicalRepository), reviewed_case_id: cliCase.case_id,
+        plan_ref: copy(planRef), plan_sha256: canonicalPlanSha256, execution_mode: 'cli',
+        execution_status: 'passed', classification: 'deterministic', observations: [],
+        assertions: [{
+          schema: 'testing-assertion-result.v1', assertion_id: 'assertion-1',
+          type: 'exit-code', required: true, status: 'passed', classification: 'deterministic',
+          observation_ids: [], evidence_refs: [copy(evidencePointer)],
+        }],
+        evidence_refs: [copy(evidencePointer)], timing: {
+          started_at: '2026-07-24T00:00:00Z', completed_at: '2026-07-24T00:00:00Z', duration_ms: 0,
+        },
+        trace_id: common.trace_id, dedup_key: common.dedup_key,
+      }],
+      evidence_manifest_ref: { kind: 'artifact', ref: evidenceManifestPath },
+      evidence_manifest_sha256: manifest.canonical_sha256,
+      trace_id: common.trace_id, dedup_key: common.dedup_key,
+    };
+    const validManifestArtifact = persistJson(evidenceManifestPath, manifest);
+    resultSet.evidence_manifest_ref.sha256 = validManifestArtifact.digest;
+    resultSet.evidence_manifest_artifact_sha256 = validManifestArtifact.digest;
+    const validResultSetArtifact = persistJson(caseResultSetPath, resultSet);
+    const canonicalExecution = {
+      ...historicalExecution,
+      plan_sha256: canonicalPlanSha256,
+      case_result_set_path: caseResultSetPath,
+      case_result_set_artifact_sha256: validResultSetArtifact.digest,
+      evidence_manifest_path: evidenceManifestPath,
+      evidence_manifest_artifact_sha256: validManifestArtifact.digest,
+    };
+    const canonicalClaimRequest = {
+      ...common,
+      grant_sha256: grantSha256,
+      parent_authorization_sha256: 'c'.repeat(64),
+      plan_sha256: canonicalPlanSha256,
+    };
+    const claimCanonical = async (name) => dispatch('replay-guard', {
+      ...canonicalClaimRequest, grant_id: `${runId}-${name}`,
+    });
+    const rejectCompletion = async (name, pattern) => {
+      const candidateClaim = await claimCanonical(name);
+      await assert.rejects(() => dispatch('complete-replay', {
+        ...common, claim: candidateClaim, result_ref: resultRef,
+      }), pattern);
+    };
+
+    for (const field of [
+      'case_result_set_path', 'case_result_set_artifact_sha256',
+      'evidence_manifest_path', 'evidence_manifest_artifact_sha256',
+    ]) {
+      const partial = { ...canonicalExecution };
+      delete partial[field];
+      persistJson(resultRef, partial);
+      await rejectCompletion(`partial-${field}`, /canonical artifact group is invalid/);
+    }
+
+    persistJson(caseResultSetPath, { ...resultSet, set_id: 'tampered-before-completion' });
+    persistJson(resultRef, canonicalExecution);
+    await rejectCompletion('tampered-set-digest', /case result set artifact digest differs/);
+    persistJson(caseResultSetPath, resultSet);
+
+    persistJson(evidenceManifestPath, { ...manifest, manifest_id: 'tampered-before-completion' });
+    persistJson(resultRef, canonicalExecution);
+    await rejectCompletion('tampered-manifest-digest', /evidence manifest artifact digest differs/);
+    persistJson(evidenceManifestPath, manifest);
+
+    const foreignSetArtifact = persistJson(caseResultSetPath, {
+      ...resultSet, run_id: 'foreign-operation',
+    });
+    persistJson(resultRef, {
+      ...canonicalExecution, case_result_set_artifact_sha256: foreignSetArtifact.digest,
+    });
+    await rejectCompletion('foreign-set', /case result set binding is invalid/);
+    persistJson(caseResultSetPath, resultSet);
+
+    const foreignManifestArtifact = persistJson(evidenceManifestPath, {
+      ...manifest, run_id: 'foreign-operation',
+    });
+    const foreignManifestSetArtifact = persistJson(caseResultSetPath, {
+      ...resultSet,
+      evidence_manifest_ref: { ...resultSet.evidence_manifest_ref, sha256: foreignManifestArtifact.digest },
+      evidence_manifest_artifact_sha256: foreignManifestArtifact.digest,
+    });
+    persistJson(resultRef, {
+      ...canonicalExecution,
+      case_result_set_artifact_sha256: foreignManifestSetArtifact.digest,
+      evidence_manifest_artifact_sha256: foreignManifestArtifact.digest,
+    });
+    await rejectCompletion('foreign-manifest', /evidence manifest binding is invalid/);
+
+    const invalidCanonicalManifestArtifact = persistJson(evidenceManifestPath, {
+      ...manifest, canonical_sha256: 'f'.repeat(64),
+    });
+    const invalidCanonicalSetArtifact = persistJson(caseResultSetPath, {
+      ...resultSet,
+      evidence_manifest_ref: {
+        ...resultSet.evidence_manifest_ref, sha256: invalidCanonicalManifestArtifact.digest,
+      },
+      evidence_manifest_sha256: 'f'.repeat(64),
+      evidence_manifest_artifact_sha256: invalidCanonicalManifestArtifact.digest,
+    });
+    persistJson(resultRef, {
+      ...canonicalExecution,
+      case_result_set_artifact_sha256: invalidCanonicalSetArtifact.digest,
+      evidence_manifest_artifact_sha256: invalidCanonicalManifestArtifact.digest,
+    });
+    await rejectCompletion('invalid-canonical-manifest', /canonical digest differs/);
+
+    const foreignCanonicalRepository = {
+      id: 'f'.repeat(40), source_ref: { kind: 'git', ref: 'https://foreign.invalid/repo.git@foreign' },
+      source_sha256: 'e'.repeat(64),
+    };
+    const foreignRepositoryManifest = {
+      ...manifest, repository: foreignCanonicalRepository,
+      entries: manifest.entries.map((entry) => ({ ...entry })),
+    };
+    foreignRepositoryManifest.canonical_sha256 = canonicalManifestDigest(foreignRepositoryManifest);
+    const foreignRepositoryManifestArtifact = persistJson(evidenceManifestPath, foreignRepositoryManifest);
+    const foreignRepositorySetArtifact = persistJson(caseResultSetPath, {
+      ...resultSet,
+      cases: resultSet.cases.map((item) => ({ ...item, repository: foreignCanonicalRepository })),
+      evidence_manifest_ref: {
+        ...resultSet.evidence_manifest_ref, sha256: foreignRepositoryManifestArtifact.digest,
+      },
+      evidence_manifest_sha256: foreignRepositoryManifest.canonical_sha256,
+      evidence_manifest_artifact_sha256: foreignRepositoryManifestArtifact.digest,
+    });
+    persistJson(resultRef, {
+      ...canonicalExecution,
+      case_result_set_artifact_sha256: foreignRepositorySetArtifact.digest,
+      evidence_manifest_artifact_sha256: foreignRepositoryManifestArtifact.digest,
+    });
+    await rejectCompletion('foreign-canonical-repository', /evidence manifest binding is invalid/);
+
+    persistJson(evidenceManifestPath, manifest);
+    const malformedReferenceSetArtifact = persistJson(caseResultSetPath, {
+      ...resultSet,
+      cases: resultSet.cases.map((item) => ({ ...item, evidence_refs: [{ kind: 'evidence' }] })),
+    });
+    persistJson(resultRef, {
+      ...canonicalExecution, case_result_set_artifact_sha256: malformedReferenceSetArtifact.digest,
+    });
+    await rejectCompletion('malformed-case-evidence', /canonical case binding is invalid/);
+
+    const contradictoryCaseSetArtifact = persistJson(caseResultSetPath, {
+      ...resultSet,
+      cases: resultSet.cases.map((item) => ({ ...item, classification: 'assertion_failure' })),
+    });
+    persistJson(resultRef, {
+      ...canonicalExecution, case_result_set_artifact_sha256: contradictoryCaseSetArtifact.digest,
+    });
+    await rejectCompletion('contradictory-case-outcome', /canonical case outcome is invalid/);
+
+    const malformedManifestArtifact = persistJson(evidenceManifestPath, {
+      ...manifest, entries: {},
+    });
+    const malformedManifestSetArtifact = persistJson(caseResultSetPath, {
+      ...resultSet,
+      evidence_manifest_ref: { ...resultSet.evidence_manifest_ref, sha256: malformedManifestArtifact.digest },
+      evidence_manifest_artifact_sha256: malformedManifestArtifact.digest,
+    });
+    persistJson(resultRef, {
+      ...canonicalExecution,
+      case_result_set_artifact_sha256: malformedManifestSetArtifact.digest,
+      evidence_manifest_artifact_sha256: malformedManifestArtifact.digest,
+    });
+    await rejectCompletion('malformed-manifest', /evidence manifest binding is invalid/);
+
+    persistJson(evidenceManifestPath, manifest);
+    persistJson(caseResultSetPath, resultSet);
+    const canonicalExecutionArtifact = persistJson(resultRef, canonicalExecution);
+    assert.strictEqual(fs.existsSync(evidencePath), false);
+    const canonicalClaim = await claimCanonical('canonical-grant');
     const completion = await dispatch('complete-replay', {
-      ...common, claim, result_ref: resultRef,
+      ...common, claim: canonicalClaim, result_ref: resultRef,
     });
     assert.strictEqual(completion.completed, true);
-    const replay = await dispatch('replay-guard', claimRequest);
+    assert.strictEqual(completion.result_sha256, canonicalExecutionArtifact.digest);
+    const replay = await dispatch('replay-guard', {
+      ...canonicalClaimRequest, grant_id: `${runId}-canonical-grant`,
+    });
     assert.strictEqual(replay.status, 'completed');
     assert.strictEqual(replay.result_ref, resultRef);
     assert.strictEqual(replay.result_sha256, completion.result_sha256);
-    assert.strictEqual((await dispatch('load-result', {
+    const summary = await dispatch('load-result', {
       ...common, result_ref: resultRef, result_sha256: replay.result_sha256,
-    })).passed_count, 1);
+    });
+    assert.strictEqual(summary.passed_count, 1);
+    assert.strictEqual(summary.case_result_set_path, caseResultSetPath);
+    assert.strictEqual(summary.case_result_set_artifact_sha256, validResultSetArtifact.digest);
+    assert.strictEqual(summary.evidence_manifest_path, evidenceManifestPath);
+    assert.strictEqual(summary.evidence_manifest_artifact_sha256, validManifestArtifact.digest);
+    assert.strictEqual(fs.existsSync(evidencePath), false);
+    assert.strictEqual(fs.readFileSync(resultRef, 'utf8'), canonicalExecutionArtifact.raw);
+    assert.strictEqual(fs.readFileSync(caseResultSetPath, 'utf8'), validResultSetArtifact.raw);
+    assert.strictEqual(fs.readFileSync(evidenceManifestPath, 'utf8'), validManifestArtifact.raw);
+
+    persistJson(caseResultSetPath, { ...resultSet, set_id: 'tampered-after-completion' });
+    await assert.rejects(() => dispatch('load-result', {
+      ...common, result_ref: resultRef, result_sha256: replay.result_sha256,
+    }), /case result set artifact digest differs/);
+    persistJson(caseResultSetPath, resultSet);
+    persistJson(evidenceManifestPath, { ...manifest, manifest_id: 'tampered-after-completion' });
+    await assert.rejects(() => dispatch('load-result', {
+      ...common, result_ref: resultRef, result_sha256: replay.result_sha256,
+    }), /evidence manifest artifact digest differs/);
+    persistJson(evidenceManifestPath, manifest);
     fs.writeFileSync(resultRef, '{}\n');
     await assert.rejects(() => dispatch('load-result', {
       ...common, result_ref: resultRef, result_sha256: replay.result_sha256,

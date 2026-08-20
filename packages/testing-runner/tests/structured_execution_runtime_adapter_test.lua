@@ -19,6 +19,7 @@ local function fake_host()
   local files = {}
   local calls = {}
   local responses = {
+    ["sha256-bytes"] = { sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad" },
     ["load-artifact"] = { raw = "{}\n", digest = string.rep("a", 64), value = { status = "ready" } },
     ["now"] = { now = "2026-07-24T00:00:00Z" },
     ["verify-grant"] = { grant_sha256 = string.rep("b", 64) },
@@ -71,6 +72,12 @@ return {
     with_globals(host.globals, function()
       local ports = runtime.production(options(host))
       local root = ".testing/runs/runtime-adapter/execution"
+      t.eq(ports.sha256_bytes("abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+      t.eq(host.calls[1].payload.bytes, "abc")
+      t.eq(host.calls[1].payload.artifact_root, nil)
+      t.is_true(host.calls[1].argv[7]:find(".testing/runtime/structured-execution/", 1, true) == 1)
+      t.raises(function() ports.sha256_bytes(string.rep("a", 1024 * 1024 + 1)) end)
       t.eq(ports.load_artifact(root .. "/source.json").value.status, "ready")
       t.eq(ports.now({ artifact_root = root, operation_id = "op" }), "2026-07-24T00:00:00Z")
       t.eq(ports.verify_grant({ artifact_root = root, operation_id = "op" }).grant_sha256, string.rep("b", 64))

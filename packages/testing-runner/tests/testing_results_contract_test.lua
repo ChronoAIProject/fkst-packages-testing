@@ -1,8 +1,10 @@
 local results = require("contract.testing_results")
 local manifest_contract = require("contract.testing_evidence_manifest")
 local golden = require("tests.fixtures.testing_results_golden_helpers")
+local real_sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
 local digest = string.rep("a", 64)
+local persisted_digest = string.rep("b", 64)
 
 local function ref(kind, value) return { kind = kind, ref = value } end
 local function copy(value)
@@ -34,16 +36,6 @@ local function valid_case(status)
   if status == "error" then local value=make_case(status, "execution_error", {assertion("assert-1", true, "skipped")}); value.error={code="provider-timeout",message="execution ended before assertions completed"}; return value end
   local value=make_case(status, status, {assertion("assert-1", true, "skipped")}); value.non_execution_reason=(status == "blocked" and "precondition-unavailable" or "runner-disconnected"); return value
 end
-local function real_sha256(bytes)
-  local input, output = os.tmpname(), os.tmpname()
-  local handle = assert(io.open(input, "wb")); handle:write(bytes); handle:close()
-  local ok, _, code = os.execute("sha256sum " .. input .. " > " .. output)
-  local digest_file = assert(io.open(output, "r")); local computed = assert(digest_file:read("*l")):match("^([0-9a-f]+)"); digest_file:close()
-  os.remove(input); os.remove(output)
-  if not (ok == true or ok == 0) then error("sha256sum failed exit=" .. tostring(code)) end
-  return computed
-end
-
 local function evidence_manifest(case)
   local manifest = {
     schema=manifest_contract.schema, manifest_id="manifest-1", canonicalization=manifest_contract.canonicalization,
@@ -59,7 +51,7 @@ local function evidence_manifest(case)
 end
 
 local function result_set(case, manifest)
-  return {schema=results.schemas.case_result_set,set_id="set-1",run_id="run-1",plan_ref=case.plan_ref,plan_sha256=case.plan_sha256,cases={case},evidence_manifest_ref=ref("artifact", ".testing/runs/run-1/evidence-manifest.json"),evidence_manifest_sha256=manifest.canonical_sha256,trace_id="trace-set",dedup_key="dedup-set"}
+  return {schema=results.schemas.case_result_set,set_id="set-1",run_id="run-1",plan_ref=case.plan_ref,plan_sha256=case.plan_sha256,cases={case},evidence_manifest_ref={kind="artifact",ref=".testing/runs/run-1/evidence-manifest.json",sha256=persisted_digest},evidence_manifest_sha256=manifest.canonical_sha256,evidence_manifest_artifact_sha256=persisted_digest,trace_id=case.trace_id,dedup_key=case.dedup_key}
 end
 
 return {
@@ -72,6 +64,7 @@ return {
   end,
   test_rejects_plan_assertion_omission_foreign_identity_and_requiredness = function()
     local value=valid_case("passed"); table.insert(value.assertions, assertion("assert-optional", false, "skipped")); local plan=authority({{"assert-1",true},{"assert-optional",false}}); t.eq(results.validate_case_result(value, plan), value)
+    local reordered=copy(value); reordered.assertions[1],reordered.assertions[2]=reordered.assertions[2],reordered.assertions[1]; t.raises(function() results.validate_case_result(reordered, plan) end)
     local omitted=copy(value); table.remove(omitted.assertions, 1); t.raises(function() results.validate_case_result(omitted, plan) end)
     local foreign=copy(value); foreign.assertions[2].assertion_id="assert-foreign"; t.raises(function() results.validate_case_result(foreign, plan) end)
     local weakened=copy(value); weakened.assertions[1].required=false; weakened.assertions[1].status="skipped"; weakened.assertions[1].classification="skipped"; t.raises(function() results.validate_case_result(weakened, plan) end)
@@ -95,6 +88,10 @@ return {
     local case=valid_case("passed"); case.evidence_refs={{kind="evidence",ref="evidence-log"}}; case.assertions[1].evidence_refs={{kind="evidence",ref="evidence-log"}}
     local manifest=evidence_manifest(case); local value=result_set(case, manifest)
     t.eq(results.validate_case_result_set(value, {authority()}, manifest), value)
+    local no_persisted_digest=copy(value); no_persisted_digest.evidence_manifest_artifact_sha256=nil; no_persisted_digest.evidence_manifest_ref.sha256=nil
+    t.eq(results.validate_case_result_set(no_persisted_digest, {authority()}, manifest), no_persisted_digest)
+    local mismatched=copy(value); mismatched.evidence_manifest_ref.sha256=string.rep("c",64)
+    t.raises(function() results.validate_case_result_set(mismatched, {authority()}, manifest) end)
     t.raises(function() results.validate_case_result_set(copy(value), {}, manifest) end)
     local foreign=authority(); foreign.plan_ref=ref("plan","foreign"); t.raises(function() results.validate_case_result_set(value, {foreign}, manifest) end)
   end,
@@ -103,9 +100,16 @@ return {
     local manifest=evidence_manifest(case); local set=result_set(case, manifest)
     local bad=copy(manifest); bad.entries[1].evidence_id="evidence-duplicate"; table.insert(bad.entries, copy(bad.entries[1])); t.raises(function() results.validate_case_result_set(set, nil, bad) end)
     bad=copy(manifest); bad.entries[1].case_id="foreign-case"; t.raises(function() results.validate_case_result_set(set, nil, bad) end)
+    bad=copy(manifest); bad.entries[1].role="unsupported"; t.raises(function() results.validate_case_result_set(set, nil, bad) end)
     bad=copy(manifest); bad.entries[1].media_type="application/json"; t.raises(function() results.validate_case_result_set(set, nil, bad) end)
     bad=copy(manifest); bad.entries[1].artifact_ref=ref("artifact", ".testing/runs/foreign-run/evidence/runner.log"); t.raises(function() results.validate_case_result_set(set, nil, bad) end)
     local missing=copy(set); missing.cases[1].evidence_refs={{kind="evidence",ref="missing"}}; t.raises(function() results.validate_case_result_set(missing, nil, manifest) end)
+    local cross=valid_case("passed"); table.insert(cross.assertions, assertion("assert-2", true, "passed"))
+    cross.evidence_refs={{kind="evidence",ref="evidence-log"}}
+    cross.assertions[1].evidence_refs={{kind="evidence",ref="evidence-shot"}}
+    local cross_manifest=evidence_manifest(cross); cross_manifest.entries[2].assertion_id="assert-2"
+    local cross_set=result_set(cross, cross_manifest)
+    t.raises(function() results.validate_case_result_set(cross_set, {authority({{"assert-1",true},{"assert-2",true}})}, cross_manifest) end)
   end,
   test_manifest_digest_is_deterministic = function()
     local case=valid_case("passed"); case.evidence_refs={{kind="evidence",ref="evidence-log"}}; case.assertions[1].evidence_refs={{kind="evidence",ref="evidence-log"}}

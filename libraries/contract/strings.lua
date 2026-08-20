@@ -28,8 +28,33 @@ function S.is_bounded_string(value, limit)
   return type(value) == "string" and value ~= "" and #value <= limit
 end
 
+function S.is_sha256(value)
+  return type(value) == "string" and #value == 64
+    and value:match("^[0-9a-f]+$") ~= nil
+end
+
 function S.is_artifact_root(value, limit)
   return S.is_path_safe_key(value, limit or 4096) and value:sub(1, 14) == ".testing/runs/"
+end
+
+local function is_strict_safe_path(value, limit)
+  return S.is_path_safe_key(value, limit)
+    and value:sub(-1) ~= "/"
+    and value:find("//", 1, true) == nil
+    and value:find("#", 1, true) == nil
+end
+
+function S.artifact_run_id(value)
+  if not is_strict_safe_path(value, 4096) then return nil end
+  return value:match("^%.testing/runs/([^/]+)")
+end
+
+function S.is_artifact_descendant(value, root)
+  if not is_strict_safe_path(root, 4096) or root:sub(1, 14) ~= ".testing/runs/"
+    or not is_strict_safe_path(value, 4096) then
+    return false
+  end
+  return value:sub(1, #root + 1) == root .. "/"
 end
 
 function S.decimal_checksum(value)

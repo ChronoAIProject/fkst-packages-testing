@@ -1,13 +1,36 @@
 local defect_publication = require("defect_publication")
+local results_compat = require("contract.testing_results_compat")
 local t = fkst.test
 
 local commit_sha = string.rep("1", 40)
 local plan_sha = string.rep("a", 64)
 local results_sha = string.rep("b", 64)
 local drafts_sha = string.rep("c", 64)
+local result_set_artifact_sha = string.rep("7", 64)
+local manifest_artifact_sha = string.rep("8", 64)
+
+local function portable_sha256(bytes)
+  local function quote(value) return string.format("%q", value) end
+  local input, output = os.tmpname(), os.tmpname()
+  local handle = assert(io.open(input, "wb")); handle:write(bytes); handle:close()
+  for _, command in ipairs({ "shasum -a 256", "sha256sum", "openssl dgst -sha256" }) do
+    os.execute(command .. " " .. quote(input) .. " > " .. quote(output) .. " 2>/dev/null")
+    local digest_file = io.open(output, "r")
+    local line = digest_file and digest_file:read("*l") or ""
+    if digest_file then digest_file:close() end
+    for candidate in tostring(line):gmatch("[0-9A-Fa-f]+") do
+      if #candidate == 64 then
+        os.remove(input); os.remove(output)
+        return candidate:lower()
+      end
+    end
+  end
+  os.remove(input); os.remove(output)
+  error("no SHA-256 command is available")
+end
 
 local function request()
-  local root = ".testing/runs/defect-publication"
+  local root = ".testing/runs/run-99"
   return {
     schema = "test-publication.defect-publication.request.v1",
     publication = {
@@ -29,11 +52,25 @@ local function request()
   }
 end
 
-local function preparation_request()
+local function canonical_request()
   local value = request()
+  local root = value.publication.artifact_root
+  value.publication.case_result_set_path = root .. "/case-result-set.json"
+  value.publication.case_result_set_artifact_sha256 = result_set_artifact_sha
+  value.publication.evidence_manifest_path = root .. "/evidence-manifest.json"
+  value.publication.evidence_manifest_artifact_sha256 = manifest_artifact_sha
+  value.case_result_set_ref = value.publication.case_result_set_path
+  value.case_result_set_artifact_sha256 = result_set_artifact_sha
+  value.evidence_manifest_ref = value.publication.evidence_manifest_path
+  value.evidence_manifest_artifact_sha256 = manifest_artifact_sha
+  return value
+end
+
+local function preparation_request(source)
+  local value = source or request()
   value.publication.dedup_key = value.dedup_key
   value.publication.publication_dry_run = true
-  return {
+  local prepared = {
     schema = "test-publication.defect-preparation.request.v1",
     publication = value.publication,
     repository = value.repository,
@@ -48,6 +85,17 @@ local function preparation_request()
     trace_id = value.trace_id,
     dedup_key = value.dedup_key,
   }
+  for _, field in ipairs({
+    "case_result_set_ref", "case_result_set_artifact_sha256",
+    "evidence_manifest_ref", "evidence_manifest_artifact_sha256",
+  }) do
+    if value[field] ~= nil then prepared[field] = value[field] end
+  end
+  return prepared
+end
+
+local function canonical_preparation_request()
+  return preparation_request(canonical_request())
 end
 
 local function structured_plan(value)
@@ -72,22 +120,70 @@ local function structured_plan(value)
   }
 end
 
+local function legacy_results(value)
+  local root = value.publication.artifact_root
+  return {
+    schema = "testing-structured-case-results.v1", plan_sha256 = plan_sha,
+    cases = {
+      { case_id = "version", kind = "cli", status = "failed", classification = "product-defect", assertions = { { type = "exit-code", passed = false } }, evidence_ref = root .. "/evidence/version.json" },
+      { case_id = "health", kind = "http", status = "error", classification = "environment-session-issue", assertions = {}, evidence_ref = root .. "/evidence/health.json" },
+    },
+  }
+end
+
+local function canonical_results(value)
+  local root = value.publication.artifact_root
+  local repository_url = "https://github.com/owner/repo.git"
+  local function metadata(case_id, evidence_id, sha256)
+    local ref = root .. "/evidence/" .. case_id .. ".json"
+    return {
+      case_id = case_id,
+      timing = {
+        started_at = "2026-08-14T00:00:00Z", completed_at = "2026-08-14T00:00:01Z",
+        duration_ms = 1000,
+      },
+      evidence = {
+        evidence_id = evidence_id, role = "sanitized-json", sha256 = sha256,
+        media_type = "application/json", size_bytes = 128,
+        producer = "testing-runner", producer_version = "v1",
+        created_at = "2026-08-14T00:00:01Z", sensitivity = "internal",
+        redaction_classification = "none", policy_version = "v1", policy_status = "approved",
+        provenance = { source_kind = "artifact", source_ref = ref, source_sha256 = sha256 },
+      },
+    }
+  end
+  return results_compat.canonicalize_v1(legacy_results(value), {
+    artifact_root = root,
+    plan_sha256 = plan_sha,
+    plan = structured_plan(value),
+    repository = {
+      id = commit_sha,
+      source_ref = { kind = "git", ref = repository_url .. "@" .. commit_sha },
+      source_sha256 = portable_sha256(repository_url .. "\n" .. commit_sha),
+    },
+    run_id = value.run_id or value.publication.source_ref.ref,
+    plan_ref = { kind = "artifact", ref = value.plan_ref or value.publication.test_plan_path },
+    trace_id = value.trace_id,
+    dedup_key = value.dedup_key,
+    case_metadata = {
+      metadata("version", "evidence-version", string.rep("3", 64)),
+      metadata("health", "evidence-health", string.rep("4", 64)),
+    },
+    sha256_bytes = portable_sha256,
+  })
+end
+
 local function runtime(options)
   options = options or {}
   local state
   local writes = {}
   local write_count = 0
+  local save_count = 0
   local artifacts_enabled = true
-  local value = request()
+  local value = options.canonical and canonical_request() or request()
   local artifacts = {
     [value.publication.test_plan_path] = { digest = plan_sha, value = structured_plan(value) },
-    [value.case_results_ref] = { digest = results_sha, value = {
-      schema = "testing-structured-case-results.v1", plan_sha256 = plan_sha,
-      cases = {
-        { case_id = "version", kind = "cli", status = "failed", classification = "product-defect", assertions = { { type = "exit-code", passed = false } }, evidence_ref = value.publication.artifact_root .. "/evidence/version.json" },
-        { case_id = "health", kind = "http", status = "error", classification = "environment-session-issue", assertions = {}, evidence_ref = value.publication.artifact_root .. "/evidence/health.json" },
-      },
-    } },
+    [value.case_results_ref] = { digest = results_sha, value = legacy_results(value) },
     [value.issue_drafts_ref] = { digest = drafts_sha, value = {
       schema = "test-publication.defect-issue-drafts.v1", plan_sha256 = plan_sha,
       cases = {
@@ -95,13 +191,25 @@ local function runtime(options)
       },
     } },
   }
-  if options.mutate then options.mutate(artifacts) end
-  return {
+  if options.canonical then
+    local canonical = canonical_results(value)
+    canonical.result_set.evidence_manifest_artifact_sha256 = value.evidence_manifest_artifact_sha256
+    canonical.result_set.evidence_manifest_ref.sha256 = value.evidence_manifest_artifact_sha256
+    artifacts[value.case_result_set_ref] = {
+      digest = value.case_result_set_artifact_sha256, value = canonical.result_set,
+    }
+    artifacts[value.evidence_manifest_ref] = {
+      digest = value.evidence_manifest_artifact_sha256, value = canonical.evidence_manifest,
+    }
+  end
+  if options.mutate then options.mutate(artifacts, value) end
+  local ports = {
     load_ledger = function() return state end,
     save_ledger = function(_, next_state, expected)
       if options.save_failure then return false end
       if state ~= nil and state.version ~= expected then return false end
       if state == nil and expected ~= 0 then return false end
+      save_count = save_count + 1
       state = next_state
       return true
     end,
@@ -118,12 +226,162 @@ local function runtime(options)
     end,
     state = function() return state end,
     write_count = function() return write_count end,
+    save_count = function() return save_count end,
     disable_artifacts = function() artifacts_enabled = false end,
+    artifacts = artifacts,
     writes = writes,
   }
+  if options.canonical then
+    ports.sha256_bytes = function(bytes, artifact_root)
+      if artifact_root ~= value.publication.artifact_root then error("unexpected hash artifact root") end
+      return portable_sha256(bytes)
+    end
+  end
+  return ports
+end
+
+local function reject_canonical_before_outputs(mutate)
+  local preparation_ports = runtime({
+    canonical = true,
+    mutate = function(artifacts, value)
+      artifacts[value.issue_drafts_ref] = nil
+      mutate(artifacts, value)
+    end,
+  })
+  t.raises(function()
+    defect_publication.prepare_defects(canonical_preparation_request(), preparation_ports)
+  end)
+  t.eq(preparation_ports.write_count(), 0)
+  t.eq(preparation_ports.save_count(), 0)
+
+  local publication_ports = runtime({ canonical = true, mutate = mutate })
+  t.raises(function() defect_publication.prepare(canonical_request(), publication_ports) end)
+  t.eq(publication_ports.write_count(), 0)
+  t.eq(publication_ports.save_count(), 0)
 end
 
 return {
+  test_canonical_preparation_materializes_manifest_bound_draft_and_one_intent = function()
+    local value = canonical_preparation_request()
+    local ports = runtime({
+      canonical = true,
+      mutate = function(artifacts) artifacts[value.issue_drafts_ref] = nil end,
+    })
+    local prepared = defect_publication.prepare_defects(value, ports)
+
+    for _, field in ipairs({
+      "case_result_set_ref", "case_result_set_artifact_sha256",
+      "evidence_manifest_ref", "evidence_manifest_artifact_sha256",
+    }) do
+      t.eq(prepared.defect_request[field], value[field])
+    end
+    t.eq(prepared.defect_request.publication.case_result_set_path,
+      value.publication.case_result_set_path)
+    t.eq(prepared.defect_request.publication.evidence_manifest_path,
+      value.publication.evidence_manifest_path)
+    local drafts = ports.writes[value.issue_drafts_ref]
+    local manifest = ports.artifacts[value.evidence_manifest_ref].value
+    t.eq(#drafts.cases, 1)
+    t.eq(drafts.cases[1].case_id, "version")
+    t.eq(manifest.entries[1].case_id, "version")
+    t.eq(drafts.cases[1].evidence_ref, manifest.entries[1].artifact_ref.ref)
+    t.eq(ports.write_count(), 1)
+
+    local publication = defect_publication.prepare(prepared.defect_request, ports)
+    t.eq(#publication.issue_requests, 1)
+  end,
+
+  test_canonical_request_bindings_reject_before_writes = function()
+    for _, mutate in ipairs({
+      function(value) value.case_result_set_artifact_sha256 = nil end,
+      function(value)
+        value.publication.case_result_set_path = nil
+        value.publication.evidence_manifest_path = nil
+      end,
+      function(value) value.publication.evidence_manifest_path = nil end,
+      function(value) value.case_result_set_ref = value.publication.artifact_root .. "/other-result-set.json" end,
+    }) do
+      local value = canonical_preparation_request()
+      mutate(value)
+      local ports = runtime({ canonical = true })
+      t.raises(function() defect_publication.prepare_defects(value, ports) end)
+      t.eq(ports.write_count(), 0)
+      t.eq(ports.save_count(), 0)
+    end
+  end,
+
+  test_canonical_requires_hash_port_before_any_output = function()
+    local preparation_ports = runtime({ canonical = true })
+    preparation_ports.sha256_bytes = nil
+    t.raises(function()
+      defect_publication.prepare_defects(canonical_preparation_request(), preparation_ports)
+    end)
+    t.eq(preparation_ports.write_count(), 0)
+    t.eq(preparation_ports.save_count(), 0)
+
+    local publication_ports = runtime({ canonical = true })
+    publication_ports.sha256_bytes = nil
+    t.raises(function() defect_publication.prepare(canonical_request(), publication_ports) end)
+    t.eq(publication_ports.write_count(), 0)
+    t.eq(publication_ports.save_count(), 0)
+  end,
+
+  test_canonical_artifact_failures_reject_before_drafts_receipts_or_intents = function()
+    for _, mutate in ipairs({
+      function(artifacts, value)
+        artifacts[value.case_result_set_ref].digest = string.rep("0", 64)
+      end,
+      function(artifacts, value)
+        artifacts[value.evidence_manifest_ref].digest = string.rep("0", 64)
+      end,
+      function(artifacts, value)
+        artifacts[value.evidence_manifest_ref].value.canonical_sha256 = string.rep("0", 64)
+      end,
+      function(artifacts, value)
+        artifacts[value.case_result_set_ref].value.run_id = "foreign-run"
+      end,
+      function(artifacts, value)
+        artifacts[value.case_result_set_ref].value.plan_ref.ref = value.publication.artifact_root .. "/foreign-plan.json"
+      end,
+      function(artifacts, value)
+        artifacts[value.case_result_set_ref].value.trace_id = "foreign-trace"
+      end,
+      function(artifacts, value)
+        artifacts[value.case_result_set_ref].value.evidence_manifest_ref.ref = value.publication.artifact_root
+          .. "/other-evidence-manifest.json"
+      end,
+      function(artifacts, value)
+        artifacts[value.case_results_ref].value.cases[1].evidence_ref = value.publication.artifact_root
+          .. "/evidence/version-other.json"
+      end,
+    }) do
+      reject_canonical_before_outputs(mutate)
+    end
+  end,
+
+  test_canonical_ledger_replay_rejects_changed_digest_or_ref_without_outputs = function()
+    local ports = runtime({ canonical = true })
+    local first = defect_publication.prepare(canonical_request(), ports)
+    t.eq(#first.issue_requests, 1)
+    t.eq(ports.save_count(), 1)
+    local version = ports.state().version
+
+    for _, mutate in ipairs({
+      function(value) value.evidence_manifest_artifact_sha256 = string.rep("9", 64) end,
+      function(value)
+        value.case_result_set_ref = value.publication.artifact_root .. "/other-result-set.json"
+        value.publication.case_result_set_path = value.case_result_set_ref
+      end,
+    }) do
+      local changed = canonical_request()
+      mutate(changed)
+      t.raises(function() defect_publication.prepare(changed, ports) end)
+      t.eq(ports.write_count(), 0)
+      t.eq(ports.save_count(), 1)
+      t.eq(ports.state().version, version)
+    end
+  end,
+
   test_defect_preparation_precise_fail_closed_matrix = function()
     do
       local value = preparation_request()

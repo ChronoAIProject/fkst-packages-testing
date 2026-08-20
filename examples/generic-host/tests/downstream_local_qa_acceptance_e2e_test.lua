@@ -256,9 +256,11 @@ return {
       t.eq(before.authorization, 2)
       t.eq(before.consumption, 2)
       t.eq(before.effects, 5)
-      t.eq(before.publication, 14)
-      t.eq(publication_stage_count(durable.load(
-        context.project_root, context.durable_root, context.run_id), "aggregate-report"), 1)
+      t.eq(before.publication, 16)
+      local published = durable.load(context.project_root, context.durable_root, context.run_id)
+      t.eq(publication_stage_count(published, "aggregate-source-case-result-set"), 1)
+      t.eq(publication_stage_count(published, "aggregate-source-evidence-manifest"), 1)
+      t.eq(publication_stage_count(published, "aggregate-report"), 1)
       t.eq(before.terminal, 1)
     end)
   end,
