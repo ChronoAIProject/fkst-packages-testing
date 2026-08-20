@@ -157,11 +157,21 @@ end
 
 local function ports(request, artifacts, grant, options)
   options = options or {}
-  local writes, turns, clock = {}, 0, 0
+  local writes, turns, clock = options.writes or {}, 0, 0
   local pending_action
   local runtime = {
-    load_artifact = function(path) return artifacts[path] end,
-    write_artifact = function(path, value) writes[path] = structured.copy(value) return true end,
+    load_artifact = function(path)
+      if artifacts[path] then return artifacts[path] end
+      if writes[path] then
+        local raw = json_codec.encode(writes[path]) .. "\n"
+        return { value = structured.copy(writes[path]), raw = raw, digest = sha256(raw) }
+      end
+    end,
+    write_artifact = function(path, value)
+      if writes[path] ~= nil then return json_codec.encode(writes[path]) == json_codec.encode(value) end
+      writes[path] = structured.copy(value)
+      return true
+    end,
     artifact_digest = function(path)
       if artifacts[path] then return artifacts[path].digest end
       if writes[path] then return sha256(json_codec.encode(writes[path]) .. "\n") end
@@ -186,6 +196,7 @@ local function ports(request, artifacts, grant, options)
     decode = function() return structured.copy(pending_action) end,
     monotonic_seconds = function() clock = clock + (options.clock_step or 0) return clock end,
     sha256 = sha256,
+    failpoint = options.failpoint,
     browser_observe = function(_, turn)
       turns = turns + 1
       if options.observe then return options.observe(turn) end
@@ -553,6 +564,119 @@ return {
       t.eq(case_result.execution_status, "lost")
       t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
     end
+  end,
+
+  test_in_progress_claim_before_effect_resumes_without_second_claim = function()
+    local request, artifacts, grant = fixture()
+    local writes = {}
+    local effects = 0
+    local first = ports(request, artifacts, grant, {
+      writes = writes,
+      failpoint = function(name) if name == "after-claim" then error("replace controller") end end,
+      act = function() effects = effects + 1 end,
+    })
+    t.eq(controller.run(request, first).status, "blocked")
+    t.eq(effects, 0)
+
+    local second = ports(request, artifacts, grant, {
+      writes = writes,
+      claim = { status = "in-progress", claim_id = "claim-browser" },
+      callback_turn = 1,
+      act = function(turn, selected)
+        effects = effects + 1
+        return {
+          schema = browser.schemas.step_receipt, turn = turn,
+          action = structured.copy(selected), before = observation(turn),
+          after = observation(turn, { callback = true }), status = "executed",
+          classification = "effect-applied",
+        }
+      end,
+    })
+    t.eq(controller.run(request, second).status, "passed")
+    t.eq(effects, 1)
+  end,
+
+  test_unresolved_effect_intent_recovers_as_lost_without_rerun = function()
+    local request, artifacts, grant = fixture()
+    local writes = {}
+    local effects = 0
+    local first = ports(request, artifacts, grant, {
+      writes = writes,
+      callback_turn = 1,
+      failpoint = function(name) if name == "after-browser-effect" then error("browser acknowledgement lost") end end,
+      act = function(turn, selected)
+        effects = effects + 1
+        return {
+          schema = browser.schemas.step_receipt, turn = turn,
+          action = structured.copy(selected), before = observation(turn),
+          after = observation(turn, { callback = true }), status = "executed",
+          classification = "effect-applied",
+        }
+      end,
+    })
+    t.eq(controller.run(request, first).status, "blocked")
+    t.eq(effects, 1)
+
+    local second, recovered = ports(request, artifacts, grant, {
+      writes = writes,
+      claim = { status = "in-progress", claim_id = "claim-browser" },
+      act = function() effects = effects + 1 error("effect must not repeat") end,
+    })
+    t.eq(controller.run(request, second).status, "failed")
+    t.eq(effects, 1)
+    local case_result = canonical_case(request, recovered)
+    t.eq(case_result.execution_status, "lost")
+    t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
+    local manifest = recovered[request.artifact_root .. "/evidence-manifest.json"]
+    local effect_entry
+    for _, entry in ipairs(manifest.entries) do
+      if entry.redaction_classification == "sanitized-browser-effect-intent" then
+        effect_entry = entry
+        break
+      end
+    end
+    t.is_true(type(effect_entry) == "table")
+    t.is_true(effect_entry.evidence_id:match("^browser%-effect%-%x+$") ~= nil)
+  end,
+
+  test_result_write_retry_reuses_effect_receipt_and_digest_identity = function()
+    local request, artifacts, grant = fixture()
+    local writes = {}
+    local effects = 0
+    local interrupted = false
+    local first = ports(request, artifacts, grant, {
+      writes = writes,
+      callback_turn = 1,
+      failpoint = function(name)
+        if name == "after-case-result-set-write" and not interrupted then
+          interrupted = true
+          error("result write interrupted")
+        end
+      end,
+      act = function(turn, selected)
+        effects = effects + 1
+        return {
+          schema = browser.schemas.step_receipt, turn = turn,
+          action = structured.copy(selected), before = observation(turn),
+          after = observation(turn, { callback = true }), status = "executed",
+          classification = "effect-applied",
+        }
+      end,
+    })
+    t.eq(controller.run(request, first).status, "blocked")
+    local manifest_path = request.artifact_root .. "/evidence-manifest.json"
+    local manifest_digest = sha256(json_codec.encode(writes[manifest_path]) .. "\n")
+
+    local second = ports(request, artifacts, grant, {
+      writes = writes,
+      claim = { status = "in-progress", claim_id = "claim-browser" },
+      act = function() effects = effects + 1 error("effect must not repeat") end,
+    })
+    t.eq(controller.run(request, second).status, "passed")
+    t.eq(effects, 1)
+    t.eq(sha256(json_codec.encode(writes[manifest_path]) .. "\n"), manifest_digest)
+    t.eq(writes[request.artifact_root .. "/case-result-set.json"].evidence_manifest_artifact_sha256,
+      manifest_digest)
   end,
 
   test_completed_grant_replay_performs_no_observation = function()
