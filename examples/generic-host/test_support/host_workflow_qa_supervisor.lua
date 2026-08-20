@@ -89,6 +89,7 @@ function M.run(context, project_root, options)
   local runner = runner_modules("core")
   local planning = runner_modules("structured_planning")
   local structured = runner_modules("structured_execution")
+  local browser_controller = runner_modules("ai_browser_control")
   local artifacts = artifact_modules("core")
   local publication = publication_modules("qa_publication")
 
@@ -266,31 +267,41 @@ function M.run(context, project_root, options)
   local stopped = prepared("structured-execution-pending", actions)
   if stopped ~= nil then return stopped end
 
-  if type(actions[1]) ~= "table" or actions[1].queue ~= "testing-runner.structured_execution_request" then
-    error("canonical lifecycle recovery expected the persisted structured execution request, got "
+  if type(actions[1]) ~= "table" or (actions[1].queue ~= "testing-runner.structured_execution_request"
+    and actions[1].queue ~= "testing-runner.ai_browser_control_request") then
+    error("canonical lifecycle recovery expected a persisted execution request, got "
       .. tostring(actions[1] and actions[1].queue))
   end
 
-  local execution_outcome = structured.run(actions[1].payload, context.structured_runtime)
-  if execution_outcome.status == "blocked" then
-    local case_artifact = execution_outcome.case_results_path
-      and context.store:load(execution_outcome.case_results_path) or nil
-    local first
-    for _, case in ipairs(case_artifact and case_artifact.value and case_artifact.value.cases or {}) do
-      if case.status == "error" then first = case break end
+  local execution_result
+  if actions[1].queue == "testing-runner.ai_browser_control_request" then
+    context.last_browser_execution_request = copy(actions[1].payload)
+    execution_result = browser_controller.result_payload(actions[1].payload, context.ai_browser_runtime)
+    if execution_result.status == "blocked" then
+      error("canonical lifecycle browser execution blocked: " .. tostring(execution_result.stderr_excerpt))
     end
-    error("canonical lifecycle structured execution blocked: " .. tostring(execution_outcome.message)
-      .. " error_count=" .. tostring(execution_outcome.error_count)
-      .. " case=" .. tostring(first and first.case_id)
-      .. " status=" .. tostring(first and first.status)
-      .. " classification=" .. tostring(first and first.classification))
-  end
-  if type(context.after_replay_complete) == "function" then
-    context:after_replay_complete(execution_outcome, actions[1].payload)
-  end
-  local execution_result = structured.result_payload(actions[1].payload, context.structured_runtime)
-  if execution_result.status == "blocked" then
-    error("canonical lifecycle structured execution blocked: " .. tostring(execution_result.stderr_excerpt))
+  else
+    local execution_outcome = structured.run(actions[1].payload, context.structured_runtime)
+    if execution_outcome.status == "blocked" then
+      local case_artifact = execution_outcome.case_results_path
+        and context.store:load(execution_outcome.case_results_path) or nil
+      local first
+      for _, case in ipairs(case_artifact and case_artifact.value and case_artifact.value.cases or {}) do
+        if case.status == "error" then first = case break end
+      end
+      error("canonical lifecycle structured execution blocked: " .. tostring(execution_outcome.message)
+        .. " error_count=" .. tostring(execution_outcome.error_count)
+        .. " case=" .. tostring(first and first.case_id)
+        .. " status=" .. tostring(first and first.status)
+        .. " classification=" .. tostring(first and first.classification))
+    end
+    if type(context.after_replay_complete) == "function" then
+      context:after_replay_complete(execution_outcome, actions[1].payload)
+    end
+    execution_result = structured.result_payload(actions[1].payload, context.structured_runtime)
+    if execution_result.status == "blocked" then
+      error("canonical lifecycle structured execution blocked: " .. tostring(execution_result.stderr_excerpt))
+    end
   end
   actions = workflow.handle_execution_result(execution_result, context.request, context.workflow_runtime)
   stopped = prepared("artifact-summary-pending", actions)

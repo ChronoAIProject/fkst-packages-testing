@@ -212,7 +212,7 @@ local function ports(request, artifacts, grant, options)
 end
 
 local function canonical_case(request, writes)
-  local result_set = writes[request.artifact_root .. "/case-results.json"]
+  local result_set = writes[request.artifact_root .. "/case-result-set.json"]
   t.eq(result_set.schema, "testing-case-result-set.v2")
   t.eq(writes[request.artifact_root .. "/evidence-manifest.json"].schema,
     "testing-evidence-manifest.v1")
@@ -238,6 +238,12 @@ return {
     t.eq(case_result.assertions[1].status, "passed")
     t.is_true(#case_result.observations > 0)
     local manifest = writes[request.artifact_root .. "/evidence-manifest.json"]
+    local result_set = writes[request.artifact_root .. "/case-result-set.json"]
+    t.eq(result_set.evidence_manifest_ref.sha256, runtime.artifact_digest(
+      request.artifact_root .. "/evidence-manifest.json"))
+    t.eq(result_set.evidence_manifest_artifact_sha256, result_set.evidence_manifest_ref.sha256)
+    t.is_true(result_set.evidence_manifest_sha256 ~= result_set.evidence_manifest_artifact_sha256)
+    t.is_true(structured.equal(result_set, writes[request.artifact_root .. "/case-results.json"]))
     t.eq(manifest.entries[1].sha256, runtime.artifact_digest(
       request.artifact_root .. "/browser-agent-execution.json"))
     local encoded = json_codec.encode(writes)
@@ -433,6 +439,8 @@ return {
     for _, suffix in ipairs({
       "/evidence/browser-observation-1.json",
       "/evidence-manifest.json",
+      "/case-result-set.json",
+      "/case-results.json",
     }) do
       local request, artifacts, grant = fixture()
       local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
@@ -556,6 +564,10 @@ return {
       ["test_" .. "plan_path"] = request.artifact_root .. "/test-plan.json",
       execution_path = request.artifact_root .. "/browser-agent-execution.json",
       case_results_path = request.artifact_root .. "/case-results.json",
+      case_result_set_path = request.artifact_root .. "/case-result-set.json",
+      case_result_set_artifact_sha256 = digest("4"),
+      evidence_manifest_path = request.artifact_root .. "/evidence-manifest.json",
+      evidence_manifest_artifact_sha256 = digest("5"),
       case_count = 1, passed_count = 1, failed_count = 0, skipped_count = 0,
       error_count = 0, turn_count = 1, replayed = false,
     }
@@ -603,6 +615,10 @@ return {
       ["test_" .. "plan_path"] = root .. "/test-plan.json",
       execution_path = root .. "/browser-agent-execution.json",
       case_results_path = root .. "/case-results.json",
+      case_result_set_path = root .. "/case-result-set.json",
+      case_result_set_artifact_sha256 = digest("4"),
+      evidence_manifest_path = root .. "/evidence-manifest.json",
+      evidence_manifest_artifact_sha256 = digest("5"),
       case_count = 1, passed_count = 1, failed_count = 0, skipped_count = 0,
       error_count = 0, turn_count = 1, replayed = false,
     }

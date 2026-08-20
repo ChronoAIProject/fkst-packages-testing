@@ -634,14 +634,14 @@ local function publication_from_summary(state, summary)
     case_results_path = native.case_results_path,
     publication_dry_run = true,
   }
-  if state.execution_job == "structured-execution" and native.case_result_set_path ~= nil then
+  if (state.execution_job == "structured-execution" or state.execution_job == "ai-browser-control") and native.case_result_set_path ~= nil then
     publication.case_result_set_path = native.case_result_set_path; publication.case_result_set_artifact_sha256 = native.case_result_set_artifact_sha256
     publication.evidence_manifest_path = native.evidence_manifest_path; publication.evidence_manifest_artifact_sha256 = native.evidence_manifest_artifact_sha256
   end
   return publication
 end
 local function canonical_paths(state, summary)
-  if state.execution_job ~= "structured-execution" or type(summary.native_summary) ~= "table" then return nil end
+  if (state.execution_job ~= "structured-execution" and state.execution_job ~= "ai-browser-control") or type(summary.native_summary) ~= "table" then return nil end
   local native = summary.native_summary
   local plan_ref, result_ref, result_sha = native.test_plan_path,
     native.case_result_set_path, native.case_result_set_artifact_sha256
