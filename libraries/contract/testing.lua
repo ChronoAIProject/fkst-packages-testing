@@ -406,6 +406,8 @@ local function copy_browser_control(value)
   if not has_only(value, {
     schema = true, status = true, classification = true, mode = true, artifact_root = true,
     test_plan_path = true, execution_path = true, case_results_path = true,
+    case_result_set_path = true, case_result_set_artifact_sha256 = true,
+    evidence_manifest_path = true, evidence_manifest_artifact_sha256 = true,
     case_count = true, passed_count = true, failed_count = true, skipped_count = true,
     error_count = true, turn_count = true, replayed = true,
   }) then return nil end
@@ -414,7 +416,11 @@ local function copy_browser_control(value)
     or not strings.is_artifact_root(value.artifact_root)
     or value.test_plan_path ~= value.artifact_root .. "/test-plan.json"
     or value.execution_path ~= value.artifact_root .. "/browser-agent-execution.json"
-    or value.case_results_path ~= value.artifact_root .. "/case-results.json" then return nil end
+    or value.case_results_path ~= value.artifact_root .. "/case-results.json"
+    or value.case_result_set_path ~= value.artifact_root .. "/case-result-set.json"
+    or not sha256(value.case_result_set_artifact_sha256)
+    or value.evidence_manifest_path ~= value.artifact_root .. "/evidence-manifest.json"
+    or not sha256(value.evidence_manifest_artifact_sha256) then return nil end
   for _, field in ipairs({
     "case_count", "passed_count", "failed_count", "skipped_count", "error_count", "turn_count",
   }) do
@@ -427,6 +433,10 @@ local function copy_browser_control(value)
     mode = value.mode, artifact_root = value.artifact_root,
     test_plan_path = value.test_plan_path, execution_path = value.execution_path,
     case_results_path = value.case_results_path, case_count = value.case_count,
+    case_result_set_path = value.case_result_set_path,
+    case_result_set_artifact_sha256 = value.case_result_set_artifact_sha256,
+    evidence_manifest_path = value.evidence_manifest_path,
+    evidence_manifest_artifact_sha256 = value.evidence_manifest_artifact_sha256,
     passed_count = value.passed_count, failed_count = value.failed_count,
     skipped_count = value.skipped_count, error_count = value.error_count,
     turn_count = value.turn_count, replayed = value.replayed,

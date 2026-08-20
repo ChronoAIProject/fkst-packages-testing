@@ -217,10 +217,13 @@ function R.plan_assertion_authorities(plan, plan_ref, plan_sha256)
   local authorities = {}
   for case_index, case in ipairs(plan.cases) do
     bounded(case.case_id, "plan.cases[" .. case_index .. "].case_id", 180)
-    list(case.assertions, "plan.cases[" .. case_index .. "].assertions", 32, false)
+    local planned = case.kind == "browser" and case.completion_assertions or case.assertions
+    list(planned, "plan.cases[" .. case_index .. "].assertions", 32, false)
     local assertions = {}
-    for assertion_index in ipairs(case.assertions) do
-      assertions[assertion_index] = { assertion_id="assertion-" .. assertion_index, required=true }
+    for assertion_index, assertion in ipairs(planned) do
+      assertions[assertion_index] = case.kind == "browser"
+        and { assertion_id=assertion.assertion_id, required=assertion.required }
+        or { assertion_id="assertion-" .. assertion_index, required=true }
     end
     authorities[case_index] = {
       plan_ref={kind=plan_ref.kind,ref=plan_ref.ref}, plan_sha256=plan_sha256,

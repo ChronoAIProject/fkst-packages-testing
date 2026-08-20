@@ -174,12 +174,17 @@ function Context:_environment_runtime()
           dedup_key = request.dedup_key,
         }
         assert(context.store:write(path, value))
-        return {
+        local outcome = {
           status = "passed",
           attempt_id = "attempt-1",
           attempt_ref = ref(path),
           attempt_sha256 = context.store:digest(path),
         }
+        if context.browser_walking_skeleton then
+          outcome.target_id = "target-1"
+          outcome.target_sha256 = sha256_bytes("target-1")
+        end
+        return outcome
       end)
     end,
     run_argv = function(request)
@@ -220,6 +225,7 @@ function Context:_environment_runtime()
     end,
     cleanup = function(request)
       return replay(request.effect_id, function()
+        context.cleanup_effects = context.cleanup_effects + 1
         local cleanup = request.cleanup_ref or {}
         if cleanup.kind == "process-cleanup" then
           local pid = processes[cleanup.ref]
@@ -313,6 +319,23 @@ function Context:_testing_design_runtime()
         local replay = copy(result)
         replay.replayed = true
         return replay
+      end
+      if context.browser_walking_skeleton then
+        context.testing_design_invocations = context.testing_design_invocations + 1
+        context.testing_design_runtime_path = "packages/testing-design/bin/testing-design-runtime.js"
+        local response = direct_exec({
+          "env", "FKST_TESTING_DESIGN_REQUEST_JSON=" .. json_codec.encode(request),
+          "node", context.project_root .. "/" .. context.testing_design_runtime_path, "analyze-env",
+        }, context.project_root)
+        if response.exit_code ~= 0 then
+          error("canonical browser testing-design runtime failed: " .. tostring(response.stderr))
+        end
+        local envelope = json.decode(response.stdout)
+        if type(envelope) ~= "table" or envelope.ok ~= true or type(envelope.result) ~= "table" then
+          error("canonical browser testing-design runtime returned an invalid envelope")
+        end
+        result = copy(envelope.result)
+        return copy(result)
       end
       local root = request.artifact_root
       local module_id = context.fixture_name == "downstream-inventory" and "inventory" or "service"
@@ -574,6 +597,136 @@ function Context:_structured_runtime()
   }
 end
 
+function Context:_ai_browser_runtime()
+  local context = self
+  local claim_ref = context.request.structured_execution.artifact_root .. "/authorization/browser-claim.json"
+  local completion_ref = context.request.structured_execution.artifact_root .. "/authorization/browser-complete.json"
+  local browser_state = context.browser_state or { clicked = false, callback_observed = false }
+  context.browser_state = browser_state
+  local function observation(turn, callback)
+    return {
+      schema = "testing-runner.ai-browser-control.observation.v1",
+      turn = turn,
+      document_token = sha256_bytes("browser-document-" .. tostring(turn) .. ":" .. tostring(callback)),
+      target_id = "target-1",
+      origin = callback and "http://127.0.0.1:43119" or "https://auth.example.test",
+      path = callback and "/callback" or "/login",
+      ready_state = "complete",
+      controls = callback and {} or {
+        { handle = "a1", role = "button", kind = "button", label = "Continue", focused = false },
+      },
+      signals = {
+        callback_detected = callback,
+        mfa_detected = false,
+        captcha_detected = false,
+        target_changed = false,
+        popup_detected = false,
+      },
+      console_count = 0,
+      network_count = turn,
+    }
+  end
+  return {
+    load_artifact = function(path) return context.store:load(path) end,
+    write_artifact = function(path, value) return context.store:write(path, value) end,
+    artifact_digest = function(path) return context.store:digest(path) end,
+    now = function() return "2026-08-20T00:30:00Z" end,
+    verify_grant = function(request)
+      return {
+        grant_sha256 = request.grant_sha256,
+        authority = copy(request.grant.authority),
+        policy_revision = request.grant.policy_revision,
+        evidence_ref = copy(request.grant.evidence_ref),
+      }
+    end,
+    replay_guard = function(binding)
+      local completed = context.store:load(completion_ref)
+      if completed ~= nil then return { status = "completed", result_ref = completed.value.result_ref } end
+      local existing = context.store:load(claim_ref)
+      if existing ~= nil then
+        if not equal(existing.value.binding, binding) then return { status = "blocked" } end
+        return { status = "in-progress", claim_id = existing.value.claim_id }
+      end
+      local claim = { schema = "canonical-browser.claim.v1", claim_id = "browser-claim-1", binding = copy(binding) }
+      assert(context.store:write(claim_ref, claim))
+      context.browser_grant_claims = context.browser_grant_claims + 1
+      return { status = "claimed", claim_id = claim.claim_id }
+    end,
+    complete_replay = function(claim)
+      local stored = context.store:load(claim_ref)
+      if stored == nil or stored.value.claim_id ~= claim.claim_id then return false end
+      return context.store:write(completion_ref, {
+        schema = "canonical-browser.completion.v1",
+        claim_id = claim.claim_id,
+        result_ref = context.request.structured_execution.artifact_root .. "/metadata.json",
+      })
+    end,
+    load_result = function(path)
+      local artifact = context.store:load(path)
+      return artifact and artifact.value and copy(artifact.value.native_summary) or nil
+    end,
+    verify_completion = function()
+      return {
+        callback_observed = browser_state.callback_observed,
+        process_exit_zero = browser_state.clicked,
+        whoami_succeeded = browser_state.clicked,
+        status_authenticated = browser_state.clicked,
+      }
+    end,
+    decode = function(value) return json.decode(value) end,
+    monotonic_seconds = function()
+      context.browser_clock = context.browser_clock + 0.01
+      return context.browser_clock
+    end,
+    sha256 = function(bytes) return sha256_bytes(bytes) end,
+    failpoint = function(name)
+      if context.browser_failpoint == name and context.browser_failpoint_fired ~= true then
+        context.browser_failpoint_fired = true
+        error("canonical browser failpoint: " .. name)
+      end
+    end,
+    browser_observe = function(_, turn)
+      context.browser_observations = context.browser_observations + 1
+      return observation(turn, browser_state.callback_observed), {}
+    end,
+    browser_act = function(_, turn, action)
+      if action.kind ~= "click" or action.handle ~= "a1" or turn ~= 1 then
+        error("canonical browser adapter received an unauthorized effect")
+      end
+      context.browser_effects[#context.browser_effects + 1] = copy(action)
+      if context.browser_crash == true then error("canonical browser crashed during action") end
+      local before = observation(turn, false)
+      browser_state.clicked = true
+      browser_state.callback_observed = true
+      return {
+        schema = "testing-runner.ai-browser-control.step-receipt.v1",
+        turn = turn,
+        action = copy(action),
+        before = before,
+        after = observation(turn, true),
+        status = "executed",
+        classification = "effect-applied",
+      }
+    end,
+    ai_turn = function(_, _, current)
+      return {
+        exit_code = 0,
+        stdout = json_codec.encode({
+          schema = "testing-runner.ai-browser-control.action.v1",
+          turn = current.turn,
+          kind = "click",
+          handle = "a1",
+        }),
+        stderr = "",
+      }
+    end,
+  }
+end
+
+function Context:replace_browser_process()
+  self.ai_browser_runtime = self:_ai_browser_runtime()
+end
+
 function Context:_publication_runtime()
   local context = self
   local ledgers = {}
@@ -627,6 +780,14 @@ function Context:_publication_runtime()
       end
       context.publications[id] = copy(value)
       context.publication_count = context.publication_count + 1
+      if request.stage == "aggregate-report" then
+        context.aggregate_publication_count = context.aggregate_publication_count + 1
+      end
+      if context.publication_ack_loss == true and request.stage == "aggregate-report"
+        and context.publication_ack_lost ~= true then
+        context.publication_ack_lost = true
+        error("canonical publication acknowledgement lost")
+      end
       return value
     end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
@@ -663,7 +824,25 @@ function Context:_generic_host_runtime()
       context.preauthorization_claims = context.preauthorization_claims + 1
       return { status = "claimed", claim_id = preauthorization_claim.claim_id }
     end,
-    grant_values = function()
+    grant_values = function(_, materials)
+      if context.browser_walking_skeleton then
+        local correlation = materials.environment.browser_readiness.correlation
+        return {
+          grant_id = "browser-grant-1",
+          readiness_attempt_id = correlation.attempt_id,
+          readiness_attempt_sha256 = correlation.readiness_attempt_sha256,
+          target_id = correlation.target_id,
+          target_sha256 = correlation.target_sha256,
+          allowed_auth_origins = { "https://auth.example.test" },
+          callback = { origin = "http://127.0.0.1:43119", path = "/callback" },
+          allowed_actions = { "click", "type", "submit", "press_tab", "finish" },
+          approved_secret_refs = { "primary-identity", "primary-secret" },
+          step_budget = 3, time_budget_seconds = 120,
+          evidence_ref = { kind = "attestation", ref = "browser-grant-1" },
+          issued_at = "2026-08-20T00:00:00Z", expires_at = "2026-08-20T01:00:00Z",
+          now = "2026-08-20T00:30:00Z",
+        }
+      end
       return {
         grant_id = context.run_id .. "-grant",
         evidence_ref = { kind = "signed-attestation", ref = context.run_id .. "-execution-grant" },
@@ -780,9 +959,12 @@ end
 function M.new(options)
   options = options or {}
   local inventory = options.scenario == "downstream-inventory"
+  local browser = type(options.scenario) == "string"
+    and options.scenario:sub(1, #"canonical-browser") == "canonical-browser"
   local port = reserve_port()
   local cdp_port = reserve_port()
-  local run_prefix = inventory and "inventory-initial-state-" or "canonical-workflow-qa-"
+  local run_prefix = inventory and "inventory-initial-state-"
+    or browser and "canonical-browser-" or "canonical-workflow-qa-"
   local fixture_name = inventory and "downstream-inventory" or "canonical-qa"
   local run_id = run_prefix .. tostring(port)
   local artifact_root = ".testing/runs/" .. run_id
@@ -807,13 +989,19 @@ function M.new(options)
   require_exec({ "git", "config", "user.email", "fixture@example.invalid" }, source_root)
   require_exec({ "git", "config", "user.name", "Generic Host Fixture" }, source_root)
   require_exec({ "git", "add", "." }, source_root)
-  require_exec({ "git", "commit", "--quiet", "-m", fixture_name .. " fixture" }, source_root)
+  local commit_argv = { "git", "commit", "--quiet", "-m", fixture_name .. " fixture" }
+  if browser then
+    commit_argv = { "env", "GIT_AUTHOR_DATE=2026-08-20T00:00:00Z",
+      "GIT_COMMITTER_DATE=2026-08-20T00:00:00Z", table.unpack(commit_argv) }
+  end
+  require_exec(commit_argv, source_root)
   write_file(source_root .. "/source-only-uncommitted.txt", "must not enter the detached test checkout\n")
   local commit_sha = require_exec({ "git", "rev-parse", "HEAD" }, source_root):match("([0-9a-f]+)")
   local store = Store.new()
   local repository = {
-    slug = inventory and "fixture/downstream-inventory" or "owner/canonical-qa",
+    slug = inventory and "fixture/downstream-inventory" or browser and "owner/repo" or "owner/canonical-qa",
     url = inventory and "https://example.invalid/fixtures/downstream-inventory.git"
+      or browser and "https://github.com/owner/repo.git"
       or "https://example.invalid/generic/canonical-qa.git",
     commit_sha = commit_sha,
   }
@@ -875,15 +1063,15 @@ function M.new(options)
     authority = authority,
     policy_revision = fixture_name .. "-policy-v1",
     evidence_ref = evidence,
-    issued_at = "2026-07-22T00:00:00Z",
-    expires_at = "2026-07-22T01:00:00Z",
+    issued_at = browser and "2026-08-20T00:00:00Z" or "2026-07-22T00:00:00Z",
+    expires_at = browser and "2026-08-20T01:00:00Z" or "2026-07-22T01:00:00Z",
     max_uses = 1,
     trace_id = trace_id,
     dedup_key = dedup_key,
   }
   local authorization_claim
   local authorization_context = {
-    now = "2026-07-22T00:10:00Z",
+    now = browser and "2026-08-20T00:10:00Z" or "2026-07-22T00:10:00Z",
     sha256 = sha256_bytes,
     trusted_authorities = { trusted },
     approval_ref = approval_ref,
@@ -913,7 +1101,7 @@ function M.new(options)
   }
   assert(store:write(analysis_approval_ref.ref, analysis_approval))
 
-  local catalog_ref = artifact_root .. "/execution/case-catalog.json"
+  local catalog_ref = artifact_root .. (browser and "/case-catalog.json" or "/execution/case-catalog.json")
   local effect_counter_path = options.effect_counter_path
   if effect_counter_path == nil and options.count_effect == true then
     effect_counter_path = temp_root .. "/effect-invocations"
@@ -956,7 +1144,22 @@ function M.new(options)
     }
   end
   local catalog_cases = {}
-  if inventory then
+  if browser then
+    catalog_cases = { {
+      design_case_id = "existing-user-login", case_id = "existing-user-login", kind = "browser",
+      goal = "Authenticate the existing user through the approved browser target.",
+      success_conditions = {
+        "Exact loopback callback observed", "Login process exits zero",
+        "whoami succeeds", "status reports authenticated",
+      },
+      completion_assertions = {
+        { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+        { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+        { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+        { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+      },
+    } }
+  elseif inventory then
     catalog_cases = {
       {
       design_case_id = "inventory-initial-state",
@@ -1048,7 +1251,7 @@ function M.new(options)
     dedup_key = dedup_key,
   }
   assert(store:write(catalog_ref, catalog))
-  local preauthorization_ref = artifact_root .. "/execution/preauthorization.json"
+  local preauthorization_ref = artifact_root .. (browser and "/preauthorization.json" or "/execution/preauthorization.json")
   local preauthorization = {
     schema = execution.schemas.preauthorization,
     authorization_id = run_id .. "-execution-authorization",
@@ -1069,8 +1272,8 @@ function M.new(options)
     evidence_ref = {
       kind = "signed-attestation", ref = "fixtures/" .. fixture_name .. "-execution-approval",
     },
-    issued_at = "2026-07-22T00:00:00Z",
-    expires_at = "2026-07-22T01:00:00Z",
+    issued_at = browser and "2026-08-20T00:00:00Z" or "2026-07-22T00:00:00Z",
+    expires_at = browser and "2026-08-20T01:00:00Z" or "2026-07-22T01:00:00Z",
     max_uses = 1,
     trace_id = trace_id,
     dedup_key = dedup_key,
@@ -1078,7 +1281,7 @@ function M.new(options)
   assert(store:write(preauthorization_ref, preauthorization))
 
   local inventory_design_request
-  if inventory then
+  if inventory or browser then
     local design_input_root = artifact_root .. "/design/design-loop-inputs"
     local deterministic_cases = {
       schema = design_loop.schemas.deterministic_cases,
@@ -1086,7 +1289,10 @@ function M.new(options)
     }
     local coverage_scope = {
       schema = design_loop.schemas.coverage_scope,
-      subjects = {
+      subjects = browser and {
+        { id = "existing-user-login", kind = "requirement", priority = "P0",
+          evidence_pointer = design_input_root .. "/existing-user-login.json" },
+      } or {
         { id = "inventory:initial-state", kind = "requirement", priority = "P0",
           evidence_pointer = design_input_root .. "/inventory-initial-state.json" },
         { id = "inventory:reserve-three", kind = "requirement", priority = "P0",
@@ -1133,7 +1339,17 @@ function M.new(options)
     repository = copy(repository),
     artifact_root = artifact_root,
     state_ref = artifact_root .. "/workflow-state.json",
-    proposed_cases = inventory and {
+    proposed_cases = browser and {
+      {
+        id = "existing-user-login", module_id = "service", priority = "P0",
+        title = "Existing user login",
+        objective = "Authenticate the existing user through the approved browser target.",
+        case_kind = "browser",
+        actions = { { action = "click", target = "Continue", expected = "Exact loopback callback observed" } },
+        expected_observable = "The exact callback is observed and all deterministic login signals pass.",
+        coverage_subject_ids = { "existing-user-login" }, review_status = "executable",
+      },
+    } or inventory and {
       {
         id = "inventory-initial-state", module_id = "inventory", priority = "P0",
         title = "Initial inventory state",
@@ -1186,8 +1402,8 @@ function M.new(options)
       profile_ref = profile_ref,
       approval_ref = approval_ref,
       validation_receipt_ref = validation_ref,
-      operation_state_ref = ref(artifact_root .. "/environment/operation-state.json"),
-      artifact_root = artifact_root .. "/environment",
+      operation_state_ref = ref(artifact_root .. (browser and "/operation-state.json" or "/environment/operation-state.json")),
+      artifact_root = browser and artifact_root or artifact_root .. "/environment",
       base_url = base_url,
       runtime_ports = { { name = "application", port = port } },
       sessions = { { role = "browser", cdp_url = "http://127.0.0.1:" .. tostring(cdp_port) } },
@@ -1244,13 +1460,13 @@ function M.new(options)
       ai_design_loop_request = inventory_design_request,
     },
     structured_execution = {
-      artifact_root = artifact_root .. "/execution",
+      artifact_root = browser and artifact_root or artifact_root .. "/execution",
       preauthorization_ref = preauthorization_ref,
       preauthorization_sha256 = store:digest(preauthorization_ref),
       case_catalog_ref = catalog_ref,
       case_catalog_sha256 = store:digest(catalog_ref),
-      structured_plan_ref = artifact_root .. "/execution/structured-plan.json",
-      grant_ref = artifact_root .. "/execution/execution-grant.json",
+      structured_plan_ref = artifact_root .. (browser and "/structured-plan.json" or "/execution/structured-plan.json"),
+      grant_ref = artifact_root .. (browser and "/browser-grant.json" or "/execution/execution-grant.json"),
     },
     publication = {
       channel = options.publication_channel or (durable_enabled and "filesystem-dry-run-v1" or nil),
@@ -1292,6 +1508,7 @@ function M.new(options)
     target_effects = {},
     publications = {},
     publication_count = 0,
+    aggregate_publication_count = 0,
     execution_claims = 0,
     preauthorization_claims = 0,
     terminal_records = 0,
@@ -1306,12 +1523,25 @@ function M.new(options)
     local_qa_department_calls = {},
     temp_root_prefix = "/tmp/fkst-generic-host-" .. run_prefix,
     artifact_root_prefix = project_root .. "/.testing/runs/" .. run_prefix,
+    browser_walking_skeleton = browser,
+    testing_design_invocations = 0,
+    browser_grant_claims = 0,
+    browser_effects = {},
+    browser_observations = 0,
+    browser_clock = 0,
+    browser_failpoint = options.browser_failpoint,
+    browser_failpoint_fired = false,
+    browser_crash = options.browser_crash == true,
+    cleanup_effects = 0,
+    publication_ack_loss = options.publication_ack_loss == true,
+    publication_ack_lost = false,
   }, Context)
   context.environment_runtime = context:_environment_runtime()
   context.workflow_runtime = context:_workflow_runtime()
   context.module_loop_runtime = context:_module_loop_runtime()
   context.testing_design_runtime = context:_testing_design_runtime()
   context.structured_runtime = context:_structured_runtime()
+  context.ai_browser_runtime = context:_ai_browser_runtime()
   context.publication_runtime = context:_publication_runtime()
   context.generic_host_runtime = context:_generic_host_runtime()
   local durable_root = options.durable_root

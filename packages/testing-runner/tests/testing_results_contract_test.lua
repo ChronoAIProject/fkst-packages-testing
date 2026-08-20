@@ -84,6 +84,15 @@ return {
     local errored=valid_case("error"); errored.error=nil; t.raises(function() results.validate_case_result(errored, authority()) end)
     for _, status in ipairs({"blocked","lost"}) do local value=valid_case(status); value.non_execution_reason=nil; t.raises(function() results.validate_case_result(value, authority()) end) end
   end,
+  test_derives_cli_http_and_browser_plan_assertion_authorities = function()
+    local plan_ref=ref("plan","plans/1")
+    local fixed=results.plan_assertion_authorities({cases={{case_id="fixed",kind="cli",assertions={{type="exit-code"}}}}},plan_ref,digest)
+    t.eq(fixed[1].assertions[1].assertion_id,"assertion-1"); t.eq(fixed[1].assertions[1].required,true)
+    local browser=results.plan_assertion_authorities({cases={{case_id="browser",kind="browser",completion_assertions={{assertion_id="callback-observed",required=true},{assertion_id="optional-status",required=false}}}}},plan_ref,digest)
+    t.eq(browser[1].assertions[1].assertion_id,"callback-observed"); t.eq(browser[1].assertions[1].required,true)
+    t.eq(browser[1].assertions[2].assertion_id,"optional-status"); t.eq(browser[1].assertions[2].required,false)
+  end,
+
   test_validates_set_and_plan_authorities = function()
     local case=valid_case("passed"); case.evidence_refs={{kind="evidence",ref="evidence-log"}}; case.assertions[1].evidence_refs={{kind="evidence",ref="evidence-log"}}
     local manifest=evidence_manifest(case); local value=result_set(case, manifest)

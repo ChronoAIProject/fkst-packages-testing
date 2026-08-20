@@ -6,7 +6,6 @@ local testing_contract = require("contract.testing")
 local json_codec = require("testing_runtime.json")
 local testing = require("testkit.testing")
 local t = fkst.test
-
 local function digest(char) return string.rep(char, 64) end
 local function sha256(value)
   local input, output = os.tmpname(), os.tmpname()
@@ -19,7 +18,6 @@ local function sha256(value)
   return computed
 end
 local target_sha = "75a34976ea1b88daa7ba0c80731fc1dbf0d7a3d4c63e7a255764facd1c7d0f57"
-
 local function fixture(options)
   options = options or {}
   local root = ".testing/runs/ai-browser"
@@ -123,7 +121,6 @@ local function fixture(options)
   }
   return request, artifacts, grant
 end
-
 local function observation(turn, options)
   options = options or {}
   local callback = options.callback == true
@@ -148,20 +145,28 @@ local function observation(turn, options)
     console_count = 0, network_count = turn,
   }
 end
-
 local function action(turn, kind, fields)
   local value = { schema = browser.schemas.action, turn = turn, kind = kind }
   for key, item in pairs(fields or {}) do value[key] = item end
   return value
 end
-
 local function ports(request, artifacts, grant, options)
   options = options or {}
-  local writes, turns, clock = {}, 0, 0
+  local writes, turns, clock = options.writes or {}, 0, 0
   local pending_action
   local runtime = {
-    load_artifact = function(path) return artifacts[path] end,
-    write_artifact = function(path, value) writes[path] = structured.copy(value) return true end,
+    load_artifact = function(path)
+      if artifacts[path] then return artifacts[path] end
+      if writes[path] then
+        local raw = json_codec.encode(writes[path]) .. "\n"
+        return { value = structured.copy(writes[path]), raw = raw, digest = sha256(raw) }
+      end
+    end,
+    write_artifact = function(path, value)
+      if writes[path] ~= nil then return json_codec.encode(writes[path]) == json_codec.encode(value) end
+      writes[path] = structured.copy(value)
+      return true
+    end,
     artifact_digest = function(path)
       if artifacts[path] then return artifacts[path].digest end
       if writes[path] then return sha256(json_codec.encode(writes[path]) .. "\n") end
@@ -186,6 +191,7 @@ local function ports(request, artifacts, grant, options)
     decode = function() return structured.copy(pending_action) end,
     monotonic_seconds = function() clock = clock + (options.clock_step or 0) return clock end,
     sha256 = sha256,
+    failpoint = options.failpoint,
     browser_observe = function(_, turn)
       turns = turns + 1
       if options.observe then return options.observe(turn) end
@@ -210,15 +216,13 @@ local function ports(request, artifacts, grant, options)
   }
   return runtime, writes, function() return turns end
 end
-
 local function canonical_case(request, writes)
-  local result_set = writes[request.artifact_root .. "/case-results.json"]
+  local result_set = writes[request.artifact_root .. "/case-result-set.json"]
   t.eq(result_set.schema, "testing-case-result-set.v2")
   t.eq(writes[request.artifact_root .. "/evidence-manifest.json"].schema,
     "testing-evidence-manifest.v1")
   return result_set.cases[1]
 end
-
 return {
   test_deterministic_completion_overrides_advisory_ai_and_passes = function()
     local request, artifacts, grant = fixture()
@@ -238,13 +242,18 @@ return {
     t.eq(case_result.assertions[1].status, "passed")
     t.is_true(#case_result.observations > 0)
     local manifest = writes[request.artifact_root .. "/evidence-manifest.json"]
+    local result_set = writes[request.artifact_root .. "/case-result-set.json"]
+    t.eq(result_set.evidence_manifest_ref.sha256, runtime.artifact_digest(
+      request.artifact_root .. "/evidence-manifest.json"))
+    t.eq(result_set.evidence_manifest_artifact_sha256, result_set.evidence_manifest_ref.sha256)
+    t.is_true(result_set.evidence_manifest_sha256 ~= result_set.evidence_manifest_artifact_sha256)
+    t.is_true(structured.equal(result_set, writes[request.artifact_root .. "/case-results.json"]))
     t.eq(manifest.entries[1].sha256, runtime.artifact_digest(
       request.artifact_root .. "/browser-agent-execution.json"))
     local encoded = json_codec.encode(writes)
     t.eq(encoded:find("raw provider body", 1, true), nil)
     t.eq(encoded:find("password=", 1, true), nil)
   end,
-
   test_ai_false_success_is_advisory_and_repetition_blocks = function()
     local request, artifacts, grant = fixture()
     local runtime, writes = ports(request, artifacts, grant, {
@@ -257,7 +266,6 @@ return {
     t.eq(#receipt.steps, 1)
     t.eq(receipt.completion.callback_observed, false)
   end,
-
   test_malformed_ai_action_fails_before_browser_effect = function()
     local request, artifacts, grant = fixture()
     local effects = 0
@@ -272,7 +280,6 @@ return {
     t.eq(case_result.execution_status, "error")
     t.eq(case_result.error.code, "browser-action-invalid")
   end,
-
   test_step_budget_exhaustion_is_terminal_and_bounded = function()
     local request, artifacts, grant = fixture({ step_budget = 2 })
     local runtime, writes = ports(request, artifacts, grant, {
@@ -287,7 +294,6 @@ return {
     t.eq(#writes[request.artifact_root .. "/browser-agent-execution.json"].steps, 2)
     t.eq(canonical_case(request, writes).non_execution_reason, "browser-step-budget-exhausted")
   end,
-
   test_mfa_captcha_popup_and_target_change_stop_without_ai_turn = function()
     for _, signal in ipairs({ "mfa", "captcha", "popup", "target_changed" }) do
       local request, artifacts, grant = fixture()
@@ -306,7 +312,6 @@ return {
       t.eq(case_result.non_execution_reason, reason)
     end
   end,
-
   test_target_binding_and_grant_digest_mismatches_fail_before_observation = function()
     local request, artifacts, grant = fixture()
     artifacts[request.browser_grant_ref].value.target_id = "foreign-target"
@@ -314,7 +319,6 @@ return {
     local result = controller.run(request, runtime)
     t.eq(result.status, "blocked")
     t.eq(turns(), 0)
-
     request, artifacts, grant = fixture()
     artifacts[request.browser_grant_ref].digest = digest("8")
     runtime, _, turns = ports(request, artifacts, grant)
@@ -322,7 +326,6 @@ return {
     t.eq(result.status, "blocked")
     t.eq(turns(), 0)
   end,
-
   test_time_budget_exhaustion_stops_before_ai_or_effect = function()
     local request, artifacts, grant = fixture()
     local ai_calls = 0
@@ -337,7 +340,6 @@ return {
     t.eq(#writes[request.artifact_root .. "/browser-agent-execution.json"].steps, 0)
     t.eq(canonical_case(request, writes).non_execution_reason, "browser-time-budget-exhausted")
   end,
-
   test_callback_failure_completion_failure_step_failure_interrupt_and_loss_are_stable = function()
     do
       local request, artifacts, grant = fixture()
@@ -402,7 +404,6 @@ return {
       t.eq(case_result.assertions[1].status, "skipped")
     end
   end,
-
   test_optional_screenshot_and_runner_output_evidence_require_exact_metadata = function()
     local request, artifacts, grant = fixture()
     local screenshot_path = request.artifact_root .. "/browser-runtime/turn-1-screenshot.png"
@@ -428,11 +429,12 @@ return {
     t.eq(roles.screenshot, true)
     t.eq(roles["runner-log"], true)
   end,
-
   test_evidence_and_canonical_result_write_failures_are_fail_closed = function()
     for _, suffix in ipairs({
       "/evidence/browser-observation-1.json",
       "/evidence-manifest.json",
+      "/case-result-set.json",
+      "/case-results.json",
     }) do
       local request, artifacts, grant = fixture()
       local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
@@ -446,7 +448,6 @@ return {
       t.is_true(result.message:find("artifact write failed", 1, true) ~= nil)
     end
   end,
-
   test_optional_evidence_rejects_missing_and_mismatched_metadata = function()
     do
       local request, artifacts, grant = fixture()
@@ -477,7 +478,6 @@ return {
       t.is_true(result.message:find("optional evidence metadata differs", 1, true) ~= nil)
     end
   end,
-
   test_malformed_observation_is_terminal_without_ai_or_effect = function()
     local request, artifacts, grant = fixture()
     local ai_calls = 0
@@ -495,7 +495,6 @@ return {
     t.eq(ai_calls, 0)
     t.eq(canonical_case(request, writes).non_execution_reason, "unsafe-browser-observation")
   end,
-
   test_observation_interruptions_before_and_after_an_action_are_distinct = function()
     do
       local request, artifacts, grant = fixture()
@@ -521,7 +520,6 @@ return {
       t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
     end
   end,
-
   test_invalid_completion_before_and_after_an_action_is_fail_closed = function()
     do
       local request, artifacts, grant = fixture()
@@ -546,7 +544,270 @@ return {
       t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
     end
   end,
-
+  test_in_progress_claim_before_effect_resumes_without_second_claim = function()
+    local request, artifacts, grant = fixture()
+    local writes = {}
+    local effects = 0
+    local first = ports(request, artifacts, grant, {
+      writes = writes,
+      failpoint = function(name) if name == "after-claim" then error("replace controller") end end,
+      act = function() effects = effects + 1 end,
+    })
+    t.eq(controller.run(request, first).status, "blocked")
+    t.eq(effects, 0)
+    local second = ports(request, artifacts, grant, {
+      writes = writes,
+      claim = { status = "in-progress", claim_id = "claim-browser" },
+      callback_turn = 1,
+      act = function(turn, selected)
+        effects = effects + 1
+        return {
+          schema = browser.schemas.step_receipt, turn = turn,
+          action = structured.copy(selected), before = observation(turn),
+          after = observation(turn, { callback = true }), status = "executed",
+          classification = "effect-applied",
+        }
+      end,
+    })
+    t.eq(controller.run(request, second).status, "passed")
+    t.eq(effects, 1)
+  end,
+  test_unresolved_effect_intent_recovers_as_lost_without_rerun = function()
+    local request, artifacts, grant = fixture()
+    local writes = {}
+    local effects = 0
+    local first = ports(request, artifacts, grant, {
+      writes = writes,
+      callback_turn = 1,
+      failpoint = function(name) if name == "after-browser-effect" then error("browser acknowledgement lost") end end,
+      act = function(turn, selected)
+        effects = effects + 1
+        return {
+          schema = browser.schemas.step_receipt, turn = turn,
+          action = structured.copy(selected), before = observation(turn),
+          after = observation(turn, { callback = true }), status = "executed",
+          classification = "effect-applied",
+        }
+      end,
+    })
+    t.eq(controller.run(request, first).status, "blocked")
+    t.eq(effects, 1)
+    local second, recovered = ports(request, artifacts, grant, {
+      writes = writes,
+      claim = { status = "in-progress", claim_id = "claim-browser" },
+      act = function() effects = effects + 1 error("effect must not repeat") end,
+    })
+    t.eq(controller.run(request, second).status, "blocked")
+    t.eq(effects, 1)
+    local case_result = canonical_case(request, recovered)
+    t.eq(case_result.execution_status, "lost")
+    t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
+    local manifest = recovered[request.artifact_root .. "/evidence-manifest.json"]
+    local effect_entry
+    for _, entry in ipairs(manifest.entries) do
+      if entry.redaction_classification == "sanitized-browser-effect-intent" then
+        effect_entry = entry
+        break
+      end
+    end
+    t.is_true(type(effect_entry) == "table")
+    t.is_true(effect_entry.evidence_id:match("^browser%-effect%-%x+$") ~= nil)
+  end,
+  test_recovery_and_effect_journal_fail_closed_matrix = function()
+    local function successful_writes()
+      local request, artifacts, grant = fixture()
+      local runtime, writes = ports(request, artifacts, grant, { callback_turn = 1 })
+      t.eq(controller.run(request, runtime).status, "passed")
+      return request, artifacts, grant, writes
+    end
+    for _, failure in ipairs({ "compatibility", "replay" }) do
+      local request, artifacts, grant, writes = successful_writes()
+      local runtime = ports(request, artifacts, grant, {
+        writes = writes, claim = { status = "in-progress", claim_id = "claim-browser" },
+      })
+      if failure == "compatibility" then
+        local write = runtime.write_artifact
+        runtime.write_artifact = function(path, value)
+          if path == request.artifact_root .. "/case-results.json" then return false end
+          return write(path, value)
+        end
+      else
+        runtime.complete_replay = function() return false end
+        local write = runtime.write_artifact
+        runtime.write_artifact = function(path, value)
+          if path == request.artifact_root .. "/metadata.json" then return true end
+          return write(path, value)
+        end
+      end
+      local replay_failure = controller.run(request, runtime)
+      t.eq(replay_failure.status, "blocked")
+      if failure == "replay" and replay_failure.message:find("replay completion failed", 1, true) == nil then
+        error(replay_failure.message)
+      end
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
+      local write = runtime.write_artifact
+      runtime.write_artifact = function(path, value)
+        if path == request.artifact_root .. "/browser-agent-execution.json" then return false end
+        return write(path, value)
+      end
+      t.eq(controller.run(request, runtime).status, "blocked")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local runtime, writes = ports(request, artifacts, grant, { callback_turn = 1 })
+      local load = runtime.load_artifact
+      runtime.load_artifact = function(path)
+        if path:find("browser%-effects/turn%-1%-intent%.json$") and writes[path] then return nil end
+        return load(path)
+      end
+      t.eq(controller.run(request, runtime).status, "blocked")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
+      local artifact_digest = runtime.artifact_digest
+      runtime.artifact_digest = function(path)
+        if path == request.artifact_root .. "/evidence-manifest.json" then return nil end
+        return artifact_digest(path)
+      end
+      t.eq(controller.run(request, runtime).status, "blocked")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
+      local artifact_digest = runtime.artifact_digest
+      runtime.artifact_digest = function(path)
+        if path == request.artifact_root .. "/case-result-set.json" then return nil end
+        return artifact_digest(path)
+      end
+      t.eq(controller.run(request, runtime).status, "blocked")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local intent_path = request.artifact_root .. "/browser-effects/turn-1-intent.json"
+      local writes = { [intent_path] = {
+        schema = "testing-runner.ai-browser-control.effect-intent.v1",
+        effect_id = "browser-effect-foreign", claim_id = "foreign", turn = 1,
+        action = action(1, "click", { handle = "a1" }), target_id = "target-1",
+        trace_id = request.trace_id, dedup_key = request.dedup_key,
+      } }
+      local runtime = ports(request, artifacts, grant, {
+        writes = writes, claim = { status = "in-progress", claim_id = "claim-browser" },
+      })
+      t.eq(controller.run(request, runtime).status, "blocked")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local intent_path = request.artifact_root .. "/browser-effects/turn-1-intent.json"
+      local receipt_path = request.artifact_root .. "/browser-effects/turn-1-receipt.json"
+      local selected = action(1, "click", { handle = "a1" })
+      local writes = {
+        [intent_path] = {
+          schema = "testing-runner.ai-browser-control.effect-intent.v1",
+          effect_id = "browser-effect-blocked", claim_id = "claim-browser", turn = 1,
+          action = structured.copy(selected), target_id = "target-1",
+          trace_id = request.trace_id, dedup_key = request.dedup_key,
+        },
+        [receipt_path] = {
+          schema = browser.schemas.step_receipt, turn = 1, action = structured.copy(selected),
+          before = observation(1), after = observation(1), status = "blocked",
+          classification = "browser-step-rejected",
+        },
+      }
+      local runtime, recovered = ports(request, artifacts, grant, {
+        writes = writes, claim = { status = "in-progress", claim_id = "claim-browser" },
+      })
+      t.eq(controller.run(request, runtime).status, "blocked")
+      t.eq(canonical_case(request, recovered).error.code, "browser-step-rejected")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local intent_path = request.artifact_root .. "/browser-effects/turn-1-intent.json"
+      local receipt_path = request.artifact_root .. "/browser-effects/turn-1-receipt.json"
+      local selected = action(1, "click", { handle = "a1" })
+      local writes = {
+        [intent_path] = {
+          schema = "testing-runner.ai-browser-control.effect-intent.v1",
+          effect_id = "browser-effect-recovered", claim_id = "claim-browser", turn = 1,
+          action = structured.copy(selected), target_id = "target-1",
+          trace_id = request.trace_id, dedup_key = request.dedup_key,
+        },
+        [receipt_path] = {
+          schema = browser.schemas.step_receipt, turn = 1, action = structured.copy(selected),
+          before = observation(1), after = observation(1), status = "executed",
+          classification = "effect-applied",
+        },
+      }
+      local runtime = ports(request, artifacts, grant, {
+        writes = writes, claim = { status = "in-progress", claim_id = "claim-browser" },
+      })
+      t.eq(controller.run(request, runtime).status, "blocked")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local runtime = ports(request, artifacts, grant)
+      local load, intent_loads = runtime.load_artifact, 0
+      runtime.load_artifact = function(path)
+        if path:find("browser%-effects/turn%-1%-intent%.json$") then
+          intent_loads = intent_loads + 1
+          if intent_loads == 2 then return { value = {}, raw = "{}", digest = digest("a") } end
+        end
+        return load(path)
+      end
+      t.eq(controller.run(request, runtime).status, "blocked")
+    end
+    do
+      local request, artifacts, grant = fixture()
+      local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
+      local write = runtime.write_artifact
+      runtime.write_artifact = function(path, value)
+        if path:find("browser%-effects/turn%-1%-receipt%.json$") then return false end
+        return write(path, value)
+      end
+      t.eq(controller.run(request, runtime).status, "blocked")
+    end
+  end,
+  test_result_write_retry_reuses_effect_receipt_and_digest_identity = function()
+    local request, artifacts, grant = fixture()
+    local writes = {}
+    local effects = 0
+    local interrupted = false
+    local first = ports(request, artifacts, grant, {
+      writes = writes,
+      callback_turn = 1,
+      failpoint = function(name)
+        if name == "after-case-result-set-write" and not interrupted then
+          interrupted = true
+          error("result write interrupted")
+        end
+      end,
+      act = function(turn, selected)
+        effects = effects + 1
+        return {
+          schema = browser.schemas.step_receipt, turn = turn,
+          action = structured.copy(selected), before = observation(turn),
+          after = observation(turn, { callback = true }), status = "executed",
+          classification = "effect-applied",
+        }
+      end,
+    })
+    t.eq(controller.run(request, first).status, "blocked")
+    local manifest_path = request.artifact_root .. "/evidence-manifest.json"
+    local manifest_digest = sha256(json_codec.encode(writes[manifest_path]) .. "\n")
+    local second = ports(request, artifacts, grant, {
+      writes = writes,
+      claim = { status = "in-progress", claim_id = "claim-browser" },
+      act = function() effects = effects + 1 error("effect must not repeat") end,
+    })
+    t.eq(controller.run(request, second).status, "passed")
+    t.eq(effects, 1)
+    t.eq(sha256(json_codec.encode(writes[manifest_path]) .. "\n"), manifest_digest)
+    t.eq(writes[request.artifact_root .. "/case-result-set.json"].evidence_manifest_artifact_sha256,
+      manifest_digest)
+  end,
   test_completed_grant_replay_performs_no_observation = function()
     local request, artifacts, grant = fixture()
     local replayed = {
@@ -556,6 +817,10 @@ return {
       ["test_" .. "plan_path"] = request.artifact_root .. "/test-plan.json",
       execution_path = request.artifact_root .. "/browser-agent-execution.json",
       case_results_path = request.artifact_root .. "/case-results.json",
+      case_result_set_path = request.artifact_root .. "/case-result-set.json",
+      case_result_set_artifact_sha256 = digest("4"),
+      evidence_manifest_path = request.artifact_root .. "/evidence-manifest.json",
+      evidence_manifest_artifact_sha256 = digest("5"),
       case_count = 1, passed_count = 1, failed_count = 0, skipped_count = 0,
       error_count = 0, turn_count = 1, replayed = false,
     }
@@ -568,7 +833,6 @@ return {
     t.eq(result.replayed, true)
     t.eq(turns(), 0)
   end,
-
   test_department_raises_testing_result = function()
     local request, artifacts, grant = fixture()
     local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
@@ -580,7 +844,6 @@ return {
     t.eq(trace.raises[1].queue, "testing_result")
     t.eq(trace.raises[1].payload.status, "passed")
   end,
-
   test_production_ports_fail_closed_and_return_complete_runtime = function()
     local previous = _G.ai_browser_control_runtime
     _G.ai_browser_control_runtime = nil
@@ -593,7 +856,6 @@ return {
     t.eq(controller.production_ports(), runtime)
     _G.ai_browser_control_runtime = previous
   end,
-
   test_browser_control_summary_contract_copies_only_bounded_values = function()
     local root = ".testing/runs/browser-summary"
     local summary = {
@@ -603,6 +865,10 @@ return {
       ["test_" .. "plan_path"] = root .. "/test-plan.json",
       execution_path = root .. "/browser-agent-execution.json",
       case_results_path = root .. "/case-results.json",
+      case_result_set_path = root .. "/case-result-set.json",
+      case_result_set_artifact_sha256 = digest("4"),
+      evidence_manifest_path = root .. "/evidence-manifest.json",
+      evidence_manifest_artifact_sha256 = digest("5"),
       case_count = 1, passed_count = 1, failed_count = 0, skipped_count = 0,
       error_count = 0, turn_count = 1, replayed = false,
     }
@@ -610,7 +876,6 @@ return {
     t.eq(copied.schema, summary.schema)
     t.eq(copied.execution_path, summary.execution_path)
     t.eq(copied.turn_count, 1)
-
     local mutations = {
       function(value) value.extra = true end,
       function(value) value.mode = "structured-api-cli" end,
@@ -624,7 +889,6 @@ return {
       t.eq(testing_contract.copy_native_summary(value), nil)
     end
   end,
-
   test_controller_fail_closed_runtime_boundaries = function()
     local mutations = {
       function(request, artifacts)
@@ -639,7 +903,6 @@ return {
       mutate(request, artifacts)
       t.eq(controller.run(request, ports(request, artifacts, grant)).status, "blocked")
     end
-
     do
       local request, artifacts, grant = fixture()
       local runtime = ports(request, artifacts, grant)
@@ -670,7 +933,6 @@ return {
       t.eq(controller.run(request, runtime).status, "blocked")
     end
   end,
-
   test_callback_before_action_and_unsafe_after_action_are_terminal = function()
     do
       local request, artifacts, grant = fixture()
@@ -695,7 +957,6 @@ return {
       t.eq(result.classification, "browser-popup-detected")
     end
   end,
-
   test_default_runtime_and_ai_adapters_complete_one_browser_turn = function()
     local request, artifacts, grant = fixture()
     local runtime = ports(request, artifacts, grant)

@@ -617,7 +617,8 @@ local function reconcile(plan, validated_results, request, repository)
     classifications[result.case_id] = result.classification
     evidence_refs[result.case_id] = result.evidence_ref
     counts.executed = counts.executed + 1
-    counts[result.status] = counts[result.status] + 1
+    local bucket = result.status == "lost" and "error" or result.status
+    counts[bucket] = counts[bucket] + 1
   end
   return counts, classifications, evidence_refs
 end
@@ -661,16 +662,22 @@ local function validated_result_view(request, ports, plan, repository, has_canon
     evidence_manifest_artifact_sha256=request.evidence_manifest_artifact_sha256,
     sha256_bytes=hash,
   })
-  local projected = results_compat.project_v1(result_set, manifest, {
-    artifact_root = canonical_root, plan_sha256 = request.test_plan_sha256, plan = plan,
-    repository = canonical_repository_identity, run_id = request.run_id,
-    plan_ref = plan_ref, trace_id = request.trace_id, dedup_key = request.dedup_key,
-    sha256_bytes = hash,
-  })
   local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
-  results_compat.validate_v1(legacy, v1_context)
-  if not structured_contract.equal(projected, legacy) then
-    error("test-publication: qa: canonical and legacy case results differ")
+  if plan.execution_mode == "agentic-browser" then
+    if not structured_contract.equal(result_set, legacy) then
+      error("test-publication: qa: canonical browser result alias differs")
+    end
+  else
+    local projected = results_compat.project_v1(result_set, manifest, {
+      artifact_root = canonical_root, plan_sha256 = request.test_plan_sha256, plan = plan,
+      repository = canonical_repository_identity, run_id = request.run_id,
+      plan_ref = plan_ref, trace_id = request.trace_id, dedup_key = request.dedup_key,
+      sha256_bytes = hash,
+    })
+    results_compat.validate_v1(legacy, v1_context)
+    if not structured_contract.equal(projected, legacy) then
+      error("test-publication: qa: canonical and legacy case results differ")
+    end
   end
   return direct
 end
