@@ -170,7 +170,6 @@ local function effect_journal(request, claim, turn, action, observation, ports)
       turn = turn,
       action = copy(action),
       target_id = observation.target_id,
-      document_token = observation.document_token,
       trace_id = request.trace_id,
       dedup_key = request.dedup_key,
     },
