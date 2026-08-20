@@ -120,10 +120,11 @@ local function validate_authoritative_assertions(value, authority, assertion_ids
   if authority == nil then return end
   local planned = validate_assertion_authority(authority, value.reviewed_case_id)
   if not same_plan(value.plan_ref, value.plan_sha256, authority) then fail("foreign-plan", "assertion authority does not match the case plan") end
-  for _, assertion in ipairs(value.assertions) do
-    local required = planned[assertion.assertion_id]
-    if required == nil then fail("foreign-assertion", assertion.assertion_id) end
-    if assertion.required ~= required then fail("contradictory-requiredness", assertion.assertion_id) end
+  if #value.assertions ~= #authority.assertions then fail("missing-assertion", "assertion count differs from authority") end
+  for index, assertion in ipairs(value.assertions) do
+    local expected = authority.assertions[index]
+    if assertion.assertion_id ~= expected.assertion_id then fail("foreign-assertion", assertion.assertion_id) end
+    if assertion.required ~= expected.required then fail("contradictory-requiredness", assertion.assertion_id) end
   end
   for assertion_id in pairs(planned) do if not assertion_ids[assertion_id] then fail("missing-assertion", assertion_id) end end
 end
@@ -169,10 +170,16 @@ end
 function R.validate_observation(value) return validate_observation(value) end
 function R.validate_assertion_result(value) return validate_assertion(value) end
 function R.validate_case_result(value, assertion_authority) return validate_case(value, nil, assertion_authority) end
-function R.validate_case_result_set(value, assertion_authorities, manifest, sha256_fn)
-  fields(value, { schema=true, set_id=true, run_id=true, plan_ref=true, plan_sha256=true, cases=true, evidence_manifest_ref=true, evidence_manifest_sha256=true, trace_id=true, dedup_key=true }, "case-result-set")
+function R.validate_case_result_set(value, assertion_authorities, manifest, sha256_fn, context)
+  fields(value, { schema=true, set_id=true, run_id=true, plan_ref=true, plan_sha256=true, cases=true, evidence_manifest_ref=true, evidence_manifest_sha256=true, evidence_manifest_artifact_sha256=true, trace_id=true, dedup_key=true }, "case-result-set")
   if value.schema ~= R.schemas.case_result_set then fail("unknown-schema", "case result set schema") end
   bounded(value.set_id, "set_id", 180); bounded(value.run_id, "run_id", 180); reference(value.plan_ref, "plan_ref"); digest(value.plan_sha256, "plan_sha256"); reference(value.evidence_manifest_ref, "evidence_manifest_ref"); digest(value.evidence_manifest_sha256, "evidence_manifest_sha256"); list(value.cases, "cases", 64, true); local seen = {}; local plan = { plan_ref=value.plan_ref, plan_sha256=value.plan_sha256 }
+  if value.evidence_manifest_artifact_sha256 ~= nil then digest(value.evidence_manifest_artifact_sha256, "evidence_manifest_artifact_sha256") end
+  if value.evidence_manifest_ref.sha256 ~= nil then
+    if value.evidence_manifest_artifact_sha256 == nil or value.evidence_manifest_ref.sha256 ~= value.evidence_manifest_artifact_sha256 then
+      fail("digest-mismatch", "manifest reference digest must equal the persisted manifest digest")
+    end
+  end
   local authorities = {}
   if assertion_authorities ~= nil then
     list(assertion_authorities, "assertion-authorities", 64, true)
@@ -187,6 +194,7 @@ function R.validate_case_result_set(value, assertion_authorities, manifest, sha2
     validate_case(item, plan, assertion_authorities and authorities[item.reviewed_case_id])
     if seen[item.case_id] then fail("duplicate-case", item.case_id) end
     seen[item.case_id] = true
+    if item.trace_id ~= value.trace_id or item.dedup_key ~= value.dedup_key then fail("foreign-correlation", "case correlation does not match the result set") end
     if assertion_authorities and authorities[item.reviewed_case_id] == nil then fail("missing-assertion-authority", item.reviewed_case_id) end
   end
   if assertion_authorities then
@@ -197,10 +205,31 @@ function R.validate_case_result_set(value, assertion_authorities, manifest, sha2
     end
   end
   if type(manifest) ~= "table" then fail("missing-evidence-manifest", "case result set requires a bound evidence manifest") end
-  evidence_manifest.validate(manifest, value, sha256_fn)
+  evidence_manifest.validate(manifest, value, sha256_fn, context)
   if manifest.canonical_sha256 ~= value.evidence_manifest_sha256 then fail("digest-mismatch", "evidence manifest digest does not match the result-set binding") end
   bounded(value.trace_id, "trace_id", 180); bounded(value.dedup_key, "dedup_key", 180); return value
 end
+
+function R.plan_assertion_authorities(plan, plan_ref, plan_sha256)
+  if type(plan) ~= "table" then fail("malformed-plan", "plan must be a table") end
+  reference(plan_ref, "plan_ref"); digest(plan_sha256, "plan_sha256")
+  list(plan.cases, "plan.cases", 64, true)
+  local authorities = {}
+  for case_index, case in ipairs(plan.cases) do
+    bounded(case.case_id, "plan.cases[" .. case_index .. "].case_id", 180)
+    list(case.assertions, "plan.cases[" .. case_index .. "].assertions", 32, false)
+    local assertions = {}
+    for assertion_index in ipairs(case.assertions) do
+      assertions[assertion_index] = { assertion_id="assertion-" .. assertion_index, required=true }
+    end
+    authorities[case_index] = {
+      plan_ref={kind=plan_ref.kind,ref=plan_ref.ref}, plan_sha256=plan_sha256,
+      reviewed_case_id=case.case_id, assertions=assertions,
+    }
+  end
+  return authorities
+end
+
 function R.negotiate(schema, supported)
   bounded(schema, "schema", 96); local major = tonumber(schema:match("%.v(%d+)$")); if major == nil or type(supported) ~= "table" or supported[major] ~= true then fail("unsupported-major", schema) end; return major
 end
@@ -211,12 +240,12 @@ local function canonical_json(value)
   if numeric > 0 or next(value) == nil then local parts = {}; for _, item in ipairs(value) do table.insert(parts, canonical_json(item)) end; return "[" .. table.concat(parts, ",") .. "]" end
   table.sort(keys); local parts = {}; for _, key in ipairs(keys) do table.insert(parts, strings.json_string(key) .. ":" .. canonical_json(value[key])) end; return "{" .. table.concat(parts, ",") .. "}"
 end
-function R.canonicalize(value, manifest, sha256_fn)
-  if value.schema == R.schemas.observation then validate_observation(value) elseif value.schema == R.schemas.assertion_result then validate_assertion(value) elseif value.schema == R.schemas.case_result then validate_case(value) elseif value.schema == R.schemas.case_result_set then R.validate_case_result_set(value, nil, manifest, sha256_fn) else fail("unknown-schema", "unsupported result schema") end
+function R.canonicalize(value, manifest, sha256_fn, context)
+  if value.schema == R.schemas.observation then validate_observation(value) elseif value.schema == R.schemas.assertion_result then validate_assertion(value) elseif value.schema == R.schemas.case_result then validate_case(value) elseif value.schema == R.schemas.case_result_set then R.validate_case_result_set(value, nil, manifest, sha256_fn, context) else fail("unknown-schema", "unsupported result schema") end
   return canonical_json(value)
 end
-function R.sha256(value, sha256_fn, manifest)
+function R.sha256(value, sha256_fn, manifest, context)
   if type(sha256_fn) ~= "function" then fail("missing-sha256", "a host-supplied SHA-256 function is required") end
-  local ok, result = pcall(sha256_fn, R.canonicalize(value, manifest)); if not ok then fail("sha256-failed", "the host SHA-256 function failed") end; return digest(result, "sha256 result")
+  local ok, result = pcall(sha256_fn, R.canonicalize(value, manifest, sha256_fn, context)); if not ok then fail("sha256-failed", "the host SHA-256 function failed") end; return digest(result, "sha256 result")
 end
 return R

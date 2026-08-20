@@ -1,4 +1,5 @@
 local core = require("core")
+local testing_contract = require("contract.testing")
 local t = fkst.test
 
 local function assert_payload(actual, expected)
@@ -13,6 +14,21 @@ local function assert_payload(actual, expected)
   for key, _ in pairs(actual) do
     t.is_true(expected[key] ~= nil)
   end
+end
+
+local function structured_summary(root)
+  return {
+    schema = "testing-runner.structured-execution-summary.v1",
+    status = "passed", classification = "passed", mode = "structured-api-cli",
+    artifact_root = root, test_plan_path = root .. "/test-plan.json",
+    execution_path = root .. "/execution.json", case_results_path = root .. "/case-results.json",
+    case_result_set_path = root .. "/case-result-set.json",
+    case_result_set_artifact_sha256 = string.rep("a", 64),
+    evidence_manifest_path = root .. "/evidence-manifest.json",
+    evidence_manifest_artifact_sha256 = string.rep("b", 64),
+    case_count = 1, passed_count = 1, failed_count = 0, skipped_count = 0,
+    error_count = 0, replayed = false,
+  }
 end
 
 return {
@@ -48,6 +64,43 @@ return {
     t.eq(summary.native_summary.schema, "testing-runner.module-no-browser-summary.v1")
     t.eq(summary.native_summary.module, "module-a")
     t.eq(summary.exit_code, 0)
+  end,
+
+  test_structured_summary_copies_only_the_optional_canonical_pointer_pair = function()
+    local root = ".testing/runs/structured-summary"
+    local value = structured_summary(root)
+    local copied = testing_contract.copy_native_summary(value)
+    t.eq(copied.case_result_set_path, root .. "/case-result-set.json")
+    t.eq(copied.case_result_set_artifact_sha256, string.rep("a", 64))
+    t.eq(copied.evidence_manifest_path, root .. "/evidence-manifest.json")
+    t.eq(copied.evidence_manifest_artifact_sha256, string.rep("b", 64))
+
+    local historical = structured_summary(root)
+    historical.case_result_set_path = nil
+    historical.case_result_set_artifact_sha256 = nil
+    historical.evidence_manifest_path = nil
+    historical.evidence_manifest_artifact_sha256 = nil
+    t.is_true(testing_contract.copy_native_summary(historical) ~= nil)
+
+    local missing_pair = structured_summary(root)
+    missing_pair.evidence_manifest_path = nil
+    t.eq(testing_contract.copy_native_summary(missing_pair), nil)
+    local foreign = structured_summary(root)
+    foreign.case_result_set_path = ".testing/runs/foreign/case-result-set.json"
+    t.eq(testing_contract.copy_native_summary(foreign), nil)
+    local unknown = structured_summary(root)
+    unknown.canonical_results = true
+    t.eq(testing_contract.copy_native_summary(unknown), nil)
+  end,
+
+  test_artifact_summary_retains_structured_canonical_pointers = function()
+    local root = ".testing/runs/structured-artifacts"
+    local summary = core.from_testing_result({
+      schema = "testing-runner.result.v1", job = "structured-execution", status = "passed",
+      artifact_root = root, native_summary = structured_summary(root),
+    })
+    t.eq(summary.native_summary.case_result_set_path, root .. "/case-result-set.json")
+    t.eq(summary.native_summary.evidence_manifest_path, root .. "/evidence-manifest.json")
   end,
 
   test_failed_native_no_browser_summary_is_golden = function()

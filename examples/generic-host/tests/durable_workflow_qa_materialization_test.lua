@@ -68,6 +68,26 @@ return {
     end)
   end,
 
+  test_publication_hash_ports_accept_only_workflow_and_execution_roots = function()
+    with_inventory_context(function(context)
+      local execution_root = context.request.structured_execution.artifact_root
+      local canonical_digest = context.publication_runtime.sha256_bytes("canonical", execution_root)
+      t.eq(#canonical_digest, 64)
+      t.eq(context.publication_runtime.sha256_bytes("canonical", context.artifact_root), canonical_digest)
+      t.raises(function()
+        context.publication_runtime.sha256_bytes("canonical", context.artifact_root .. "/foreign")
+      end)
+
+      durable.initialize(context, context.durable_root)
+      local recovered = durable.load(context.project_root, context.durable_root, context.run_id)
+      t.eq(recovered.publication_runtime.sha256_bytes("canonical", execution_root), canonical_digest)
+      t.eq(recovered.publication_runtime.sha256_bytes("canonical", context.artifact_root), canonical_digest)
+      t.raises(function()
+        recovered.publication_runtime.sha256_bytes("canonical", context.artifact_root .. "/foreign")
+      end)
+    end)
+  end,
+
   test_supports_requests_without_ai_design_loop = function()
     with_inventory_context(function(context)
       local request = design_request(context)

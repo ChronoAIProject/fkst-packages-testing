@@ -1,4 +1,7 @@
+local canonical_results = require("canonical_results")
 local structured_contract = require("contract.structured_execution")
+local results_contract = require("contract.testing_results")
+local results_compat = require("contract.testing_results_compat")
 local local_runtime = require("testing_runtime.qa_publication")
 
 local M = {}
@@ -63,6 +66,8 @@ local request_fields = {
   schema = true, publication = true, repository = true, plan_sha256 = true,
   case_results_ref = true, case_results_sha256 = true, issue_drafts_ref = true,
   issue_drafts_sha256 = true, ledger_ref = true, receipt_ref = true,
+  case_result_set_ref = true, case_result_set_artifact_sha256 = true,
+  evidence_manifest_ref = true, evidence_manifest_artifact_sha256 = true,
   trace_id = true, dedup_key = true,
 }
 
@@ -71,8 +76,64 @@ local publication_fields = {
   trace_id = true, dedup_key = true, status = true, job = true, artifact_root = true,
   metadata_path = true, source_ref = true, test_plan_path = true, execution_path = true,
   case_results_path = true, stage_report_path = true, issue_drafts_path = true,
+  case_result_set_path = true, case_result_set_artifact_sha256 = true,
+  evidence_manifest_path = true, evidence_manifest_artifact_sha256 = true,
   publication_dry_run = true,
 }
+
+local canonical_quartet_fields = {
+  "case_result_set_ref", "case_result_set_artifact_sha256",
+  "evidence_manifest_ref", "evidence_manifest_artifact_sha256",
+}
+
+local function validate_publication_canonical_paths(publication)
+  local fields = {
+    publication.case_result_set_path, publication.case_result_set_artifact_sha256,
+    publication.evidence_manifest_path, publication.evidence_manifest_artifact_sha256,
+  }
+  local present = 0
+  for index = 1, 4 do if fields[index] ~= nil then present = present + 1 end end
+  if present ~= 0 and present ~= 4 then
+    error("test-publication: defect: canonical publication paths and digests must be complete")
+  end
+  if present == 4 and (publication.job ~= "structured-execution"
+    or publication.case_result_set_path ~= publication.artifact_root .. "/case-result-set.json"
+    or not digest(publication.case_result_set_artifact_sha256)
+    or publication.evidence_manifest_path ~= publication.artifact_root .. "/evidence-manifest.json"
+    or not digest(publication.evidence_manifest_artifact_sha256)) then
+    error("test-publication: defect: malformed canonical publication artifact group")
+  end
+end
+
+local function validate_canonical_quartet(request, root)
+  local count = 0
+  for _, field in ipairs(canonical_quartet_fields) do
+    if request[field] ~= nil then count = count + 1 end
+  end
+  if count ~= 0 and count ~= #canonical_quartet_fields then
+    error("test-publication: defect: canonical result quartet must be complete")
+  end
+  if count ~= 0 and (request.case_result_set_ref ~= root .. "/case-result-set.json"
+    or request.evidence_manifest_ref ~= root .. "/evidence-manifest.json"
+    or not digest(request.case_result_set_artifact_sha256)
+    or not digest(request.evidence_manifest_artifact_sha256)) then
+    error("test-publication: defect: malformed canonical result quartet")
+  end
+  return count ~= 0
+end
+
+local function validate_canonical_binding(request, publication)
+  local has_canonical = validate_canonical_quartet(request, publication.artifact_root)
+  local has_paths = publication.case_result_set_path ~= nil
+  if has_canonical ~= has_paths or (has_canonical
+    and (request.case_result_set_ref ~= publication.case_result_set_path
+      or request.case_result_set_artifact_sha256 ~= publication.case_result_set_artifact_sha256
+      or request.evidence_manifest_ref ~= publication.evidence_manifest_path
+      or request.evidence_manifest_artifact_sha256 ~= publication.evidence_manifest_artifact_sha256)) then
+    error("test-publication: defect: canonical request and publication pointers differ")
+  end
+  return has_canonical
+end
 
 function M.validate_request(request)
   only_fields(request, request_fields, "request")
@@ -88,6 +149,7 @@ function M.validate_request(request)
   local publication = request.publication
   only_fields(publication, publication_fields, "publication")
   only_fields(publication.source_ref, { kind = true, ref = true }, "publication source_ref")
+  validate_publication_canonical_paths(publication)
   local execution_path = publication.job == "structured-execution" and "/execution.json"
     or publication.job == "ai-browser-control" and "/browser-agent-execution.json" or nil
   if publication.schema ~= "test-publication.publication-request.v1"
@@ -116,6 +178,7 @@ function M.validate_request(request)
     or not bounded(request.dedup_key, 180) then
     error("test-publication: defect: request binding is invalid")
   end
+  validate_canonical_binding(request, publication)
   return request
 end
 
@@ -127,48 +190,8 @@ local function load_bound(ports, ref, expected_digest, label)
   return artifact.value
 end
 
-local classifications = {
-  passed = true, ["product-defect"] = true, ["environment-session-issue"] = true,
-  ["data-fixture-gap"] = true, ["harness-tooling-issue"] = true, ["not-executed-risk"] = true,
-}
-
-local statuses = { passed = true, failed = true, skipped = true, error = true }
-
-local function validate_case_results(results, plan_sha256, root)
-  if results.schema ~= "testing-structured-case-results.v1" or results.plan_sha256 ~= plan_sha256
-    or not dense_list(results.cases, 1000) then
-    error("test-publication: defect: malformed case results")
-  end
-  local seen = {}
-  for _, result in ipairs(results.cases) do
-    only_fields(result, {
-      case_id = true, kind = true, status = true, classification = true,
-      assertions = true, evidence_ref = true,
-    }, "case result")
-    if not bounded(result.case_id, 180) or result.case_id:match("^[%w._%-]+$") == nil
-      or seen[result.case_id] or not bounded(result.kind, 40)
-      or not statuses[result.status] or not classifications[result.classification]
-      or (result.status == "passed" and result.classification ~= "passed")
-      or (result.status ~= "passed" and result.classification == "passed")
-      or (result.assertions ~= nil and not dense_list(result.assertions, 64))
-      or not under_root(result.evidence_ref, root) then
-      error("test-publication: defect: unsafe case result")
-    end
-    for _, assertion in ipairs(result.assertions or {}) do
-      only_fields(assertion, { type = true, passed = true }, "case assertion")
-      if not bounded(assertion.type, 80) or type(assertion.passed) ~= "boolean" then
-        error("test-publication: defect: unsafe case assertion")
-      end
-    end
-    seen[result.case_id] = true
-  end
-  return results
-end
-
-local function validate_artifacts(request, ports)
+local function validate_issue_drafts(request, ports)
   local root = request.publication.artifact_root
-  local bound_results = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
-  local results = validate_case_results(bound_results, request.plan_sha256, root)
   local drafts = load_bound(ports, request.issue_drafts_ref, request.issue_drafts_sha256, "issue drafts")
   if drafts.schema ~= "test-publication.defect-issue-drafts.v1" or drafts.plan_sha256 ~= request.plan_sha256
     or not dense_list(drafts.cases, 1000) then
@@ -187,7 +210,7 @@ local function validate_artifacts(request, ports)
     end
     indexed_drafts[draft.case_id] = draft
   end
-  return results, indexed_drafts
+  return indexed_drafts
 end
 
 local preparation_fields = {
@@ -195,6 +218,8 @@ local preparation_fields = {
   plan_ref = true, plan_sha256 = true, case_results_ref = true,
   case_results_sha256 = true, issue_drafts_ref = true, ledger_ref = true,
   receipt_ref = true, trace_id = true, dedup_key = true,
+  case_result_set_ref = true, case_result_set_artifact_sha256 = true,
+  evidence_manifest_ref = true, evidence_manifest_artifact_sha256 = true,
 }
 
 local function validate_preparation_request(request)
@@ -215,6 +240,7 @@ local function validate_preparation_request(request)
   local publication = request.publication
   only_fields(publication, publication_fields, "publication")
   only_fields(publication.source_ref, { kind = true, ref = true }, "publication source_ref")
+  validate_publication_canonical_paths(publication)
   local execution_path = publication.job == "structured-execution" and "/execution.json"
     or publication.job == "ai-browser-control" and "/browser-agent-execution.json" or nil
   if publication.schema ~= "test-publication.publication-request.v1"
@@ -237,6 +263,7 @@ local function validate_preparation_request(request)
     or not under_root(request.receipt_ref, publication.artifact_root) then
     error("test-publication: defect: malformed preparation binding")
   end
+  validate_canonical_binding(request, publication)
   return request
 end
 
@@ -248,10 +275,85 @@ local function repository_matches_slug(repository, requested)
     and (repository.url == base or repository.url == base .. ".git")
 end
 
-local function assertion_names(assertions, failed_only)
+local function load_verified_plan(request, ports)
+  local plan_ref = request.plan_ref or request.publication.test_plan_path
+  local plan = load_bound(ports, plan_ref, request.plan_sha256, "test plan")
+  local plan_ok = pcall(structured_contract.validate_plan, plan)
+  if not plan_ok or not repository_matches_slug(plan.repository, request.repository)
+    or plan.trace_id ~= request.trace_id or plan.dedup_key ~= request.dedup_key then
+    error("test-publication: defect: verified plan does not belong to the run")
+  end
+  return plan, plan_ref
+end
+
+local function canonical_repository(request, plan, hash)
+  return {
+    id = request.repository.commit_sha,
+    source_ref = {
+      kind = results_contract.repository_source_kinds.git,
+      ref = plan.repository.url .. "@" .. request.repository.commit_sha,
+    },
+    source_sha256 = hash(plan.repository.url .. "\n" .. request.repository.commit_sha),
+  }
+end
+
+local function validated_result_view(request, ports, plan, plan_ref)
+  local root = request.publication.artifact_root
+  local v1_context = { artifact_root = root, plan_sha256 = request.plan_sha256, plan = plan }
+  if request.case_result_set_ref == nil then
+    local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+    results_compat.validate_v1(legacy, v1_context)
+    return { canonical=false, cases=legacy.cases }
+  end
+  if type(ports.sha256_bytes) ~= "function" then
+    error("test-publication: defect: canonical results require sha256_bytes")
+  end
+  local result_set = load_bound(ports, request.case_result_set_ref,
+    request.case_result_set_artifact_sha256, "case result set")
+  local manifest = load_bound(ports, request.evidence_manifest_ref,
+    request.evidence_manifest_artifact_sha256, "evidence manifest")
+  if type(result_set.evidence_manifest_ref) ~= "table"
+    or result_set.evidence_manifest_ref.kind ~= "artifact"
+    or result_set.evidence_manifest_ref.ref ~= request.evidence_manifest_ref then
+    error("test-publication: defect: result set manifest reference differs")
+  end
+  local hash = function(bytes) return ports.sha256_bytes(bytes, root) end
+  local run_id = request.run_id or request.publication.source_ref.ref
+  local repository = canonical_repository(request, plan, hash)
+  local canonical_plan_ref = { kind = "artifact", ref = plan_ref }
+  local direct = canonical_results.validate(result_set, manifest, {
+    artifact_root=root, run_id=run_id, plan=plan, plan_ref=canonical_plan_ref,
+    plan_sha256=request.plan_sha256, repository=repository,
+    trace_id=request.trace_id, dedup_key=request.dedup_key,
+    evidence_manifest_ref=request.evidence_manifest_ref,
+    evidence_manifest_artifact_sha256=request.evidence_manifest_artifact_sha256,
+    sha256_bytes=hash,
+  })
+  local projected = results_compat.project_v1(result_set, manifest, {
+    artifact_root = root,
+    plan_sha256 = request.plan_sha256,
+    plan = plan,
+    repository = repository,
+    run_id = run_id,
+    plan_ref = canonical_plan_ref,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+    sha256_bytes = hash,
+  })
+  local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+  results_compat.validate_v1(legacy, v1_context)
+  if not equal(projected, legacy) then
+    error("test-publication: defect: canonical and legacy case results differ")
+  end
+  return direct
+end
+
+local function assertion_names(assertions, failed_only, view)
   local names = {}
   for _, assertion in ipairs(assertions or {}) do
-    if not failed_only or assertion.passed == false then table.insert(names, assertion.type) end
+    if not failed_only or canonical_results.assertion_failed(view, assertion) then
+      table.insert(names, assertion.type)
+    end
   end
   if #names == 0 then return "verified assertions" end
   return table.concat(names, ", ")
@@ -267,11 +369,8 @@ local function materialize_drafts(request, plan, results)
   }
   for _, case in ipairs(plan.cases) do
     local result = indexed[case.case_id]
-    if result == nil or result.kind ~= case.kind then
-      error("test-publication: defect: case results differ from the verified plan")
-    end
-    if result.classification == "product-defect" then
-      local actual_summary = "Observed failed product-defect result; failed assertions: " .. assertion_names(result.assertions, true)
+    if canonical_results.is_product_defect(results, result) then
+      local actual_summary = "Observed failed product-defect result; failed assertions: " .. assertion_names(result.assertions, true, results)
       table.insert(drafts.cases, {
         case_id = result.case_id,
         title = (result.case_id:sub(1, 130) .. ": verified " .. result.kind .. " behavior differs"),
@@ -288,17 +387,8 @@ end
 
 function M.prepare_defects(request, ports)
   validate_preparation_request(request)
-  local plan = load_bound(ports, request.plan_ref, request.plan_sha256, "test plan")
-  local plan_ok = pcall(structured_contract.validate_plan, plan)
-  if not plan_ok or not repository_matches_slug(plan.repository, request.repository)
-    or plan.trace_id ~= request.trace_id or plan.dedup_key ~= request.dedup_key then
-    error("test-publication: defect: verified plan does not belong to the run")
-  end
-  local results = validate_case_results(
-    load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results"),
-    request.plan_sha256,
-    request.publication.artifact_root
-  )
+  local plan, plan_ref = load_verified_plan(request, ports)
+  local results = validated_result_view(request, ports, plan, plan_ref)
   local drafts = materialize_drafts(request, plan, results)
   local existing = ports.load_artifact(request.issue_drafts_ref)
   local replayed = existing ~= nil
@@ -328,6 +418,9 @@ function M.prepare_defects(request, ports)
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
+  for _, field in ipairs(canonical_quartet_fields) do
+    if request[field] ~= nil then defect_request[field] = request[field] end
+  end
   M.validate_request(defect_request)
   return {
     replayed = replayed,
@@ -384,8 +477,14 @@ local function issue_request(request, result, draft)
   }
 end
 
+local function validate_artifacts(request, ports)
+  local plan, plan_ref = load_verified_plan(request, ports)
+  local results = validated_result_view(request, ports, plan, plan_ref)
+  return results, validate_issue_drafts(request, ports)
+end
+
 local function same_identity(state, request)
-  return type(state) == "table"
+  local same = type(state) == "table"
     and state.schema == "test-publication.defect-publication-ledger.v1"
     and type(state.repository) == "table"
     and type(state.case_order) == "table" and type(state.cases) == "table"
@@ -396,6 +495,11 @@ local function same_identity(state, request)
     and state.issue_drafts_sha256 == request.issue_drafts_sha256
     and state.trace_id == request.trace_id and state.dedup_key == request.dedup_key
     and state.ledger_ref == request.ledger_ref and state.receipt_ref == request.receipt_ref
+  if not same then return false end
+  for _, field in ipairs(canonical_quartet_fields) do
+    if state[field] ~= request[field] then return false end
+  end
+  return true
 end
 
 local function save(ports, state, expected_version)
@@ -477,14 +581,18 @@ function M.prepare(request, ports)
     ledger_ref = request.ledger_ref, receipt_ref = request.receipt_ref,
     trace_id = request.trace_id, dedup_key = request.dedup_key, case_order = {}, cases = {},
   }
+  for _, field in ipairs(canonical_quartet_fields) do
+    if request[field] ~= nil then state[field] = request[field] end
+  end
   for _, result in ipairs(results.cases) do
     table.insert(state.case_order, result.case_id)
+    local is_defect = canonical_results.is_product_defect(results, result)
     local item = {
-      classification = result.classification,
+      classification = is_defect and "product-defect" or result.classification,
       evidence_ref = result.evidence_ref,
       status = "summary-only",
     }
-    if result.classification == "product-defect" then
+    if is_defect then
       local draft = drafts[result.case_id]
       if draft == nil or draft.evidence_ref ~= result.evidence_ref then
         item.status = "blocked"

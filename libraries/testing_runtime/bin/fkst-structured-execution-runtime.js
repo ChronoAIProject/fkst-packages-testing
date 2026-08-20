@@ -52,8 +52,9 @@ function artifactRef(value) {
 
 function readArtifact(ref) {
   const pointer = artifactRef(ref);
-  const raw = fs.readFileSync(artifactPath(pointer), 'utf8');
-  return { raw, digest: sha256(raw), value: JSON.parse(raw) };
+  const bytes = fs.readFileSync(artifactPath(pointer));
+  const raw = bytes.toString('utf8');
+  return { raw, digest: sha256(bytes), value: JSON.parse(raw) };
 }
 
 function writeArtifact(ref, value) {
@@ -141,6 +142,304 @@ function sameRepository(left, right) {
   return Boolean(left && right && left.url === right.url && left.commit_sha === right.commit_sha);
 }
 
+function validString(value, limit) {
+  return typeof value === 'string' && value.length > 0 && value.length <= limit
+    && !/[\x00-\x1f\x7f]/.test(value);
+}
+
+function hasExactKeys(value, keys) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).sort().join(',') === [...keys].sort().join(','));
+}
+
+function hasOnlyKeys(value, keys) {
+  return Boolean(value && typeof value === 'object' && !Array.isArray(value)
+    && Object.keys(value).every((key) => keys.includes(key)));
+}
+
+function sameResultRepository(left, right) {
+  return Boolean(left && right && left.id === right.id
+    && samePointer(left.source_ref, right.source_ref)
+    && left.source_sha256 === right.source_sha256);
+}
+
+function expectedResultRepository(repository) {
+  if (!repository) return null;
+  return {
+    id: repository.commit_sha,
+    source_ref: { kind: 'git', ref: `${repository.url}@${repository.commit_sha}` },
+    source_sha256: sha256(`${repository.url}\n${repository.commit_sha}`),
+  };
+}
+
+function canonicalEvidenceRefs(owner, caseId, referenced, assertionId) {
+  if (!Array.isArray(owner.evidence_refs)) return false;
+  for (const reference of owner.evidence_refs) {
+    if (!hasExactKeys(reference, ['kind', 'ref']) || reference.kind !== 'evidence'
+      || !validString(reference.ref, 180)) return false;
+    referenced.push({ caseId, assertionId, evidenceId: reference.ref });
+  }
+  return true;
+}
+
+function validReference(value, allowDigest) {
+  return hasOnlyKeys(value, ['kind', 'ref', 'sha256']) && validString(value.kind, 96)
+    && validString(value.ref, 4096)
+    && (value.sha256 === undefined || (allowDigest && /^[0-9a-f]{64}$/.test(value.sha256)));
+}
+
+function validTiming(value) {
+  if (!hasExactKeys(value, ['started_at', 'completed_at', 'duration_ms'])
+    || !validString(value.started_at, 40) || !validString(value.completed_at, 40)
+    || !Number.isInteger(value.duration_ms) || value.duration_ms < 0 || value.duration_ms > 86400000) return false;
+  const started = Date.parse(value.started_at);
+  const completed = Date.parse(value.completed_at);
+  return !Number.isNaN(started) && !Number.isNaN(completed) && completed >= started;
+}
+
+const assertionOutcomes = {
+  passed: new Set(['deterministic']), failed: new Set(['assertion_failure']),
+  skipped: new Set(['skipped', 'not_applicable']),
+};
+
+function validObservation(value) {
+  return hasExactKeys(value, ['schema', 'observation_id', 'kind', 'subject', 'value', 'source_ref', 'evidence_refs'])
+    && value.schema === 'testing-observation.v1' && validString(value.observation_id, 180)
+    && validString(value.kind, 96) && validString(value.subject, 180) && validString(value.value, 512)
+    && validReference(value.source_ref, true) && Array.isArray(value.evidence_refs);
+}
+
+function validAssertion(value, observationIds) {
+  if (!hasExactKeys(value, ['schema', 'assertion_id', 'type', 'required', 'status', 'classification',
+    'observation_ids', 'evidence_refs']) || value.schema !== 'testing-assertion-result.v1'
+    || !validString(value.assertion_id, 180) || !validString(value.type, 96)
+    || typeof value.required !== 'boolean' || !assertionOutcomes[value.status]
+    || !assertionOutcomes[value.status].has(value.classification)
+    || !Array.isArray(value.observation_ids) || !Array.isArray(value.evidence_refs)) return false;
+  const seen = new Set();
+  return value.observation_ids.every((id) => validString(id, 180) && observationIds.has(id)
+    && !seen.has(id) && Boolean(seen.add(id)));
+}
+
+function validCaseOutcome(value) {
+  const required = value.assertions.filter((assertion) => assertion.required);
+  if (value.execution_status === 'passed') {
+    return value.classification === 'deterministic' && value.error === undefined
+      && value.non_execution_reason === undefined && required.length > 0
+      && required.every((assertion) => assertion.status === 'passed');
+  }
+  if (value.execution_status === 'failed') {
+    return value.classification === 'assertion_failure' && value.error === undefined
+      && value.non_execution_reason === undefined
+      && required.some((assertion) => assertion.status === 'failed');
+  }
+  if (value.execution_status === 'skipped') {
+    return ['skipped', 'not_applicable'].includes(value.classification) && value.error === undefined
+      && validString(value.non_execution_reason, 96)
+      && value.assertions.every((assertion) => assertion.status === 'skipped');
+  }
+  if (value.execution_status === 'error') {
+    return value.classification === 'execution_error' && value.non_execution_reason === undefined
+      && hasExactKeys(value.error, ['code', 'message']) && validString(value.error.code, 96)
+      && validString(value.error.message, 512)
+      && value.assertions.every((assertion) => assertion.status !== 'failed');
+  }
+  return false;
+}
+
+function utcTimestamp(value = new Date()) {
+  return value.toISOString().replace(/\.\d{3}Z$/, 'Z');
+}
+
+function canonicalManifestDigest(value) {
+  const canonical = { ...value };
+  delete canonical.canonical_sha256;
+  return sha256(stableStringify(canonical));
+}
+
+function canonicalArtifactGroup(value, binding) {
+  const fields = [
+    'case_result_set_path', 'case_result_set_artifact_sha256',
+    'evidence_manifest_path', 'evidence_manifest_artifact_sha256',
+  ];
+  const present = fields.filter((field) => Object.prototype.hasOwnProperty.call(value, field));
+  if (present.length === 0) return null;
+  if (present.length !== fields.length
+    || value.case_result_set_path !== `${binding.artifact_root}/case-result-set.json`
+    || value.evidence_manifest_path !== `${binding.artifact_root}/evidence-manifest.json`
+    || !/^[0-9a-f]{64}$/.test(String(value.case_result_set_artifact_sha256 || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.evidence_manifest_artifact_sha256 || ''))
+    || !/^[0-9a-f]{64}$/.test(String(value.plan_sha256 || ''))
+    || (binding.plan_sha256 !== undefined && value.plan_sha256 !== binding.plan_sha256)) {
+    throw new Error('completed execution canonical artifact group is invalid');
+  }
+  return {
+    caseResultSetPath: value.case_result_set_path,
+    caseResultSetDigest: value.case_result_set_artifact_sha256,
+    evidenceManifestPath: value.evidence_manifest_path,
+    evidenceManifestDigest: value.evidence_manifest_artifact_sha256,
+  };
+}
+
+function validateCanonicalArtifacts(execution, binding, group) {
+  const resultSetArtifact = readArtifact({ kind: 'artifact', ref: group.caseResultSetPath });
+  if (resultSetArtifact.digest !== group.caseResultSetDigest) {
+    throw new Error('completed case result set artifact digest differs');
+  }
+  const manifestArtifact = readArtifact({ kind: 'artifact', ref: group.evidenceManifestPath });
+  if (manifestArtifact.digest !== group.evidenceManifestDigest) {
+    throw new Error('completed evidence manifest artifact digest differs');
+  }
+
+  const resultSet = resultSetArtifact.value;
+  const planRef = { kind: 'artifact', ref: execution.test_plan_path };
+  const manifestRef = { kind: 'artifact', ref: group.evidenceManifestPath };
+  const planArtifact = readArtifact(planRef);
+  const plan = planArtifact.value;
+  if (planArtifact.digest !== execution.plan_sha256 || !plan
+    || plan.schema !== 'testing-structured-plan.v2' || plan.execution_mode !== 'structured-api-cli'
+    || !sameRepository(plan.repository, execution.repository)
+    || plan.trace_id !== execution.trace_id || plan.dedup_key !== execution.dedup_key
+    || !Array.isArray(plan.cases) || plan.cases.length !== execution.case_count) {
+    throw new Error('completed canonical test plan binding is invalid');
+  }
+  if (!resultSet || resultSet.schema !== 'testing-case-result-set.v2'
+    || resultSet.run_id !== binding.operation_id || resultSet.set_id !== binding.operation_id
+    || !hasExactKeys(resultSet.plan_ref, ['kind', 'ref'])
+    || !samePointer(resultSet.plan_ref, planRef) || resultSet.plan_sha256 !== execution.plan_sha256
+    || !hasOnlyKeys(resultSet.evidence_manifest_ref, ['kind', 'ref', 'sha256'])
+    || !samePointer(resultSet.evidence_manifest_ref, manifestRef)
+    || !/^[0-9a-f]{64}$/.test(String(resultSet.evidence_manifest_sha256 || ''))
+    || resultSet.evidence_manifest_artifact_sha256 !== group.evidenceManifestDigest
+    || (resultSet.evidence_manifest_ref.sha256 !== undefined
+      && resultSet.evidence_manifest_ref.sha256 !== group.evidenceManifestDigest)
+    || resultSet.trace_id !== binding.trace_id || resultSet.dedup_key !== binding.dedup_key
+    || !Array.isArray(resultSet.cases) || resultSet.cases.length !== execution.case_count) {
+    throw new Error('completed case result set binding is invalid');
+  }
+
+  const manifest = manifestArtifact.value;
+  const repository = manifest && manifest.repository;
+  if (!manifest || manifest.schema !== 'testing-evidence-manifest.v1'
+    || manifest.canonicalization !== 'fkst-testing-evidence-manifest-canonical-json.v1'
+    || manifest.manifest_id !== resultSet.run_id || manifest.run_id !== resultSet.run_id
+    || !hasExactKeys(manifest.plan_ref, ['kind', 'ref'])
+    || !samePointer(manifest.plan_ref, resultSet.plan_ref)
+    || manifest.plan_sha256 !== resultSet.plan_sha256
+    || !hasExactKeys(repository, ['id', 'source_ref', 'source_sha256'])
+    || !validString(repository.id, 180) || !hasExactKeys(repository.source_ref, ['kind', 'ref'])
+    || !validString(repository.source_ref.kind, 96) || !validString(repository.source_ref.ref, 4096)
+    || !/^[0-9a-f]{64}$/.test(String(repository.source_sha256 || ''))
+    || !sameResultRepository(repository, expectedResultRepository(execution.repository))
+    || !/^[0-9a-f]{64}$/.test(String(manifest.canonical_sha256 || ''))
+    || manifest.canonical_sha256 !== resultSet.evidence_manifest_sha256
+    || !Array.isArray(manifest.entries) || manifest.entries.length !== resultSet.cases.length) {
+    throw new Error('completed evidence manifest binding is invalid');
+  }
+  if (canonicalManifestDigest(manifest) !== manifest.canonical_sha256) {
+    throw new Error('completed evidence manifest canonical digest differs');
+  }
+
+  const caseFields = ['schema', 'case_id', 'repository', 'reviewed_case_id', 'asset_ref',
+    'requirement_ref', 'plan_ref', 'plan_sha256', 'execution_mode', 'execution_status',
+    'classification', 'observations', 'assertions', 'evidence_refs', 'timing', 'error',
+    'non_execution_reason', 'trace_id', 'dedup_key'];
+  const cases = new Map();
+  const caseAssertions = new Map();
+  const referenced = [];
+  for (const [index, item] of resultSet.cases.entries()) {
+    const planned = plan.cases[index];
+    if (!hasOnlyKeys(item, caseFields) || item.schema !== 'testing-case-result.v2'
+      || !validString(item.case_id, 180) || cases.has(item.case_id) || item.case_id !== planned.case_id
+      || item.reviewed_case_id !== planned.case_id || item.execution_mode !== planned.kind
+      || !['cli', 'http'].includes(item.execution_mode)
+      || !hasExactKeys(item.repository, ['id', 'source_ref', 'source_sha256'])
+      || !validReference(item.repository.source_ref, true)
+      || !sameResultRepository(item.repository, repository)
+      || (item.asset_ref !== undefined && !validReference(item.asset_ref, true))
+      || (item.requirement_ref !== undefined && !validReference(item.requirement_ref, true))
+      || !hasExactKeys(item.plan_ref, ['kind', 'ref']) || !samePointer(item.plan_ref, resultSet.plan_ref)
+      || item.plan_sha256 !== resultSet.plan_sha256
+      || item.trace_id !== resultSet.trace_id || item.dedup_key !== resultSet.dedup_key
+      || !Array.isArray(item.observations) || !Array.isArray(item.assertions)
+      || !Array.isArray(planned.assertions) || item.assertions.length !== planned.assertions.length
+      || !Array.isArray(item.evidence_refs) || item.evidence_refs.length !== 1
+      || !validTiming(item.timing) || !canonicalEvidenceRefs(item, item.case_id, referenced)) {
+      throw new Error('completed canonical case binding is invalid');
+    }
+    cases.set(item.case_id, item);
+    const observationIds = new Set();
+    for (const observation of item.observations) {
+      if (!validObservation(observation) || observationIds.has(observation.observation_id)
+        || !canonicalEvidenceRefs(observation, item.case_id, referenced)) {
+        throw new Error('completed canonical observation binding is invalid');
+      }
+      observationIds.add(observation.observation_id);
+    }
+    const assertionIds = new Set();
+    for (const [assertionIndex, assertion] of item.assertions.entries()) {
+      if (!validAssertion(assertion, observationIds) || assertionIds.has(assertion.assertion_id)
+        || assertion.assertion_id !== `assertion-${assertionIndex + 1}` || assertion.required !== true
+        || assertion.type !== planned.assertions[assertionIndex].type
+        || !canonicalEvidenceRefs(assertion, item.case_id, referenced, assertion.assertion_id)) {
+        throw new Error('completed canonical assertion binding is invalid');
+      }
+      assertionIds.add(assertion.assertion_id);
+    }
+    if (!validCaseOutcome(item)) throw new Error('completed canonical case outcome is invalid');
+    caseAssertions.set(item.case_id, assertionIds);
+  }
+  const outcomeCounts = { passed: 0, failed: 0, skipped: 0, error: 0 };
+  for (const item of resultSet.cases) outcomeCounts[item.execution_status] += 1;
+  const expectedStatus = outcomeCounts.failed > 0 ? 'failed'
+    : outcomeCounts.error > 0 ? 'blocked' : outcomeCounts.skipped > 0 ? 'degraded' : 'passed';
+  if (outcomeCounts.passed !== execution.passed_count || outcomeCounts.failed !== execution.failed_count
+    || outcomeCounts.skipped !== execution.skipped_count || outcomeCounts.error !== execution.error_count
+    || expectedStatus !== execution.status) {
+    throw new Error('completed canonical aggregate outcome differs');
+  }
+
+  const entryFields = ['evidence_id', 'case_id', 'assertion_id', 'role', 'artifact_ref', 'sha256',
+    'media_type', 'size_bytes', 'producer', 'producer_version', 'created_at', 'sensitivity',
+    'redaction_classification', 'policy_version', 'policy_status', 'provenance'];
+  const roleMedia = { 'runner-log': 'text/plain', screenshot: 'image/png', 'sanitized-json': 'application/json' };
+  const entries = new Map();
+  for (const entry of manifest.entries) {
+    const assertions = entry && caseAssertions.get(entry.case_id);
+    if (!hasOnlyKeys(entry, entryFields) || !validString(entry.evidence_id, 180)
+      || entries.has(entry.evidence_id) || !validString(entry.case_id, 180) || !cases.has(entry.case_id)
+      || (entry.assertion_id !== undefined
+        && (!validString(entry.assertion_id, 180) || !assertions.has(entry.assertion_id)))
+      || roleMedia[entry.role] !== entry.media_type
+      || !hasExactKeys(entry.artifact_ref, ['kind', 'ref']) || entry.artifact_ref.kind !== 'artifact'
+      || !isSafeArtifactPath(entry.artifact_ref.ref)
+      || !entry.artifact_ref.ref.startsWith(`${binding.artifact_root}/`)
+      || !/^[0-9a-f]{64}$/.test(String(entry.sha256 || ''))
+      || !Number.isInteger(entry.size_bytes) || entry.size_bytes < 0 || entry.size_bytes > 1000000000
+      || !validString(entry.producer, 180) || !validString(entry.producer_version, 96)
+      || !validString(entry.created_at, 40) || Number.isNaN(Date.parse(entry.created_at))
+      || !['public', 'internal', 'restricted'].includes(entry.sensitivity)
+      || !validString(entry.redaction_classification, 64) || !validString(entry.policy_version, 96)
+      || !['approved', 'redacted', 'withheld'].includes(entry.policy_status)
+      || !hasExactKeys(entry.provenance, ['source_kind', 'source_ref', 'source_sha256'])
+      || !validString(entry.provenance.source_kind, 96) || !validString(entry.provenance.source_ref, 4096)
+      || !/^[0-9a-f]{64}$/.test(String(entry.provenance.source_sha256 || ''))
+      || (entry.provenance.source_kind === 'artifact'
+        && (entry.provenance.source_ref !== entry.artifact_ref.ref
+          || entry.provenance.source_sha256 !== entry.sha256))) {
+      throw new Error('completed evidence manifest entry binding is invalid');
+    }
+    entries.set(entry.evidence_id, entry);
+  }
+  for (const reference of referenced) {
+    const entry = entries.get(reference.evidenceId);
+    if (!entry || entry.case_id !== reference.caseId
+      || (reference.assertionId && entry.assertion_id && entry.assertion_id !== reference.assertionId)) {
+      throw new Error('completed canonical evidence reference is unresolved');
+    }
+  }
+}
+
 function validateExecutionArtifact(payload, binding, expectedDigest) {
   if (!isSafeArtifactPath(payload.result_ref)
     || payload.result_ref !== `${binding.artifact_root}/execution.json`) {
@@ -164,6 +463,8 @@ function validateExecutionArtifact(payload, binding, expectedDigest) {
     || value.case_count !== value.passed_count + value.failed_count + value.skipped_count + value.error_count) {
     throw new Error('completed execution result binding is invalid');
   }
+  const canonical = canonicalArtifactGroup(value, binding);
+  if (canonical) validateCanonicalArtifacts(value, binding, canonical);
   return artifact;
 }
 
@@ -240,6 +541,16 @@ function exactKeys(value, keys, label) {
   }
 }
 
+function sha256Bytes(payload) {
+  const fields = payload && payload.runtime_config_ref === undefined
+    ? ['bytes'] : ['bytes', 'runtime_config_ref'];
+  exactKeys(payload, fields, 'sha256-bytes payload');
+  if (typeof payload.bytes !== 'string' || Buffer.byteLength(payload.bytes, 'utf8') > 1024 * 1024) {
+    throw new Error('sha256-bytes requires a string no larger than 1 MiB');
+  }
+  return { sha256: sha256(payload.bytes) };
+}
+
 function boundArtifact(ref, digest) {
   if (!isSafeArtifactPath(ref) || !/^[0-9a-f]{64}$/.test(String(digest || ''))) {
     throw new Error('authorization input binding is malformed');
@@ -274,7 +585,7 @@ function authorizationReceipt(config, envelope, decision, reasonCode, inputs, no
     receipt_id: `cli-effect-${envelopeSha256.slice(0, 40)}`,
     envelope_sha256: envelopeSha256,
     evaluated_input_digests: inputs,
-    issued_at: now.toISOString(), expires_at: envelope.expires_at,
+    issued_at: utcTimestamp(now), expires_at: envelope.expires_at,
     fence_id: envelope.fence_id, trace_id: envelope.trace_id, dedup_key: envelope.dedup_key,
   };
   receipt.auth_tag = receiptTag(config, receipt);
@@ -422,7 +733,7 @@ function authorizeCliEffect(payload) {
               : message.includes('fields') || message.includes('malformed') ? 'malformed-envelope'
                 : 'foreign-binding';
     const safeEnvelope = {
-      expires_at: Number.isFinite(Date.parse(envelope.expires_at)) ? envelope.expires_at : new Date(now.getTime() + 1000).toISOString(),
+      expires_at: Number.isFinite(Date.parse(envelope.expires_at)) ? envelope.expires_at : utcTimestamp(new Date(now.getTime() + 1000)),
       fence_id: typeof envelope.fence_id === 'string' ? envelope.fence_id : 'invalid-fence',
       trace_id: typeof envelope.trace_id === 'string' ? envelope.trace_id : 'invalid-trace',
       dedup_key: typeof envelope.dedup_key === 'string' ? envelope.dedup_key : 'invalid-dedup',
@@ -551,7 +862,7 @@ function loadResult(payload) {
   };
   const artifact = validateExecutionArtifact(payload, binding, payload.result_sha256);
   const execution = artifact.value;
-  return {
+  const result = {
     schema: 'testing-runner.structured-execution-summary.v1',
     status: execution.status,
     classification: execution.classification,
@@ -566,14 +877,22 @@ function loadResult(payload) {
     case_results_path: execution.case_results_path,
     execution_path: execution.execution_path,
   };
+  if (Object.prototype.hasOwnProperty.call(execution, 'case_result_set_path')) {
+    result.case_result_set_path = execution.case_result_set_path;
+    result.case_result_set_artifact_sha256 = execution.case_result_set_artifact_sha256;
+    result.evidence_manifest_path = execution.evidence_manifest_path;
+    result.evidence_manifest_artifact_sha256 = execution.evidence_manifest_artifact_sha256;
+  }
+  return result;
 }
 
 async function dispatch(name, payload) {
+  if (name === 'sha256-bytes') return sha256Bytes(payload);
   if (name === 'load-artifact') return readArtifact(payload.artifact_ref);
   if (name === 'write-artifact') return writeArtifact(payload.artifact_ref, payload.value);
   if (name === 'now') {
     runtimeConfig(payload);
-    return { now: new Date().toISOString() };
+    return { now: utcTimestamp() };
   }
   if (name === 'verify-grant') return verifyGrant(payload);
   if (name === 'replay-guard') return replayGuard(payload);
