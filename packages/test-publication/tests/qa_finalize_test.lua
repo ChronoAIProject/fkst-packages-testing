@@ -2,6 +2,7 @@ local qa_publication = require("qa_publication")
 local canonical_validator = require("canonical_results")
 local manifest_contract = require("contract.testing_evidence_manifest")
 local results_compat = require("contract.testing_results_compat")
+local structured_contract = require("contract.structured_execution")
 local t = fkst.test
 
 local commit_sha = string.rep("1", 40)
@@ -546,6 +547,42 @@ return {
       })
       artifacts[value.case_result_set_ref].value.evidence_manifest_sha256 = manifest.canonical_sha256
     end)
+  end,
+
+  test_canonical_browser_alias_disagreement_rejects_before_output = function()
+    local value = canonical_request()
+    local ports = runtime(function(artifacts)
+      local plan_value = artifacts[value.test_plan_ref].value
+      plan_value.execution_mode = "agentic-browser"
+      plan_value.cases = { {
+        case_id = "health", kind = "browser", goal = "Authenticate the existing user.",
+        success_conditions = { "Callback observed" },
+        completion_assertions = { {
+          assertion_id = "assertion-1", type = "browser-callback-observed",
+          required = true, completion_field = "callback_observed",
+        } },
+      } }
+      local result_set = artifacts[value.case_result_set_ref].value
+      result_set.cases = { result_set.cases[1] }
+      result_set.cases[1].execution_mode = "browser"
+      result_set.cases[1].assertions[1].type = "browser-callback-observed"
+      local manifest = artifacts[value.evidence_manifest_ref].value
+      manifest.entries = { manifest.entries[1] }
+      manifest.canonical_sha256 = manifest_contract.sha256(manifest, portable_sha256, {
+        artifact_root = result_artifact_root(value),
+      })
+      result_set.evidence_manifest_sha256 = manifest.canonical_sha256
+      local legacy = structured_contract.copy(result_set)
+      legacy.set_id = "foreign-browser-alias"
+      artifacts[value.case_results_ref].value = legacy
+      local terminal = artifacts[value.terminal_summary_ref].value
+      terminal.counts = { planned=1,executed=1,passed=1,failed=0,skipped=0,error=0,blocked=0 }
+    end, value)
+    local ok, failure = pcall(qa_publication.prepare_final_report, value, ports)
+    t.eq(ok, false)
+    if tostring(failure):find("canonical browser result alias differs", 1, true) == nil then error(tostring(failure)) end
+    t.eq(ports.publish_calls(), 0)
+    t.eq(ports.report_writes(), 0)
   end,
 
   test_canonical_and_legacy_disagreement_rejects_before_output = function()

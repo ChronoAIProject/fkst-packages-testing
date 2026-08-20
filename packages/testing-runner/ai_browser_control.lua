@@ -351,8 +351,8 @@ local function required_completion_passed(browser_case, completion)
   return required > 0
 end
 
-local function write_terminal(request, environment, plan, grant_artifact, steps, raw_observations,
-    effect_records, completion, outcome, claim, ports, started_at, started_monotonic)
+local function write_terminal(request, environment, plan, grant_artifact, steps, raw_observations, completion, outcome, claim, ports, started_at, started_monotonic)
+  local effect_records = raw_observations.effect_records or {}
   local browser_case = plan.cases[1]
   local receipt_path = request.artifact_root .. "/browser-agent-execution.json"
   local plan_path = request.artifact_root .. "/test-plan.json"
@@ -673,8 +673,9 @@ local function run_inner(request, ports)
   local started = ports.monotonic_seconds()
   local raw_observations = {}
   local function terminal(outcome)
+    raw_observations.effect_records = effect_records
     return write_terminal(request, environment, plan, grant_artifact, steps, raw_observations,
-      effect_records, completion, outcome, claim, ports, started_at, started)
+      completion, outcome, claim, ports, started_at, started)
   end
   for turn = 1, grant.step_budget do
     if ports.monotonic_seconds() - started >= grant.time_budget_seconds then
