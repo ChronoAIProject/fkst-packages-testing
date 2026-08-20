@@ -225,6 +225,7 @@ function Context:_environment_runtime()
     end,
     cleanup = function(request)
       return replay(request.effect_id, function()
+        context.cleanup_effects = context.cleanup_effects + 1
         local cleanup = request.cleanup_ref or {}
         if cleanup.kind == "process-cleanup" then
           local pid = processes[cleanup.ref]
@@ -600,7 +601,8 @@ function Context:_ai_browser_runtime()
   local context = self
   local claim_ref = context.request.structured_execution.artifact_root .. "/authorization/browser-claim.json"
   local completion_ref = context.request.structured_execution.artifact_root .. "/authorization/browser-complete.json"
-  local browser_state = { clicked = false, callback_observed = false }
+  local browser_state = context.browser_state or { clicked = false, callback_observed = false }
+  context.browser_state = browser_state
   local function observation(turn, callback)
     return {
       schema = "testing-runner.ai-browser-control.observation.v1",
@@ -641,7 +643,10 @@ function Context:_ai_browser_runtime()
       local completed = context.store:load(completion_ref)
       if completed ~= nil then return { status = "completed", result_ref = completed.value.result_ref } end
       local existing = context.store:load(claim_ref)
-      if existing ~= nil then return { status = "in-progress", claim_id = existing.value.claim_id } end
+      if existing ~= nil then
+        if not equal(existing.value.binding, binding) then return { status = "blocked" } end
+        return { status = "in-progress", claim_id = existing.value.claim_id }
+      end
       local claim = { schema = "canonical-browser.claim.v1", claim_id = "browser-claim-1", binding = copy(binding) }
       assert(context.store:write(claim_ref, claim))
       context.browser_grant_claims = context.browser_grant_claims + 1
@@ -674,6 +679,12 @@ function Context:_ai_browser_runtime()
       return context.browser_clock
     end,
     sha256 = function(bytes) return sha256_bytes(bytes) end,
+    failpoint = function(name)
+      if context.browser_failpoint == name and context.browser_failpoint_fired ~= true then
+        context.browser_failpoint_fired = true
+        error("canonical browser failpoint: " .. name)
+      end
+    end,
     browser_observe = function(_, turn)
       context.browser_observations = context.browser_observations + 1
       return observation(turn, browser_state.callback_observed), {}
@@ -683,6 +694,7 @@ function Context:_ai_browser_runtime()
         error("canonical browser adapter received an unauthorized effect")
       end
       context.browser_effects[#context.browser_effects + 1] = copy(action)
+      if context.browser_crash == true then error("canonical browser crashed during action") end
       local before = observation(turn, false)
       browser_state.clicked = true
       browser_state.callback_observed = true
@@ -768,6 +780,10 @@ function Context:_publication_runtime()
       end
       context.publications[id] = copy(value)
       context.publication_count = context.publication_count + 1
+      if context.publication_ack_loss == true and context.publication_ack_lost ~= true then
+        context.publication_ack_lost = true
+        error("canonical publication acknowledgement lost")
+      end
       return value
     end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
@@ -1507,6 +1523,12 @@ function M.new(options)
     browser_effects = {},
     browser_observations = 0,
     browser_clock = 0,
+    browser_failpoint = options.browser_failpoint,
+    browser_failpoint_fired = false,
+    browser_crash = options.browser_crash == true,
+    cleanup_effects = 0,
+    publication_ack_loss = options.publication_ack_loss == true,
+    publication_ack_lost = false,
   }, Context)
   context.environment_runtime = context:_environment_runtime()
   context.workflow_runtime = context:_workflow_runtime()

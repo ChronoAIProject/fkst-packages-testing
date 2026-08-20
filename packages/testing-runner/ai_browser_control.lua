@@ -110,7 +110,7 @@ end
 
 local function summary(request, outcome, replayed, artifacts)
   local status = outcome.status == "passed" and "passed"
-    or outcome.status == "failed" and "failed" or "blocked"
+    or (outcome.status == "failed" or outcome.status == "lost") and "failed" or "blocked"
   local passed = status == "passed" and 1 or 0
   local failed = status == "failed" and 1 or 0
   local errors = status == "blocked" and 1 or 0
@@ -141,6 +141,40 @@ end
 
 local function evidence_ref(evidence_id)
   return { kind = "evidence", ref = evidence_id }
+end
+
+local function failpoint(ports, name, value)
+  if type(ports.failpoint) == "function" then ports.failpoint(name, copy(value)) end
+end
+
+local function effect_journal(request, claim, turn, action, observation, ports)
+  local identity = {
+    claim_id = claim.claim_id,
+    grant_sha256 = request.browser_grant_sha256,
+    plan_sha256 = request.reviewed_plan_sha256,
+    target_id = observation.target_id,
+    turn = turn,
+    action = copy(action),
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }
+  local effect_id = "browser-effect-" .. ports.sha256(json_codec.encode(identity))
+  local root = request.artifact_root .. "/browser-effects/turn-" .. tostring(turn)
+  return {
+    intent_path = root .. "-intent.json",
+    receipt_path = root .. "-receipt.json",
+    intent = {
+      schema = "testing-runner.ai-browser-control.effect-intent.v1",
+      effect_id = effect_id,
+      claim_id = claim.claim_id,
+      turn = turn,
+      action = copy(action),
+      target_id = observation.target_id,
+      document_token = observation.document_token,
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+    },
+  }
 end
 
 local function repository_result(request, ports)
@@ -318,12 +352,54 @@ local function required_completion_passed(browser_case, completion)
   return required > 0
 end
 
-local function write_terminal(request, environment, plan, grant_artifact, steps, raw_observations, completion, outcome, claim, ports, started_at, started_monotonic)
+local function write_terminal(request, environment, plan, grant_artifact, steps, raw_observations,
+    effect_records, completion, outcome, claim, ports, started_at, started_monotonic)
   local browser_case = plan.cases[1]
   local receipt_path = request.artifact_root .. "/browser-agent-execution.json"
   local plan_path = request.artifact_root .. "/test-plan.json"
   local results_path = request.artifact_root .. "/case-result-set.json"
   local manifest_path = request.artifact_root .. "/evidence-manifest.json"
+  local compatibility_path = request.artifact_root .. "/case-results.json"
+  local metadata_path = request.artifact_root .. "/metadata.json"
+  local persisted_result = ports.load_artifact(results_path)
+  local persisted_manifest = ports.load_artifact(manifest_path)
+  local persisted_receipt = ports.load_artifact(receipt_path)
+  if persisted_result ~= nil and persisted_manifest ~= nil and persisted_receipt ~= nil then
+    local authority = assertion_authority(request, browser_case)
+    browser_contract.validate_receipt(persisted_receipt.value, grant_artifact.value)
+    results_contract.validate_case_result_set(
+      persisted_result.value, { authority }, persisted_manifest.value, ports.sha256)
+    evidence_contract.validate(persisted_manifest.value, persisted_result.value, ports.sha256)
+    if ports.write_artifact(compatibility_path, persisted_result.value) ~= true then
+      error("testing-runner: ai-browser-control: compatibility result artifact write failed")
+    end
+    local persisted_case = persisted_result.value.cases[1]
+    local native = summary(request, {
+      status = persisted_case.execution_status,
+      classification = persisted_case.classification,
+      turn_count = #persisted_receipt.value.steps,
+    }, false, {
+      case_result_set_path = results_path,
+      case_result_set_artifact_sha256 = persisted_result.digest,
+      evidence_manifest_path = manifest_path,
+      evidence_manifest_artifact_sha256 = persisted_manifest.digest,
+    })
+    if ports.write_artifact(metadata_path, {
+      schema = testing_contract.schemas.native_metadata,
+      job = "ai-browser-control",
+      status = native.status,
+      artifact_root = request.artifact_root,
+      source_ref = copy(request.source_ref),
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+      adapter = { name = "fkst-native", mode = "agentic-browser" },
+      native_summary = native,
+    }) ~= true then error("testing-runner: ai-browser-control: metadata write failed") end
+    if ports.complete_replay(claim, receipt_path) ~= true then
+      error("testing-runner: ai-browser-control: replay completion failed")
+    end
+    return native
+  end
   local normalized = normalize_outcome(outcome)
   local receipt_status = normalized.execution_status == "passed" and "passed"
     or normalized.execution_status == "failed" and "failed" or "blocked"
@@ -345,6 +421,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     dedup_key = request.dedup_key,
   }
   browser_contract.validate_receipt(receipt, grant_artifact.value)
+  failpoint(ports, "before-test-plan-write", { path = plan_path })
   if ports.write_artifact(plan_path, plan) ~= true
     or ports.write_artifact(receipt_path, receipt) ~= true then
     error("testing-runner: ai-browser-control: terminal artifact write failed")
@@ -371,6 +448,30 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     policy_status = "redacted",
     provenance = { source_kind = "runner", source_ref = receipt_path, source_sha256 = receipt_sha256 },
   } }
+  for _, effect in ipairs(effect_records) do
+    local intent_artifact = ports.load_artifact(effect.intent_path)
+    if type(intent_artifact) ~= "table" or type(intent_artifact.digest) ~= "string"
+      or type(intent_artifact.value) ~= "table" or intent_artifact.value.effect_id ~= effect.intent.effect_id then
+      error("testing-runner: ai-browser-control: effect intent artifact is unavailable")
+    end
+    table.insert(entries, {
+      evidence_id = effect.intent.effect_id,
+      case_id = browser_case.case_id,
+      role = "sanitized-json",
+      artifact_ref = { kind = "artifact", ref = effect.intent_path },
+      sha256 = intent_artifact.digest,
+      media_type = "application/json",
+      size_bytes = #intent_artifact.raw,
+      producer = "testing-runner.ai-browser-control",
+      producer_version = "2",
+      created_at = created_at,
+      sensitivity = "internal",
+      redaction_classification = "sanitized-browser-effect-intent",
+      policy_version = "agentic-browser-execution.v1",
+      policy_status = "redacted",
+      provenance = { source_kind = "runner", source_ref = effect.intent_path, source_sha256 = intent_artifact.digest },
+    })
+  end
   local observations = collect_observations(request, raw_observations,
     artifact_ref(receipt_path, receipt_sha256), ports, entries, created_at)
   optional_artifact_evidence(request, browser_case, raw_observations, entries, created_at, ports)
@@ -417,9 +518,11 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     entries = entries,
   }
   manifest.canonical_sha256 = evidence_contract.sha256(manifest, ports.sha256)
+  failpoint(ports, "before-evidence-manifest-write", { path = manifest_path })
   if ports.write_artifact(manifest_path, manifest) ~= true then
     error("testing-runner: ai-browser-control: canonical result artifact write failed")
   end
+  failpoint(ports, "after-evidence-manifest-write", { path = manifest_path })
   local manifest_artifact_sha256 = ports.artifact_digest(manifest_path)
   if type(manifest_artifact_sha256) ~= "string" then
     error("testing-runner: ai-browser-control: evidence manifest digest unavailable")
@@ -438,10 +541,12 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     dedup_key = request.dedup_key,
   }
   results_contract.validate_case_result_set(result_set, { authority }, manifest, ports.sha256)
+  failpoint(ports, "before-case-result-set-write", { path = results_path })
   if ports.write_artifact(results_path, result_set) ~= true then
     error("testing-runner: ai-browser-control: canonical result artifact write failed")
   end
-  local compatibility_path = request.artifact_root .. "/case-results.json"
+  failpoint(ports, "after-case-result-set-write", { path = results_path })
+  failpoint(ports, "before-compatibility-result-write", { path = compatibility_path })
   if ports.write_artifact(compatibility_path, result_set) ~= true then
     error("testing-runner: ai-browser-control: compatibility result artifact write failed")
   end
@@ -459,7 +564,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     evidence_manifest_path = manifest_path,
     evidence_manifest_artifact_sha256 = manifest_artifact_sha256,
   })
-  if ports.write_artifact(request.artifact_root .. "/metadata.json", {
+  if ports.write_artifact(metadata_path, {
     schema = testing_contract.schemas.native_metadata,
     job = "ai-browser-control",
     status = native.status,
@@ -470,6 +575,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     adapter = { name = "fkst-native", mode = "agentic-browser" },
     native_summary = native,
   }) ~= true then error("testing-runner: ai-browser-control: metadata write failed") end
+  failpoint(ports, "before-replay-completion", { claim_id = claim.claim_id })
   if ports.complete_replay(claim, receipt_path) ~= true then
     error("testing-runner: ai-browser-control: replay completion failed")
   end
@@ -536,16 +642,18 @@ local function run_inner(request, ports)
     replayed.replayed = true
     return replayed
   end
-  if claim.status ~= "claimed" or type(claim.claim_id) ~= "string" or claim.claim_id == "" then
+  if (claim.status ~= "claimed" and claim.status ~= "in-progress")
+    or type(claim.claim_id) ~= "string" or claim.claim_id == "" then
     error("testing-runner: ai-browser-control: replay guard did not claim execution")
   end
+  failpoint(ports, "after-claim", { claim_id = claim.claim_id, replayed = claim.status == "in-progress" })
 
   local context = {
     artifact_root = request.artifact_root,
     grant = grant,
     cdp_url = cdp_url(environment),
   }
-  local steps, seen_actions = {}, {}
+  local steps, seen_actions, effect_records = {}, {}, {}
   local completion = {
     callback_observed = false, process_exit_zero = false,
     whoami_succeeded = false, status_authenticated = false,
@@ -567,12 +675,57 @@ local function run_inner(request, ports)
   local raw_observations = {}
   local function terminal(outcome)
     return write_terminal(request, environment, plan, grant_artifact, steps, raw_observations,
-      completion, outcome, claim, ports, started_at, started)
+      effect_records, completion, outcome, claim, ports, started_at, started)
   end
   for turn = 1, grant.step_budget do
     if ports.monotonic_seconds() - started >= grant.time_budget_seconds then
       return terminal({ kind = "time_budget_exhausted" })
     end
+    local recovered = false
+    local recovered_intent_path = request.artifact_root .. "/browser-effects/turn-" .. tostring(turn) .. "-intent.json"
+    local stored_intent = ports.load_artifact(recovered_intent_path)
+    if stored_intent ~= nil then
+      local intent = stored_intent.value
+      if type(intent) ~= "table" or intent.schema ~= "testing-runner.ai-browser-control.effect-intent.v1"
+        or intent.claim_id ~= claim.claim_id or intent.turn ~= turn or intent.trace_id ~= request.trace_id
+        or intent.dedup_key ~= request.dedup_key then
+        error("testing-runner: ai-browser-control: effect intent identity differs")
+      end
+      browser_contract.validate_action(intent.action, grant.allowed_actions, grant.approved_secret_refs)
+      local effect = {
+        intent_path = recovered_intent_path,
+        receipt_path = request.artifact_root .. "/browser-effects/turn-" .. tostring(turn) .. "-receipt.json",
+        intent = copy(intent),
+      }
+      table.insert(effect_records, effect)
+      local stored_receipt = ports.load_artifact(effect.receipt_path)
+      if stored_receipt == nil then
+        return terminal({ kind = "assertion_lost", message = "browser effect outcome is uncertain: " .. intent.effect_id })
+      end
+      local valid_stored_step, stored_step_error = pcall(
+        browser_contract.validate_step_receipt, stored_receipt.value, grant)
+      if not valid_stored_step then return terminal({ kind = "assertion_lost", message = stored_step_error }) end
+      local step = copy(stored_receipt.value)
+      table.insert(steps, step)
+      table.insert(raw_observations, { case_id = plan.cases[1].case_id, phase = "before-action", value = copy(step.before) })
+      table.insert(raw_observations, { case_id = plan.cases[1].case_id, phase = "after-action", value = copy(step.after) })
+      if step.status == "blocked" then
+        return terminal({ kind = "browser_step_failed", reason = step.classification })
+      end
+      local recovered_unsafe = unsafe_observation(step.after)
+      if recovered_unsafe ~= nil then return terminal({ kind = "unsafe_observation", reason = recovered_unsafe }) end
+      if step.after.signals.callback_detected then
+        local verified, verified_completion = pcall(ports.verify_completion, request)
+        if not verified then return terminal({ kind = "assertion_lost", message = verified_completion }) end
+        local valid_completion, completion_error = pcall(browser_contract.validate_completion, verified_completion)
+        if not valid_completion then return terminal({ kind = "assertion_lost", message = completion_error }) end
+        completion = verified_completion
+        return terminal({ kind = required_completion_passed(plan.cases[1], completion)
+          and "passed" or "deterministic_completion_failed", reason = "browser-completion-asserted" })
+      end
+      recovered = true
+    end
+    if not recovered then
     local observed, observation, runtime_paths = pcall(observe, context, turn)
     if not observed then return terminal({ kind = #steps > 0 and "assertion_lost" or "controller_interrupted", reason = #steps > 0 and nil or "browser-observation-failed", message = observation }) end
     local valid_observation, observation_error = pcall(browser_contract.validate_observation, observation)
@@ -603,19 +756,30 @@ local function run_inner(request, ports)
       return terminal({ kind = "repeated_action" })
     end
     seen_actions[key] = true
+    local effect = effect_journal(request, claim, turn, action, observation, ports)
+    if ports.load_artifact(effect.intent_path) ~= nil then
+      error("testing-runner: ai-browser-control: effect intent appeared concurrently")
+    end
+    if ports.write_artifact(effect.intent_path, effect.intent) ~= true then
+      error("testing-runner: ai-browser-control: effect intent artifact write failed")
+    end
+    table.insert(effect_records, effect)
+    failpoint(ports, "after-effect-intent", { effect_id = effect.intent.effect_id })
     local acted, step = pcall(act, context, turn, action, runtime_paths)
     if not acted then return terminal({ kind = "assertion_lost", message = step }) end
+    failpoint(ports, "after-browser-effect", { effect_id = effect.intent.effect_id })
     local valid_step, step_error = pcall(browser_contract.validate_step_receipt, step, grant)
     if not valid_step then return terminal({ kind = "assertion_lost", message = step_error }) end
+    if ports.write_artifact(effect.receipt_path, step) ~= true then
+      return terminal({ kind = "assertion_lost", message = "browser effect receipt write failed" })
+    end
     table.insert(steps, step)
     table.insert(raw_observations, { case_id = plan.cases[1].case_id, phase = "after-action", value = copy(step.after) })
     if step.status == "blocked" then
       return terminal({ kind = "browser_step_failed", reason = step.classification })
     end
     unsafe = unsafe_observation(step.after)
-    if unsafe ~= nil then
-      return terminal({ kind = "unsafe_observation", reason = unsafe })
-    end
+    if unsafe ~= nil then return terminal({ kind = "unsafe_observation", reason = unsafe }) end
     if step.after.signals.callback_detected then
       local verified, verified_completion = pcall(ports.verify_completion, request)
       if not verified then return terminal({ kind = "assertion_lost", message = verified_completion }) end
@@ -624,6 +788,7 @@ local function run_inner(request, ports)
       completion = verified_completion
       return terminal({ kind = required_completion_passed(plan.cases[1], completion)
         and "passed" or "deterministic_completion_failed", reason = "browser-completion-asserted" })
+    end
     end
   end
   return terminal({ kind = "step_budget_exhausted" })
