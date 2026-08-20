@@ -1,6 +1,10 @@
 local browser_readiness_contract = require("contract.browser_readiness")
+local canonical_results = require("canonical_results")
 local environment_contract = require("contract.environment_factory")
 local structured_contract = require("contract.structured_execution")
+local results_contract = require("contract.testing_results")
+local results_compat = require("contract.testing_results_compat")
+local strings = require("contract.strings")
 local local_runtime = require("testing_runtime.qa_publication")
 
 local M = {}
@@ -35,10 +39,6 @@ end
 local function bounded(value, maximum)
   return type(value) == "string" and value ~= "" and #value <= maximum
     and value:find("[%z\1-\31]") == nil
-end
-
-local function digest(value)
-  return type(value) == "string" and #value == 64 and value:match("^[0-9a-f]+$") ~= nil
 end
 
 local function safe_pointer(value)
@@ -100,7 +100,7 @@ function M.validate_checkpoint_request(request)
   if request.artifact_root ~= run_root(request.run_id)
     or request.artifact_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/"
     or request.ledger_ref ~= request.artifact_root .. "/run-ledger.json"
-    or not digest(request.artifact_sha256) or not bounded(request.trace_id, 180)
+    or not strings.is_sha256(request.artifact_sha256) or not bounded(request.trace_id, 180)
     or not bounded(request.dedup_key, 180) then
     error("test-publication: qa: checkpoint binding is invalid")
   end
@@ -164,7 +164,7 @@ local function validate_publication(publication, request, ports)
     end
   else
     if publication.status ~= "materialized" or publication.artifact_ref ~= request.artifact_ref
-      or publication.remote_url ~= nil or not digest(publication.receipt_sha256) then
+      or publication.remote_url ~= nil or not strings.is_sha256(publication.receipt_sha256) then
       error("test-publication: qa: immutable filesystem materialization failed")
     end
     local persisted = ports.load_artifact(publication.receipt_ref)
@@ -295,7 +295,7 @@ local function save(ports, state, expected_version)
   end
 end
 
-function M.prepare_checkpoint(request, ports)
+function M.prepare_checkpoint(request, ports, finalization_identity)
   M.validate_checkpoint_request(request)
   local loaded = ports.load_ledger(request.ledger_ref)
   local state = loaded and copy(loaded) or initial_state(request)
@@ -306,6 +306,10 @@ function M.prepare_checkpoint(request, ports)
     if existing.artifact_ref ~= request.artifact_ref or existing.artifact_sha256 ~= request.artifact_sha256
       or existing.status ~= request.status or not structured_contract.equal(existing.counts, request.counts) then
       error("test-publication: qa: immutable checkpoint changed on replay")
+    end
+    if finalization_identity ~= nil
+      and not structured_contract.equal(existing.finalization_identity, finalization_identity) then
+      error("test-publication: qa: immutable finalization identity changed on replay")
     end
     local outbound = copy(existing.comment_request)
     if existing.receipt ~= nil then outbound = nil end
@@ -330,7 +334,7 @@ function M.prepare_checkpoint(request, ports)
       error("test-publication: qa: publication receipt write failed")
     end
   end
-  state.checkpoints[key] = {
+  local checkpoint = {
     stage = request.stage,
     attempt = request.attempt,
     status = request.status,
@@ -342,6 +346,8 @@ function M.prepare_checkpoint(request, ports)
     request_dedup_key = request_dedup_key,
     receipt = copy(receipt),
   }
+  if finalization_identity ~= nil then checkpoint.finalization_identity = copy(finalization_identity) end
+  state.checkpoints[key] = checkpoint
   if rank > state.latest_stage_rank then state.latest_stage_rank = rank end
   save(ports, state, state.version)
   return {
@@ -359,9 +365,28 @@ local finalize_fields = {
   browser_readiness_ref = true, browser_readiness_sha256 = true,
   cleanup_receipt_ref = true, cleanup_receipt_sha256 = true, aggregate_report_ref = true,
   terminal_summary_ref = true, terminal_summary_sha256 = true,
+  case_result_set_ref = true, case_result_set_artifact_sha256 = true,
+  evidence_manifest_ref = true, evidence_manifest_artifact_sha256 = true,
   defect_publication_receipt_ref = true, defect_publication_receipt_sha256 = true,
   trace_id = true, dedup_key = true, channel = true,
 }
+
+local canonical_quartet_fields = {
+  "case_result_set_ref", "case_result_set_artifact_sha256",
+  "evidence_manifest_ref", "evidence_manifest_artifact_sha256",
+}
+
+local function canonical_identity(request)
+  if request.case_result_set_ref == nil then return nil end
+  local value = {}
+  for _, field in ipairs(canonical_quartet_fields) do value[field] = request[field] end
+  return value
+end
+
+local function canonical_artifact_root(request)
+  if type(request.case_results_ref) ~= "string" then return nil end
+  return request.case_results_ref:match("^(.*)/case%-results%.json$")
+end
 
 local function validate_finalize_request(request)
   only_fields(request, finalize_fields, "finalize request")
@@ -391,7 +416,7 @@ local function validate_finalize_request(request)
     end
   end
   for _, field in ipairs({ "terminal_summary_sha256", "environment_receipt_sha256", "cleanup_receipt_sha256" }) do
-    if not digest(request[field]) then error("test-publication: qa: invalid finalize digest " .. field) end
+    if not strings.is_sha256(request[field]) then error("test-publication: qa: invalid finalize digest " .. field) end
   end
   local has_readiness = request.browser_readiness_ref ~= nil or request.browser_readiness_sha256 ~= nil
   if has_readiness ~= (request.browser_readiness_ref ~= nil and request.browser_readiness_sha256 ~= nil) then
@@ -399,7 +424,7 @@ local function validate_finalize_request(request)
   end
   if has_readiness and (not safe_pointer(request.browser_readiness_ref)
     or request.browser_readiness_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/"
-    or not digest(request.browser_readiness_sha256)) then
+    or not strings.is_sha256(request.browser_readiness_sha256)) then
     error("test-publication: qa: malformed browser readiness pointer")
   end
   local full = request.test_plan_ref ~= nil or request.test_plan_sha256 ~= nil
@@ -415,19 +440,39 @@ local function validate_finalize_request(request)
       end
     end
     for _, field in ipairs({ "test_plan_sha256", "case_results_sha256" }) do
-      if not digest(request[field]) then error("test-publication: qa: invalid finalize digest " .. field) end
+      if not strings.is_sha256(request[field]) then error("test-publication: qa: invalid finalize digest " .. field) end
     end
   end
   if full and not has_readiness then
     error("test-publication: qa: full finalization requires post-design browser readiness")
   end
+  local canonical_count = 0
+  for _, field in ipairs(canonical_quartet_fields) do
+    if request[field] ~= nil then canonical_count = canonical_count + 1 end
+  end
+  local has_canonical = canonical_count > 0
+  if has_canonical and canonical_count ~= #canonical_quartet_fields then
+    error("test-publication: qa: canonical result quartet must be complete")
+  end
+  if has_canonical then
+    if not full then error("test-publication: qa: canonical results require full finalization") end
+    local canonical_root = canonical_artifact_root(request)
+    if canonical_root == nil or request.case_result_set_ref ~= canonical_root .. "/case-result-set.json"
+      or request.evidence_manifest_ref ~= canonical_root .. "/evidence-manifest.json" then
+      error("test-publication: qa: canonical result pointers must use exact execution paths")
+    end
+    if not strings.is_sha256(request.case_result_set_artifact_sha256)
+      or not strings.is_sha256(request.evidence_manifest_artifact_sha256) then
+      error("test-publication: qa: invalid canonical artifact digest")
+    end
+  end
   local optional_ref = request.defect_publication_receipt_ref
   local optional_sha = request.defect_publication_receipt_sha256
   if (optional_ref == nil) ~= (optional_sha == nil)
-    or (optional_ref ~= nil and (not safe_pointer(optional_ref) or not digest(optional_sha))) then
+    or (optional_ref ~= nil and (not safe_pointer(optional_ref) or not strings.is_sha256(optional_sha))) then
     error("test-publication: qa: malformed defect publication receipt pointer")
   end
-  return request, full
+  return request, full, has_canonical
 end
 
 local function load_bound(ports, ref, expected_digest, label)
@@ -476,6 +521,7 @@ local function validate_terminal_summary(summary, request, full)
     counts = true, environment_receipt_ref = true, cleanup_receipt_ref = true,
     browser_readiness_ref = true, browser_readiness_sha256 = true,
     module_plan_ref = true, structured_plan_ref = true, case_results_ref = true,
+    case_result_set_ref = true, evidence_manifest_ref = true,
     interruption = true, trace_id = true, dedup_key = true,
   }, "terminal summary")
   only_fields(summary.repository, { slug = true, url = true, commit_sha = true }, "terminal summary repository")
@@ -485,7 +531,7 @@ local function validate_terminal_summary(summary, request, full)
   }
   if (summary.browser_readiness_ref == nil) ~= (summary.browser_readiness_sha256 == nil)
     or (summary.browser_readiness_ref ~= nil and (not safe_pointer(summary.browser_readiness_ref)
-      or not digest(summary.browser_readiness_sha256))) then
+      or not strings.is_sha256(summary.browser_readiness_sha256))) then
     error("test-publication: qa: unsafe terminal browser readiness binding")
   end
   if summary.schema ~= "workflow-qa.terminal-summary.v2" or not terminal_statuses[summary.status]
@@ -499,6 +545,21 @@ local function validate_terminal_summary(summary, request, full)
     or summary.browser_readiness_sha256 ~= request.browser_readiness_sha256
     or summary.trace_id ~= request.trace_id or summary.dedup_key ~= request.dedup_key then
     error("test-publication: qa: terminal summary binding is invalid")
+  end
+  local has_canonical_summary = summary.case_result_set_ref ~= nil or summary.evidence_manifest_ref ~= nil
+  if has_canonical_summary ~= (summary.case_result_set_ref ~= nil and summary.evidence_manifest_ref ~= nil) then
+    error("test-publication: qa: terminal canonical result pointers must be paired")
+  end
+  if has_canonical_summary and (not safe_pointer(summary.case_result_set_ref)
+    or not safe_pointer(summary.evidence_manifest_ref)
+    or summary.case_result_set_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/"
+    or summary.evidence_manifest_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/") then
+    error("test-publication: qa: unsafe terminal canonical result pointer")
+  end
+  if request.case_result_set_ref ~= nil
+    and (summary.case_result_set_ref ~= request.case_result_set_ref
+      or summary.evidence_manifest_ref ~= request.evidence_manifest_ref) then
+    error("test-publication: qa: terminal summary differs from canonical finalization inputs")
   end
   for _, field in ipairs({ "module_plan_ref", "structured_plan_ref", "case_results_ref" }) do
     if summary[field] ~= nil and (not safe_pointer(summary[field])
@@ -520,9 +581,7 @@ end
 local function validate_environment_receipts(environment, cleanup, request, repository, full)
   local environment_ok = pcall(environment_contract.validate_receipt, environment)
   local cleanup_ok = pcall(environment_contract.validate_cleanup_receipt, cleanup)
-  if not environment_ok or not cleanup_ok then
-    error("test-publication: qa: environment or cleanup receipt is malformed")
-  end
+  if not environment_ok or not cleanup_ok then error("test-publication: qa: environment or cleanup receipt is malformed") end
   if environment.operation_id ~= request.run_id or not same_repository(environment.repository, repository)
     or environment.trace_id ~= request.trace_id or environment.dedup_key ~= request.dedup_key
     or request.environment_receipt_ref:sub(1, #environment.artifact_root + 1) ~= environment.artifact_root .. "/" then
@@ -545,48 +604,75 @@ local function validate_environment_receipts(environment, cleanup, request, repo
   end
 end
 
-local terminal_case_statuses = { passed = true, failed = true, skipped = true, error = true }
-local case_classifications = {
-  passed = { passed = true },
-  failed = { ["product-defect"] = true },
-  skipped = { ["data-fixture-gap"] = true, ["not-executed-risk"] = true },
-  error = { ["environment-session-issue"] = true, ["harness-tooling-issue"] = true },
-}
-
-local function reconcile(plan, results, request, repository)
-  local plan_ok = pcall(structured_contract.validate_plan, plan)
-  local malformed = not plan_ok or results.schema ~= "testing-structured-case-results.v1" or not dense_list(results.cases)
-  if malformed then error("test-publication: qa: malformed plan or case results") end
+local function reconcile(plan, validated_results, request, repository)
   if not same_repository(plan.repository, repository)
     or plan.environment_receipt_sha256 ~= request.environment_receipt_sha256
     or plan.browser_readiness_sha256 ~= request.browser_readiness_sha256
-    or plan.trace_id ~= request.trace_id or plan.dedup_key ~= request.dedup_key
-    or results.plan_sha256 ~= request.test_plan_sha256 then
-    error("test-publication: qa: case results do not belong to the immutable plan")
-  end
-  local planned = {}
-  for _, case in ipairs(plan.cases) do
-    planned[case.case_id] = case.kind
+    or plan.trace_id ~= request.trace_id or plan.dedup_key ~= request.dedup_key then
+    error("test-publication: qa: immutable plan does not belong to the run")
   end
   local counts = { planned = #plan.cases, executed = 0, passed = 0, failed = 0, skipped = 0, error = 0, blocked = 0 }
   local classifications, evidence_refs = {}, {}
-  for _, result in ipairs(results.cases) do
-    if not planned[result.case_id] or not terminal_case_statuses[result.status] then
-      error("test-publication: qa: foreign or non-terminal case result")
-    end
-    if result.kind ~= planned[result.case_id] or not case_classifications[result.status][result.classification]
-      or not safe_pointer(result.evidence_ref)
-      or result.evidence_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/" then
-      error("test-publication: qa: unsafe or mismatched case result")
-    end
-    if classifications[result.case_id] ~= nil then error("test-publication: qa: duplicate case result") end
+  for _, result in ipairs(validated_results.cases) do
     classifications[result.case_id] = result.classification
     evidence_refs[result.case_id] = result.evidence_ref
     counts.executed = counts.executed + 1
     counts[result.status] = counts[result.status] + 1
   end
-  if counts.executed ~= counts.planned then error("test-publication: qa: planned cases lack terminal dispositions") end
   return counts, classifications, evidence_refs
+end
+
+local function canonical_repository(repository, hash)
+  return {
+    id = repository.commit_sha,
+    source_ref = { kind = results_contract.repository_source_kinds.git,
+      ref = repository.url .. "@" .. repository.commit_sha },
+    source_sha256 = hash(repository.url .. "\n" .. repository.commit_sha),
+  }
+end
+
+local function validated_result_view(request, ports, plan, repository, has_canonical)
+  local v1_context = { artifact_root = request.artifact_root,
+    plan_sha256 = request.test_plan_sha256, plan = plan }
+  if not has_canonical then
+    local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+    results_compat.validate_v1(legacy, v1_context)
+    return { canonical=false, cases=legacy.cases }
+  end
+  if type(ports.sha256_bytes) ~= "function" then error("test-publication: qa: canonical results require sha256_bytes") end
+  local canonical_root = canonical_artifact_root(request)
+  local result_set = load_bound(ports, request.case_result_set_ref,
+    request.case_result_set_artifact_sha256, "case result set")
+  local manifest = load_bound(ports, request.evidence_manifest_ref,
+    request.evidence_manifest_artifact_sha256, "evidence manifest")
+  if type(result_set.evidence_manifest_ref) ~= "table" or result_set.evidence_manifest_ref.kind ~= "artifact"
+    or result_set.evidence_manifest_ref.ref ~= request.evidence_manifest_ref then
+    error("test-publication: qa: result set manifest reference differs")
+  end
+  local hash = function(bytes) return ports.sha256_bytes(bytes, canonical_root) end
+  local canonical_repository_identity = canonical_repository(repository, hash)
+  local plan_ref = { kind="artifact", ref=request.test_plan_ref }
+  local direct = canonical_results.validate(result_set, manifest, {
+    artifact_root=canonical_root, run_id=request.run_id, plan=plan,
+    plan_ref=plan_ref, plan_sha256=request.test_plan_sha256,
+    repository=canonical_repository_identity, trace_id=request.trace_id,
+    dedup_key=request.dedup_key,
+    evidence_manifest_ref=request.evidence_manifest_ref,
+    evidence_manifest_artifact_sha256=request.evidence_manifest_artifact_sha256,
+    sha256_bytes=hash,
+  })
+  local projected = results_compat.project_v1(result_set, manifest, {
+    artifact_root = canonical_root, plan_sha256 = request.test_plan_sha256, plan = plan,
+    repository = canonical_repository_identity, run_id = request.run_id,
+    plan_ref = plan_ref, trace_id = request.trace_id, dedup_key = request.dedup_key,
+    sha256_bytes = hash,
+  })
+  local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+  results_compat.validate_v1(legacy, v1_context)
+  if not structured_contract.equal(projected, legacy) then
+    error("test-publication: qa: canonical and legacy case results differ")
+  end
+  return direct
 end
 
 local function publish_source(request, ports, ref, source_digest, stage)
@@ -645,10 +731,19 @@ local function replayed_final_report(request, ports)
   if checkpoint.artifact_ref ~= request.aggregate_report_ref then
     error("test-publication: qa: aggregate report pointer changed on replay")
   end
+  if checkpoint.finalization_identity ~= nil
+    and not structured_contract.equal(checkpoint.finalization_identity, canonical_identity(request)) then
+    error("test-publication: qa: canonical finalization identity changed on replay")
+  end
   local report = load_bound(ports, request.aggregate_report_ref, checkpoint.artifact_sha256, "aggregate report")
   if report.schema ~= "test-publication.qa-aggregate-report.v1" or report.run_id ~= request.run_id
     or report.trace_id ~= request.trace_id or report.dedup_key ~= request.dedup_key then
     error("test-publication: qa: aggregate report replay binding is invalid")
+  end
+  for _, field in ipairs(canonical_quartet_fields) do
+    if report[field] ~= request[field] then
+      error("test-publication: qa: aggregate report canonical identity changed on replay")
+    end
   end
   local outbound = copy(checkpoint.comment_request)
   if checkpoint.receipt ~= nil then outbound = nil end
@@ -663,7 +758,7 @@ local function replayed_final_report(request, ports)
 end
 
 function M.prepare_final_report(request, ports)
-  local _, full = validate_finalize_request(request)
+  local _, full, has_canonical = validate_finalize_request(request)
   local replay = replayed_final_report(request, ports)
   if replay ~= nil then return replay end
   local terminal_summary = load_bound(ports, request.terminal_summary_ref, request.terminal_summary_sha256, "terminal summary")
@@ -688,9 +783,9 @@ function M.prepare_final_report(request, ports)
   local execution_mode
   if full then
     local plan = load_bound(ports, request.test_plan_ref, request.test_plan_sha256, "test plan")
-    local results = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+    local validated_results = validated_result_view(request, ports, plan, repository, has_canonical)
     execution_mode = plan.execution_mode
-    counts, classifications, evidence_refs = reconcile(plan, results, request, repository)
+    counts, classifications, evidence_refs = reconcile(plan, validated_results, request, repository)
     if not structured_contract.equal(counts, summary_counts) then
       error("test-publication: qa: terminal summary counts differ from reconciled results")
     end
@@ -718,6 +813,14 @@ function M.prepare_final_report(request, ports)
       request.case_results_sha256, "aggregate-source-results")
     links.test_plan = publication_location(plan_publication, channel)
     links.case_results = publication_location(results_publication, channel)
+  end
+  if has_canonical then
+    local result_set_publication = publish_source(request, ports, request.case_result_set_ref,
+      request.case_result_set_artifact_sha256, "aggregate-source-case-result-set")
+    local manifest_publication = publish_source(request, ports, request.evidence_manifest_ref,
+      request.evidence_manifest_artifact_sha256, "aggregate-source-evidence-manifest")
+    links.case_result_set = publication_location(result_set_publication, channel)
+    links.evidence_manifest = publication_location(manifest_publication, channel)
   end
   local status
   if full then
@@ -750,12 +853,15 @@ function M.prepare_final_report(request, ports)
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
+  if has_canonical then
+    for _, field in ipairs(canonical_quartet_fields) do report[field] = request[field] end
+  end
   if channel == "filesystem-dry-run-v1" then
     report.channel = channel
     report.github_publication_occurred = false
   end
   local written = ports.write_report(request.aggregate_report_ref, report)
-  if type(written) ~= "table" or written.status ~= "written" or not digest(written.digest) then
+  if type(written) ~= "table" or written.status ~= "written" or not strings.is_sha256(written.digest) then
     error("test-publication: qa: aggregate report write failed")
   end
   local prepared = M.prepare_checkpoint({
@@ -765,7 +871,7 @@ function M.prepare_final_report(request, ports)
     artifact_ref = request.aggregate_report_ref, artifact_sha256 = written.digest, ledger_ref = request.ledger_ref,
     trace_id = request.trace_id, dedup_key = request.dedup_key, counts = counts,
     channel = request.channel,
-  }, ports)
+  }, ports, canonical_identity(request))
   prepared.report = report
   return prepared
 end

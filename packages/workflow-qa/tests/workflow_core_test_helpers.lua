@@ -411,6 +411,7 @@ function M.build(deps)
       source_ref = { kind = "workflow-qa", ref = request.run_id },
       trace_id = request.trace_id, dedup_key = request.dedup_key,
       native_summary = {
+        schema = "testing-runner.structured-execution-summary.v1",
         ["test_" .. "plan_path"] = root .. "/test-plan.json",
         execution_path = root .. "/execution.json",
         case_results_path = root .. "/case-results.json",
@@ -420,12 +421,22 @@ function M.build(deps)
     }
   end
 
-  local function artifact_summary(request, failures, put)
+  local function artifact_summary(request, failures, put, canonical)
     local result = execution_result(request, failures)
     put(result.native_summary.case_results_path, {
       schema = "testing-structured-case-results.v1",
       plan_sha256 = digest("a"), cases = {},
     }, digest("c"))
+    if canonical then
+      local root = result.artifact_root
+      put(result.native_summary.test_plan_path, { schema = execution_contract.schemas.plan }, digest("a"))
+      result.native_summary.case_result_set_path = root .. "/case-result-set.json"
+      result.native_summary.case_result_set_artifact_sha256 = digest("4")
+      result.native_summary.evidence_manifest_path = root .. "/evidence-manifest.json"
+      result.native_summary.evidence_manifest_artifact_sha256 = digest("5")
+      put(result.native_summary.case_result_set_path, { schema = "testing.case-result-set.v1" }, digest("4"))
+      put(result.native_summary.evidence_manifest_path, { schema = "testing.evidence-manifest.v1" }, digest("5"))
+    end
     return {
       schema = "test-artifacts.summary.v1",
       job = "structured-execution",

@@ -23,9 +23,11 @@ local function action(queue, payload)
   return { queue = queue, payload = payload }
 end
 
+local function valid_digest(value) return type(value) == "string" and #value == 64 and value:match("^[0-9a-f]+$") ~= nil end
+
 local function digest(ports, pointer)
   local value = ports.artifact_digest(pointer)
-  if type(value) ~= "string" or #value ~= 64 or value:match("^[0-9a-f]+$") == nil then
+  if not valid_digest(value) then
     error("workflow-qa: artifact-digest-unavailable: " .. tostring(pointer))
   end
   return value
@@ -96,12 +98,35 @@ local function gate_checkpoint(state, stage, status, artifact_ref, counts, next_
   save(ports, state)
   return actions
 end
-
 local function set_pending(state, phase, actions)
   state.phase = phase
   state.pending_actions = actions
 end
-
+local function canonical_state(state)
+  local result_ref = state.artifacts.case_result_set_ref
+  local manifest_ref = state.artifacts.evidence_manifest_ref
+  local result_sha = result_ref and state.digests[result_ref] or nil
+  local manifest_sha = manifest_ref and state.digests[manifest_ref] or nil
+  if (result_ref == nil) ~= (manifest_ref == nil)
+    or (result_ref ~= nil and (result_sha == nil or manifest_sha == nil)) then
+    error("workflow-qa: canonical-state-incomplete: canonical artifacts must be complete")
+  end
+  return result_ref, manifest_ref, result_sha, manifest_sha
+end
+local function add_canonical_quartet(state, target)
+  local result_ref, manifest_ref, result_sha, manifest_sha = canonical_state(state)
+  if result_ref ~= nil then
+    target.case_result_set_ref = result_ref
+    target.case_result_set_artifact_sha256 = result_sha
+    target.evidence_manifest_ref = manifest_ref
+    target.evidence_manifest_artifact_sha256 = manifest_sha
+  end
+  return target
+end
+local function publication_plan(state)
+  local ref = state.artifacts.canonical_plan_ref or state.artifacts.structured_plan_ref
+  return ref, ref and state.digests[ref] or nil
+end
 local function seed_document(request)
   local cases = {}
   for _, proposed in ipairs(request.proposed_cases) do
@@ -127,6 +152,8 @@ local function resolve_request(payload, request, ports)
   local source = type(payload) == "table" and payload.source_ref or nil
   local recovered
   if type(source) == "table" and source.kind == "workflow-qa" then
+    if type(source.ref) ~= "string" or #source.ref == 0 or #source.ref > 180
+      or source.ref:find("[%z\1-\31\127]") ~= nil then error("workflow-qa: run-identity-invalid: source run id is malformed") end
     recovered = ports.load_run_by_id(source.ref)
   else
     recovered = ports.load_run(payload.trace_id, payload.dedup_key)
@@ -134,13 +161,11 @@ local function resolve_request(payload, request, ports)
   if type(recovered) ~= "table" then error("workflow-qa: run-identity-unavailable: durable run lookup failed") end
   return contract.validate_request(recovered)
 end
-
 local function exact_identity(state, payload)
   if payload.trace_id ~= state.request.trace_id or payload.dedup_key ~= state.request.dedup_key then
     error("workflow-qa: foreign-result: trace or dedup identity differs")
   end
 end
-
 local function source_identity(state, payload, kind, expected_dedup_key)
   if payload.trace_id ~= state.request.trace_id or type(payload.source_ref) ~= "table"
     or payload.dedup_key ~= expected_dedup_key
@@ -191,12 +216,17 @@ local function terminal_summary(state, ports, status)
     browser_readiness_sha256 = state.artifacts.browser_readiness_ref
       and state.digests[state.artifacts.browser_readiness_ref] or nil,
     module_plan_ref = state.artifacts.module_plan_ref,
-    structured_plan_ref = state.artifacts.structured_plan_ref,
+    structured_plan_ref = publication_plan(state),
     case_results_ref = state.artifacts.case_results_ref,
     interruption = state.interruption_requested,
     trace_id = state.request.trace_id,
     dedup_key = state.request.dedup_key,
   }
+  local result_ref, manifest_ref = canonical_state(state)
+  if result_ref ~= nil then
+    value.case_result_set_ref = result_ref
+    value.evidence_manifest_ref = manifest_ref
+  end
   if ports.write_artifact(ref, value) ~= true then
     error("workflow-qa: terminal-summary-write-failed: bounded terminal summary was not persisted")
   end
@@ -585,7 +615,7 @@ end
 
 local function publication_from_summary(state, summary)
   local native = summary.native_summary
-  return {
+  local publication = {
     schema = "test-publication.publication-request.v1",
     publication_kind = "testing-summary",
     channel = "testing",
@@ -599,13 +629,41 @@ local function publication_from_summary(state, summary)
     artifact_root = summary.artifact_root,
     metadata_path = summary.metadata_path,
     source_ref = { kind = "workflow-qa", ref = state.request.run_id },
-    test_plan_path = state.artifacts.structured_plan_ref,
+    test_plan_path = publication_plan(state),
     execution_path = native.execution_path,
     case_results_path = native.case_results_path,
     publication_dry_run = true,
   }
+  if state.execution_job == "structured-execution" and native.case_result_set_path ~= nil then
+    publication.case_result_set_path = native.case_result_set_path; publication.case_result_set_artifact_sha256 = native.case_result_set_artifact_sha256
+    publication.evidence_manifest_path = native.evidence_manifest_path; publication.evidence_manifest_artifact_sha256 = native.evidence_manifest_artifact_sha256
+  end
+  return publication
 end
-
+local function canonical_paths(state, summary)
+  if state.execution_job ~= "structured-execution" or type(summary.native_summary) ~= "table" then return nil end
+  local native = summary.native_summary
+  local plan_ref, result_ref, result_sha = native.test_plan_path,
+    native.case_result_set_path, native.case_result_set_artifact_sha256
+  local manifest_ref, manifest_sha = native.evidence_manifest_path, native.evidence_manifest_artifact_sha256
+  local present = 0
+  for _, value in pairs({
+    result_ref=result_ref, result_sha=result_sha, manifest_ref=manifest_ref, manifest_sha=manifest_sha,
+  }) do
+    if value ~= nil then present = present + 1 end
+  end
+  if present ~= 0 and present ~= 4 then
+    error("workflow-qa: foreign-artifact-summary: canonical paths and digests must be all-or-none")
+  end
+  if present == 0 then return nil end
+  if plan_ref ~= summary.artifact_root .. "/test-plan.json"
+    or result_ref ~= summary.artifact_root .. "/case-result-set.json"
+    or manifest_ref ~= summary.artifact_root .. "/evidence-manifest.json"
+    or not valid_digest(result_sha) or not valid_digest(manifest_sha) then
+    error("workflow-qa: foreign-artifact-summary: canonical artifact group differs")
+  end
+  return { plan_ref=plan_ref, result_ref=result_ref, result_sha=result_sha, manifest_ref=manifest_ref, manifest_sha=manifest_sha }
+end
 function M.handle_artifact_summary(payload, request, supplied_ports)
   local ports = ports_module.resolve(supplied_ports)
   request = resolve_request(payload, request, ports)
@@ -617,15 +675,31 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     error("workflow-qa: foreign-artifact-summary: summary binding differs")
   end
   if state.phase ~= "artifact-summary-pending" then return copy(state.pending_actions or {}) end
-  state.execution_summary = copy(payload)
+  local canonical = canonical_paths(state, payload)
   local summary = payload.native_summary
   if type(summary) ~= "table" or type(summary.case_results_path) ~= "string"
     or payload.status == "blocked" then
+    state.execution_summary = copy(payload)
     state.counts = { planned = 0, executed = 0, passed = 0, failed = 0, skipped = 0, error = 0, blocked = 1 }
     return begin_cleanup(state, state.interruption_requested or "blocked", ports)
   end
-  state.artifacts.case_results_ref = summary.case_results_path
-  state.digests[summary.case_results_path] = digest(ports, summary.case_results_path)
+  local case_results_sha256 = digest(ports, summary.case_results_path)
+  local plan_sha256 = canonical and digest(ports, canonical.plan_ref) or nil
+  local result_sha256 = canonical and digest(ports, canonical.result_ref) or nil
+  local manifest_sha256 = canonical and digest(ports, canonical.manifest_ref) or nil
+  if canonical ~= nil and (plan_sha256 ~= state.digests[state.artifacts.structured_plan_ref]
+    or result_sha256 ~= canonical.result_sha or manifest_sha256 ~= canonical.manifest_sha) then
+    error("workflow-qa: foreign-artifact-summary: canonical artifact digest differs")
+  end
+  state.execution_summary = copy(payload)
+  state.artifacts.case_results_ref = summary.case_results_path; state.digests[summary.case_results_path] = case_results_sha256
+  if canonical ~= nil then
+    state.artifacts.canonical_plan_ref = canonical.plan_ref; state.digests[canonical.plan_ref] = plan_sha256
+    state.artifacts.case_result_set_ref = canonical.result_ref
+    state.artifacts.evidence_manifest_ref = canonical.manifest_ref
+    state.digests[canonical.result_ref] = result_sha256
+    state.digests[canonical.manifest_ref] = manifest_sha256
+  end
   local counts = {
     planned = summary.case_count or 0,
     executed = summary.case_count or 0,
@@ -649,8 +723,8 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     publication = publication_from_summary(state, payload),
     repository = { slug = request.repository.slug, commit_sha = request.repository.commit_sha },
     run_id = request.run_id,
-    plan_ref = state.artifacts.structured_plan_ref,
-    plan_sha256 = state.digests[state.artifacts.structured_plan_ref],
+    plan_ref = publication_plan(state),
+    plan_sha256 = select(2, publication_plan(state)),
     case_results_ref = summary.case_results_path,
     case_results_sha256 = state.digests[summary.case_results_path],
     issue_drafts_ref = request.publication.issue_drafts_ref,
@@ -659,6 +733,7 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
+  add_canonical_quartet(state, prepare)
   if next_phase == nil then
     next_phase = "defects-pending"
     next_actions = { action("test-publication.defect_preparation_request", prepare) }
@@ -751,11 +826,11 @@ prepare_finalization = function(state, ports)
     final.channel = request.publication.channel
   end
   if state.artifacts.structured_plan_ref ~= nil and state.artifacts.case_results_ref ~= nil then
-    final.test_plan_ref = state.artifacts.structured_plan_ref
-    final.test_plan_sha256 = state.digests[state.artifacts.structured_plan_ref]
+    final.test_plan_ref, final.test_plan_sha256 = publication_plan(state)
     final.case_results_ref = state.artifacts.case_results_ref
     final.case_results_sha256 = state.digests[state.artifacts.case_results_ref]
   end
+  add_canonical_quartet(state, final)
   if state.defect_terminal and state.defect_terminal.receipt_ref then
     final.defect_publication_receipt_ref = state.defect_terminal.receipt_ref
     final.defect_publication_receipt_sha256 = state.digests[state.defect_terminal.receipt_ref]

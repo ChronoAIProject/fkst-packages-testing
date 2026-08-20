@@ -40,6 +40,31 @@ return {
     t.eq(request.dedup_key, "dedup-platform")
   end,
 
+  test_structured_summary_rejects_foreign_canonical_paths_and_digests = function()
+    local root = ".testing/runs/structured"
+    local function summary()
+      return {
+        schema = "test-artifacts.summary.v1", job = "structured-execution", status = "failed",
+        artifact_root = root, metadata_path = root .. "/metadata.json",
+        source_ref = { kind = "workflow-qa", ref = "structured" },
+        trace_id = "trace-structured", dedup_key = "dedup-structured",
+        native_summary = {
+          schema = "testing-runner.structured-execution-summary.v1",
+          test_plan_path = root .. "/test-plan.json", execution_path = root .. "/execution.json",
+          case_results_path = root .. "/case-results.json",
+          case_result_set_path = root .. "/case-result-set.json",
+          case_result_set_artifact_sha256 = string.rep("a", 64),
+          evidence_manifest_path = root .. "/evidence-manifest.json",
+          evidence_manifest_artifact_sha256 = string.rep("b", 64),
+        },
+      }
+    end
+    local value = summary(); value.native_summary.case_result_set_path = root .. "/other.json"
+    t.raises(function() core.publication_request(value) end)
+    value = summary(); value.native_summary.evidence_manifest_artifact_sha256 = string.rep("A", 64)
+    t.raises(function() core.publication_request(value) end)
+  end,
+
   test_failed_publication_request_is_golden_and_pointer_only = function()
     local request = core.publication_request({
       schema = "test-artifacts.summary.v1",

@@ -246,6 +246,59 @@ end
 local Context = {}
 Context.__index = Context
 
+local canonical_execution_fields = {
+  "case_result_set_path", "case_result_set_artifact_sha256",
+  "evidence_manifest_path", "evidence_manifest_artifact_sha256",
+}
+
+local function valid_digest(value)
+  return type(value) == "string" and #value == 64 and value:match("^[0-9a-f]+$") ~= nil
+end
+
+local function structured_execution_artifacts(context, result_ref)
+  local execution_artifact = context.store:load(result_ref)
+  if execution_artifact == nil or type(execution_artifact.value) ~= "table" then return nil end
+  local execution_value = execution_artifact.value
+  local present = 0
+  for _, field in ipairs(canonical_execution_fields) do
+    if execution_value[field] ~= nil then present = present + 1 end
+  end
+  if present ~= 0 and present ~= #canonical_execution_fields then
+    error("generic-host durable canonical execution artifact fields must be all-or-none")
+  end
+  if present == 0 then return execution_artifact, nil end
+
+  local root = context.request.structured_execution.artifact_root
+  if execution_value.test_plan_path ~= root .. "/test-plan.json"
+    or not valid_digest(execution_value.plan_sha256)
+    or execution_value.case_result_set_path ~= root .. "/case-result-set.json"
+    or execution_value.evidence_manifest_path ~= root .. "/evidence-manifest.json"
+    or not valid_digest(execution_value.case_result_set_artifact_sha256)
+    or not valid_digest(execution_value.evidence_manifest_artifact_sha256) then
+    error("generic-host durable canonical execution artifact binding is invalid")
+  end
+  local plan = context.store:load(execution_value.test_plan_path)
+  local result_set = context.store:load(execution_value.case_result_set_path)
+  local manifest = context.store:load(execution_value.evidence_manifest_path)
+  if plan == nil or plan.digest ~= execution_value.plan_sha256
+    or result_set == nil or result_set.digest ~= execution_value.case_result_set_artifact_sha256
+    or manifest == nil or manifest.digest ~= execution_value.evidence_manifest_artifact_sha256
+    or type(result_set.value) ~= "table" or type(manifest.value) ~= "table"
+    or type(result_set.value.plan_ref) ~= "table" or result_set.value.plan_ref.kind ~= "artifact"
+    or result_set.value.plan_ref.ref ~= execution_value.test_plan_path
+    or result_set.value.plan_sha256 ~= execution_value.plan_sha256
+    or type(manifest.value.plan_ref) ~= "table" or manifest.value.plan_ref.kind ~= "artifact"
+    or manifest.value.plan_ref.ref ~= execution_value.test_plan_path
+    or manifest.value.plan_sha256 ~= execution_value.plan_sha256 then
+    error("generic-host durable canonical execution artifact digest mismatch")
+  end
+  return execution_artifact, {
+    test_plan = plan,
+    case_result_set = result_set,
+    evidence_manifest = manifest,
+  }
+end
+
 function Context:_key(value)
   return self.records:digest(json_codec.encode(value))
 end
@@ -624,6 +677,7 @@ function Context:_structured_runtime()
     return receipt
   end
   return {
+    sha256_bytes = function(bytes) return context.records:digest(bytes) end,
     load_artifact = function(path) return context.store:load(path) end,
     now = function(request)
       if request.artifact_root ~= context.request.structured_execution.artifact_root then
@@ -754,12 +808,13 @@ function Context:_structured_runtime()
     end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
     load_result = function(request)
-      local artifact = context.store:load(request.result_ref)
+      local artifact = structured_execution_artifacts(context, request.result_ref)
       if artifact == nil or (request.result_sha256 ~= nil and artifact.digest ~= request.result_sha256) then return nil end
       local value = artifact.value
       if value.operation_id ~= request.operation_id or value.environment_receipt_sha256 ~= request.environment_receipt_sha256
+        or not execution.same_repository(value.repository, request.repository)
         or value.trace_id ~= request.trace_id or value.dedup_key ~= request.dedup_key then return nil end
-      return {
+      local summary = {
         schema = "testing-runner.structured-execution-summary.v1", status = value.status,
         classification = value.classification, mode = "structured-api-cli",
         artifact_root = context.request.structured_execution.artifact_root,
@@ -768,6 +823,13 @@ function Context:_structured_runtime()
         test_plan_path = value.test_plan_path, case_results_path = value.case_results_path,
         execution_path = value.execution_path, replayed = true,
       }
+      if value.case_result_set_path ~= nil then
+        summary.case_result_set_path = value.case_result_set_path
+        summary.case_result_set_artifact_sha256 = value.case_result_set_artifact_sha256
+        summary.evidence_manifest_path = value.evidence_manifest_path
+        summary.evidence_manifest_artifact_sha256 = value.evidence_manifest_artifact_sha256
+      end
+      return summary
     end,
     complete_replay = function(request)
       local current
@@ -785,12 +847,28 @@ function Context:_structured_runtime()
         or binding.trace_id ~= request.trace_id or binding.dedup_key ~= request.dedup_key then
         return false
       end
-      local result_sha256 = context.store:digest(request.result_ref)
-      if result_sha256 == nil then return false end
+      local artifact, canonical = structured_execution_artifacts(context, request.result_ref)
+      local value = artifact and artifact.value or nil
+      if value == nil or value.operation_id ~= request.operation_id
+        or binding.plan_sha256 ~= value.plan_sha256
+        or value.environment_receipt_sha256 ~= request.environment_receipt_sha256
+        or not execution.same_repository(value.repository, request.repository)
+        or value.trace_id ~= request.trace_id or value.dedup_key ~= request.dedup_key then
+        return false
+      end
       local completion = copy(request)
       completion.claim = nil
-      completion.result_sha256 = result_sha256
-      return context.records:complete_replay(current.key, request.claim.claim_id, completion).completed == true
+      completion.result_sha256 = artifact.digest
+      local completed = context.records:complete_replay(current.key, request.claim.claim_id, completion)
+      if completed.completed ~= true then return false end
+      local verified, verified_canonical = structured_execution_artifacts(context, request.result_ref)
+      if verified.digest ~= artifact.digest
+        or (canonical ~= nil and (verified_canonical == nil
+          or verified_canonical.case_result_set.digest ~= canonical.case_result_set.digest
+          or verified_canonical.evidence_manifest.digest ~= canonical.evidence_manifest.digest)) then
+        error("generic-host durable canonical execution artifacts changed during replay completion")
+      end
+      return true
     end,
   }
 end
@@ -798,6 +876,13 @@ end
 function Context:_publication_runtime()
   local context = self
   return {
+    sha256_bytes = function(bytes, artifact_root)
+      local execution_root = context.request.structured_execution.artifact_root
+      if artifact_root ~= context.artifact_root and artifact_root ~= execution_root then
+        error("generic-host durable publication hash received a foreign artifact root")
+      end
+      return context.records:digest(bytes)
+    end,
     load_ledger = function(path) return copy(context.records:read("test-publication/ledgers/" .. context:_key(path))) end,
     save_ledger = function(path, value, expected)
       return context.records:cas("test-publication/ledgers/" .. context:_key(path), copy(value), expected).saved == true
@@ -921,12 +1006,21 @@ function Context:after_replay_complete(outcome, request)
   local fifo = self.root .. "/post-replay-complete.fifo"
   os.remove(fifo)
   require_exec({ "mkfifo", fifo })
-  local barrier = self.records:immutable("generic-host/barriers/post-replay-complete", {
+  local execution_artifact = structured_execution_artifacts(self, outcome.execution_path)
+  local witness = {
     run_id = self.run_id,
     result_ref = outcome.execution_path,
-    result_sha256 = self.store:digest(outcome.execution_path),
+    result_sha256 = execution_artifact.digest,
     replay_status = claims[1].value.status,
-  })
+  }
+  local execution_value = execution_artifact.value
+  if execution_value.case_result_set_path ~= nil then
+    witness.case_result_set_ref = execution_value.case_result_set_path
+    witness.case_result_set_artifact_sha256 = execution_value.case_result_set_artifact_sha256
+    witness.evidence_manifest_ref = execution_value.evidence_manifest_path
+    witness.evidence_manifest_artifact_sha256 = execution_value.evidence_manifest_artifact_sha256
+  end
+  local barrier = self.records:immutable("generic-host/barriers/post-replay-complete", witness)
   if barrier.written ~= true then return end
   local handle = io.open(fifo, "r")
   if handle ~= nil then handle:read("*l") handle:close() end

@@ -115,6 +115,51 @@ return {
     if not ok then error(err, 0) end
   end,
 
+  test_generic_host_runtime_hashes_bounded_bytes_with_closed_payload = function()
+    local root = os.tmpname() .. "-generic-host-runtime-hash"
+    cleanup(root)
+    local request_path = root .. "/request.json"
+    local response_path = root .. "/response.json"
+    local ok, err = pcall(function()
+      write_file(request_path, json_codec.encode({ request_id = "hash-success", bytes = "abc" }) .. "\n")
+      local result = direct_exec({
+        "env", "FKST_DURABLE_ROOT=" .. root .. "/durable",
+        "node", generic_runtime_cli(), "effect", "--name", "sha256-bytes",
+        "--request", request_path, "--response", response_path,
+      })
+      t.eq(result.exit_code, 0)
+      local response = json.decode(assert(read_file(response_path)))
+      t.eq(response.result.sha256,
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+
+      write_file(request_path, json_codec.encode({
+        request_id = "hash-unknown-field", bytes = "abc", extra = true,
+      }) .. "\n")
+      result = direct_exec({
+        "env", "FKST_DURABLE_ROOT=" .. root .. "/durable",
+        "node", generic_runtime_cli(), "effect", "--name", "sha256-bytes",
+        "--request", request_path, "--response", response_path,
+      })
+      t.is_true(result.exit_code ~= 0)
+      response = json.decode(assert(read_file(response_path)))
+      t.is_true(response.error:find("payload fields are invalid", 1, true) ~= nil)
+
+      write_file(request_path, json_codec.encode({
+        request_id = "hash-oversized", bytes = string.rep("a", 1024 * 1024 + 1),
+      }) .. "\n")
+      result = direct_exec({
+        "env", "FKST_DURABLE_ROOT=" .. root .. "/durable",
+        "node", generic_runtime_cli(), "effect", "--name", "sha256-bytes",
+        "--request", request_path, "--response", response_path,
+      })
+      t.is_true(result.exit_code ~= 0)
+      response = json.decode(assert(read_file(response_path)))
+      t.is_true(response.error:find("no larger than 1 MiB", 1, true) ~= nil)
+    end)
+    cleanup(root)
+    if not ok then error(err, 0) end
+  end,
+
   test_generic_host_runtime_authorizes_and_consumes_cli_effect_once = function()
     local context = support.new({
       cli_only = true,
@@ -123,12 +168,17 @@ return {
       prepare_execution_grant_pending = false,
     })
     local io_link = ".testing/runs/" .. context.run_id
+    local runtime_io_link = ".testing/runtime/structured-execution"
     local ok, err = pcall(function()
       cleanup(io_link)
-      os.execute("mkdir -p .testing/runs")
+      cleanup(runtime_io_link)
+      os.execute("mkdir -p .testing/runs .testing/runtime")
       local linked = os.execute("ln -s "
         .. shell_quote(context.project_root .. "/" .. io_link) .. " " .. shell_quote(io_link))
       if linked ~= true and linked ~= 0 then error("generic-host runtime test: failed to link run I/O") end
+      linked = os.execute("ln -s " .. shell_quote(context.project_root .. "/" .. runtime_io_link)
+        .. " " .. shell_quote(runtime_io_link))
+      if linked ~= true and linked ~= 0 then error("generic-host runtime test: failed to link runtime I/O") end
       local preparation = durable.load(context.project_root, context.durable_root, context.run_id)
       local prepared = supervisor_support.prepare_phase(
         preparation, context.project_root, "structured-execution-pending")
@@ -146,6 +196,12 @@ return {
           return direct_exec(command)
         end,
       })
+      t.eq(ports.sha256_bytes("abc"),
+        "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+      local after_hash = durable.load(context.project_root, context.durable_root, context.run_id)
+      t.eq(#after_hash.records:list("testing-runner/target-effects"), 0)
+      t.eq(process.effect_count(context), 0)
+
       local production_exec_argv = ports.exec_argv
       local authorized_request
 
@@ -302,6 +358,7 @@ return {
       t.eq(process.effect_count(context), 1)
     end)
     cleanup(io_link)
+    cleanup(runtime_io_link)
     context:cleanup()
     if not ok then error(err, 0) end
   end,

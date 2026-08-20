@@ -38,6 +38,10 @@ T.summary_statuses = {
 local max_string = 512
 local max_id = 180
 
+local function sha256(value)
+  return type(value) == "string" and #value == 64 and value:match("^[0-9a-f]+$") ~= nil
+end
+
 local function has_no_control(text)
   return type(text) == "string" and text:find("[%z\1-\31]") == nil
 end
@@ -356,6 +360,8 @@ local function copy_structured_execution(value)
   if not has_only(value, {
     schema = true, status = true, classification = true, mode = true, artifact_root = true,
     test_plan_path = true, execution_path = true, case_results_path = true, case_count = true,
+    case_result_set_path = true, case_result_set_artifact_sha256 = true,
+    evidence_manifest_path = true, evidence_manifest_artifact_sha256 = true,
     passed_count = true, failed_count = true, skipped_count = true, error_count = true, replayed = true,
   }) then return nil end
   if value.schema ~= T.schemas.structured_execution_summary or not T.runner_statuses[value.status]
@@ -364,18 +370,36 @@ local function copy_structured_execution(value)
   if value.test_plan_path ~= value.artifact_root .. "/test-plan.json"
     or value.execution_path ~= value.artifact_root .. "/execution.json"
     or value.case_results_path ~= value.artifact_root .. "/case-results.json" then return nil end
+  local has_case_result_set = value.case_result_set_path ~= nil
+  local has_case_result_set_digest = value.case_result_set_artifact_sha256 ~= nil
+  local has_evidence_manifest = value.evidence_manifest_path ~= nil
+  local has_evidence_manifest_digest = value.evidence_manifest_artifact_sha256 ~= nil
+  if has_case_result_set ~= has_case_result_set_digest
+    or has_case_result_set ~= has_evidence_manifest
+    or has_case_result_set ~= has_evidence_manifest_digest then return nil end
+  if has_case_result_set and (value.case_result_set_path ~= value.artifact_root .. "/case-result-set.json"
+    or not sha256(value.case_result_set_artifact_sha256)
+    or value.evidence_manifest_path ~= value.artifact_root .. "/evidence-manifest.json"
+    or not sha256(value.evidence_manifest_artifact_sha256)) then return nil end
   for _, field in ipairs({ "case_count", "passed_count", "failed_count", "skipped_count", "error_count" }) do
     local count = value[field]
     if type(count) ~= "number" or count < 0 or count > 64 or count ~= math.floor(count) then return nil end
   end
   if type(value.replayed) ~= "boolean" then return nil end
-  return {
+  local copy = {
     schema = value.schema, status = value.status, classification = value.classification, mode = value.mode,
     artifact_root = value.artifact_root, test_plan_path = value.test_plan_path,
     execution_path = value.execution_path, case_results_path = value.case_results_path,
     case_count = value.case_count, passed_count = value.passed_count, failed_count = value.failed_count,
     skipped_count = value.skipped_count, error_count = value.error_count, replayed = value.replayed,
   }
+  if has_case_result_set then
+    copy.case_result_set_path = value.case_result_set_path
+    copy.case_result_set_artifact_sha256 = value.case_result_set_artifact_sha256
+    copy.evidence_manifest_path = value.evidence_manifest_path
+    copy.evidence_manifest_artifact_sha256 = value.evidence_manifest_artifact_sha256
+  end
+  return copy
 end
 
 local function copy_browser_control(value)

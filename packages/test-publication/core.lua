@@ -69,6 +69,31 @@ local function copy_dry_run_pointers(request, summary)
       end
       request[field] = native[field]
     end
+    local canonical_fields = {
+      "case_result_set_path", "case_result_set_artifact_sha256",
+      "evidence_manifest_path", "evidence_manifest_artifact_sha256",
+    }
+    local present = 0
+    for _, field in ipairs(canonical_fields) do if native[field] ~= nil then present = present + 1 end end
+    if present ~= 0 and present ~= #canonical_fields then
+      error("test-publication: malformed-summary: canonical path and digest quartet must be all-or-none")
+    end
+    if present == #canonical_fields then
+      for _, field in ipairs({ "case_result_set_path", "evidence_manifest_path" }) do
+        local expected = summary.artifact_root .. "/" .. ({
+          case_result_set_path = "case-result-set.json",
+          evidence_manifest_path = "evidence-manifest.json",
+        })[field]
+        if native[field] ~= expected then
+          error("test-publication: malformed-summary: " .. field .. " must point under artifact_root")
+        end
+      end
+      if not strings.is_sha256(native.case_result_set_artifact_sha256)
+        or not strings.is_sha256(native.evidence_manifest_artifact_sha256) then
+        error("test-publication: malformed-summary: canonical artifact digests are invalid")
+      end
+      for _, field in ipairs(canonical_fields) do request[field] = native[field] end
+    end
   end
   return request
 end

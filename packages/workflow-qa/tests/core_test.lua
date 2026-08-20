@@ -99,7 +99,7 @@ local tests = {
   test_run_traverses_plan_grant_execution_cleanup_and_terminal = function()
     local request = fixture()
     request.publication.channel = "filesystem-dry-run-v1"
-    local ports, state, put = runtime(request)
+    local ports, state, put, artifacts = runtime(request)
     local execution = drive_to_grant(request, ports, state, put)
     t.eq(execution[1].queue, "testing-runner.structured_execution_request")
     t.eq(state().phase, "structured-execution-pending")
@@ -111,9 +111,14 @@ local tests = {
     local cleanup_checkpoint = core.handle_cleanup_result(finalized(request, put), request, ports)
     t.eq(cleanup_checkpoint[1].queue, "test-publication.qa_checkpoint_request")
     t.eq(cleanup_checkpoint[1].payload.channel, "filesystem-dry-run-v1")
+    local historical_terminal = artifacts[request.publication.terminal_summary_ref].value
+    t.eq(historical_terminal.case_result_set_ref, nil)
+    t.eq(historical_terminal.evidence_manifest_ref, nil)
     local wrong_stage_receipt = checkpoint_receipt(request, state().active_checkpoint)
     local finalization = release_checkpoint(request, ports, state, "test-publication.qa_finalize_request")
     t.eq(finalization[1].payload.channel, "filesystem-dry-run-v1")
+    t.eq(finalization[1].payload.case_result_set_ref, nil)
+    t.eq(finalization[1].payload.evidence_manifest_ref, nil)
     t.eq(state().request.publication.channel, "filesystem-dry-run-v1")
     t.eq(state().phase, "publication-pending")
     t.is_true(type(state().finalization_request) == "table")
@@ -186,6 +191,130 @@ local tests = {
     }, request, ports)
     t.eq(defect_checkpoint[1].queue, "test-publication.qa_checkpoint_request")
     release_checkpoint(request, ports, state, "environment-factory.environment_finalize")
+  end,
+
+  test_canonical_artifacts_propagate_through_replay_cleanup_and_finalization = function()
+    local request = fixture()
+    local ports, state, put, artifacts = runtime(request)
+    drive_to_grant(request, ports, state, put)
+    core.handle_execution_result(execution_result(request, 1), request, ports)
+    local summary = artifact_summary(request, 1, put, true)
+    local canonical_plan_ref = summary.native_summary.test_plan_path
+    local result_ref = summary.native_summary.case_result_set_path
+    local manifest_ref = summary.native_summary.evidence_manifest_path
+    local first = core.handle_artifact_summary(summary, request, ports)
+    t.eq(state().artifacts.canonical_plan_ref, canonical_plan_ref)
+    t.eq(state().digests[canonical_plan_ref], digest("a"))
+    t.eq(state().artifacts.case_result_set_ref, result_ref)
+    t.eq(state().artifacts.evidence_manifest_ref, manifest_ref)
+    t.eq(state().digests[result_ref], digest("4"))
+    t.eq(state().digests[manifest_ref], digest("5"))
+
+    local accepted_version = state().version
+    artifacts[result_ref].digest = digest("8")
+    artifacts[manifest_ref].digest = digest("9")
+    local replay = core.handle_artifact_summary(summary, request, ports)
+    t.eq(execution_contract.equal(replay, first), true)
+    t.eq(state().version, accepted_version)
+
+    local preparation = release_checkpoint(request, ports, state,
+      "test-publication.defect_preparation_request")[1].payload
+    t.eq(preparation.plan_ref, canonical_plan_ref)
+    t.eq(preparation.plan_sha256, digest("a"))
+    t.eq(preparation.publication.test_plan_path, canonical_plan_ref)
+    t.eq(preparation.case_result_set_ref, result_ref)
+    t.eq(preparation.case_result_set_artifact_sha256, digest("4"))
+    t.eq(preparation.evidence_manifest_ref, manifest_ref)
+    t.eq(preparation.evidence_manifest_artifact_sha256, digest("5"))
+    t.eq(preparation.publication.case_result_set_path, result_ref)
+    t.eq(preparation.publication.case_result_set_artifact_sha256, digest("4"))
+    t.eq(preparation.publication.evidence_manifest_path, manifest_ref)
+    t.eq(preparation.publication.evidence_manifest_artifact_sha256, digest("5"))
+
+    core.handle_defect_terminal({
+      schema = "test-publication.defect-publication-terminal.v1", status = "published",
+      receipt_ref = request.publication.defect_receipt_ref,
+      trace_id = request.trace_id, dedup_key = request.dedup_key,
+    }, request, ports)
+    release_checkpoint(request, ports, state, "environment-factory.environment_finalize")
+    core.handle_cleanup_result(finalized(request, put), request, ports)
+    local terminal = artifacts[request.publication.terminal_summary_ref].value
+    t.eq(terminal.structured_plan_ref, canonical_plan_ref)
+    t.eq(terminal.case_result_set_ref, result_ref)
+    t.eq(terminal.evidence_manifest_ref, manifest_ref)
+    local final = release_checkpoint(request, ports, state, "test-publication.qa_finalize_request")[1].payload
+    t.eq(final.test_plan_ref, canonical_plan_ref)
+    t.eq(final.test_plan_sha256, digest("a"))
+    t.eq(final.case_result_set_ref, result_ref)
+    t.eq(final.case_result_set_artifact_sha256, digest("4"))
+    t.eq(final.evidence_manifest_ref, manifest_ref)
+    t.eq(final.evidence_manifest_artifact_sha256, digest("5"))
+  end,
+
+  test_historical_artifact_summary_omits_canonical_defect_fields = function()
+    local request = fixture()
+    local ports, state, put = runtime(request)
+    drive_to_grant(request, ports, state, put)
+    core.handle_execution_result(execution_result(request, 1), request, ports)
+    core.handle_artifact_summary(artifact_summary(request, 1, put), request, ports)
+    local preparation = release_checkpoint(request, ports, state,
+      "test-publication.defect_preparation_request")[1].payload
+    t.eq(preparation.case_result_set_ref, nil)
+    t.eq(preparation.case_result_set_artifact_sha256, nil)
+    t.eq(preparation.evidence_manifest_ref, nil)
+    t.eq(preparation.evidence_manifest_artifact_sha256, nil)
+    t.eq(preparation.publication.case_result_set_path, nil)
+    t.eq(preparation.publication.evidence_manifest_path, nil)
+  end,
+
+  test_partial_and_foreign_canonical_paths_fail_before_progression = function()
+    local mutations = {
+      function(summary)
+        summary.native_summary.case_result_set_path = summary.artifact_root .. "/case-result-set.json"
+      end,
+      function(summary)
+        summary.native_summary.case_result_set_path = summary.artifact_root .. "/foreign-result-set.json"
+        summary.native_summary.evidence_manifest_path = summary.artifact_root .. "/evidence-manifest.json"
+      end,
+    }
+    for _, mutate in ipairs(mutations) do
+      local request = fixture()
+      local ports, state, put = runtime(request)
+      drive_to_grant(request, ports, state, put)
+      core.handle_execution_result(execution_result(request, 1), request, ports)
+      local summary = artifact_summary(request, 1, put)
+      mutate(summary)
+      local version = state().version
+      expect_failure("foreign-artifact-summary", function()
+        core.handle_artifact_summary(summary, request, ports)
+      end)
+      t.eq(state().phase, "artifact-summary-pending")
+      t.eq(state().version, version)
+      t.eq(state().execution_summary, nil)
+      t.eq(state().artifacts.case_result_set_ref, nil)
+      t.eq(state().pending_actions[1].queue, "test-artifacts.testing_result")
+    end
+  end,
+
+  test_foreign_canonical_group_and_persisted_digest_fail_before_progression = function()
+    for _, mismatch in ipairs({ "path", "digest" }) do
+      local request = fixture()
+      local ports, state, put, artifacts = runtime(request)
+      drive_to_grant(request, ports, state, put)
+      core.handle_execution_result(execution_result(request, 1), request, ports)
+      local summary = artifact_summary(request, 1, put, true)
+      if mismatch == "path" then
+        summary.native_summary.case_result_set_path = summary.artifact_root .. "/other.json"
+      else
+        artifacts[summary.native_summary.case_result_set_path].digest = digest("8")
+      end
+      local version = state().version
+      expect_failure("foreign-artifact-summary", function()
+        core.handle_artifact_summary(summary, request, ports)
+      end)
+      t.eq(state().phase, "artifact-summary-pending")
+      t.eq(state().version, version)
+    end
   end,
 
   test_plan_and_grant_redelivery_are_idempotent = function()
@@ -614,6 +743,20 @@ local tests = {
       result = execution_result(request, 0)
       result.source_ref.ref = "foreign"
       expect_failure("foreign-result", function() core.handle_execution_result(result, request, ports) end)
+    end
+    do
+      local request = fixture()
+      local ports = runtime(request)
+      local lookups, original = 0, ports.load_run_by_id
+      ports.load_run_by_id = function(run_id) lookups = lookups + 1 return original(run_id) end
+      local result = execution_result(request, 0)
+      result.source_ref.ref = string.rep("r", 181)
+      expect_failure("run-identity-invalid", function() core.handle_execution_result(result, nil, ports) end)
+      t.eq(lookups, 0)
+      ports.load_run_by_id = function(run_id) lookups = lookups + 1 return request end
+      result.source_ref.ref = "run..01"
+      expect_failure("state-unavailable", function() core.handle_execution_result(result, nil, ports) end)
+      t.eq(lookups, 1)
     end
   end,
 
