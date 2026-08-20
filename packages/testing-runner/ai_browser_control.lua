@@ -108,13 +108,13 @@ local function unsafe_observation(observation)
   return nil
 end
 
-local function summary(request, outcome, replayed)
+local function summary(request, outcome, replayed, artifacts)
   local status = outcome.status == "passed" and "passed"
     or outcome.status == "failed" and "failed" or "blocked"
   local passed = status == "passed" and 1 or 0
   local failed = status == "failed" and 1 or 0
   local errors = status == "blocked" and 1 or 0
-  return {
+  local value = {
     schema = testing_contract.schemas.browser_control_summary,
     status = status,
     classification = outcome.classification,
@@ -131,6 +131,8 @@ local function summary(request, outcome, replayed)
     turn_count = outcome.turn_count or 0,
     replayed = replayed == true,
   }
+  for key, item in pairs(artifacts or {}) do value[key] = item end
+  return value
 end
 
 local function artifact_ref(path, sha256)
@@ -320,7 +322,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
   local browser_case = plan.cases[1]
   local receipt_path = request.artifact_root .. "/browser-agent-execution.json"
   local plan_path = request.artifact_root .. "/test-plan.json"
-  local results_path = request.artifact_root .. "/case-results.json"
+  local results_path = request.artifact_root .. "/case-result-set.json"
   local manifest_path = request.artifact_root .. "/evidence-manifest.json"
   local normalized = normalize_outcome(outcome)
   local receipt_status = normalized.execution_status == "passed" and "passed"
@@ -415,6 +417,13 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     entries = entries,
   }
   manifest.canonical_sha256 = evidence_contract.sha256(manifest, ports.sha256)
+  if ports.write_artifact(manifest_path, manifest) ~= true then
+    error("testing-runner: ai-browser-control: canonical result artifact write failed")
+  end
+  local manifest_artifact_sha256 = ports.artifact_digest(manifest_path)
+  if type(manifest_artifact_sha256) ~= "string" then
+    error("testing-runner: ai-browser-control: evidence manifest digest unavailable")
+  end
   local result_set = {
     schema = results_contract.schemas.case_result_set,
     set_id = run_id .. "-browser-results",
@@ -422,21 +431,34 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     plan_ref = copy(authority.plan_ref),
     plan_sha256 = request.reviewed_plan_sha256,
     cases = { case_result },
-    evidence_manifest_ref = { kind = "artifact", ref = manifest_path },
+    evidence_manifest_ref = artifact_ref(manifest_path, manifest_artifact_sha256),
     evidence_manifest_sha256 = manifest.canonical_sha256,
+    evidence_manifest_artifact_sha256 = manifest_artifact_sha256,
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
   results_contract.validate_case_result_set(result_set, { authority }, manifest, ports.sha256)
-  if ports.write_artifact(manifest_path, manifest) ~= true
-    or ports.write_artifact(results_path, result_set) ~= true then
+  if ports.write_artifact(results_path, result_set) ~= true then
     error("testing-runner: ai-browser-control: canonical result artifact write failed")
+  end
+  local compatibility_path = request.artifact_root .. "/case-results.json"
+  if ports.write_artifact(compatibility_path, result_set) ~= true then
+    error("testing-runner: ai-browser-control: compatibility result artifact write failed")
+  end
+  local result_set_artifact_sha256 = ports.artifact_digest(results_path)
+  if type(result_set_artifact_sha256) ~= "string" then
+    error("testing-runner: ai-browser-control: case result set digest unavailable")
   end
   local native = summary(request, {
     status = normalized.execution_status,
     classification = normalized.public_classification,
     turn_count = #steps,
-  }, false)
+  }, false, {
+    case_result_set_path = results_path,
+    case_result_set_artifact_sha256 = result_set_artifact_sha256,
+    evidence_manifest_path = manifest_path,
+    evidence_manifest_artifact_sha256 = manifest_artifact_sha256,
+  })
   if ports.write_artifact(request.artifact_root .. "/metadata.json", {
     schema = testing_contract.schemas.native_metadata,
     job = "ai-browser-control",
