@@ -597,7 +597,7 @@ return {
       claim = { status = "in-progress", claim_id = "claim-browser" },
       act = function() effects = effects + 1 error("effect must not repeat") end,
     })
-    t.eq(controller.run(request, second).status, "failed")
+    t.eq(controller.run(request, second).status, "blocked")
     t.eq(effects, 1)
     local case_result = canonical_case(request, recovered)
     t.eq(case_result.execution_status, "lost")
@@ -767,7 +767,7 @@ return {
         if path:find("browser%-effects/turn%-1%-receipt%.json$") then return false end
         return write(path, value)
       end
-      t.eq(controller.run(request, runtime).status, "failed")
+      t.eq(controller.run(request, runtime).status, "blocked")
     end
   end,
   test_result_write_retry_reuses_effect_receipt_and_digest_identity = function()

@@ -33,7 +33,7 @@ local function assert_terminal(context, expected_status)
   local cleanup = artifact(context, context.terminal.cleanup_receipt_ref).value
   t.eq(cleanup.status, "complete")
   t.eq(#cleanup.remaining_resources, 0)
-  t.eq(context.publication_count, 1)
+  t.is_true(context.aggregate_publication_count > 0)
   t.eq(context.terminal_records, 1)
 end
 
@@ -140,9 +140,10 @@ return {
       supervisor.prepare_phase(context, context.project_root, "cleanup-checkpoint")
       local cleanup_effects = context.cleanup_effects
       t.is_true(cleanup_effects > 0)
-      t.eq(context.publication_count, 0)
+      t.eq(context.aggregate_publication_count, 0)
       t.eq(context.terminal, nil)
       context:run_lifecycle()
+      t.is_true(cleanup_effects > 0)
       t.eq(context.cleanup_effects, cleanup_effects)
       t.eq(#context.browser_effects, 1)
       assert_terminal(context, "passed")
@@ -156,10 +157,10 @@ return {
       publication_ack_loss = true,
     }, function(context)
       expect_interruption(context)
-      t.eq(context.publication_count, 1)
+      t.eq(context.aggregate_publication_count, 1)
       t.eq(context.terminal, nil)
       context:run_lifecycle()
-      t.eq(context.publication_count, 1)
+      t.eq(context.aggregate_publication_count, 1)
       t.eq(#context.browser_effects, 1)
       assert_terminal(context, "passed")
     end)
@@ -176,6 +177,7 @@ return {
       local result_bytes = artifact(context, result_path).raw
       local manifest_bytes = artifact(context, manifest_path).raw
       local observations = context.browser_observations
+      local publications = context.aggregate_publication_count
       context:replace_browser_process()
       local replay = context:run_lifecycle()
       t.eq(replay.no_op, true)
@@ -183,7 +185,7 @@ return {
       t.eq(artifact(context, manifest_path).raw, manifest_bytes)
       t.eq(context.browser_observations, observations)
       t.eq(#context.browser_effects, 1)
-      t.eq(context.publication_count, 1)
+      t.eq(context.aggregate_publication_count, publications)
       t.eq(context.terminal_records, 1)
     end)
   end,

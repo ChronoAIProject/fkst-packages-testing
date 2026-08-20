@@ -61,7 +61,7 @@ function C.validate(result_set, manifest, options)
     options.sha256_bytes, { artifact_root = options.artifact_root })
 
   if #result_set.cases ~= #options.plan.cases then fail("result set case count differs from plan") end
-  if #manifest.entries ~= #result_set.cases then
+  if options.plan.execution_mode == "structured-api-cli" and #manifest.entries ~= #result_set.cases then
     fail("structured CLI/HTTP publication requires exactly one manifest entry per case")
   end
   local entries = {}

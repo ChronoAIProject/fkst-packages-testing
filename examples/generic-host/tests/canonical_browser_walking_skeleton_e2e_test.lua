@@ -43,7 +43,8 @@ return {
       t.eq(execution_root, context.artifact_root)
       t.eq(context.request.structured_execution.structured_plan_ref, context.artifact_root .. "/structured-plan.json")
       t.eq(context.request.structured_execution.grant_ref, context.artifact_root .. "/browser-grant.json")
-      local plan_path = context.request.structured_execution.structured_plan_ref
+      local reviewed_plan_path = context.request.structured_execution.structured_plan_ref
+      local plan_path = execution_root .. "/test-plan.json"
       local result_set_path = execution_root .. "/case-result-set.json"
       local compatibility_path = execution_root .. "/case-results.json"
       local manifest_path = execution_root .. "/evidence-manifest.json"

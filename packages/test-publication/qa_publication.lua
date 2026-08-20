@@ -617,7 +617,8 @@ local function reconcile(plan, validated_results, request, repository)
     classifications[result.case_id] = result.classification
     evidence_refs[result.case_id] = result.evidence_ref
     counts.executed = counts.executed + 1
-    counts[result.status] = counts[result.status] + 1
+    local bucket = result.status == "lost" and "error" or result.status
+    counts[bucket] = counts[bucket] + 1
   end
   return counts, classifications, evidence_refs
 end

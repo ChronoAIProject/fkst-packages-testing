@@ -1,5 +1,7 @@
 local defect_publication = require("defect_publication")
+local manifest_contract = require("contract.testing_evidence_manifest")
 local results_compat = require("contract.testing_results_compat")
+local structured_contract = require("contract.structured_execution")
 local t = fkst.test
 
 local commit_sha = string.rep("1", 40)
@@ -289,6 +291,53 @@ return {
 
     local publication = defect_publication.prepare(prepared.defect_request, ports)
     t.eq(#publication.issue_requests, 1)
+  end,
+
+  test_canonical_browser_alias_mismatch_rejects_before_outputs = function()
+    local value = canonical_request()
+    value.publication.job = "ai-browser-control"
+    value.publication.execution_path = value.publication.artifact_root .. "/browser-agent-execution.json"
+    local ports = runtime({ canonical = true, mutate = function(artifacts)
+      local plan = artifacts[value.publication.test_plan_path].value
+      plan.execution_mode = "agentic-browser"
+      plan.cases = { {
+        case_id="version",kind="browser",goal="Authenticate the existing user.",
+        success_conditions={"All deterministic login signals are verified."},completion_assertions={
+          {assertion_id="callback-observed",type="browser-callback-observed",required=true,completion_field="callback_observed"},
+          {assertion_id="process-exit-zero",type="browser-process-exit-zero",required=true,completion_field="process_exit_zero"},
+          {assertion_id="whoami-succeeded",type="browser-whoami-succeeded",required=true,completion_field="whoami_succeeded"},
+          {assertion_id="status-authenticated",type="browser-status-authenticated",required=true,completion_field="status_authenticated"},
+        },
+      } }
+      local result_set = artifacts[value.case_result_set_ref].value
+      result_set.cases = { result_set.cases[1] }
+      local case = result_set.cases[1]
+      case.execution_mode = "browser"
+      local template = structured_contract.copy(case.assertions[1])
+      case.assertions = {}
+      for index, authority in ipairs(plan.cases[1].completion_assertions) do
+        local assertion = structured_contract.copy(template)
+        assertion.assertion_id = authority.assertion_id; assertion.type = authority.type
+        assertion.required = true; assertion.status = index == 1 and "failed" or "skipped"
+        assertion.classification = index == 1 and "assertion_failure" or "skipped"
+        case.assertions[index] = assertion
+      end
+      local manifest = artifacts[value.evidence_manifest_ref].value
+      manifest.entries = { manifest.entries[1] }; manifest.entries[1].assertion_id = nil
+      manifest.canonical_sha256 = manifest_contract.sha256(manifest, portable_sha256, {
+        artifact_root=value.publication.artifact_root,
+      })
+      result_set.evidence_manifest_sha256 = manifest.canonical_sha256
+      local alias = structured_contract.copy(result_set)
+      alias.set_id = "foreign-browser-alias"
+      artifacts[value.case_results_ref].value = alias
+    end })
+    local ok, failure = pcall(defect_publication.prepare, value, ports)
+    t.eq(ok, false)
+    if tostring(failure):find("canonical browser result alias differs", 1, true) == nil then
+      error(tostring(failure))
+    end
+    t.eq(ports.write_count(), 0); t.eq(ports.save_count(), 0)
   end,
 
   test_canonical_request_bindings_reject_before_writes = function()

@@ -110,7 +110,7 @@ end
 
 local function summary(request, outcome, replayed, artifacts)
   local status = outcome.status == "passed" and "passed"
-    or (outcome.status == "failed" or outcome.status == "lost") and "failed" or "blocked"
+    or outcome.status == "failed" and "failed" or "blocked"
   local passed = status == "passed" and 1 or 0
   local failed = status == "failed" and 1 or 0
   local errors = status == "blocked" and 1 or 0
@@ -177,10 +177,9 @@ local function effect_journal(request, claim, turn, action, observation, ports)
 end
 
 local function repository_result(request, ports)
-  local source = json_codec.encode(request.repository)
-  local source_sha256 = ports.sha256(source)
+  local source_sha256 = ports.sha256(request.repository.url .. "\n" .. request.repository.commit_sha)
   return {
-    id = "repository-" .. source_sha256:sub(1, 32),
+    id = request.repository.commit_sha,
     source_ref = {
       kind = results_contract.repository_source_kinds.git,
       ref = request.repository.url .. "@" .. request.repository.commit_sha,
@@ -189,7 +188,7 @@ local function repository_result(request, ports)
   }
 end
 
-local function assertion_authority(request, browser_case)
+local function assertion_authority(request, browser_case, plan_ref)
   local assertions = {}
   for _, assertion in ipairs(browser_case.completion_assertions) do
     table.insert(assertions, {
@@ -198,7 +197,7 @@ local function assertion_authority(request, browser_case)
     })
   end
   return {
-    plan_ref = { kind = "artifact", ref = request.reviewed_plan_ref },
+    plan_ref = plan_ref or { kind = "artifact", ref = request.reviewed_plan_ref },
     plan_sha256 = request.reviewed_plan_sha256,
     reviewed_case_id = browser_case.case_id,
     assertions = assertions,
@@ -364,7 +363,8 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
   local persisted_manifest = ports.load_artifact(manifest_path)
   local persisted_receipt = ports.load_artifact(receipt_path)
   if persisted_result ~= nil and persisted_manifest ~= nil and persisted_receipt ~= nil then
-    local authority = assertion_authority(request, browser_case)
+    local authority = assertion_authority(request, browser_case,
+      { kind = "artifact", ref = request.artifact_root .. "/test-plan.json" })
     browser_contract.validate_receipt(persisted_receipt.value, grant_artifact.value)
     results_contract.validate_case_result_set(
       persisted_result.value, { authority }, persisted_manifest.value, ports.sha256)
@@ -476,7 +476,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
   optional_artifact_evidence(request, browser_case, raw_observations, entries, created_at, ports)
   local observation_ids = {}
   for _, observation in ipairs(observations) do table.insert(observation_ids, observation.observation_id) end
-  local authority = assertion_authority(request, browser_case)
+  local authority = assertion_authority(request, browser_case, { kind = "artifact", ref = plan_path })
   local assertions = assertion_results(browser_case, completion, normalized, observation_ids, receipt_evidence_ref)
   local repository = repository_result(request, ports)
   local completed_monotonic = ports.monotonic_seconds()
@@ -528,7 +528,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
   end
   local result_set = {
     schema = results_contract.schemas.case_result_set,
-    set_id = run_id .. "-browser-results",
+    set_id = run_id,
     run_id = run_id,
     plan_ref = copy(authority.plan_ref),
     plan_sha256 = request.reviewed_plan_sha256,

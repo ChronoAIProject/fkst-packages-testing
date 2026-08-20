@@ -780,7 +780,11 @@ function Context:_publication_runtime()
       end
       context.publications[id] = copy(value)
       context.publication_count = context.publication_count + 1
-      if context.publication_ack_loss == true and context.publication_ack_lost ~= true then
+      if request.stage == "aggregate-report" then
+        context.aggregate_publication_count = context.aggregate_publication_count + 1
+      end
+      if context.publication_ack_loss == true and request.stage == "aggregate-report"
+        and context.publication_ack_lost ~= true then
         context.publication_ack_lost = true
         error("canonical publication acknowledgement lost")
       end
@@ -955,7 +959,8 @@ end
 function M.new(options)
   options = options or {}
   local inventory = options.scenario == "downstream-inventory"
-  local browser = options.scenario == "canonical-browser"
+  local browser = type(options.scenario) == "string"
+    and options.scenario:sub(1, #"canonical-browser") == "canonical-browser"
   local port = reserve_port()
   local cdp_port = reserve_port()
   local run_prefix = inventory and "inventory-initial-state-"
@@ -1397,7 +1402,7 @@ function M.new(options)
       profile_ref = profile_ref,
       approval_ref = approval_ref,
       validation_receipt_ref = validation_ref,
-      operation_state_ref = ref(artifact_root .. "/environment/operation-state.json"),
+      operation_state_ref = ref(artifact_root .. (browser and "/operation-state.json" or "/environment/operation-state.json")),
       artifact_root = browser and artifact_root or artifact_root .. "/environment",
       base_url = base_url,
       runtime_ports = { { name = "application", port = port } },
@@ -1503,6 +1508,7 @@ function M.new(options)
     target_effects = {},
     publications = {},
     publication_count = 0,
+    aggregate_publication_count = 0,
     execution_claims = 0,
     preauthorization_claims = 0,
     terminal_records = 0,

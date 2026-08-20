@@ -92,6 +92,7 @@ function M.run(context, project_root, options)
   local browser_controller = runner_modules("ai_browser_control")
   local artifacts = artifact_modules("core")
   local publication = publication_modules("qa_publication")
+  local defect_publication = publication_modules("defect_publication")
 
   local function prepared(label, actions)
     if options.stop_at ~= label then return nil end
@@ -167,8 +168,25 @@ function M.run(context, project_root, options)
     return workflow.handle_publication_receipt(receipt, context.request, context.workflow_runtime)
   end
 
+  local function complete_publication(actions)
+    local final_report = publication.prepare_final_report(actions[1].payload, context.publication_runtime)
+    local aggregate_receipt = final_report.receipt
+    if aggregate_receipt == nil then
+      aggregate_receipt = publication.acknowledge_comment(
+        checkpoint_written(final_report, next_comment_id()), context.publication_runtime)
+    end
+    actions = workflow.handle_publication_receipt(
+      aggregate_receipt, context.request, context.workflow_runtime)
+    adapter.handle_terminal(actions[1].payload, context.generic_host_runtime)
+    return {
+      workflow = workflow, planning = planning, structured = structured,
+      publication = publication, terminal_action = copy(actions[1]),
+    }
+  end
+
   local actions
-  if context.workflow_runtime.load_state(context.request.state_ref) == nil then
+  local recovering = context.workflow_runtime.load_state(context.request.state_ref) ~= nil
+  if not recovering then
     local intake = adapter.qa_run_event(context.request)
     if intake.queue ~= "workflow-qa.qa_run_request" then
       error("canonical lifecycle Local QA intake did not target workflow-qa.qa_run_request")
@@ -206,9 +224,24 @@ function M.run(context, project_root, options)
     stopped = prepared("module-pending", actions)
     if stopped ~= nil then return stopped end
 
-    local module_request = module_pipeline.module_loop_request(actions[1].payload)
-    local runner_action = module_loop.start(module_request, context.module_loop_runtime)
+    local module_start = module_pipeline.start_module(actions[1].payload, {
+      read = function(path)
+        local artifact = context.store:load(path)
+        if artifact == nil then error("canonical lifecycle design artifact is unavailable: " .. path) end
+        return artifact.raw
+      end,
+      write = function(path, body) return context.store:write_raw(path, body) end,
+    })
+    if module_start.kind ~= "module-loop-request" then
+      error("canonical lifecycle module design did not reach reviewed closure")
+    end
+    local runner_action = module_loop.start(module_start.request, context.module_loop_runtime)
     local runner_request = copy(runner_action[1].payload)
+    runner_request.artifact_reader = function(path)
+      local artifact = context.store:load(path)
+      if artifact == nil then error("canonical lifecycle runner artifact is unavailable: " .. path) end
+      return artifact.raw
+    end
     runner_request.artifact_writer = function(path, body)
       return context.store:write_raw(path, body)
     end
@@ -247,6 +280,24 @@ function M.run(context, project_root, options)
         publication = publication, no_op = true,
       }
     end
+    if actions[1].queue == "test-publication.qa_checkpoint_request" then
+      actions = release_checkpoint(actions[1].payload.stage, actions)
+    end
+    if actions[1].queue == "environment-factory.environment_finalize" then
+      local cleanup_result = environment.finalize(actions[1].payload, context.environment_runtime)
+      actions = workflow.handle_cleanup_result(cleanup_result, context.request, context.workflow_runtime)
+      if actions[1].queue == "test-publication.qa_checkpoint_request" then
+        actions = release_checkpoint(actions[1].payload.stage, actions)
+      end
+    end
+    if actions[1].queue == "test-publication.qa_finalize_request" then
+      return complete_publication(actions)
+    end
+    if actions[1].queue == "workflow-qa.workflow_qa_terminal_request" then
+      adapter.handle_terminal(actions[1].payload, context.generic_host_runtime)
+      return { workflow=workflow,planning=planning,structured=structured,
+        publication=publication,terminal_action=copy(actions[1]) }
+    end
   end
 
   if options.stop_after_plan == true then
@@ -277,7 +328,8 @@ function M.run(context, project_root, options)
   if actions[1].queue == "testing-runner.ai_browser_control_request" then
     context.last_browser_execution_request = copy(actions[1].payload)
     execution_result = browser_controller.result_payload(actions[1].payload, context.ai_browser_runtime)
-    if execution_result.status == "blocked" then
+    if execution_result.status == "blocked"
+      and not tostring(execution_result.stderr_excerpt or ""):find("execution-lost-between-action-and-assertion", 1, true) then
       error("canonical lifecycle browser execution blocked: " .. tostring(execution_result.stderr_excerpt))
     end
   else
@@ -310,7 +362,23 @@ function M.run(context, project_root, options)
   actions = workflow.handle_artifact_summary(summary, context.request, context.workflow_runtime)
   stopped = prepared("execution-batch-checkpoint", actions)
   if stopped ~= nil then return stopped end
-  actions = release_checkpoint("execution-batch", actions)
+  if actions[1].queue == "test-publication.qa_checkpoint_request" then
+    actions = release_checkpoint("execution-batch", actions)
+  end
+  if actions[1].queue == "test-publication.defect_preparation_request" then
+    local prepared_defects = defect_publication.prepare_defects(
+      actions[1].payload, context.publication_runtime)
+    local published_defects = defect_publication.prepare(
+      prepared_defects.defect_request, context.publication_runtime)
+    if published_defects.receipt == nil then
+      error("canonical lifecycle product-defect publication requires Host acknowledgement")
+    end
+    actions = workflow.handle_defect_terminal(
+      defect_publication.terminal(published_defects.receipt), context.request, context.workflow_runtime)
+    if actions[1].queue == "test-publication.qa_checkpoint_request" then
+      actions = release_checkpoint(actions[1].payload.stage, actions)
+    end
+  end
   stopped = prepared("cleanup-pending", actions)
   if stopped ~= nil then return stopped end
 
