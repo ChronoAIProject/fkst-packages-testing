@@ -1,0 +1,23 @@
+kind = "library"
+name = "testing_package_executor"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract"]
+
+[dependency_constraints]
+allowed_lib_deps = ["contract"]
+
+[library]
+name = "testing_package_executor"
+stable_id = "fkst.library.testing_package_executor"
+version = "workspace"
+
+[exports]
+exact = true
+public = ["testing_package_executor.executor"]
+
+[visibility]
+public = false
