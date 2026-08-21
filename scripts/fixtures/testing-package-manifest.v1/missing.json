@@ -1,0 +1,5 @@
+{
+  "case": "missing",
+  "schema": "testing-package-manifest.v1",
+  "mutation": "remove package_content_sha256"
+}

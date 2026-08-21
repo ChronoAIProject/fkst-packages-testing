@@ -1,0 +1,5 @@
+{
+  "case": "unsupported-major",
+  "schema": "testing-package-manifest.v1",
+  "mutation": "request testing-runner.v2"
+}

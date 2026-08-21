@@ -1,0 +1,5 @@
+{
+  "case": "unknown-entrypoint",
+  "schema": "testing-package-manifest.v1",
+  "mutation": "replace entrypoint with testing-runner.unknown"
+}

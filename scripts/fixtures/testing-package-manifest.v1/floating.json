@@ -1,0 +1,5 @@
+{
+  "case": "floating",
+  "schema": "testing-package-manifest.v1",
+  "mutation": "replace source commit with main"
+}
