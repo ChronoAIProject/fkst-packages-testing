@@ -5,10 +5,10 @@ name = "testing_runtime"
 root = "."
 
 [lib_deps]
-libraries = ["contract"]
+libraries = ["contract", "testing_package_executor"]
 
 [dependency_constraints]
-allowed_lib_deps = ["contract"]
+allowed_lib_deps = ["contract", "testing_package_executor"]
 
 [library]
 name = "testing_runtime"
