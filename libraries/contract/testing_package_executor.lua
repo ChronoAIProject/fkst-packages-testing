@@ -95,9 +95,7 @@ local function dense_list(value, field, limit, nonempty)
   if type(value) ~= "table" then fail("malformed-list", field .. " must be a list") end
   local count, highest = 0, 0
   for key in pairs(value) do
-    if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then
-      fail("malformed-list", field .. " must be dense")
-    end
+    if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then fail("malformed-list", field .. " must be dense") end
     count = count + 1
     highest = math.max(highest, key)
   end

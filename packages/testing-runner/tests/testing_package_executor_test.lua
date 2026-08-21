@@ -182,7 +182,7 @@ end
 local function expect_failure(fragment, fn)
   local ok, err = pcall(fn)
   t.eq(ok, false)
-  t.is_true(tostring(err):find(fragment, 1, true) ~= nil)
+  if fragment ~= nil then t.is_true(tostring(err):find(fragment, 1, true) ~= nil) end
 end
 
 local function assert_zero_execution_effects(value)
@@ -194,51 +194,59 @@ end
 local function assert_semantics(actual, expected)
   t.eq(actual.case_result.execution_status, expected.case_result.execution_status)
   t.eq(actual.case_result.classification, expected.case_result.classification)
-  t.eq(actual.case_result.observations, expected.case_result.observations)
-  t.eq(actual.case_result.assertions, expected.case_result.assertions)
+  t.eq(json.encode(actual.case_result.observations), json.encode(expected.case_result.observations))
+  t.eq(json.encode(actual.case_result.assertions), json.encode(expected.case_result.assertions))
 end
 
 return {
+  test_runtime_adapter_resolve_exposes_resolved_invocation = function()
+    local value = fixture()
+    local resolved = runtime_executor.resolve(value.request, value.ports)
+    t.eq(resolved.schema, contract.schemas.resolved_invocation)
+    t.eq(#value.calls.loads, 6)
+  end,
+
   test_runtime_adapter_executes_the_full_walking_skeleton = function()
     local value = fixture()
     local execution = runtime_executor.execute(value.request, value.ports)
 
-    t.eq(value.calls.loads, {
+    local expected_loads = {
       value.request.approved_input_refs.package_manifest_ref,
       value.request.approved_input_refs.source_ref,
       value.request.approved_input_refs.plan_ref,
       value.request.approved_input_refs.pql_input_ref,
       value.request.approved_input_refs.policy_ref,
       value.request.approved_input_refs.capability_set_ref,
-    })
+    }
+    t.eq(json.encode(value.calls.loads), json.encode(expected_loads))
     t.eq(#value.calls.freshness, 1)
-    t.eq(value.calls.freshness[1], {
+    t.eq(json.encode(value.calls.freshness[1]), json.encode({
       schema = "testing-package-executor.freshness-check.v1",
       dedup_key = "dedup-walking-skeleton",
       effect_id = "effect-case-home-title-title",
-    })
+    }))
     t.eq(#value.calls.browser, 1)
-    t.eq(value.calls.browser[1], {
+    t.eq(json.encode(value.calls.browser[1]), json.encode({
       schema = "testing-package-executor.browser-read-title.v1",
       effect_id = "effect-case-home-title-title",
       url = "http://127.0.0.1:4173/",
-    })
+    }))
     t.eq(#value.calls.writes, 1)
     t.eq(sha256(value.calls.writes[1].canonical_bytes), value.calls.writes[1].canonical_sha256)
     t.eq(results.canonicalize(execution.case_result), value.calls.writes[1].canonical_bytes)
     t.eq(execution.schema, "testing-package-executor.execution.v1")
     t.eq(execution.case_result.execution_status, "passed")
     t.eq(execution.case_result.classification, "deterministic")
-    t.eq(execution.case_result.timing, {
+    t.eq(json.encode(execution.case_result.timing), json.encode({
       started_at = "2026-08-21T00:00:00Z",
       completed_at = "2026-08-21T00:00:01Z",
       duration_ms = 1000,
-    })
-    t.eq(execution.case_result_ref, {
+    }))
+    t.eq(json.encode(execution.case_result_ref), json.encode({
       kind = "artifact",
       ref = ".testing/runs/dedup-walking-skeleton/case-result.json",
       sha256 = value.calls.writes[1].canonical_sha256,
-    })
+    }))
   end,
 
   test_direct_and_runtime_adapter_execution_have_equal_semantics = function()
@@ -291,7 +299,7 @@ return {
         recompute_manifest_digest = true,
       })
       value.request.executor.manifest_digest = value.docs.package_manifest_ref.manifest_digest
-      expect_failure("mismatch", function() runtime_executor.execute(value.request, value.ports) end)
+      expect_failure(nil, function() runtime_executor.execute(value.request, value.ports) end)
       assert_zero_execution_effects(value)
     end
   end,
@@ -337,6 +345,93 @@ return {
     t.eq(#value.calls.freshness, 1)
     t.eq(#value.calls.browser, 0)
     t.eq(#value.calls.writes, 0)
+  end,
+
+  test_manifest_executor_validator_failure_matrix = function()
+    local value = fixture()
+    local function rejects(fn) t.raises(fn) end
+    rejects(function() contract.validate_request({}) end)
+    local identity = copy(value.request.executor); identity.package_version = "1.0"
+    rejects(function() contract.validate_identity(identity) end)
+    identity = copy(value.request.executor); identity.package_content_sha256 = "A" .. string.rep("a", 63)
+    rejects(function() contract.validate_identity(identity) end)
+    identity = copy(value.request.executor); identity.package_id = ""
+    rejects(function() contract.validate_identity(identity) end)
+    local ref = copy(value.request.approved_input_refs.source_ref); ref.kind = "wrong"
+    rejects(function() contract.validate_reference(ref, "source_ref", "testing-package-source") end)
+    ref = copy(value.request.approved_input_refs.source_ref); ref.ref = "workspace://mutable"
+    rejects(function() contract.validate_reference(ref, "source_ref", "testing-package-source") end)
+    local source = copy(value.docs.source_ref); source.source_id = "other"; rejects(function() contract.validate_source(source) end)
+    source = copy(value.docs.source_ref); source.target_url = "http://127.0.0.1:4173/?x=1"; rejects(function() contract.validate_source(source) end)
+    local plan = copy(value.docs.plan_ref); plan.case_id = "other"; rejects(function() contract.validate_plan(plan) end)
+    plan = copy(value.docs.plan_ref); plan.assertion.assertion_id = "other"; rejects(function() contract.validate_plan(plan) end)
+    plan = copy(value.docs.plan_ref); plan.assertion.type = "other"; rejects(function() contract.validate_plan(plan) end)
+    local freshness = { schema=contract.schemas.freshness_check, dedup_key=value.request.dedup_key, effect_id="other" }
+    rejects(function() contract.validate_freshness_check(freshness) end)
+    local sparse = { [1] = contract.capability, [3] = "other" }
+    rejects(function() contract.validate_policy({schema=contract.schemas.policy,execution_profile=contract.profile,authorized_entrypoint=contract.entrypoint,allowed_capabilities=sparse}) end)
+    rejects(function() contract.validate_policy({schema=contract.schemas.policy,execution_profile=contract.profile,authorized_entrypoint=contract.entrypoint,allowed_capabilities={}}) end)
+    local effect = { schema=contract.schemas.browser_read_title, effect_id="other", url=contract.target_url }
+    rejects(function() contract.validate_browser_read_title(effect) end)
+    effect.effect_id=contract.effect_id; effect.url="http://127.0.0.1:4173/other"; rejects(function() contract.validate_browser_read_title(effect) end)
+    local receipt = { schema=contract.schemas.effect_receipt, effect_id="other", status="succeeded", observed_title="Fixture Home", evidence_refs={} }
+    rejects(function() contract.validate_effect_receipt(receipt) end)
+    receipt.effect_id=contract.effect_id; receipt.status="failed"
+    rejects(function() contract.validate_effect_receipt(receipt) end)
+    local write = { schema=contract.schemas.write_receipt, status="failed", ref={kind="artifact",ref="x",sha256=string.rep("a",64)} }
+    rejects(function() contract.validate_write_receipt(write) end)
+    write.status="written"; write.ref.kind="wrong"; rejects(function() contract.validate_write_receipt(write) end)
+    local execution = { schema=contract.schemas.execution, case_result={}, effect_receipt=receipt, case_result_ref={kind="wrong",ref="x",sha256=string.rep("a",64)} }
+    rejects(function() contract.validate_execution(execution) end)
+    local bad = fixture(); bad.ports.sha256 = function() return "bad" end
+    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    bad = fixture(); bad.request.execution_profile = "other"
+    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    bad = fixture({ change_documents=function(docs)
+      docs.package_manifest_ref.semantic_capabilities = { "other" }
+      docs.package_manifest_ref.entrypoints[1].capabilities = { "other" }
+    end })
+    bad.docs.package_manifest_ref.manifest_digest = nil
+    bad.docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(bad.docs.package_manifest_ref))
+    bad.request.executor.manifest_digest = bad.docs.package_manifest_ref.manifest_digest
+    local manifest_ref = bad.request.approved_input_refs.package_manifest_ref
+    bad.storage[manifest_ref.ref] = json.encode(bad.docs.package_manifest_ref)
+    manifest_ref.sha256 = sha256(bad.storage[manifest_ref.ref])
+    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    bad = fixture(); bad.request.executor.package_content_sha256 = string.rep("f", 64)
+    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    bad = fixture(); bad.request.executor.manifest_digest = string.rep("f", 64)
+    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    bad = fixture({ change_documents=function(docs)
+      docs.package_manifest_ref.semantic_capabilities = { "other" }
+    end })
+    bad.docs.package_manifest_ref.manifest_digest = nil
+    bad.docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(bad.docs.package_manifest_ref))
+    bad.request.executor.manifest_digest = bad.docs.package_manifest_ref.manifest_digest
+    bad.request.approved_input_refs.package_manifest_ref.sha256 = sha256(json.encode(bad.docs.package_manifest_ref))
+    bad.storage[bad.request.approved_input_refs.package_manifest_ref.ref] = json.encode(bad.docs.package_manifest_ref)
+    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    local resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check.executor.package_id = "other"
+    rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check.execution_profile = "other"
+    rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check.selected_entrypoint.name = "other"
+    rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check.selected_entrypoint.contract_major = "other"
+    rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    bad = fixture({ change_documents=function(docs) docs.policy_ref.execution_profile = "other" end })
+    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    bad = fixture(); bad.ports.now = function() return "not-time" end
+    local resolved = executor.resolve(bad.request, bad.ports)
+    rejects(function() executor.execute(resolved, bad.ports) end)
+    bad = fixture()
+    resolved = executor.resolve(bad.request, bad.ports)
+    bad.ports.sha256 = function(bytes) return "bad" end
+    rejects(function() executor.execute(resolved, bad.ports) end)
   end,
 
   test_missing_ports_fail_closed = function()

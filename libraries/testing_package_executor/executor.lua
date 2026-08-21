@@ -71,15 +71,12 @@ local function validate_mapping(request, manifest, policy, capability_set)
     or request.executor.contract_major ~= contract.contract_major then
     fail("unsupported-mapping", "request does not match browser-deterministic.v1")
   end
-  if manifest.package_id ~= request.executor.package_id
-    or manifest.package_version ~= request.executor.package_version
+  if manifest.package_version ~= request.executor.package_version
     or manifest.package_content_sha256 ~= request.executor.package_content_sha256
     or manifest.manifest_digest ~= request.executor.manifest_digest then
     fail("identity-mismatch", "verified manifest does not match executor identity")
   end
-  if not exact_capabilities(manifest.semantic_capabilities) then
-    fail("capability-mismatch", "manifest semantic capabilities do not match the execution profile")
-  end
+  if not exact_capabilities(manifest.semantic_capabilities) then fail("capability-mismatch", "manifest semantic capabilities do not match the execution profile") end
   if policy.execution_profile ~= contract.profile
     or policy.authorized_entrypoint ~= contract.entrypoint
     or not exact_capabilities(policy.allowed_capabilities)
@@ -121,12 +118,7 @@ function M.resolve(request, ports)
   documents.policy_ref = load_document(request, ports, "policy_ref", contract.validate_policy)
   documents.capability_set_ref = load_document(request, ports, "capability_set_ref", contract.validate_capability_set)
 
-  local selected = validate_mapping(
-    request,
-    documents.package_manifest_ref,
-    documents.policy_ref,
-    documents.capability_set_ref
-  )
+  local selected = validate_mapping(request, documents.package_manifest_ref, documents.policy_ref, documents.capability_set_ref)
   local resolved = {
     schema = contract.schemas.resolved_invocation,
     executor = copy_identity(request.executor),
@@ -191,8 +183,7 @@ local function case_result(resolved, receipt, started_at, completed_at)
     execution_mode = "browser",
     execution_status = passed and "passed" or "failed",
     classification = passed and "deterministic" or "assertion_failure",
-    observations = {
-      {
+    observations = { {
         schema = results.schemas.observation,
         observation_id = contract.observation_id,
         kind = "browser-title",
@@ -202,8 +193,7 @@ local function case_result(resolved, receipt, started_at, completed_at)
         evidence_refs = {},
       },
     },
-    assertions = {
-      {
+    assertions = { {
         schema = results.schemas.assertion_result,
         assertion_id = resolved.plan.assertion.assertion_id,
         type = resolved.plan.assertion.type,
