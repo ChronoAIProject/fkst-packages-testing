@@ -1,6 +1,6 @@
 local manifest = require("contract.testing_package_manifest")
 local t = fkst.test
-local sha256 = require("sha256_helpers")
+local sha256 = require("tests.fixtures.sha256_helpers")
 
 local function digest(char) return string.rep(char, 64) end
 
@@ -45,8 +45,14 @@ return {
     }), value)
   end,
 
-  test_rejects_missing_content_digest = function()
+  test_rejects_missing_malformed_and_non_lowercase_digests = function()
     local value = valid(); value.package_content_sha256 = nil
+    t.raises(function() manifest.validate(value) end)
+    value = valid(); value.package_id = ""
+    t.raises(function() manifest.validate(value) end)
+    value = valid(); value.package_content_sha256 = "not-a-digest"
+    t.raises(function() manifest.validate(value) end)
+    value = valid(); value.package_content_sha256 = string.rep("A", 64)
     t.raises(function() manifest.validate(value) end)
   end,
 
