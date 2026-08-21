@@ -1,0 +1,86 @@
+#!/usr/bin/env python3
+from __future__ import annotations
+
+import hashlib
+import json
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+import generate_testing_package_manifest as generator
+
+
+ROOT = Path(__file__).resolve().parents[1]
+FIXTURES = ROOT / "scripts" / "fixtures" / "testing-package-manifest.v1"
+
+
+def base_arguments(root: Path, output: Path) -> list[str]:
+    return [
+        sys.executable,
+        str(ROOT / "scripts" / "generate_testing_package_manifest.py"),
+        "--package-root", str(root), "--output", str(output),
+        "--package-id", "testing-runner", "--package-version", "1.0.0",
+        "--source-commit", "0123456789abcdef0123456789abcdef01234567",
+        "--entrypoint", "testing-runner.run", "--entrypoint-contract-major", "testing-runner.v1",
+        "--contract-major", "testing-runner.v1",
+        "--canonicalization-profile", generator.CANONICALIZATION, "--capability", "semantic-runner",
+        "--platform", "linux-amd64", "--lua-runtime", "5.4.0",
+        "--fkst-packages-commit", "abcdef0123456789abcdef0123456789abcdef01",
+        "--fkst-substrate-commit", "fedcba9876543210fedcba9876543210fedcba98",
+        "--producer", "fkst-packages-testing", "--producer-version", "1.0.0",
+        "--toolchain", "python-3.11", "--created-at", "2026-08-21T00:00:00Z",
+        "--build-id", "fixture-build",
+    ]
+
+
+def run_generator(root: Path, output: Path) -> dict[str, object]:
+    subprocess.run(base_arguments(root, output), check=True)
+    return json.loads(output.read_text())
+
+
+def assert_rejected(arguments: list[str], expected: str) -> None:
+    result = subprocess.run(arguments, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+    assert result.returncode != 0, expected
+    assert expected in result.stderr, (expected, result.stderr)
+
+
+def main() -> int:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory) / "package"
+        root.mkdir()
+        (root / "core.lua").write_text("return 'stable'\n")
+        output = root / generator.MANIFEST_NAME
+        first = run_generator(root, output)
+        replay = run_generator(root, output)
+        assert first == replay
+        original_digest = first["package_content_sha256"]
+        (root / "core.lua").write_text("return 'changed'\n")
+        changed = run_generator(root, output)
+        assert changed["package_content_sha256"] != original_digest
+
+        fields = dict(first)
+        fields["manifest_digest"] = "0" * 64
+        assert hashlib.sha256(generator.canonical({key: value for key, value in fields.items() if key != "manifest_digest"})).hexdigest() != fields["manifest_digest"]
+
+        floating = base_arguments(root, output)
+        floating[floating.index("--source-commit") + 1] = "main"
+        assert_rejected(floating, "source_commit must be exact")
+        unknown = base_arguments(root, output)
+        unknown[unknown.index("--entrypoint") + 1] = "testing-runner.unknown"
+        assert_rejected(unknown, "unknown entrypoint")
+        unsupported = base_arguments(root, output)
+        unsupported[unsupported.index("--entrypoint-contract-major") + 1] = "testing-runner.v2"
+        assert_rejected(unsupported, "entrypoint contract major must be supported")
+
+    valid_fixture = json.loads((FIXTURES / "valid.json").read_text())
+    assert valid_fixture["schema"] == generator.SCHEMA
+    for name in ("missing", "floating", "mismatched", "unsupported-major", "unknown-entrypoint"):
+        fixture = json.loads((FIXTURES / f"{name}.json").read_text())
+        assert fixture["case"] == name
+    print("testing-package-manifest: PASS")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

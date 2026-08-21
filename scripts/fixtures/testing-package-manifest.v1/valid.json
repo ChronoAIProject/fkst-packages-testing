@@ -1,0 +1,5 @@
+{
+  "case": "valid",
+  "schema": "testing-package-manifest.v1",
+  "description": "A deterministic manifest with exact dependency identities."
+}
