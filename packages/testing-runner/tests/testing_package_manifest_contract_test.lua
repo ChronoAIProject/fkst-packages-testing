@@ -138,6 +138,32 @@ return {
     t.raises(function() canonical_json.encode(cyclic) end)
   end,
 
+  test_canonicalization_validates_utf8_boundary_sequences = function()
+    local valid = table.concat({
+      string.char(0xe0, 0xa0, 0x80),
+      string.char(0xed, 0x9f, 0xbf),
+      string.char(0xf0, 0x90, 0x80, 0x80),
+      string.char(0xf1, 0x80, 0x80, 0x80),
+      string.char(0xf4, 0x8f, 0xbf, 0xbf),
+    })
+    t.eq(canonical_json.encode(valid), '"' .. valid .. '"')
+    for _, invalid in ipairs({
+      string.char(0xe0, 0x9f, 0x80), string.char(0xe0, 0xa0),
+      string.char(0xed, 0xa0, 0x80), string.char(0xed, 0x80),
+      string.char(0xf0, 0x8f, 0x80, 0x80), string.char(0xf0, 0x90, 0x80),
+      string.char(0xf1, 0x80, 0x80), string.char(0xf4, 0x90, 0x80, 0x80),
+      string.char(0xf4, 0x8f, 0x80),
+    }) do
+      t.raises(function() canonical_json.encode(invalid) end)
+    end
+  end,
+
+  test_canonicalization_rejects_invalid_container_tags_and_key_types = function()
+    t.raises(function() canonical_json.array("not-a-table") end)
+    t.raises(function() canonical_json.object(canonical_json.null) end)
+    t.raises(function() canonical_json.encode({ [true] = "invalid" }) end)
+  end,
+
   test_canonicalization_supports_null_and_explicit_empty_containers = function()
     t.eq(canonical_json.encode({ canonical_json.null }), "[null]")
     t.eq(canonical_json.encode({}), "[]")
