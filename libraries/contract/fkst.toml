@@ -18,7 +18,7 @@ version = "workspace"
 
 [exports]
 exact = true
-public = ["contract.browser_control", "contract.browser_readiness", "contract.convergence_identity", "contract.environment_factory", "contract.error_facts", "contract.payload", "contract.project_profile", "contract.source_ref", "contract.strings", "contract.structured_execution", "contract.testing", "contract.testing_design", "contract.testing_execution", "contract.testing_package_executor", "contract.testing_results", "contract.testing_results_compat", "contract.testing_evidence_manifest", "contract.testing_package_manifest", "contract.time", "contract.transition_version", "contract.workflow_qa"]
+public = ["contract.browser_control", "contract.browser_readiness", "contract.canonical_json", "contract.convergence_identity", "contract.environment_factory", "contract.error_facts", "contract.payload", "contract.project_profile", "contract.source_ref", "contract.strings", "contract.structured_execution", "contract.testing", "contract.testing_design", "contract.testing_execution", "contract.testing_package_executor", "contract.testing_results", "contract.testing_results_compat", "contract.testing_evidence_manifest", "contract.testing_package_manifest", "contract.time", "contract.transition_version", "contract.workflow_qa"]
 
 [visibility]
 public = true

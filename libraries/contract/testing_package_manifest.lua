@@ -1,4 +1,5 @@
 -- contract.testing_package_manifest: immutable release identity for testing packages.
+local canonical_json = require("contract.canonical_json")
 local M = {}
 
 M.schema = "testing-package-manifest.v1"
@@ -178,30 +179,7 @@ function M.validate(value, expected, sha256_fn)
 end
 
 function M.canonicalize(value)
-  local function encode(item)
-    local kind = type(item)
-    if kind == "nil" then return "null" end
-    if kind == "boolean" then return item and "true" or "false" end
-    if kind == "number" then return tostring(item) end
-    if kind == "string" then return string.format("%q", item) end
-    if kind ~= "table" then fail("canonicalization", "unsupported value type") end
-    local array, count = true, 0
-    for key in pairs(item) do
-      count = count + 1
-      if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then array = false end
-    end
-    local parts = {}
-    if array then
-      for index = 1, count do parts[index] = encode(item[index]) end
-      return "[" .. table.concat(parts, ",") .. "]"
-    end
-    local keys = {}
-    for key in pairs(item) do if type(key) ~= "string" then fail("canonicalization", "object key must be string") end; keys[#keys + 1] = key end
-    table.sort(keys)
-    for _, key in ipairs(keys) do parts[#parts + 1] = string.format("%q:%s", key, encode(item[key])) end
-    return "{" .. table.concat(parts, ",") .. "}"
-  end
-  return encode(value)
+  return canonical_json.encode(value)
 end
 
 return M
