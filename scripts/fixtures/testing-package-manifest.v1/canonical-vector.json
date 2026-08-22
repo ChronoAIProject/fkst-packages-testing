@@ -1,0 +1,17 @@
+{
+  "input": {
+    "array": ["first", "雪"],
+    "backslash": "C:\\tmp\\file",
+    "control": "\b\f\n\r\t\u0000\u001f",
+    "empty_array": [],
+    "empty_object": {},
+    "integer_max": 9007199254740991,
+    "integer_min": -9007199254740991,
+    "nested": {"quote": "\"", "β": "unicode"},
+    "unicode": "雪😀",
+    "": "bmp-private-use",
+    "😀": "supplementary"
+  },
+  "canonical": "{\"array\":[\"first\",\"雪\"],\"backslash\":\"C:\\\\tmp\\\\file\",\"control\":\"\\b\\f\\n\\r\\t\\u0000\\u001f\",\"empty_array\":[],\"empty_object\":{},\"integer_max\":9007199254740991,\"integer_min\":-9007199254740991,\"nested\":{\"quote\":\"\\\"\",\"β\":\"unicode\"},\"unicode\":\"雪😀\",\"\":\"bmp-private-use\",\"😀\":\"supplementary\"}",
+  "sha256": "2211744d7633cbdc2adbc647b1601e162b5269fba7800fa1c446e8d1a8cc9a87"
+}
