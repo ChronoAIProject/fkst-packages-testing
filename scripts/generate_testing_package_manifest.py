@@ -18,6 +18,8 @@ COMMIT = re.compile(r"^[0-9a-f]{40}$")
 SEMVER = re.compile(r"^[0-9]+\.[0-9]+\.[0-9]+$")
 ENTRYPOINTS = {"testing-runner.run", "testing-runner.supervise"}
 CONTRACT_MAJORS = {"testing-runner.v1"}
+MAX_INTEGER = 9007199254740991
+MIN_INTEGER = -MAX_INTEGER
 
 
 def exact(value: str, pattern: re.Pattern[str], field: str) -> str:
@@ -27,7 +29,44 @@ def exact(value: str, pattern: re.Pattern[str], field: str) -> str:
 
 
 def canonical(value: object) -> bytes:
-    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    active: set[int] = set()
+
+    def encode(item: object) -> str:
+        if item is None:
+            return "null"
+        if item is True:
+            return "true"
+        if item is False:
+            return "false"
+        if type(item) is int:
+            if item < MIN_INTEGER or item > MAX_INTEGER:
+                raise ValueError("numbers must be integers in the inclusive safe range")
+            return str(item)
+        if isinstance(item, str):
+            return json.dumps(item, ensure_ascii=False, separators=(",", ":"))
+        if not isinstance(item, (list, dict)):
+            raise ValueError(f"unsupported canonical JSON value type: {type(item).__name__}")
+
+        identity = id(item)
+        if identity in active:
+            raise ValueError("cyclic containers are not supported")
+        active.add(identity)
+        try:
+            if isinstance(item, list):
+                return "[" + ",".join(encode(value) for value in item) + "]"
+            if not all(isinstance(key, str) for key in item):
+                raise ValueError("object keys must be strings")
+            return "{" + ",".join(
+                f"{json.dumps(key, ensure_ascii=False, separators=(',', ':'))}:{encode(item[key])}"
+                for key in sorted(item)
+            ) + "}"
+        finally:
+            active.remove(identity)
+
+    try:
+        return encode(value).encode("utf-8")
+    except UnicodeEncodeError as error:
+        raise ValueError("strings and object keys must contain valid Unicode") from error
 
 
 def package_digest(root: Path, excluded: str) -> str:

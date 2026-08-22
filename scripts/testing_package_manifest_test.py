@@ -46,6 +46,35 @@ def assert_rejected(arguments: list[str], expected: str) -> None:
 
 
 def main() -> int:
+    vector = json.loads((FIXTURES / "canonical-vector.json").read_text(encoding="utf-8"))
+    canonical_bytes = generator.canonical(vector["input"])
+    assert canonical_bytes == vector["canonical"].encode("utf-8")
+    assert hashlib.sha256(canonical_bytes).hexdigest() == vector["sha256"]
+    manifest_vector = json.loads((FIXTURES / "manifest-vector.json").read_text(encoding="utf-8"))
+    assert hashlib.sha256(generator.canonical(manifest_vector["input"])).hexdigest() == manifest_vector["sha256"]
+
+    for invalid in (1.5, generator.MAX_INTEGER + 1, generator.MIN_INTEGER - 1, {1: "value"}):
+        try:
+            generator.canonical(invalid)
+        except ValueError:
+            pass
+        else:
+            raise AssertionError(f"canonicalization accepted invalid value: {invalid!r}")
+    cyclic: list[object] = []
+    cyclic.append(cyclic)
+    try:
+        generator.canonical(cyclic)
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("canonicalization accepted a cyclic container")
+    try:
+        generator.canonical("\ud800")
+    except ValueError:
+        pass
+    else:
+        raise AssertionError("canonicalization accepted an invalid Unicode scalar value")
+
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory) / "package"
         root.mkdir()

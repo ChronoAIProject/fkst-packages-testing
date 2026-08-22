@@ -1,4 +1,5 @@
 local manifest = require("contract.testing_package_manifest")
+local canonical_json = require("contract.canonical_json")
 local t = fkst.test
 local sha256 = require("tests.fixtures.sha256_helpers")
 
@@ -29,6 +30,12 @@ local function valid()
     creation_metadata = { created_at = "2026-08-21T00:00:00Z", build_id = "fixture-build" },
     manifest_digest = digest("e"),
   }
+end
+
+local function without_digest(value)
+  local copy = {}
+  for key, item in pairs(value) do if key ~= "manifest_digest" then copy[key] = item end end
+  return copy
 end
 
 return {
@@ -92,5 +99,49 @@ return {
     local reordered = valid()
     reordered.semantic_capabilities = { "semantic-runner" }
     t.eq(manifest.canonicalize(value), manifest.canonicalize(reordered))
+  end,
+
+  test_validation_matches_cross_language_manifest_digest = function()
+    local value = valid()
+    value.manifest_digest = "905948ed62d0fd3f13d5cf0f77dbfc85cba8376e1b97bdc1f836a3514f6dfc4f"
+    t.eq(sha256(manifest.canonicalize(without_digest(value))), value.manifest_digest)
+    t.eq(manifest.validate(value, nil, sha256), value)
+  end,
+
+  test_canonicalization_matches_cross_language_known_answer = function()
+    local value = {
+      array = { "first", "雪" },
+      backslash = "C:\\tmp\\file",
+      control = "\b\f\n\r\t\0\31",
+      empty_array = canonical_json.array({}),
+      empty_object = canonical_json.object({}),
+      integer_max = canonical_json.max_integer,
+      integer_min = canonical_json.min_integer,
+      nested = { quote = '"', ["β"] = "unicode" },
+      unicode = "雪😀",
+      [""] = "bmp-private-use",
+      ["😀"] = "supplementary",
+    }
+    local expected = '{"array":["first","雪"],"backslash":"C:\\\\tmp\\\\file","control":"\\b\\f\\n\\r\\t\\u0000\\u001f","empty_array":[],"empty_object":{},"integer_max":9007199254740991,"integer_min":-9007199254740991,"nested":{"quote":"\\\"","β":"unicode"},"unicode":"雪😀","":"bmp-private-use","😀":"supplementary"}'
+    local canonical = manifest.canonicalize(value)
+    t.eq(canonical, expected)
+    t.eq(sha256(canonical), "2211744d7633cbdc2adbc647b1601e162b5269fba7800fa1c446e8d1a8cc9a87")
+  end,
+
+  test_canonicalization_rejects_ambiguous_or_unsafe_values = function()
+    t.raises(function() canonical_json.encode(1.5) end)
+    t.raises(function() canonical_json.encode(canonical_json.max_integer + 1) end)
+    t.raises(function() canonical_json.encode({ [2] = "gap" }) end)
+    t.raises(function() canonical_json.encode({ [1] = "array", key = "object" }) end)
+    t.raises(function() canonical_json.encode(string.char(0xff)) end)
+    local cyclic = {}; cyclic[1] = cyclic
+    t.raises(function() canonical_json.encode(cyclic) end)
+  end,
+
+  test_canonicalization_supports_null_and_explicit_empty_containers = function()
+    t.eq(canonical_json.encode({ canonical_json.null }), "[null]")
+    t.eq(canonical_json.encode({}), "[]")
+    t.eq(canonical_json.encode(canonical_json.array({})), "[]")
+    t.eq(canonical_json.encode(canonical_json.object({})), "{}")
   end,
 }

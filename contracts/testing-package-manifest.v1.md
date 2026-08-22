@@ -8,7 +8,20 @@ and capability check passes.
 
 ## Canonical domains
 
-The generator writes UTF-8 JSON with sorted object keys, compact separators, and no trailing whitespace.
+`fkst-testing-package-manifest-canonical-json.v1` is a constrained deterministic JSON profile. It is
+informed by RFC 8785/JCS but is not declared RFC 8785-compatible: object keys are ordered by Unicode
+code point (equivalently, lexicographic UTF-8 byte order for valid Unicode scalar values), rather than
+JCS UTF-16 code-unit order. Inputs must contain valid Unicode scalar values. Strings use standard JSON
+escapes for quotation mark, reverse solidus, and controls while preserving all other Unicode as UTF-8.
+Arrays preserve order. Object keys are sorted at every level. Separators are `,` and `:` with no added
+whitespace, and output has no trailing whitespace or newline.
+
+Numbers are restricted to integers in the inclusive range `[-9007199254740991, 9007199254740991]`.
+Lua non-empty arrays and objects are inferred from dense positive integer indexes or string keys.
+Because an empty Lua table is otherwise ambiguous, an untagged empty table denotes `[]` and
+`contract.canonical_json.object({})` denotes `{}`; `contract.canonical_json.array({})` may be used to
+state `[]` explicitly. JSON `null` is represented by `contract.canonical_json.null` when nested in Lua.
+
 The manifest digest is SHA-256 over the canonical manifest with only `manifest_digest` omitted. The
 package digest is SHA-256 over sorted UTF-8 relative paths and file records: each record is
 `path NUL type byte content NUL`; regular files use `f`, symlinks use `l` followed by their exact
