@@ -28,7 +28,7 @@ workspace = "workspace"
 [[external_sources]]
 id = "fkst-packages-platform"
 git = "https://github.com/ChronoAIProject/fkst-packages.git"
-rev = "d4146d7bbdbde9d6fbbee404d5a2e3e4da0fa08c"
+rev = "549caa0fb921a3f7702a0726d6cc2fa6034d05d0"
 libraries = ["forge", "devloop"]
 packages = [
   "github-proxy",
@@ -39,4 +39,12 @@ packages = [
   "github-devloop-pr",
   "github-devloop-decompose",
   "github-devloop-integration",
+  "github-devloop-ops",
+  "github-external-pr-intake",
+  "github-ratchet-migration-slicer",
+  "fkst-substrate-ref-maintainer",
+  "integration-coverage-producer",
+  "idle-detector",
+  "git-branch-detector",
+  "github-devloop-worktree-gc",
 ]
