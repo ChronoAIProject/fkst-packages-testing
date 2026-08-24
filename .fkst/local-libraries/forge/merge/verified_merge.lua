@@ -1,11 +1,14 @@
 local S = {}
 local forge_validators = require("forge.gitref")
+local forge_parse_pr_view_merge = require("forge.github_view").parse_pr_view_merge
 
 function S.install(M, shared, ci_gate, opts)
 local github = opts.github_handle
+local log_info = opts.log_info
+local invalidate_pr_after_write = opts.invalidate_pr_after_write
 local merge_attempt_limit = shared.merge_attempt_limit
 local expected_pr_identity = shared.expected_pr_identity
-local parse_pr_view_merge = M.parse_pr_view_merge
+local parse_pr_view_merge = opts.pr_view_projection or forge_parse_pr_view_merge
 local evaluate_ci_merge_gate = ci_gate.evaluate_ci_merge_gate
 
 local function is_merged_pr(pr)
@@ -21,7 +24,7 @@ local function with_current_classification(request, effect)
   local pr_number = request and request.pr_number
   local pr_view, command_result = github("forge.merge").gh_pr_view_merge(repo, pr_number, 30)
   if pr_view == nil then
-    error("forge.merge: gh pr merge recheck failed: "
+    error("forge.merge: gh-pr-merge-recheck-failed: gh pr merge recheck failed: "
       .. tostring(command_result and command_result.stderr or "missing result"))
   end
   local rechecked_pr = parse_pr_view_merge(pr_view)
@@ -69,10 +72,18 @@ local function run_verified_pr_merge(request)
           return false, before_reason or "before-merge-gate", rechecked_pr
         end
       end
+      if type(request.authorize_verified_merge) == "function" then
+        local authorization = request.authorize_verified_merge(rechecked_pr)
+        if authorization == nil
+          or type(request.consume_verified_merge) ~= "function"
+          or request.consume_verified_merge(authorization) ~= true then
+          error("forge.merge: verified-merge-grant-rejected: verified merge grant was rejected")
+        end
+      end
       local merge_result = github("forge.merge").gh_pr_merge(repo, pr_number, merge_head_sha, 120)
       if merge_result.exit_code ~= 0 then
         if attempt < max_attempts and is_match_head_modified_error(merge_result.stderr) then
-          M.log_line("info", tostring(request.dept or "merge"), tostring(request.proposal_id or "merge"), "MATCH_HEAD_RETRY", {
+          log_info(tostring(request.dept or "merge"), tostring(request.proposal_id or "merge"), "MATCH_HEAD_RETRY", {
             "repo=" .. tostring(repo),
             "pr=" .. tostring(pr_number),
             "head_sha=" .. tostring(merge_head_sha),
@@ -82,12 +93,12 @@ local function run_verified_pr_merge(request)
           })
           return nil, "head-modified-retry", rechecked_pr
         end
-        error("forge.merge: gh pr merge failed: " .. tostring(merge_result.stderr))
+        error("forge.merge: gh-pr-merge-failed: gh pr merge failed: " .. tostring(merge_result.stderr))
       end
-      M.invalidate_entity_after_write(repo, "pr", pr_number)
+      invalidate_pr_after_write(repo, pr_number)
       local merged_view, merged_view_error = github("forge.merge").gh_pr_view_merge(repo, pr_number, 30)
       if merged_view == nil then
-        error("forge.merge: gh pr post-merge view failed: "
+        error("forge.merge: gh-pr-post-merge-view-failed: gh pr post-merge view failed: "
           .. tostring(merged_view_error and merged_view_error.stderr or "missing result"))
       end
       local merged_pr = parse_pr_view_merge(merged_view)
@@ -107,7 +118,7 @@ local function run_verified_pr_merge(request)
       return merged, reason, current_pr, classification
     end
   end
-  error("forge.merge: gh pr merge failed: Head branch was modified after bounded retry")
+  error("forge.merge: gh-pr-merge-head-retry-exhausted: gh pr merge failed: Head branch was modified after bounded retry")
 end
 rawset(M, "is_merged_pr", is_merged_pr)
 rawset(M, "is_match_head_modified_error", is_match_head_modified_error)

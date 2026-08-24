@@ -5,7 +5,7 @@ local gitref = require("forge.gitref")
 local function require_commit_message(message)
   local bounded_message = tostring(message or "")
   if bounded_message == "" or #bounded_message > 200 then
-    error("github-devloop: invalid git commit message")
+    error("github-devloop: commit-message-invalid: invalid git commit message")
   end
   return bounded_message
 end
@@ -34,6 +34,14 @@ local function is_ancestor_argv(maybe_ancestor_sha, descendant_sha)
   return { "git", "merge-base", "--is-ancestor", tostring(maybe_ancestor_sha), tostring(descendant_sha) }
 end
 
+local function is_ancestor_worktree_branch_argv(worktree, maybe_ancestor_sha, branch)
+  return {
+    "git", "-C", tostring(worktree), "merge-base", "--is-ancestor",
+    gitref.require_safe_sha("ancestor sha", maybe_ancestor_sha, "forge.git"),
+    "refs/heads/" .. gitref.require_safe_branch("descendant branch", branch, "forge.git"),
+  }
+end
+
 local function fetch_branch_argv(remote, branch)
   return { "git", "fetch", tostring(remote), tostring(branch) }
 end
@@ -42,8 +50,19 @@ local function fetch_ref_argv(remote, ref)
   return { "git", "fetch", tostring(remote), tostring(ref) }
 end
 
-local function fetch_pr_merge_ref_argv(remote, pr_number)
-  return fetch_ref_argv(remote, "refs/pull/" .. tostring(pr_number) .. "/merge")
+local function pr_head_local_ref(pr_number)
+  return "refs/fkst/pr/" .. tostring(pr_number)
+end
+
+local function fetch_pr_head_oid_argv(remote, pr_number)
+  local local_ref = pr_head_local_ref(pr_number)
+  return {
+    "git",
+    "fetch",
+    "--no-write-fetch-head",
+    tostring(remote),
+    "+refs/pull/" .. tostring(pr_number) .. "/head:" .. local_ref,
+  }
 end
 
 local function ls_remote_ref_argv(remote, ref)
@@ -178,10 +197,6 @@ local function push_branch_force_with_lease_argv(branch, new_sha, expected_old_s
   }
 end
 
-local function push_branch_update_argv(branch)
-  return { "git", "push", "origin", "HEAD:refs/heads/" .. tostring(branch) }
-end
-
 local function push_worktree_branch_update_argv(worktree, branch, expected_old_sha)
   local ref = "refs/heads/" .. tostring(branch)
   local argv = worktree_argv(worktree, "push", "origin", "HEAD:" .. ref)
@@ -210,12 +225,12 @@ local function diff_check_argv(worktree, cached)
   return worktree_argv(worktree, "diff", "--check")
 end
 
-local function conflict_markers_argv(worktree)
-  local pattern = "^(" .. string.rep("<", 7) .. "|" .. string.rep("=", 7) .. "|" .. string.rep(">", 7) .. ")"
+local function diff_check_range_argv(worktree, base_sha, candidate_sha)
+  local range = tostring(base_sha) .. ".." .. tostring(candidate_sha)
   if worktree == nil then
-    return { "git", "grep", "-n", "-I", "-E", pattern, "--", "." }
+    return { "git", "diff", "--check", range }
   end
-  return worktree_argv(worktree, "grep", "-n", "-I", "-E", pattern, "--", ".")
+  return worktree_argv(worktree, "diff", "--check", range)
 end
 
 local function commit_message_file_argv(worktree, message_file)
@@ -258,8 +273,28 @@ local function clean_fd_argv(worktree)
   return worktree_argv(worktree, "clean", "-fd")
 end
 
+-- A tracked-file census: what the index currently holds, versus what the commit says it should.
+-- `status --porcelain` alone reports a *deleted* tracked file, but a worktree that is still being
+-- written can have neither the file nor its index entry yet, which reads as clean.
+local function tracked_files_argv(worktree)
+  return worktree_argv(worktree, "ls-files")
+end
+
+local function commit_tracked_files_argv(worktree, sha)
+  return worktree_argv(worktree, "ls-tree", "-r", "--name-only", tostring(sha))
+end
+
 local function reset_hard_branch_argv(worktree, branch)
   return worktree_argv(worktree, "reset", "--hard", "refs/heads/" .. tostring(branch))
+end
+
+local function reset_hard_sha_argv(worktree, sha)
+  return worktree_argv(
+    worktree,
+    "reset",
+    "--hard",
+    gitref.require_safe_sha("reset sha", sha, "forge.git")
+  )
 end
 
 local function switch_branch_argv(worktree, branch)
@@ -280,6 +315,17 @@ local function remote_ahead_count_argv(upstream, integration)
     "rev-list",
     "--count",
     "refs/remotes/origin/" .. tostring(upstream) .. "..refs/remotes/origin/" .. tostring(integration),
+  }
+end
+
+local function log_subjects_between_remote_branch_argv(upstream, head_sha)
+  local safe_upstream = gitref.require_safe_branch("upstream branch", upstream, "forge.git")
+  local safe_head = gitref.require_safe_sha("history head", head_sha, "forge.git")
+  return {
+    "git",
+    "log",
+    "--format=%H%x09%s",
+    "refs/remotes/origin/" .. safe_upstream .. ".." .. safe_head,
   }
 end
 
@@ -347,6 +393,15 @@ function M.install(handle)
     return exec_result(handle, is_ancestor_argv(maybe_ancestor_sha, descendant_sha), timeout, "git merge-base --is-ancestor")
   end
 
+  function handle.is_ancestor_worktree_branch(worktree, maybe_ancestor_sha, branch, timeout)
+    return exec_result(
+      handle,
+      is_ancestor_worktree_branch_argv(worktree, maybe_ancestor_sha, branch),
+      timeout,
+      "git merge-base --is-ancestor worktree branch"
+    )
+  end
+
   function handle.fetch_branch(remote, branch, timeout)
     return exec_result(handle, fetch_branch_argv(remote, branch), timeout, "git fetch")
   end
@@ -359,12 +414,27 @@ function M.install(handle)
     return "git fetch " .. argv_render.shell_single_quote(remote) .. " " .. argv_render.shell_single_quote(ref)
   end
 
-  function handle.fetch_pr_merge_ref(remote, pr_number, timeout)
-    return exec_result(handle, fetch_pr_merge_ref_argv(remote, pr_number), timeout, "git fetch PR merge ref")
-  end
-
   function handle.fetch_pr_merge_ref_cmd(remote, pr_number)
     return handle.fetch_ref_cmd(remote, "refs/pull/" .. tostring(pr_number) .. "/merge")
+  end
+
+  function handle.fetch_pr_head_oid(remote, pr_number, timeout)
+    local local_ref = pr_head_local_ref(pr_number)
+    local result = exec_result(
+      handle,
+      fetch_pr_head_oid_argv(remote, pr_number),
+      timeout,
+      "git fetch PR head OID"
+    )
+    if result.exit_code ~= 0 then
+      return result
+    end
+    return exec_result(
+      handle,
+      rev_parse_ref_commit_argv(local_ref),
+      timeout,
+      "git rev-parse PR head OID"
+    )
   end
 
   function handle.ls_remote_ref(remote, ref, timeout)
@@ -467,10 +537,6 @@ function M.install(handle)
     return exec_result(handle, push_branch_force_with_lease_argv(branch, new_sha, expected_old_sha), timeout, "git push --force-with-lease")
   end
 
-  function handle.push_branch_update(branch, timeout)
-    return exec_result(handle, push_branch_update_argv(branch), timeout, "git push branch update")
-  end
-
   function handle.push_worktree_branch_update(worktree, branch, expected_old_sha, timeout)
     return exec_result(handle, push_worktree_branch_update_argv(worktree, branch, expected_old_sha), timeout, "git worktree push")
   end
@@ -492,8 +558,10 @@ function M.install(handle)
     return exec_result(handle, diff_check_argv(worktree, cached), timeout, "git diff --check")
   end
 
-  function handle.conflict_markers(worktree, timeout)
-    return exec_result(handle, conflict_markers_argv(worktree), timeout, "git grep conflict markers")
+  function handle.diff_check_range(worktree, base_sha, candidate_sha, timeout)
+    local safe_base = gitref.require_safe_sha("diff base sha", base_sha, "forge.git")
+    local safe_candidate = gitref.require_safe_sha("diff candidate sha", candidate_sha, "forge.git")
+    return exec_result(handle, diff_check_range_argv(worktree, safe_base, safe_candidate), timeout, "git diff range --check")
   end
 
   function handle.commit_message_file(worktree, message_file, timeout)
@@ -507,7 +575,7 @@ function M.install(handle)
   function handle.git_worktree_add_detached_plan(worktree, sha)
     local value = tostring(worktree or "")
     if value == "" or value:find("[\r\n]") ~= nil then
-      error("github-devloop: invalid worktree path")
+      error("github-devloop: worktree-path-invalid: invalid worktree path")
     end
     return {
       parent_dir = value:gsub("/+$", ""):match("^(.*)/[^/]+$") or ".",
@@ -577,8 +645,20 @@ function M.install(handle)
     return exec_result(handle, clean_fd_argv(worktree), timeout, "git clean -fd")
   end
 
+  function handle.tracked_files(worktree, timeout)
+    return exec_result(handle, tracked_files_argv(worktree), timeout, "git ls-files")
+  end
+
+  function handle.commit_tracked_files(worktree, sha, timeout)
+    return exec_result(handle, commit_tracked_files_argv(worktree, sha), timeout, "git ls-tree -r --name-only")
+  end
+
   function handle.reset_hard_branch(worktree, branch, timeout)
     return exec_result(handle, reset_hard_branch_argv(worktree, branch), timeout, "git reset --hard")
+  end
+
+  function handle.reset_hard_sha(worktree, sha, timeout)
+    return exec_result(handle, reset_hard_sha_argv(worktree, sha), timeout, "git reset --hard")
   end
 
   function handle.switch_branch(worktree, branch, timeout)
@@ -591,6 +671,15 @@ function M.install(handle)
 
   function handle.remote_ahead_count(upstream, integration, timeout)
     return exec_result(handle, remote_ahead_count_argv(upstream, integration), timeout, "git rev-list remote ahead count")
+  end
+
+  function handle.log_subjects_between_remote_branch(upstream, head_sha, timeout)
+    return exec_result(
+      handle,
+      log_subjects_between_remote_branch_argv(upstream, head_sha),
+      timeout,
+      "git log release-notes subjects"
+    )
   end
 
   function handle.branch_ahead_count(base, branch, timeout)

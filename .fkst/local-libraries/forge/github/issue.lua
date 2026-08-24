@@ -1,5 +1,6 @@
 local M = {}
 local argv_render = require("forge.argv")
+local github_comments = require("forge.github.comments")
 local github_view = require("forge.github_view")
 local stdout_policy = require("forge.github.stdout_policy")
 local append_comments = github_view.append_comments
@@ -15,33 +16,8 @@ local parse_updated_at_stdout = github_view.parse_updated_at_stdout
 -- Two documented exclusions: `blocked_by` needs GraphQL (a separate read op, not gh issue
 -- view), and comment `updated_at` is not exposed by gh issue view (only createdAt).
 local issue_view_fields = "number,title,body,url,updatedAt,state,labels,comments,assignees,author"
-local max_cache_key_segment_len = 120
 
-local function sanitize_cache_segment(value, allow_slash)
-  local pattern = allow_slash and "[^%w%._%-%/]" or "[^%w%._%-]"
-  local safe = tostring(value or ""):gsub(pattern, "-")
-  safe = safe:gsub("-+", "-")
-  if allow_slash then
-    safe = safe:gsub("/+", "/"):gsub("^/+", ""):gsub("/+$", "")
-  else
-    safe = safe:gsub("^-+", ""):gsub("-+$", "")
-  end
-  local segments = {}
-  for segment in safe:gmatch("[^/]+") do
-    if segment == "." or segment == ".." then
-      segment = "-"
-    end
-    table.insert(segments, segment)
-  end
-  safe = table.concat(segments, allow_slash and "/" or "-")
-  if #safe > max_cache_key_segment_len then
-    safe = safe:sub(1, max_cache_key_segment_len):gsub("/+$", ""):gsub("-+$", "")
-  end
-  if safe == "" then
-    return "empty"
-  end
-  return safe
-end
+local sanitize_cache_segment = require("contract.strings").sanitize_cache_segment
 
 local function issue_view_cache_key(repo, number)
   return "github-proxy/view-v2/"
@@ -53,7 +29,7 @@ end
 local function gh_issue_view_argv(repo, issue_number, fields)
   local selected_fields = tostring(fields or "")
   if selected_fields == "" or selected_fields:match("[^%w_,]") or selected_fields:match("^,") or selected_fields:match(",$") or selected_fields:match(",,") then
-    error("forge.github: invalid issue view fields")
+    error("forge.github: issue-view-fields-invalid: invalid issue view fields")
   end
   return { "gh", "issue", "view", tostring(issue_number), "--repo", tostring(repo), "--json", selected_fields }
 end
@@ -79,17 +55,7 @@ local function gh_issue_rest_argv(repo, issue_number)
   return { "gh", "api", "repos/" .. tostring(repo) .. "/issues/" .. tostring(issue_number) }
 end
 
-local function gh_issue_comments_rest_argv(repo, issue_number)
-  return {
-    "gh",
-    "api",
-    "--paginate",
-    "--slurp",
-    "repos/" .. tostring(repo) .. "/issues/" .. tostring(issue_number) .. "/comments?per_page=100",
-  }
-end
-
-local function gh_issue_edit_assignee_argv(repo, issue_number, flag, login)
+local function gh_issue_edit_argv(repo, issue_number, flag, value)
   return {
     "gh",
     "issue",
@@ -98,20 +64,7 @@ local function gh_issue_edit_assignee_argv(repo, issue_number, flag, login)
     "--repo",
     tostring(repo),
     flag,
-    tostring(login),
-  }
-end
-
-local function gh_issue_edit_label_argv(repo, issue_number, flag, label)
-  return {
-    "gh",
-    "issue",
-    "edit",
-    tostring(issue_number),
-    "--repo",
-    tostring(repo),
-    flag,
-    tostring(label),
+    tostring(value),
   }
 end
 
@@ -191,7 +144,7 @@ local function comments_from_json(comments_json)
         created_at = comment.createdAt or comment.created_at,
       })
     elseif type(comment) == "string" then
-      error("forge.github: issue comments must be gh-shaped objects")
+      error("forge.github: issue-comment-shape-invalid: issue comments must be gh-shaped objects")
     end
   end
   return comments
@@ -210,14 +163,14 @@ local function parse_json_object(stdout, context)
   if ok and type(decoded) == "table" then
     return decoded
   end
-  error("forge.github: " .. tostring(context) .. " response is not valid JSON")
+  error("forge.github: response-json-invalid: " .. tostring(context) .. " response is not valid JSON")
 end
 
 local function issue_database_id(stdout, context)
   local decoded = parse_json_object(stdout, context)
   local id = tonumber(decoded.id)
   if id == nil then
-    error("forge.github: " .. tostring(context) .. " response is missing issue id")
+    error("forge.github: issue-id-missing: " .. tostring(context) .. " response is missing issue id")
   end
   return id
 end
@@ -341,8 +294,8 @@ local function cache_available()
   return type(cache_get) == "function" and type(cache_set) == "function"
 end
 
-local function cache_successful_issue_view(key, stdout, producer)
-  if not cache_available() then
+local function cache_successful_issue_view(key, stdout, producer, cache_write)
+  if cache_write == false or not cache_available() then
     return
   end
   local updated_at = parse_view_updated_at(stdout)
@@ -378,15 +331,6 @@ function M.issue_view_cache_key(repo, issue_number)
 end
 
 function M.install(handle)
-  function handle.issue_view(repo, issue_number, fields, timeout)
-    return handle._exec(
-      gh_issue_view_argv(repo, issue_number, fields),
-      timeout,
-      "gh issue view",
-      stdout_policy.content_json("issue_view")
-    )
-  end
-
   function handle.issue_view_cmd(repo, issue_number, fields)
     return render_issue_view_argv(gh_issue_view_argv(repo, issue_number, fields))
   end
@@ -399,13 +343,18 @@ function M.install(handle)
       stdout_policy.content_json("issue_view")
     )
     local comments = handle._exec(
-      gh_issue_comments_rest_argv(repo, number),
+      github_comments.issue_comments_argv(repo, number),
       timeout,
       "gh issue comments",
       stdout_policy.content_json("issue_comments")
     )
     local stdout = rest_issue_to_view_stdout(issue.stdout, comments.stdout)
-    cache_successful_issue_view(issue_view_cache_key(repo, number), stdout, opts and opts.consumer or "")
+    cache_successful_issue_view(
+      issue_view_cache_key(repo, number),
+      stdout,
+      opts and opts.consumer or "",
+      opts and opts.cache_write
+    )
     return stdout
   end
 
@@ -439,7 +388,7 @@ function M.install(handle)
       if parse_updated_at_stdout(current.stdout) == cached.updated_at then
         return M.normalize_issue(cached.stdout, source_ref)
       end
-      if cache_available() then
+      if options.cache_write ~= false and cache_available() then
         cache_set(key, "")
       end
     end
@@ -450,8 +399,20 @@ function M.install(handle)
       "gh issue view",
       stdout_policy.content_json("issue_view")
     )
-    cache_successful_issue_view(key, out.stdout, options.consumer or "")
+    cache_successful_issue_view(key, out.stdout, options.consumer or "", options.cache_write)
     return M.normalize_issue(out.stdout, source_ref)
+  end
+
+  -- Field-complete GraphQL issue view. Exists so consumers needing a full view under a REST
+  -- throttle do not have to import this module for `issue_view_fields`; the field list stays
+  -- owned by this adapter.
+  function handle.issue_view_full(repo, issue_number, timeout)
+    return handle._exec(
+      gh_issue_view_full_argv(repo, issue_number),
+      timeout,
+      "gh issue view",
+      stdout_policy.content_json("issue_view")
+    )
   end
 
   function handle.issue_rest_view(repo, issue_number, timeout)
@@ -525,7 +486,7 @@ function M.install(handle)
 
   function handle.issue_assign(repo, issue_number, login, timeout)
     return handle._exec(
-      gh_issue_edit_assignee_argv(repo, issue_number, "--add-assignee", login),
+      gh_issue_edit_argv(repo, issue_number, "--add-assignee", login),
       timeout,
       "gh issue assign",
       stdout_policy.write_response()
@@ -534,7 +495,7 @@ function M.install(handle)
 
   function handle.issue_unassign(repo, issue_number, login, timeout)
     return handle._exec(
-      gh_issue_edit_assignee_argv(repo, issue_number, "--remove-assignee", login),
+      gh_issue_edit_argv(repo, issue_number, "--remove-assignee", login),
       timeout,
       "gh issue unassign",
       stdout_policy.write_response()
@@ -543,7 +504,7 @@ function M.install(handle)
 
   function handle.issue_add_label(repo, issue_number, label, timeout)
     return handle._exec(
-      gh_issue_edit_label_argv(repo, issue_number, "--add-label", label),
+      gh_issue_edit_argv(repo, issue_number, "--add-label", label),
       timeout,
       "gh issue add label",
       stdout_policy.write_response()
@@ -552,7 +513,7 @@ function M.install(handle)
 
   function handle.issue_remove_label(repo, issue_number, label, timeout)
     return handle._exec(
-      gh_issue_edit_label_argv(repo, issue_number, "--remove-label", label),
+      gh_issue_edit_argv(repo, issue_number, "--remove-label", label),
       timeout,
       "gh issue remove label",
       stdout_policy.write_response()

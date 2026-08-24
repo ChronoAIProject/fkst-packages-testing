@@ -3,6 +3,7 @@ local issue = require("forge.github.issue")
 local argv_render = require("forge.argv")
 local forge_strings = require("forge.strings")
 local github_view = require("forge.github_view")
+local content_filter = require("forge.github.content_filter")
 
 local function copy(value)
   if type(value) ~= "table" then
@@ -19,12 +20,16 @@ function M.model(seed)
   return {
     issues = seed and seed.issues or {},
     writes = seed and seed.writes or {},
+    author_policy = seed and seed.author_policy or nil,
   }
 end
 
 function M.new(model)
   assert(type(model) == "table", "forge.github_fake.new requires a model")
   local handle = { _model = model }
+  function handle.is_authorized_author(login)
+    return content_filter.is_authorized(login, content_filter.policy_whitelist(model.author_policy))
+  end
   function handle._exec(argv, timeout, context)
     table.insert(model.writes, {
       kind = "exec",
@@ -37,7 +42,7 @@ function M.new(model)
   function handle.read_issue(source_ref)
     local fixture = model.issues[source_ref.ref]
     if fixture == nil then
-      error("fake: unknown issue " .. tostring(source_ref.ref))
+      error("fake: issue-fixture-missing: unknown issue " .. tostring(source_ref.ref))
     end
     return copy(issue.normalize_issue(fixture, source_ref))
   end
@@ -51,7 +56,7 @@ function M.new(model)
       assignee = tostring(assignee),
       timeout = timeout,
     })
-    local normalized_assignee = forge_strings.strip_bot_login_suffix(assignee)
+    local normalized_assignee = forge_strings.canonical_login(assignee)
     local rows = {}
     for ref, fixture in pairs(model.issues or {}) do
       local issue_repo = fixture.repo or tostring(ref):match("^([^#]+)#issue/%d+$")
@@ -59,7 +64,7 @@ function M.new(model)
       if issue_repo == tostring(repo) and state == "OPEN" then
         for _, login in ipairs(fixture.assignees or {}) do
           local candidate = type(login) == "table" and login.login or login
-          if forge_strings.strip_bot_login_suffix(candidate) == normalized_assignee then
+          if forge_strings.canonical_login(candidate) == normalized_assignee then
             table.insert(rows, fixture)
             break
           end
@@ -83,7 +88,7 @@ function M.new(model)
       exit_code = 0,
     }
   end
-  function handle.issue_view(repo, issue_number, fields, timeout)
+  function handle.issue_view_full(repo, issue_number, timeout)
     return handle._exec({
       "gh",
       "issue",
@@ -92,7 +97,7 @@ function M.new(model)
       "--repo",
       tostring(repo),
       "--json",
-      tostring(fields),
+      "number,title,body,url,updatedAt,state,labels,comments,assignees,author",
     }, timeout, "gh issue view")
   end
   function handle.issue_rest_view(repo, issue_number, timeout)
