@@ -39,12 +39,4 @@ packages = [
   "github-devloop-pr",
   "github-devloop-decompose",
   "github-devloop-integration",
-  "github-devloop-ops",
-  "github-external-pr-intake",
-  "github-ratchet-migration-slicer",
-  "fkst-substrate-ref-maintainer",
-  "integration-coverage-producer",
-  "idle-detector",
-  "git-branch-detector",
-  "github-devloop-worktree-gc",
 ]
