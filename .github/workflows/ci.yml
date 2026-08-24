@@ -74,6 +74,9 @@ jobs:
         working-directory: fkst-substrate
         run: cargo build -p fkst-framework
 
+      - name: Provision Python test dependencies
+        run: scripts/python_test_deps.sh provision
+
       - name: Run repository checks and package tests
         env:
           BIN: ${{ github.workspace }}/fkst-substrate/target/debug/fkst-framework
