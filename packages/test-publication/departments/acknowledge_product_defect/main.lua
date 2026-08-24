@@ -1,5 +1,6 @@
 local defect_publication = require("defect_publication")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "github_issue_written" },
@@ -31,5 +32,5 @@ local function act(event)
 end
 
 return saga.department(spec, {
-  accept = accept, done = done, act = act, name = "acknowledge_product_defect",
+  accept = accept, done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "test-publication.acknowledge_product_defect",
 })

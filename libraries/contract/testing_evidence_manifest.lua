@@ -1,4 +1,5 @@
 -- contract.testing_evidence_manifest: canonical, pointer-only evidence manifests.
+local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 local time = require("contract.time")
 
@@ -12,7 +13,9 @@ M.sensitivities = { public = true, internal = true, restricted = true }
 M.policy_statuses = { approved = true, redacted = true, withheld = true }
 M.max_entries = 256
 
-local function fail(classification, message) error("contract.testing-evidence-manifest: " .. classification .. ": " .. message) end
+local function fail(classification, message)
+  error(error_facts.error_message("contract.testing-evidence-manifest", classification, message))
+end
 local function bounded(value, field, limit)
   if type(value) ~= "string" or value == "" or #value > (limit or 512) or value:find("[%z\1-\31]") ~= nil then fail("malformed-field", field .. " must be a bounded string") end
   return value

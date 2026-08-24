@@ -4,6 +4,7 @@ local ai_orchestration = require("ai_orchestration")
 local core = require("core")
 local start_module = require("departments.start_module.main")
 local ai_generate = require("departments.ai_generate.main")
+local ai_consensus_call = require("departments.ai_consensus_call.main")
 local ai_consensus = require("departments.ai_consensus.main")
 local t = fkst.test
 
@@ -254,7 +255,7 @@ end
 
 local function consensus_reached_event(proposal, decision)
   return {
-    queue = "consensus.consensus_reached",
+    queue = "ai_consensus_result",
     payload = {
       schema = "consensus.consensus_reached.v1",
       proposal_id = proposal.proposal_id,
@@ -275,7 +276,7 @@ end
 
 local function consensus_converge_event(proposal)
   return {
-    queue = "consensus.consensus_converge",
+    queue = "ai_consensus_result",
     payload = {
       schema = "consensus.consensus_converge.v1",
       proposal_id = proposal.proposal_id,
@@ -290,7 +291,7 @@ local function start_ai_generation_proposal()
   local trace = testing.run_fake(start_module, module_ai_consensus_start_event())
   t.eq(#trace.raises, 1)
   t.eq(trace.raises[1].queue, "ai_generation_request")
-  t.mock_command("codex exec", {
+  local generation_result = {
     stdout = ai_orchestration.json_encode({
       schema = "testing-runner.ai-case-candidates.v1",
       cases = {
@@ -313,14 +314,20 @@ local function start_ai_generation_proposal()
     }),
     stderr = "",
     exit_code = 0,
-  })
-  local generated = testing.run_fake(ai_generate, {
+  }
+  local generation_event = {
     queue = "ai_generation_request",
     payload = trace.raises[1].payload,
     source_ref = trace.raises[1].payload.source_ref,
-  })
+  }
+  generation_event["test_" .. "ports"] = {
+    generate = function()
+      return generation_result
+    end,
+  }
+  local generated = testing.run_fake(ai_generate, generation_event)
   t.eq(#generated.raises, 1)
-  t.eq(generated.raises[1].queue, "consensus.proposal")
+  t.eq(generated.raises[1].queue, "ai_consensus_request")
   return generated.raises[1].payload
 end
 
@@ -588,11 +595,38 @@ return {
     t.eq(state:find("unsafe", 1, true), nil)
   end,
 
+  test_ai_consensus_call_raises_package_owned_result = function()
+    local proposal = start_ai_generation_proposal()
+    local trace = testing.run_fake(ai_consensus_call, {
+      queue = "ai_consensus_request",
+      payload = proposal,
+      source_ref = proposal.source_ref,
+      test_ports = {
+        consensus_reach = function(value)
+          t.eq(value, proposal)
+          return {
+            status = "reached",
+            schema = "consensus.consensus_reached.v1",
+            proposal_id = "must-be-restored-from-request",
+            decision = "approve",
+            source_ref = value.source_ref,
+            angle_results = {},
+          }
+        end,
+      },
+    })
+    t.eq(#trace.raises, 1)
+    t.eq(trace.raises[1].queue, "ai_consensus_result")
+    t.eq(trace.raises[1].payload.status, nil)
+    t.eq(trace.raises[1].payload.proposal_id, proposal.proposal_id)
+    t.eq(trace.raises[1].payload.schema, "consensus.consensus_reached.v1")
+  end,
+
   test_ai_consensus_department_raises_review_then_module_loop_request = function()
     local generation_proposal = start_ai_generation_proposal()
     local generation_trace = testing.run_fake(ai_consensus, consensus_reached_event(generation_proposal))
     t.eq(#generation_trace.raises, 1)
-    t.eq(generation_trace.raises[1].queue, "consensus.proposal")
+    t.eq(generation_trace.raises[1].queue, "ai_consensus_request")
     local review_proposal = generation_trace.raises[1].payload
     t.eq(review_proposal.schema, "consensus.proposal.v1")
     t.eq(review_proposal.verdict_mode, "gate")

@@ -119,22 +119,7 @@ resolve_testing_bin() {
 }
 
 ensure_host_lock() {
-  local pin="$1" output_file rc
-  output_file="$(mktemp "${TMPDIR:-/tmp}/fkst-host-lock.XXXXXX")"
-  set +e
-  "$BIN" host lock --project-root "$ROOT" >"$output_file" 2>&1
-  rc=$?
-  set -e
-  if [ "$rc" -eq 0 ]; then
-    rm -f "$output_file"
-    return 0
-  fi
-  if ! grep -q "unknown subcommand: host" "$output_file"; then
-    cat "$output_file" >&2
-    rm -f "$output_file"
-    return "$rc"
-  fi
-  rm -f "$output_file"
+  local pin="$1"
   "$PYTHON_BIN" - "$ROOT" "$shared" "$pin" <<'PY'
 import hashlib
 import os
@@ -449,9 +434,8 @@ libraries = ["libraries/*"]
 workspace = "workspace"
 TOML
   copy_repo_libraries "$work" || return 1
-  # Repo-owned library names win over source-scoped forge/devloop; copy missing platform libraries
-  # so composed package tests close the same library graph as host conformance.
-  for dep_name in forge devloop; do
+  # Repo-owned library names win; copy missing platform dependencies for the composed graph.
+  for dep_name in forge devloop testkit_internal; do
     [ -d "$work/libraries/$dep_name" ] && continue
     [ -d "$shared/libraries/$dep_name" ] || {
       echo "error: pinned platform library missing: $dep_name" >&2
@@ -477,7 +461,7 @@ TOML
 # Run an engine subcommand (conformance|supervise) for one package with the correct scope:
 #   top-level composed (in composed-roots) -> CLOSED-WORLD across its declared graph. project-root is
 #     the repo (no package-root folds into it), so the engine enforces every consumed queue has a
-#     producer — a genuinely closed graph, the same shape the launchd supervisor runs;
+#     producer -- a genuinely closed graph, the same shape the launchd supervisor runs;
 #   composed member (a root of another composed package) -> skipped standalone (covered by its parent);
 #   undeclared composed ([event_deps] but no entry) -> hard error (tells the maintainer to declare it);
 #   flat -> SINGLE-ROOT (partial-graph), the repo default for self-contained blocks.
@@ -813,7 +797,7 @@ cmd_live_cdp_smoke() {
   return "$rc"
 }
 
-GENERIC_HOST_CLOSED_WORLD_ROOTS="local-qa-host-adapter environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/consensus @platform/github-proxy"
+GENERIC_HOST_CLOSED_WORLD_ROOTS="local-qa-host-adapter environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/github-proxy"
 generic_host_test_args() {
   local work="$1" host_name="$2" root
   GENERIC_HOST_TEST_ARGS=(--project-root "$work" --package-root "$work/packages/$host_name")
@@ -894,7 +878,6 @@ cmd_supervise() {
   echo "supervise $name (single-root; dry-run until the host write switch + FKST_SKILL_* are pinned)"
   exec "$BIN" supervise --project-root "$pkg" --package-root "$pkg" --framework-bin "$BIN"
 }
-
 run_host_check() {
   local python_shim_dir="$1" hermetic_root rc
   if ! hermetic_root="$(mktemp -d "${TMPDIR:-/tmp}/fkst-host-check.XXXXXX")"; then
@@ -907,7 +890,9 @@ run_host_check() {
     trap 'rm -rf "$hermetic_root"' EXIT
     export FKST_RUNTIME_ROOT="$hermetic_root/runtime"
     export FKST_DURABLE_ROOT="$hermetic_root/durable"
-    unset FKST_GITHUB_WRITE FKST_SUPERVISOR_PID 2>/dev/null || true
+    unset FKST_GITHUB_WRITE 2>/dev/null || true
+    # Platform conformance uses supervisor context for non-writing engine ports.
+    export FKST_SUPERVISOR_PID="${BASHPID:-$$}"
     mkdir -p "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT"
     echo "host check hermetic: FKST_RUNTIME_ROOT=$FKST_RUNTIME_ROOT FKST_DURABLE_ROOT=$FKST_DURABLE_ROOT"
     PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" host \

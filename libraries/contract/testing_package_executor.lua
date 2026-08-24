@@ -1,4 +1,5 @@
 -- contract.testing_package_executor: closed contracts for the provider-neutral walking skeleton.
+local error_facts = require("contract.error_facts")
 local M = {}
 
 M.schemas = {
@@ -48,7 +49,7 @@ M.reference_kinds = {
 }
 
 local function fail(classification, message)
-  error("contract.testing-package-executor: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.testing-package-executor", classification, message))
 end
 
 local function fields(value, allowed, context)

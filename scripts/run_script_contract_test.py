@@ -29,13 +29,12 @@ GENERIC_HOST_CLOSED_WORLD_ROOTS = (
     "test-artifacts",
     "test-publication",
     "workflow-qa",
-    "consensus",
     "github-proxy",
 )
 GENERIC_HOST_CLOSED_WORLD_ENV = (
     "local-qa-host-adapter environment-factory testing-design browser-readiness "
     "module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication "
-    "workflow-qa @platform/consensus @platform/github-proxy"
+    "workflow-qa @platform/github-proxy"
 )
 
 
@@ -240,11 +239,22 @@ class RunnerWorkspace:
             ".fkst/run/fkst-packages-conformance/packages/platform-dep/tests/platform_dep_test.lua",
             "return {}\n",
         )
-        for name in ("forge", "devloop"):
+        for name in ("forge", "devloop", "testkit_internal"):
             self.write(
                 f".fkst/run/fkst-packages-conformance/libraries/{name}/fkst.toml",
                 f'kind = "library"\n[library]\nname = "{name}"\n',
             )
+        self.write(
+            ".fkst/run/fkst-packages-conformance/fkst.workspace.toml",
+            dedent(
+                """
+                [workspace]
+                units = ["packages/*", "libraries/*"]
+                packages = ["packages/*"]
+                libraries = ["libraries/*"]
+                """
+            ),
+        )
 
         subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
         subprocess.run(["git", "config", "user.email", "fixture@example.invalid"], cwd=checkout, check=True)
@@ -255,6 +265,24 @@ class RunnerWorkspace:
             ["git", "rev-parse", "HEAD"], cwd=checkout, check=True, text=True, stdout=subprocess.PIPE
         ).stdout.strip()
         self.write(".fkst/conformance/fkst-packages.pin", f"{pin}\n")
+        self.write(
+            "fkst.workspace.toml",
+            dedent(
+                f"""
+                [workspace]
+                units = ["packages/*"]
+                packages = ["packages/*"]
+                libraries = []
+
+                [[external_sources]]
+                id = "fkst-packages-platform"
+                git = "https://github.com/ChronoAIProject/fkst-packages.git"
+                rev = "{pin}"
+                libraries = ["forge", "devloop"]
+                packages = []
+                """
+            ),
+        )
 
         self.write(
             "fixture-framework",
@@ -333,9 +361,9 @@ class RunnerWorkspace:
         self._package(name, with_tests=False)
 
     def add_generic_host_composition(self) -> None:
-        for name in GENERIC_HOST_CLOSED_WORLD_ROOTS[:-2]:
+        for name in GENERIC_HOST_CLOSED_WORLD_ROOTS[:-1]:
             self._package(name)
-        for name in GENERIC_HOST_CLOSED_WORLD_ROOTS[-2:]:
+        for name in GENERIC_HOST_CLOSED_WORLD_ROOTS[-1:]:
             self.write(
                 f".fkst/run/fkst-packages-conformance/packages/{name}/fkst.toml",
                 f'kind = "package"\nname = "{name}"\n[code]\nroot = "."\n',
@@ -552,7 +580,7 @@ class RunnerContractTest(unittest.TestCase):
                 self.assertNotEqual(record["runtime_root"], str(ambient_runtime))
                 self.assertNotEqual(record["durable_root"], str(ambient_durable))
                 self.assertIsNone(record["github_write"])
-                self.assertIsNone(record["supervisor_pid"])
+                self.assertRegex(record["supervisor_pid"], r"^[0-9]+$")
                 self.assertFalse(Path(record["runtime_root"]).exists())
                 self.assertFalse(Path(record["durable_root"]).exists())
 

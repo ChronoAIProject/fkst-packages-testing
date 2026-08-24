@@ -1,4 +1,5 @@
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "environment_control_tick" },
@@ -15,4 +16,4 @@ local function act(_event)
   return
 end
 
-return saga.department(spec, { done = done, act = act, name = "seam" })
+return saga.department(spec, { done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "environment-factory.seam" })

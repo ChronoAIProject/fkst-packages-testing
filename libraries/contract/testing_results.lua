@@ -1,4 +1,5 @@
 -- contract.testing_results: canonical, execution-only testing result contracts.
+local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 local time = require("contract.time")
 local evidence_manifest = require("contract.testing_evidence_manifest")
@@ -31,7 +32,9 @@ local case_outcomes = {
   lost = { classifications={lost=true}, assertion_statuses={passed=true,skipped=true}, error="forbidden", reason="required" },
 }
 
-local function fail(classification, message) error("contract.testing-results: " .. classification .. ": " .. message) end
+local function fail(classification, message)
+  error(error_facts.error_message("contract.testing-results", classification, message))
+end
 local function bounded(value, field, limit)
   if type(value) ~= "string" or value == "" or #value > (limit or 512) or value:find("[%z\1-\31]") ~= nil then fail("malformed-field", field .. " must be a bounded string") end
   return value

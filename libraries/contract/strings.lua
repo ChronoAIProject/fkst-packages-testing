@@ -5,6 +5,47 @@ function S.trim(value)
   return (tostring(value or ""):gsub("^%s+", ""):gsub("%s+$", ""))
 end
 
+function S.trim_end(value)
+  return tostring(value or ""):gsub("%s+$", "")
+end
+
+function S.split_final_path_segment(value)
+  local segment = value:match("/([^/]+)$")
+  local prefix = segment and value:sub(1, #value - #segment - 1) or nil
+  if prefix == nil or prefix == "" or segment == nil or segment == "" then
+    return nil
+  end
+  return prefix, segment
+end
+
+function S.normalize_control_line(value)
+  if value == nil then
+    return nil
+  end
+  local text = tostring(value):gsub("%c", " "):gsub("%s+", " ")
+  text = S.trim(text)
+  if text == "" then
+    return nil
+  end
+  return text
+end
+
+function S.map_lines(value, transform)
+  local output = {}
+  local start = 1
+  while true do
+    local newline = value:find("\n", start, true)
+    if newline == nil then
+      table.insert(output, transform(value:sub(start)))
+      break
+    end
+    table.insert(output, transform(value:sub(start, newline - 1)))
+    table.insert(output, "\n")
+    start = newline + 1
+  end
+  return table.concat(output)
+end
+
 -- contract.strings.json_string is a temporary byte-identical stopgap for #976 only:
 -- canonical JSON encoding remains deferred to a dedicated encoder boundary.
 -- Keep this body matched to the folded github-devloop encode_json_string copies;
@@ -122,6 +163,38 @@ end
 function S.runtime_safe_segment(value)
   local safe = tostring(value or ""):gsub("[^%w._-]", "_")
   safe = safe:gsub("_+", "_"):gsub("^_+", ""):gsub("_+$", "")
+  if safe == "" then
+    return "empty"
+  end
+  return safe
+end
+
+S.max_cache_key_segment_len = 120
+
+-- Renders a value as one cache-key segment. A sibling of sanitize_key, not a variant of it:
+-- it excludes "#", takes allow_slash rather than always permitting slashes, collapses runs of
+-- "-", and carries its own bound. Three byte-identical copies lived in devloop, forge and
+-- github-proxy; all three already depend on contract, which is where the rest of this family is.
+function S.sanitize_cache_segment(value, allow_slash)
+  local pattern = allow_slash and "[^%w%._%-%/]" or "[^%w%._%-]"
+  local safe = tostring(value or ""):gsub(pattern, "-")
+  safe = safe:gsub("-+", "-")
+  if allow_slash then
+    safe = safe:gsub("/+", "/"):gsub("^/+", ""):gsub("/+$", "")
+  else
+    safe = safe:gsub("^-+", ""):gsub("-+$", "")
+  end
+  local segments = {}
+  for segment in safe:gmatch("[^/]+") do
+    if segment == "." or segment == ".." then
+      segment = "-"
+    end
+    table.insert(segments, segment)
+  end
+  safe = table.concat(segments, allow_slash and "/" or "-")
+  if #safe > S.max_cache_key_segment_len then
+    safe = safe:sub(1, S.max_cache_key_segment_len):gsub("/+$", ""):gsub("-+$", "")
+  end
   if safe == "" then
     return "empty"
   end

@@ -1,4 +1,5 @@
 -- contract.testing_design: immutable, pointer-only test-design analysis contracts.
+local error_facts = require("contract.error_facts")
 local source_ref = require("contract.source_ref")
 local strings = require("contract.strings")
 
@@ -34,7 +35,7 @@ local artifact_schemas = {
 }
 
 local function fail(classification, message)
-  error("contract.testing-design: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.testing-design", classification, message))
 end
 
 local function only_fields(value, allowed, context)

@@ -1,5 +1,6 @@
 local core = require("core")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "browser_observation_observe" },
@@ -19,6 +20,6 @@ local function act(event)
   raise("browser_observation_result", result)
 end
 
-local M = saga.department(spec, { done = done, act = act, name = "observe" })
+local M = saga.department(spec, { done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "browser-observation.observe" })
 M.pipeline = _G.pipeline
 return M

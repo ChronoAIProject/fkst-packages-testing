@@ -14,7 +14,7 @@ local function department_paths(root)
     table.insert(result, path:sub(#root + 2))
   end
   if find:close() == false then
-    error("namespaced-dispatch: department discovery failed")
+    error("testkit.namespaced-dispatch: conformance-invalid: department discovery failed")
   end
   return result
 end
@@ -23,7 +23,7 @@ function C.loaded_departments(entries)
   local departments = {}
   for _, entry in ipairs(entries or {}) do
     if type(entry) == "string" then
-      error("namespaced-dispatch: loaded department entry must include a module")
+      error("testkit.namespaced-dispatch: conformance-invalid: loaded department entry must include a module")
     end
     local path = assert(entry.path, "namespaced-dispatch: loaded department entry missing path")
     departments[path] = assert(entry.module, "namespaced-dispatch: loaded department entry missing module")
@@ -33,7 +33,7 @@ end
 
 local function normalize_department(path, module)
   if type(module) ~= "table" or type(module.spec) ~= "table" then
-    error("namespaced-dispatch: department spec missing for " .. tostring(path))
+    error("testkit.namespaced-dispatch: conformance-invalid: department spec missing for " .. tostring(path))
   end
   local run = module.pipeline
   return {
@@ -165,7 +165,7 @@ local function run_department_with_logs(t, department, event, opts)
     end
     local run = department.pipeline
     if type(run) ~= "function" then
-      error("namespaced-dispatch: department pipeline missing for " .. tostring(department.path))
+      error("testkit.namespaced-dispatch: conformance-invalid: department pipeline missing for " .. tostring(department.path))
     end
     run(event)
   end)
@@ -202,7 +202,7 @@ function C.assert_all_consumed_queues_route(config)
       module = load_standard_department(package_name, path)
     end
     if module == nil then
-      error("namespaced-dispatch: missing loaded department for " .. tostring(path))
+      error("testkit.namespaced-dispatch: conformance-invalid: missing loaded department for " .. tostring(path))
     end
     local department = normalize_department(path, module)
     for _, queue in ipairs(department.spec.consumes or {}) do

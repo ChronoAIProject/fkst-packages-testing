@@ -1,4 +1,5 @@
 -- contract.testing_execution: value-only contracts for typed testing execution.
+local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 
 local E = {}
@@ -41,7 +42,7 @@ local max_assertions = 8
 local max_argv = 32
 
 local function fail(classification, message)
-  error("contract.testing-execution: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.testing-execution", classification, message))
 end
 
 local function bounded(value, limit)

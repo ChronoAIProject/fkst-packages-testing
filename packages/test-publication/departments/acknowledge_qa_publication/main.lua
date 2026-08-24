@@ -1,5 +1,6 @@
 local qa_publication = require("qa_publication")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "github_comment_written" },
@@ -24,6 +25,6 @@ local function act(event)
   raise("qa_publication_receipt", receipt)
 end
 
-local M = saga.department(spec, { accept = accept, done = done, act = act, name = "acknowledge_qa_publication" })
+local M = saga.department(spec, { accept = accept, done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "test-publication.acknowledge_qa_publication" })
 M.pipeline = _G.pipeline
 return M

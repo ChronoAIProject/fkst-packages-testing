@@ -5,10 +5,10 @@ name = "workflow"
 root = "."
 
 [lib_deps]
-libraries = ["contract"]
+libraries = ["contract", "workflow_internal"]
 
 [dependency_constraints]
-allowed_lib_deps = ["contract"]
+allowed_lib_deps = ["contract", "workflow_internal"]
 
 [library]
 name = "workflow"

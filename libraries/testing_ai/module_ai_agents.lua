@@ -175,16 +175,6 @@ local function proposal_source_ref(context, purpose)
   }
 end
 
-local function module_summary_lines(context)
-  local lines = {}
-  for _, module in ipairs((context or {}).modules or {}) do
-    table.insert(lines, "- " .. tostring(module.id) .. " entry_url=" .. tostring(module.entry_url or "not-recorded") .. " route=" .. tostring(module.route or "not-recorded") .. " label=" .. tostring(module.visible_label or module.name or "not-recorded"))
-    if #lines >= 16 then break end
-  end
-  if #lines == 0 then lines[1] = "- no modules in sanitized context" end
-  return lines
-end
-
 function A.build_generation_proposal(context, generated, request, content_fetch)
   local body = {
     "Review the exact AI-authored FKST UI test case artifact before deterministic gating.",

@@ -1,4 +1,5 @@
 local graph = require("testkit.graph")
+local ai_orchestration = require("ai_orchestration")
 
 local t = fkst.test
 local verdict_label = "\226\159\166FKST:VERDICT\226\159\167"
@@ -36,9 +37,9 @@ local function failed_result_event()
   }
 end
 
-local function consensus_proposal_event()
+local function consensus_request_event()
   return {
-    queue = "consensus.proposal",
+    queue = "ai_consensus_request",
     source_ref = event_source_ref("edge-coverage-consensus"),
     payload = {
       schema = "consensus.proposal.v1",
@@ -134,7 +135,7 @@ return {
     })
   end,
 
-  test_run_graph_consensus_proposal_routes_to_decide = function()
+  test_run_graph_consensus_request_routes_to_call = function()
     t.mock_command('printf %s "$FKST_RUNTIME_ROOT"', {
       stdout = "/tmp/fkst-packages-test/module-testing-pipeline/consensus-runtime",
       stderr = "",
@@ -146,28 +147,35 @@ return {
       exit_code = 0,
     })
     t.mock_command("consensus-angle-teleology", {
-      stdout = verdict_label .. " approve\n" .. reply_label .. " Edge coverage route approved.\n",
+      stdout = ai_orchestration.json_encode({
+        type = "item.completed",
+        item = {
+          type = "agent_message",
+          text = verdict_label .. " approve\n" .. reply_label .. " Edge coverage route approved.\n",
+        },
+      }) .. "\n",
       stderr = "",
       exit_code = 0,
     })
 
-    local trace = graph.run(consensus_proposal_event(), { max_steps = 2 })
+    local trace = graph.run(consensus_request_event(), { max_steps = 2 })
     graph.assert_covers(trace, {
-      "consensus.proposal -> consensus.decide",
+      "module-testing-pipeline.ai_consensus_request -> module-testing-pipeline.ai_consensus_call",
+      "module-testing-pipeline.ai_consensus_result -> module-testing-pipeline.ai_consensus",
     })
   end,
 
   test_run_graph_consensus_reached_routes_to_ai_orchestration = function()
-    local trace = graph.run(consensus_event("consensus.consensus_reached", "consensus.consensus_reached.v1"), { max_steps = 1 })
+    local trace = graph.run(consensus_event("ai_consensus_result", "consensus.consensus_reached.v1"), { max_steps = 1 })
     graph.assert_covers(trace, {
-      "consensus.consensus_reached -> module-testing-pipeline.ai_consensus",
+      "module-testing-pipeline.ai_consensus_result -> module-testing-pipeline.ai_consensus",
     })
   end,
 
   test_run_graph_consensus_converge_routes_to_ai_orchestration = function()
-    local trace = graph.run(consensus_event("consensus.consensus_converge", "consensus.consensus_converge.v1"), { max_steps = 1 })
+    local trace = graph.run(consensus_event("ai_consensus_result", "consensus.consensus_converge.v1"), { max_steps = 1 })
     graph.assert_covers(trace, {
-      "consensus.consensus_converge -> module-testing-pipeline.ai_consensus",
+      "module-testing-pipeline.ai_consensus_result -> module-testing-pipeline.ai_consensus",
     })
   end,
 }

@@ -4,22 +4,26 @@
 units = [
   "packages/*",
   "libraries/contract",
+  ".fkst/local-libraries/consensus",
   ".fkst/local-libraries/forge",
   "libraries/testing_ai",
   "libraries/testing_package_executor",
   "libraries/testing_runtime",
   "libraries/testkit",
   "libraries/workflow",
+  "libraries/workflow_internal",
 ]
 packages = ["packages/*"]
 libraries = [
   "libraries/contract",
+  ".fkst/local-libraries/consensus",
   ".fkst/local-libraries/forge",
   "libraries/testing_ai",
   "libraries/testing_package_executor",
   "libraries/testing_runtime",
   "libraries/testkit",
   "libraries/workflow",
+  "libraries/workflow_internal",
 ]
 
 [registries]

@@ -92,4 +92,39 @@ return {
     end
     t.eq(result, true)
   end,
+
+  test_codex_live_run_active_accepts_invocation_identity = function()
+    local previous_codex_runs = fkst.codex_runs
+    fkst.codex_runs = function()
+      return {
+        running = {
+          {
+            role = "consensus",
+            proposal_id = "invocation-1",
+            dedup_key = "dedup-1",
+            status = "running",
+            lease_expires_at_ms = 20 * 1000,
+          },
+        },
+      }
+    end
+    local ok, result = pcall(function()
+      return with_globals({
+        now = function()
+          return 10
+        end,
+      }, function()
+        return codex.live_run_active({
+          role = "consensus",
+          invocation_id = "invocation-1",
+          dedup_key = "dedup-1",
+        })
+      end)
+    end)
+    fkst.codex_runs = previous_codex_runs
+    if not ok then
+      error(result)
+    end
+    t.eq(result, true)
+  end,
 }

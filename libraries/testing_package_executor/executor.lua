@@ -1,4 +1,5 @@
 local contract = require("contract.testing_package_executor")
+local error_facts = require("contract.error_facts")
 local package_manifest = require("contract.testing_package_manifest")
 local results = require("contract.testing_results")
 local time = require("contract.time")
@@ -6,7 +7,7 @@ local time = require("contract.time")
 local M = {}
 
 local function fail(classification, message)
-  error("testing-package-executor: " .. classification .. ": " .. message)
+  error(error_facts.error_message("testing-package-executor", classification, message))
 end
 
 local function callable_ports(ports, names, context)

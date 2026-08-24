@@ -1,0 +1,22 @@
+kind = "library"
+name = "consensus"
+
+[code]
+root = "."
+
+[lib_deps]
+libraries = ["contract", "workflow_internal"]
+
+[dependency_constraints]
+allowed_lib_deps = ["contract", "workflow_internal"]
+
+[library]
+name = "consensus"
+stable_id = "fkst.library.consensus"
+version = "workspace"
+
+[exports]
+public = ["consensus", "consensus.*"]
+
+[visibility]
+public = false

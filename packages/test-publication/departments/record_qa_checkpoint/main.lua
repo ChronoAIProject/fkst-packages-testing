@@ -1,5 +1,6 @@
 local qa_publication = require("qa_publication")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "qa_checkpoint_request" },
@@ -23,6 +24,6 @@ local function act(event)
   end
 end
 
-local M = saga.department(spec, { done = done, act = act, name = "record_qa_checkpoint" })
+local M = saga.department(spec, { done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "test-publication.record_qa_checkpoint" })
 M.pipeline = _G.pipeline
 return M

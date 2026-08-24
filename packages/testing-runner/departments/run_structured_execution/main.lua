@@ -1,4 +1,5 @@
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 local structured_execution = require("structured_execution")
 
 local spec = {
@@ -19,6 +20,6 @@ local function act(event)
   raise("testing_result", result)
 end
 
-local M = saga.department(spec, { done = done, act = act, name = "run_structured_execution" })
+local M = saga.department(spec, { done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "testing-runner.run_structured_execution" })
 M.pipeline = _G.pipeline
 return M

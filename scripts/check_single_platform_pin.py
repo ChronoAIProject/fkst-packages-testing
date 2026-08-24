@@ -170,11 +170,11 @@ def tree_digest(root: Path) -> tuple[str, list[str]]:
     return digest.hexdigest(), paths
 
 
-def check_forge_mirror() -> None:
-    local_digest, local_paths = tree_digest(ROOT / ".fkst" / "local-libraries" / "forge")
-    platform_digest, platform_paths = tree_digest(CHECKOUT / "libraries" / "forge")
+def check_library_mirror(name: str) -> None:
+    local_digest, local_paths = tree_digest(ROOT / ".fkst" / "local-libraries" / name)
+    platform_digest, platform_paths = tree_digest(CHECKOUT / "libraries" / name)
     if local_paths != platform_paths or local_digest != platform_digest:
-        fail("local forge mirror differs from the pinned platform export")
+        fail(f"local {name} mirror differs from the pinned platform export")
 
 
 def git_output(*args: str) -> str:
@@ -223,7 +223,8 @@ def main() -> int:
             f"names={','.join(sorted(overlap)) or '<none>'}"
         )
     check_checkout(expected_rev)
-    check_forge_mirror()
+    check_library_mirror("forge")
+    check_library_mirror("consensus")
     check_substrate_pin()
     print(
         "PASS single-platform-pin "
