@@ -11,7 +11,7 @@ units = [
   "libraries/testing_runtime",
   "libraries/testkit",
   "libraries/workflow",
-  "libraries/workflow_internal",
+  ".fkst/local-libraries/workflow_internal",
 ]
 packages = ["packages/*"]
 libraries = [
@@ -23,7 +23,7 @@ libraries = [
   "libraries/testing_runtime",
   "libraries/testkit",
   "libraries/workflow",
-  "libraries/workflow_internal",
+  ".fkst/local-libraries/workflow_internal",
 ]
 
 [registries]

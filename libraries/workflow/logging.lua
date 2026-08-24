@@ -44,33 +44,31 @@ local function event_identity(event)
   return payload.proposal_id or payload.run_id or payload.trace_id or "unknown"
 end
 
+local function log_pipeline_failure(dept, event, result)
+  if is_engine_lock_busy(result) then
+    return
+  end
+  local queue = type(event) == "table" and event.queue or nil
+  local fields = error_facts.error_fact_fields(error_facts.error_class_from_message(result), queue, dept, result, {
+    source_ref = error_facts.event_source_ref(event),
+    attempt = type(event) == "table" and event.attempt or nil,
+    terminal = type(event) == "table" and event.terminal or nil,
+  })
+  table.insert(fields, "queue=" .. error_facts.one_line(queue))
+  table.insert(fields, "error=" .. error_facts.one_line(result))
+  L.log_line("fkst-testing", "error", dept, event_identity(event), "FAILURE", fields)
+end
+
+local function rethrow(result) error(result, 0) end
+
 function L.wrap_pipeline_failure(dept, fn)
   if type(fn) ~= "function" then
     error("workflow.logging: failure-handler-invalid: wrap_pipeline_failure requires a function", 2)
   end
   return function(event)
     local ok, result = pcall(fn, event)
-    if ok then
-      return result
-    end
-    if not is_engine_lock_busy(result) then
-      local queue = type(event) == "table" and event.queue or nil
-      local fields = error_facts.error_fact_fields(
-        error_facts.error_class_from_message(result),
-        queue,
-        dept,
-        result,
-        {
-          source_ref = error_facts.event_source_ref(event),
-          attempt = type(event) == "table" and event.attempt or nil,
-          terminal = type(event) == "table" and event.terminal or nil,
-        }
-      )
-      table.insert(fields, "queue=" .. error_facts.one_line(queue))
-      table.insert(fields, "error=" .. error_facts.one_line(result))
-      L.log_line("fkst-testing", "error", dept, event_identity(event), "FAILURE", fields)
-    end
-    error(result, 0)
+    if not ok then log_pipeline_failure(dept, event, result); rethrow(result) end
+    return result
   end
 end
 

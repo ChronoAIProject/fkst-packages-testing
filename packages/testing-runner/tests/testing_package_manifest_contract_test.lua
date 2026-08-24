@@ -70,6 +70,11 @@ return {
     t.raises(function() manifest.validate(value) end)
   end,
 
+  test_rejects_workspace_path_package_id = function()
+    local value = valid(); value.package_id = "packages/testing-runner"
+    t.raises(function() manifest.validate(value) end)
+  end,
+
   test_rejects_identity_digest_and_version_mismatches = function()
     local value = valid()
     t.raises(function() manifest.validate(value, { package_content_sha256 = digest("f") }) end)

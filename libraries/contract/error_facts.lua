@@ -32,21 +32,18 @@ end
 
 local function valid_subsystem(value)
   local start_index = 1
-  while true do
+  repeat
     local separator_index = value:find(error_envelope_grammar.hierarchy_separator, start_index, true)
     local end_index = separator_index and separator_index - 1 or #value
-    if not valid_token(
-      value:sub(start_index, end_index),
-      error_envelope_grammar.subsystem_segment_initial,
-      error_envelope_grammar.subsystem_segment_rest
-    ) then
+    local segment = value:sub(start_index, end_index)
+    if not valid_token(segment, error_envelope_grammar.subsystem_segment_initial, error_envelope_grammar.subsystem_segment_rest) then
       return false
     end
-    if separator_index == nil then
-      return true
+    if separator_index ~= nil then
+      start_index = separator_index + #error_envelope_grammar.hierarchy_separator
     end
-    start_index = separator_index + #error_envelope_grammar.hierarchy_separator
-  end
+  until separator_index == nil
+  return true
 end
 
 local function strip_position_prefix(text)

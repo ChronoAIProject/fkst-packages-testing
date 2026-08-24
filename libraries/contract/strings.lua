@@ -33,16 +33,16 @@ end
 function S.map_lines(value, transform)
   local output = {}
   local start = 1
-  while true do
+  repeat
     local newline = value:find("\n", start, true)
     if newline == nil then
       table.insert(output, transform(value:sub(start)))
-      break
+    else
+      table.insert(output, transform(value:sub(start, newline - 1)))
+      table.insert(output, "\n")
+      start = newline + 1
     end
-    table.insert(output, transform(value:sub(start, newline - 1)))
-    table.insert(output, "\n")
-    start = newline + 1
-  end
+  until newline == nil
   return table.concat(output)
 end
 

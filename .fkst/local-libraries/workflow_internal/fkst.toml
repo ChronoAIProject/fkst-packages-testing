@@ -20,12 +20,7 @@ exact = true
 public = [
   "workflow_internal.codex",
   "workflow_internal.env",
-  "workflow_internal.liveness.contract",
-  "workflow_internal.liveness.shared",
   "workflow_internal.logging",
-  "workflow_internal.ports",
-  "workflow_internal.registry",
-  "workflow_internal.restart_liveness_contract",
   "workflow_internal.sweep",
 ]
 

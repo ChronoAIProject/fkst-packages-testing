@@ -41,9 +41,6 @@ local function directory_segment(key_segment, fallback)
     local suffix = "-" .. strings.decimal_checksum(key_segment)
     segment = segment:sub(1, C.max_directory_segment_len - #suffix):gsub("%-+$", "") .. suffix
   end
-  if segment == "" then
-    return fallback
-  end
   return segment
 end
 
