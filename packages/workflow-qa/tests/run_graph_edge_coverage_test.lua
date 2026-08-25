@@ -1,4 +1,5 @@
 local graph = require("testkit.graph")
+local t = fkst.test
 
 local function trace(queue)
   return graph.run({
@@ -92,6 +93,7 @@ return {
     graph.assert_covers(trace("github-proxy.github_comment_written"), {
       "github-proxy.github_comment_written -> workflow-qa.github_comment_in",
     })
+    t.mock_command('printf %s "$FKST_GITHUB_REPO"', { stdout = "owner/repo" })
     graph.assert_covers(trace("github-proxy.github_issue_comment_request"), {
       "github-proxy.github_issue_comment_request -> github-proxy.github_comment",
     })

@@ -82,6 +82,7 @@ jobs:
           BIN: ${{ github.workspace }}/fkst-substrate/target/debug/fkst-framework
           FKST_COMPETENCE_BASE_REF: ${{ github.event.pull_request.base.sha }}
           FKST_LUA_COVERAGE_BASE_REF: ${{ github.event.pull_request.base.sha || github.ref_name }}
+          FKST_RATCHET_TARGET_REF: ${{ github.event.pull_request.base.sha || github.event.before }}
         run: |
           test -x "$BIN"
           scripts/run.sh host -- check

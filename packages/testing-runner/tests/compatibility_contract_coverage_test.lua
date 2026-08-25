@@ -1,10 +1,18 @@
 local bundle_identity = require("contract.context_bundle_identity")
 local convergence_identity = require("contract.convergence_identity")
 local error_facts = require("contract.error_facts")
+local sha256 = require("contract.sha256")
 local strings = require("contract.strings")
 local t = fkst.test
 
 return {
+  test_sha256_matches_fips_vectors_and_rejects_non_strings = function()
+    t.eq(sha256.hex(""), "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855")
+    t.eq(sha256.hex("abc"), "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad")
+    t.eq(sha256.hex(string.rep("a", 1000)), "41edece42d63e8d9bf515a9ba6932e1c20cbc9f5a5d134645adb5db1b9737ea3")
+    t.raises(function() sha256.hex({}) end)
+  end,
+
   test_string_compatibility_helpers_cover_boundaries = function()
     t.eq(strings.trim_end("value \t  "), "value")
 
