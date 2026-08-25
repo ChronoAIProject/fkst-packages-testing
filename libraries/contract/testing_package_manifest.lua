@@ -1,5 +1,6 @@
 -- contract.testing_package_manifest: immutable release identity for testing packages.
 local canonical_json = require("contract.canonical_json")
+local error_facts = require("contract.error_facts")
 local M = {}
 
 M.schema = "testing-package-manifest.v1"
@@ -15,7 +16,7 @@ M.max_capabilities = 64
 M.max_contracts = 32
 
 local function fail(classification, message)
-  error("contract.testing-package-manifest: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.testing-package-manifest", classification, message))
 end
 
 local function fields(value, allowed, context)

@@ -13,10 +13,10 @@ local function issue_list_argv(repo)
   return { "gh", "api", "--paginate", "--slurp", "repos/" .. tostring(repo) .. "/issues?state=open&per_page=100" }
 end
 
-local function issue_list_cli_argv(repo, state, limit, fields)
+local function entity_list_cli_argv(command, repo, state, limit, fields)
   return {
     "gh",
-    "issue",
+    command,
     "list",
     "--repo",
     tostring(repo),
@@ -27,6 +27,10 @@ local function issue_list_cli_argv(repo, state, limit, fields)
     "--json",
     tostring(fields),
   }
+end
+
+local function issue_list_cli_argv(repo, state, limit, fields)
+  return entity_list_cli_argv("issue", repo, state, limit, fields)
 end
 
 local function issue_list_open_assigned_argv(repo, assignee)
@@ -48,19 +52,7 @@ local function issue_list_open_assigned_argv(repo, assignee)
 end
 
 local function pr_list_cli_argv(repo, state, limit, fields)
-  return {
-    "gh",
-    "pr",
-    "list",
-    "--repo",
-    tostring(repo),
-    "--state",
-    tostring(state),
-    "--limit",
-    tostring(limit),
-    "--json",
-    tostring(fields),
-  }
+  return entity_list_cli_argv("pr", repo, state, limit, fields)
 end
 
 local function pr_list_recent_merged_argv(repo, limit)
@@ -169,8 +161,31 @@ local function pr_close_argv(repo, pr_number)
   return { "gh", "pr", "close", tostring(pr_number), "--repo", tostring(repo) }
 end
 
-local function issue_close_argv(repo, issue_number)
-  return { "gh", "issue", "close", tostring(issue_number), "--repo", tostring(repo) }
+local function issue_close_argv(repo, issue_number, disposition)
+  if type(disposition) ~= "table" then
+    error("forge.github: issue-close-disposition-required: explicit issue close disposition is required", 0)
+  end
+  local argv = { "gh", "issue", "close", tostring(issue_number), "--repo", tostring(repo) }
+  if disposition.kind == "completed" then
+    table.insert(argv, "--reason")
+    table.insert(argv, "completed")
+    return argv
+  end
+  if disposition.kind == "not_planned" then
+    table.insert(argv, "--reason")
+    table.insert(argv, "not planned")
+    return argv
+  end
+  if disposition.kind == "duplicate" then
+    local duplicate_of = tonumber(disposition.duplicate_of)
+    if duplicate_of == nil or duplicate_of < 1 or duplicate_of ~= math.floor(duplicate_of) then
+      error("forge.github: issue-close-duplicate-number-invalid: duplicate issue close disposition requires a positive duplicate_of issue number", 0)
+    end
+    table.insert(argv, "--duplicate-of")
+    table.insert(argv, tostring(duplicate_of))
+    return argv
+  end
+  error("forge.github: issue-close-disposition-unsupported: unsupported issue close disposition: " .. tostring(disposition.kind), 0)
 end
 
 local function pr_merge_argv(repo, pr_number, head_sha)
@@ -347,8 +362,16 @@ local function label_rest_create_argv(repo, name, color, description)
   })
 end
 
+local function label_rest_path(repo, name)
+  return "repos/" .. tostring(repo) .. "/labels/" .. shell.url_encode(name)
+end
+
+local function label_rest_get_argv(repo, name)
+  return api_method_argv("GET", label_rest_path(repo, name))
+end
+
 local function label_rest_update_argv(repo, name, color, description)
-  return api_method_argv("PATCH", "repos/" .. tostring(repo) .. "/labels/" .. tostring(name):gsub(":", "%%3A"), {
+  return api_method_argv("PATCH", label_rest_path(repo, name), {
     "color=" .. tostring(color),
     "description=" .. tostring(description or ""),
   })
@@ -392,7 +415,7 @@ function M.install(handle)
   function handle.issue_list_recent_closed(repo, limit, timeout)
     local bounded_limit = tonumber(limit or 30)
     if bounded_limit == nil or bounded_limit < 1 or bounded_limit > 100 then
-      error("forge.github.entities: invalid closed issue list limit")
+      error("forge.github.entities: closed-issue-list-limit-invalid: invalid closed issue list limit")
     end
     return handle.issue_list_cli(repo, "closed", math.floor(bounded_limit), "number,title,closedAt,labels,author", timeout)
   end
@@ -492,7 +515,7 @@ function M.install(handle)
     end
     local ok, parsed = pcall(json.decode, command_result.stdout or "{}")
     if not ok or type(parsed) ~= "table" then
-      error("forge.github: gh pr view returned invalid JSON")
+      error("forge.github: gh-pr-view-json-invalid: gh pr view returned invalid JSON")
     end
     return parsed
   end
@@ -521,8 +544,8 @@ function M.install(handle)
     return handle._exec(pr_close_argv(repo, pr_number), timeout, "gh pr close", stdout_policy.write_response())
   end
 
-  function handle.issue_close(repo, issue_number, timeout)
-    return handle._exec(issue_close_argv(repo, issue_number), timeout, "gh issue close", stdout_policy.write_response())
+  function handle.issue_close(repo, issue_number, disposition, timeout)
+    return handle._exec(issue_close_argv(repo, issue_number, disposition), timeout, "gh issue close", stdout_policy.write_response())
   end
 
   function handle.pr_merge(repo, pr_number, head_sha, timeout)
@@ -531,7 +554,7 @@ function M.install(handle)
 
   function handle.gh_pr_merge(repo, pr_number, head_sha, timeout)
     if tostring(head_sha or "") == "" then
-      error("github-devloop: invalid merge head sha")
+      error("github-devloop: merge-head-sha-missing: invalid merge head sha")
     end
     return gh_result(function()
       return handle.pr_merge(repo, pr_number, head_sha, timeout)
@@ -576,7 +599,7 @@ function M.install(handle)
   function handle.gh_check_run_rerequest(repo, check_run_id, timeout)
     local id = tostring(check_run_id or "")
     if id == "" or id:find("[^0-9]") ~= nil then
-      error("github-devloop: invalid check-run id")
+      error("github-devloop: check-run-id-invalid: invalid check-run id")
     end
     return gh_result(function()
       return handle.api_method("POST", "repos/" .. tostring(repo) .. "/check-runs/" .. id .. "/rerequest", nil, nil, nil, timeout)
@@ -605,6 +628,10 @@ function M.install(handle)
 
   function handle.label_rest_create(repo, name, color, description, timeout)
     return handle._exec(label_rest_create_argv(repo, name, color, description), timeout, "gh label REST create", stdout_policy.write_response())
+  end
+
+  function handle.label_rest_get(repo, name, timeout)
+    return handle._exec(label_rest_get_argv(repo, name), timeout, "gh label REST get", stdout_policy.trusted_metadata_json())
   end
 
   function handle.label_rest_update(repo, name, color, description, timeout)

@@ -26,7 +26,7 @@ local function required_names(group_name, names)
   end
   local group = groups[group_name]
   if group == nil then
-    error("workflow.ports: unknown port group " .. tostring(group_name))
+    error("workflow.ports: port-group-unknown: unknown port group " .. tostring(group_name))
   end
   return group
 end
@@ -34,11 +34,11 @@ end
 function M.require_ports(resolved, owner, names)
   local group_owner = owner or "workflow"
   if type(resolved) ~= "table" then
-    error("workflow.ports: missing resolved for " .. tostring(group_owner))
+    error("workflow.ports: resolved-missing: missing resolved for " .. tostring(group_owner))
   end
   local source = resolved.workflow_ports
   if type(source) ~= "table" then
-    error("workflow.ports: missing resolved.workflow_ports for " .. tostring(group_owner))
+    error("workflow.ports: workflow-ports-missing: missing resolved.workflow_ports for " .. tostring(group_owner))
   end
 
   local ports = {}
@@ -46,10 +46,10 @@ function M.require_ports(resolved, owner, names)
     local value = source[name]
     local expected_type = M.types[name]
     if expected_type == nil then
-      error("workflow.ports: unknown port " .. tostring(name) .. " for " .. tostring(group_owner))
+      error("workflow.ports: port-unknown: unknown port " .. tostring(name) .. " for " .. tostring(group_owner))
     end
     if type(value) ~= expected_type then
-      error("workflow.ports: missing " .. expected_type .. " port " .. tostring(name) .. " for " .. tostring(group_owner))
+      error("workflow.ports: port-missing: missing " .. expected_type .. " port " .. tostring(name) .. " for " .. tostring(group_owner))
     end
     ports[name] = value
   end

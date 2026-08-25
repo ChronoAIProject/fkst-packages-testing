@@ -1,4 +1,5 @@
 -- contract.project_profile: host-authorized Project Profile contracts.
+local error_facts = require("contract.error_facts")
 local time = require("contract.time")
 
 local P = {}
@@ -63,7 +64,7 @@ local credential_options = {
 }
 
 local function fail(classification, message)
-  error("contract.project-profile: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.project-profile", classification, message))
 end
 
 local function valid_utf8(value)

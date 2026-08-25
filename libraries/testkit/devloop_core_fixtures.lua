@@ -27,7 +27,7 @@ end
 
 function M.new(deps)
   deps = deps or {}
-  local core = deps.core or error("testkit.devloop_core_fixtures: deps.core is required")
+  local core = deps.core or error("testkit.devloop_core_fixtures: fixture-dependency-missing: deps.core is required")
   local t = deps.t or fkst.test
 
   gh_argv.install(t, core)

@@ -1,3 +1,4 @@
+local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 local structured = require("contract.structured_execution")
 local time = require("contract.time")
@@ -22,7 +23,7 @@ M.action_kinds = {
 }
 
 local function fail(classification, message)
-  error("contract.browser-control: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.browser-control", classification, message))
 end
 
 local function bounded(value, limit)

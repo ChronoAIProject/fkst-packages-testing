@@ -65,9 +65,6 @@ local function reachable_lifecycle_states(M)
     return M.lifecycle_state_set()
   end
   local seen = {}
-  local function add(state)
-    add_to(seen, state)
-  end
   return seen
 end
 shared.reachable_lifecycle_states = reachable_lifecycle_states

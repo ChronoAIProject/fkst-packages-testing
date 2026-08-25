@@ -39,7 +39,7 @@ function M.from_values(repo_value, bot_login_value)
     return nil, identity_error("malformed FKST_GITHUB_REPO")
   end
 
-  local bot_login = forge_strings.strip_bot_login_suffix(strings.trim(bot_login_value))
+  local bot_login = forge_strings.canonical_login(bot_login_value)
   if bot_login == nil or bot_login == "" then
     return nil, identity_error("missing FKST_GITHUB_BOT_LOGIN")
   end

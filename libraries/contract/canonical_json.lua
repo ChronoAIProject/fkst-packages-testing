@@ -18,7 +18,7 @@ local escapes = {
 }
 
 local function fail(message)
-  error("contract.canonical-json: " .. message)
+  error("contract.canonical-json: canonicalization-failed: " .. message)
 end
 
 local function require_table(value, kind)

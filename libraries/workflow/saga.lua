@@ -15,26 +15,26 @@ end
 
 local function validate_consumes(consumes)
   if type(consumes) ~= "table" or #consumes == 0 then
-    error("workflow.saga: department requires non-empty consumes")
+    error("workflow.saga: consumes-missing: department requires non-empty consumes")
   end
 end
 
 local function validate_spec(spec)
   if type(spec) ~= "table" then
-    error("workflow.saga: department requires spec")
+    error("workflow.saga: spec-missing: department requires spec")
   end
   validate_consumes(spec.consumes)
 end
 
 local function validate_handlers(handlers)
   if type(handlers) ~= "table" then
-    error("workflow.saga: department requires handlers")
+    error("workflow.saga: handlers-missing: department requires handlers")
   end
   if type(handlers.done) ~= "function" then
-    error("workflow.saga: department requires done")
+    error("workflow.saga: done-handler-missing: department requires done")
   end
   if type(handlers.act) ~= "function" then
-    error("workflow.saga: department requires act")
+    error("workflow.saga: act-handler-missing: department requires act")
   end
 end
 

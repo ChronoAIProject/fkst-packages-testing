@@ -1,5 +1,6 @@
 local planning = require("structured_planning")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "structured_plan_request" },
@@ -15,4 +16,4 @@ local function act(event)
   raise("structured_plan_result", result)
 end
 
-return saga.department(spec, { done = function() return false end, act = act, name = "compile_structured_plan" })
+return saga.department(spec, { done = function() return false end, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "testing-runner.compile_structured_plan" })

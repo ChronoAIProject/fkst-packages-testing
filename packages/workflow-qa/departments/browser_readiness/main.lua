@@ -1,6 +1,7 @@
 local actions = require("departments.actions")
 local core = require("core")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "browser-readiness.browser_readiness_result" },
@@ -32,5 +33,5 @@ return saga.department(spec, {
   accept = accept,
   done = function() return false end,
   act = act,
-  name = "browser_readiness",
+  wrap = workflow_logging.wrap_pipeline_failure, name = "workflow-qa.browser_readiness",
 })

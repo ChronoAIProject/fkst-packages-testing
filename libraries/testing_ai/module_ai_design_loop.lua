@@ -1,3 +1,4 @@
+local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 local util = require("testing_ai.module_ai_util")
 
@@ -52,7 +53,7 @@ local operation_kinds = {
 }
 
 local function fail(classification, message)
-  error("testing-runner: ai-design-loop-" .. classification .. ": " .. message)
+  error(error_facts.error_message("testing-runner", "ai-design-loop-" .. classification, message))
 end
 
 local function bounded(value, limit)

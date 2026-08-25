@@ -5,7 +5,9 @@ local M = {}
 local runtime_cli = "libraries/testing_runtime/bin/fkst-browser-control-runtime.js"
 
 local function resolve(ports)
-  if type(ports) ~= "table" then error("testing-runtime: browser-control-ports-unavailable") end
+  if type(ports) ~= "table" then
+    error("testing-runtime: browser-control-ports-unavailable: ports must be a table")
+  end
   for _, name in ipairs({ "exec_argv", "read", "write", "decode" }) do
     if type(ports[name]) ~= "function" then
       error("testing-runtime: browser-control-invalid-ports: missing " .. name)
@@ -29,7 +31,7 @@ local function run(ports, argv, timeout, secret_ref)
   local result
   if secret_ref ~= nil then
     if type(ports.exec_argv_with_secret_stdin) ~= "function" then
-      error("testing-runtime: secret-stdin-port-unavailable")
+      error("testing-runtime: secret-stdin-port-unavailable: secret stdin execution port is required")
     end
     result = ports.exec_argv_with_secret_stdin(argv, secret_ref, timeout)
   else

@@ -141,7 +141,7 @@ end
 
 local function consensus_reached_event(proposal)
   return {
-    queue = "consensus.consensus_reached",
+    queue = "ai_consensus_result",
     payload = {
       schema = "consensus.consensus_reached.v1",
       proposal_id = proposal.proposal_id,
@@ -164,7 +164,7 @@ local function start_ai_generation_proposal()
   local trace = testing.run_fake(start_module, module_ai_consensus_start_event())
   t.eq(#trace.raises, 1)
   t.eq(trace.raises[1].queue, "ai_generation_request")
-  t.mock_command("codex exec", {
+  local generation_result = {
     stdout = ai_orchestration.json_encode({
       schema = "testing-runner.ai-case-candidates.v1",
       cases = {
@@ -187,14 +187,19 @@ local function start_ai_generation_proposal()
     }),
     stderr = "",
     exit_code = 0,
-  })
+  }
   local generated = testing.run_fake(ai_generate, {
     queue = "ai_generation_request",
     payload = trace.raises[1].payload,
     source_ref = trace.raises[1].payload.source_ref,
+    test_ports = {
+      generate = function()
+        return generation_result
+      end,
+    },
   })
   t.eq(#generated.raises, 1)
-  t.eq(generated.raises[1].queue, "consensus.proposal")
+  t.eq(generated.raises[1].queue, "ai_consensus_request")
   return generated.raises[1].payload
 end
 
@@ -202,7 +207,7 @@ local function start_checkout_settings_dogfood_proposal()
   local trace = testing.run_fake(start_module, checkout_settings_dogfood_start_event())
   t.eq(#trace.raises, 1)
   t.eq(trace.raises[1].queue, "ai_generation_request")
-  t.mock_command("codex exec", {
+  local generation_result = {
     stdout = ai_orchestration.json_encode({
       schema = "testing-runner.ai-case-candidates.v1",
       cases = {
@@ -245,14 +250,19 @@ local function start_checkout_settings_dogfood_proposal()
     }),
     stderr = "",
     exit_code = 0,
-  })
+  }
   local generated = testing.run_fake(ai_generate, {
     queue = "ai_generation_request",
     payload = trace.raises[1].payload,
     source_ref = trace.raises[1].payload.source_ref,
+    test_ports = {
+      generate = function()
+        return generation_result
+      end,
+    },
   })
   t.eq(#generated.raises, 1)
-  t.eq(generated.raises[1].queue, "consensus.proposal")
+  t.eq(generated.raises[1].queue, "ai_consensus_request")
   return generated.raises[1].payload
 end
 
@@ -315,7 +325,7 @@ return {
 
     local generation_trace = testing.run_fake(ai_consensus, consensus_reached_event(generation_proposal))
     t.eq(#generation_trace.raises, 1)
-    t.eq(generation_trace.raises[1].queue, "consensus.proposal")
+    t.eq(generation_trace.raises[1].queue, "ai_consensus_request")
     local review_proposal = generation_trace.raises[1].payload
     t.eq(review_proposal.verdict_mode, "gate")
     t.eq(review_proposal.source_ref.kind, "testing-ai-review")

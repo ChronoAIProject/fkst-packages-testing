@@ -106,7 +106,7 @@ function S.install(M, read_env, git)
 
   local function with_github_debug_stamp(body, context)
     return S.append(body, context, {
-      read_env = read_env or M.read_env,
+      read_env = read_env,
       git = git or production_git(),
     })
   end

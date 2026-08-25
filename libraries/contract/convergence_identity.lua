@@ -2,7 +2,7 @@ local I = {}
 
 local function require_value(value, field)
   if value == nil or tostring(value) == "" then
-    error("contract.convergence_identity: missing " .. tostring(field))
+    error("contract.convergence_identity: field-missing: missing " .. tostring(field))
   end
   return tostring(value)
 end
@@ -13,7 +13,7 @@ local function nonnegative_integer(value, field)
   end
   local number = tonumber(value)
   if number == nil or number < 0 or number ~= math.floor(number) then
-    error("contract.convergence_identity: invalid " .. tostring(field))
+    error("contract.convergence_identity: field-invalid: invalid " .. tostring(field))
   end
   return number
 end
@@ -41,7 +41,7 @@ end
 
 function I.from_proposal(role, proposal, opts)
   if type(proposal) ~= "table" then
-    error("contract.convergence_identity: missing proposal")
+    error("contract.convergence_identity: proposal-missing: missing proposal")
   end
   opts = opts or {}
   local generation = nonnegative_integer(opts.generation ~= nil and opts.generation or proposal.generation, "generation")

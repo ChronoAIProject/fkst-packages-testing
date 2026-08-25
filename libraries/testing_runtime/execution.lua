@@ -1,4 +1,5 @@
 local contract = require("contract.testing_execution")
+local error_facts = require("contract.error_facts")
 local json_codec = require("testing_runtime.json")
 local ports_module = require("testing_runtime.ports")
 local receipt = require("testing_runtime.receipt")
@@ -19,10 +20,12 @@ local function run_command(ports, argv, timeout, class)
   local result = ports.exec_argv(argv, timeout)
   local exit_code = type(result) == "table" and tonumber(result.exit_code) or nil
   if exit_code ~= 0 then
-    error(
-      "testing-runtime: " .. tostring(class) .. ": exit=" .. tostring(exit_code or -1)
+    error(error_facts.error_message(
+      "testing-runtime",
+      tostring(class),
+      "exit=" .. tostring(exit_code or -1)
         .. " stderr=" .. tostring(type(result) == "table" and result.stderr or "")
-    )
+    ))
   end
   return result
 end

@@ -22,7 +22,7 @@ local function bounded_page_number(page)
   end
   local n = tonumber(page)
   if n == nil or n ~= math.floor(n) or n < 1 then
-    error("github-devloop: invalid list page number")
+    error("testkit.gh-argv-mock: page-invalid: invalid list page number")
   end
   return n
 end

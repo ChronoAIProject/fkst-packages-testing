@@ -242,12 +242,11 @@ class RunnerWorkspace:
             ".fkst/run/fkst-packages-conformance/packages/platform-dep/tests/platform_dep_test.lua",
             "return {}\n",
         )
-        for name in ("forge", "devloop"):
+        for name in ("forge", "devloop", "testkit_internal", "workflow_internal"):
             self.write(
                 f".fkst/run/fkst-packages-conformance/libraries/{name}/fkst.toml",
                 f'kind = "library"\n[library]\nname = "{name}"\n',
             )
-
         subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
         subprocess.run(["git", "config", "user.email", "fixture@example.invalid"], cwd=checkout, check=True)
         subprocess.run(["git", "config", "user.name", "Fixture"], cwd=checkout, check=True)
@@ -257,7 +256,6 @@ class RunnerWorkspace:
             ["git", "rev-parse", "HEAD"], cwd=checkout, check=True, text=True, stdout=subprocess.PIPE
         ).stdout.strip()
         self.write(".fkst/conformance/fkst-packages.pin", f"{pin}\n")
-
         self.write(
             "fixture-framework",
             dedent(
@@ -273,6 +271,9 @@ class RunnerWorkspace:
                 if subcommand == "init-package-repo":
                     Path(".fkst-substrate-ref").write_text({SUBSTRATE_PIN!r} + "\\n", encoding="utf-8")
                     print("init-package-repo substrate_ref=" + {SUBSTRATE_PIN!r})
+                    raise SystemExit(0)
+                if argv[:2] == ["host", "lock"]:
+                    Path("fkst.lock").write_text("# fixture host lock\\n", encoding="utf-8")
                     raise SystemExit(0)
                 project_root = None
                 package_roots = []

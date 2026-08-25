@@ -26,16 +26,16 @@ end
 function M.new(deps)
   deps = deps or {}
   local t = deps.t or fkst.test
-  local core = deps.core or error("testkit.devloop_fixtures: deps.core is required")
+  local core = deps.core or error("testkit.devloop_fixtures: fixture-dependency-missing: deps.core is required")
   local entity_read_mocks = deps.entity_read_mocks
-    or error("testkit.devloop_fixtures: deps.entity_read_mocks is required")
-  local devloop_base = deps.devloop_base or error("testkit.devloop_fixtures: deps.devloop_base is required")
+    or error("testkit.devloop_fixtures: fixture-dependency-missing: deps.entity_read_mocks is required")
+  local devloop_base = deps.devloop_base or error("testkit.devloop_fixtures: fixture-dependency-missing: deps.devloop_base is required")
   local payloads_builders = deps.payloads_builders
-    or error("testkit.devloop_fixtures: deps.payloads_builders is required")
+    or error("testkit.devloop_fixtures: fixture-dependency-missing: deps.payloads_builders is required")
   local conv_reconcile = deps.conv_reconcile
-    or error("testkit.devloop_fixtures: deps.conv_reconcile is required")
-  local m_builders = deps.m_builders or error("testkit.devloop_fixtures: deps.m_builders is required")
-  local pr_safety = deps.pr_safety or error("testkit.devloop_fixtures: deps.pr_safety is required")
+    or error("testkit.devloop_fixtures: fixture-dependency-missing: deps.conv_reconcile is required")
+  local m_builders = deps.m_builders or error("testkit.devloop_fixtures: fixture-dependency-missing: deps.m_builders is required")
+  local pr_safety = deps.pr_safety or error("testkit.devloop_fixtures: fixture-dependency-missing: deps.pr_safety is required")
   local consensus_result_department = deps.consensus_result_department
   local decompose_queue = deps.decompose_queue or "devloop_decompose"
   local runtime_package_name = deps.runtime_package_name or "github-devloop"
@@ -348,7 +348,7 @@ function M.new(deps)
 
   local function build_result_dept()
     if consensus_result_department == nil then
-      error("testkit.devloop_fixtures: deps.consensus_result_department is required for run_result")
+      error("testkit.devloop_fixtures: fixture-dependency-missing: deps.consensus_result_department is required for run_result")
     end
     local model = gh_fake.model({
       issues = {

@@ -156,4 +156,109 @@ function M.repo_owner_login(repo)
   return name_with_owner and name_with_owner:match("^([^/]+)/") or nil
 end
 
+function M.decode_pr_view(value)
+  if type(value) == "table" then
+    return value
+  end
+  return json.decode(value or "{}")
+end
+
+local function pr_repository_name_with_owner(head_repository, head_repository_owner)
+  if type(head_repository) == "string" then
+    return head_repository
+  end
+  if type(head_repository) ~= "table" then
+    return nil
+  end
+  if head_repository.nameWithOwner ~= nil and head_repository.nameWithOwner ~= "" then
+    return tostring(head_repository.nameWithOwner)
+  end
+  if head_repository.name_with_owner ~= nil and head_repository.name_with_owner ~= "" then
+    return tostring(head_repository.name_with_owner)
+  end
+  if head_repository.full_name ~= nil and head_repository.full_name ~= "" then
+    return tostring(head_repository.full_name)
+  end
+  local name = head_repository.name
+  local owner = nil
+  if type(head_repository.owner) == "table" and head_repository.owner.login ~= nil then
+    owner = head_repository.owner.login
+  elseif type(head_repository_owner) == "table" and head_repository_owner.login ~= nil then
+    owner = head_repository_owner.login
+  elseif type(head_repository_owner) == "string" then
+    owner = head_repository_owner
+  end
+  if owner ~= nil and name ~= nil then
+    return tostring(owner) .. "/" .. tostring(name)
+  end
+  return nil
+end
+
+local function pr_comments(comments_json)
+  local comments = {}
+  for _, comment in ipairs(comments_json or {}) do
+    if type(comment) == "table" and comment.body ~= nil then
+      local author_login = nil
+      if type(comment.author) == "table" and comment.author.login ~= nil then
+        author_login = tostring(comment.author.login)
+      elseif type(comment.user) == "table" and comment.user.login ~= nil then
+        author_login = tostring(comment.user.login)
+      elseif comment.author_login ~= nil then
+        author_login = tostring(comment.author_login)
+      end
+      table.insert(comments, {
+        id = comment.id,
+        body = tostring(comment.body),
+        author_login = author_login,
+        created_at = comment.createdAt or comment.created_at,
+      })
+    elseif type(comment) == "string" then
+      table.insert(comments, {
+        body = comment,
+        author_login = "fkst-test-bot",
+      })
+    end
+  end
+  return comments
+end
+
+local function status_rollup_entries(value)
+  if type(value) ~= "table" then
+    return {}
+  end
+  if type(value.nodes) == "table" then
+    return value.nodes
+  end
+  return value
+end
+
+function M.parse_pr_view_merge(value)
+  local decoded = M.decode_pr_view(value)
+  local is_cross_repository = decoded.isCrossRepository
+  if is_cross_repository == nil then
+    is_cross_repository = decoded.is_cross_repository
+  end
+  local is_draft = decoded.isDraft
+  if is_draft == nil then
+    is_draft = decoded.is_draft
+  end
+  return {
+    head_ref_name = decoded.headRefName or decoded.head_ref_name,
+    head_sha = decoded.headRefOid or decoded.head_ref_oid,
+    base_ref_name = decoded.baseRefName or decoded.base_ref_name,
+    state = decoded.state,
+    merged_at = decoded.mergedAt or decoded.merged_at,
+    comments = pr_comments(decoded.comments),
+    head_repository = pr_repository_name_with_owner(
+      decoded.headRepository or decoded.head_repository,
+      decoded.headRepositoryOwner or decoded.head_repository_owner
+    ),
+    is_cross_repository = is_cross_repository,
+    is_draft = is_draft,
+    mergeable = decoded.mergeable,
+    merge_state_status = decoded.mergeStateStatus or decoded.merge_state_status,
+    status_check_rollup = status_rollup_entries(decoded.statusCheckRollup or decoded.status_check_rollup),
+  }, decoded
+end
+
 return M

@@ -9,9 +9,9 @@
 module-test-loop testing-runner
 platform-test-loop testing-runner
 online-regression testing-runner
-module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus
-testing-discovery browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus
+module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication
+testing-discovery browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication
 environment-factory browser-readiness
 testing-design
-workflow-qa environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus @platform/github-proxy
-local-qa-host-adapter workflow-qa environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/consensus @platform/github-proxy
+workflow-qa environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/github-proxy
+local-qa-host-adapter workflow-qa environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication @platform/github-proxy

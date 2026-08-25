@@ -1,3 +1,4 @@
+local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 
 local M = {}
@@ -8,7 +9,7 @@ M.schemas = {
 }
 
 local function fail(classification, message)
-  error("contract.browser-readiness: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.browser-readiness", classification, message))
 end
 
 local function bounded(value, limit)

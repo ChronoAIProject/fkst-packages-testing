@@ -26,13 +26,15 @@ function M.production(options)
     sha256_bytes = function(bytes, artifact_root)
       local root = run_root(artifact_root)
       if type(bytes) ~= "string" or #bytes > max_hash_bytes then
-        error("testing-runtime: qa-publication-sha256-bytes-invalid")
+        error("testing-runtime: qa-publication-sha256-bytes-invalid: bytes must be bounded")
       end
-      if root == nil then error("testing-runtime: qa-publication-run-root-missing") end
+      if root == nil then
+        error("testing-runtime: qa-publication-run-root-missing: artifact root must identify a run")
+      end
       local result = cli.call("sha256-bytes", { bytes = bytes }, root, artifact_root, 15)
       if type(result) ~= "table" or type(result.sha256) ~= "string"
         or result.sha256:match("^[0-9a-f]+$") == nil or #result.sha256 ~= 64 then
-        error("testing-runtime: qa-publication-sha256-bytes-result-invalid")
+        error("testing-runtime: qa-publication-sha256-bytes-result-invalid: runtime returned an invalid digest")
       end
       return result.sha256
     end,
