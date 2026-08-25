@@ -3,7 +3,7 @@ local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 local time = require("contract.time")
 local evidence_manifest = require("contract.testing_evidence_manifest")
-local json_array_tag = getmetatable(json.decode("[]"))
+local json_array_tag
 
 local R = {}
 R.schemas = {
@@ -56,6 +56,7 @@ local function list(value, field, limit, required)
     highest, count = math.max(highest, key), count + 1
   end
   local value_tag = getmetatable(value)
+  if value_tag ~= nil and json_array_tag == nil then json_array_tag = getmetatable(json.decode("[]")) end
   if count == 0 and value_tag ~= nil and value_tag ~= json_array_tag then fail("malformed-list", field .. " must be a list") end
   if count ~= highest or count > limit or (required and count == 0) then fail("malformed-list", field .. " has an invalid size") end
   return value
