@@ -119,7 +119,22 @@ resolve_testing_bin() {
 }
 
 ensure_host_lock() {
-  local pin="$1"
+  local pin="$1" output_file rc
+  output_file="$(mktemp "${TMPDIR:-/tmp}/fkst-host-lock.XXXXXX")"
+  set +e
+  "$BIN" host lock --project-root "$ROOT" >"$output_file" 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq 0 ]; then
+    rm -f "$output_file"
+    return 0
+  fi
+  if ! grep -q "unknown subcommand: host" "$output_file"; then
+    cat "$output_file" >&2
+    rm -f "$output_file"
+    return "$rc"
+  fi
+  rm -f "$output_file"
   "$PYTHON_BIN" - "$ROOT" "$shared" "$pin" <<'PY'
 import hashlib
 import os
@@ -435,7 +450,7 @@ workspace = "workspace"
 TOML
   copy_repo_libraries "$work" || return 1
   # Repo-owned library names win; copy missing platform dependencies for the composed graph.
-  for dep_name in forge devloop testkit_internal; do
+  for dep_name in forge devloop testkit_internal workflow_internal; do
     [ -d "$work/libraries/$dep_name" ] && continue
     [ -d "$shared/libraries/$dep_name" ] || {
       echo "error: pinned platform library missing: $dep_name" >&2
@@ -797,7 +812,7 @@ cmd_live_cdp_smoke() {
   return "$rc"
 }
 
-GENERIC_HOST_CLOSED_WORLD_ROOTS="local-qa-host-adapter environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/github-proxy"
+GENERIC_HOST_CLOSED_WORLD_ROOTS="local-qa-host-adapter environment-factory testing-design browser-readiness module-testing-pipeline module-test-loop testing-runner test-artifacts test-publication workflow-qa @platform/consensus @platform/github-proxy"
 generic_host_test_args() {
   local work="$1" host_name="$2" root
   GENERIC_HOST_TEST_ARGS=(--project-root "$work" --package-root "$work/packages/$host_name")
@@ -890,9 +905,7 @@ run_host_check() {
     trap 'rm -rf "$hermetic_root"' EXIT
     export FKST_RUNTIME_ROOT="$hermetic_root/runtime"
     export FKST_DURABLE_ROOT="$hermetic_root/durable"
-    unset FKST_GITHUB_WRITE 2>/dev/null || true
-    # Platform conformance uses supervisor context for non-writing engine ports.
-    export FKST_SUPERVISOR_PID="${BASHPID:-$$}"
+    unset FKST_GITHUB_WRITE FKST_SUPERVISOR_PID 2>/dev/null || true
     mkdir -p "$FKST_RUNTIME_ROOT" "$FKST_DURABLE_ROOT"
     echo "host check hermetic: FKST_RUNTIME_ROOT=$FKST_RUNTIME_ROOT FKST_DURABLE_ROOT=$FKST_DURABLE_ROOT"
     PATH="$python_shim_dir:$PATH" "$shared/scripts/run.sh" host \

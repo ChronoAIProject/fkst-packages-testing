@@ -225,6 +225,7 @@ def main() -> int:
     check_checkout(expected_rev)
     check_library_mirror("forge")
     check_library_mirror("consensus")
+    check_library_mirror("workflow_internal")
     check_substrate_pin()
     print(
         "PASS single-platform-pin "

@@ -6,7 +6,7 @@ local spec = {
   consumes = { "ai_consensus_request" },
   produces = { "ai_consensus_result" },
   stall_window = "5m",
-  retry = false,
+  retry = { max_attempts = 12, base = "5s", cap = "30s" },
 }
 
 local function done(_event)
@@ -19,7 +19,7 @@ local function act(event)
   local reach = ports.consensus_reach or consensus.reach
   local result = reach(proposal)
   if result == nil then
-    return
+    error("module-testing-pipeline: consensus-deferred: consensus result is not yet available")
   end
 
   local payload = {}

@@ -622,6 +622,17 @@ return {
     t.eq(trace.raises[1].payload.schema, "consensus.consensus_reached.v1")
   end,
 
+  test_ai_consensus_call_retries_deferred_live_run = function()
+    t.eq(ai_consensus_call.spec.retry.max_attempts, 12)
+    t.raises(function()
+      testing.run_fake(ai_consensus_call, {
+        queue = "ai_consensus_request",
+        payload = { schema = "consensus.proposal.v1", proposal_id = "deferred-proposal" },
+        ["test_" .. "ports"] = { consensus_reach = function() return nil end },
+      })
+    end)
+  end,
+
   test_ai_consensus_department_raises_review_then_module_loop_request = function()
     local generation_proposal = start_ai_generation_proposal()
     local generation_trace = testing.run_fake(ai_consensus, consensus_reached_event(generation_proposal))

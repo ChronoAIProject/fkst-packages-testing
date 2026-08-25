@@ -52,6 +52,31 @@ return {
     t.eq(run_module_loop.spec.retry, false)
   end,
 
+  test_public_codex_facade_preserves_alias_identity_when_deferred = function()
+    local previous_runs = fkst.codex_runs
+    fkst.codex_runs = function()
+      return { running = {{
+        role = "implement",
+        proposal_id = "proposal-42",
+        dedup_key = "dedup-42",
+        status = "running",
+      }} }
+    end
+    local identity = {
+      role = "testing-ai-author",
+      proposal_id = "proposal-42",
+      dedup_key = "dedup-42",
+    }
+    local ok, result = pcall(function()
+      t.eq(workflow_codex.live_run_active(identity), true)
+      return workflow_codex.dispatch(identity, { prompt = "review" })
+    end)
+    fkst.codex_runs = previous_runs
+    if not ok then error(result, 0) end
+    t.eq(result.deferred, true)
+    t.eq(result.identity.role, "testing-ai-author")
+  end,
+
   test_public_codex_facade_dispatches_through_internal_owner = function()
     local previous_runs = fkst.codex_runs
     local previous_spawn = spawn_codex_sync
@@ -73,6 +98,7 @@ return {
     t.eq(result.role, "testing-ai-author")
     t.eq(result.proposal_id, "proposal-42")
     t.eq(result.dedup_key, "dedup-42")
-    t.eq(result.prompt, "review")
+    t.is_true(result.prompt:sub(-#"review") == "review")
+    t.is_true(result.prompt:find("Repository locations resolved by the launcher:", 1, true) ~= nil)
   end,
 }
