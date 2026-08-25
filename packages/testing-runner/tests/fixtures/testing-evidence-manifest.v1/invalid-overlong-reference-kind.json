@@ -1,0 +1,47 @@
+{
+  "schema": "testing-evidence-manifest.v1",
+  "manifest_id": "manifest-schema-fixture",
+  "canonicalization": "fkst-testing-evidence-manifest-canonical-json.v1",
+  "canonical_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "repository": {
+    "id": "ChronoAIProject/fkst-packages-testing",
+    "source_ref": {
+      "kind": "kkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkkk",
+      "ref": "github.com/ChronoAIProject/fkst-packages-testing@0123456789abcdef0123456789abcdef01234567"
+    },
+    "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "run_id": "schema-run",
+  "plan_ref": {
+    "kind": "artifact",
+    "ref": ".testing/runs/schema-run/test-plan.json"
+  },
+  "plan_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "entries": [
+    {
+      "evidence_id": "evidence-log",
+      "case_id": "case-1",
+      "assertion_id": "assertion-1",
+      "role": "runner-log",
+      "artifact_ref": {
+        "kind": "artifact",
+        "ref": ".testing/runs/schema-run/evidence/runner.log"
+      },
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "media_type": "text/plain",
+      "size_bytes": 128,
+      "producer": "testing-runner",
+      "producer_version": "1.0.0",
+      "created_at": "2026-08-25T12:34:56Z",
+      "sensitivity": "internal",
+      "redaction_classification": "none",
+      "policy_version": "evidence-policy-v1",
+      "policy_status": "approved",
+      "provenance": {
+        "source_kind": "runner",
+        "source_ref": "runner/execution",
+        "source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    }
+  ]
+}
