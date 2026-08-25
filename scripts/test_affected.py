@@ -7,7 +7,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 RUN_SH = ROOT / "scripts" / "run.sh"
-SHARED_MANIFEST_FIXTURE_ROOTS = (
+SHARED_SCHEMA_FIXTURE_ROOTS = (
     (
         "packages",
         "testing-runner",
@@ -21,6 +21,13 @@ SHARED_MANIFEST_FIXTURE_ROOTS = (
         "tests",
         "fixtures",
         "testing-evidence-manifest.v1",
+    ),
+    (
+        "packages",
+        "testing-runner",
+        "tests",
+        "fixtures",
+        "testing-observation.v1",
     ),
 )
 
@@ -48,7 +55,7 @@ def affected_packages(paths: list[str]) -> list[str] | None:
         path = Path(value)
         if value == "fkst.lock" or path.parts[:2] in ((".fkst", "run"), (".testing", "runs")):
             continue
-        if path.parts[:5] in SHARED_MANIFEST_FIXTURE_ROOTS:
+        if path.parts[:5] in SHARED_SCHEMA_FIXTURE_ROOTS:
             return None
         if len(path.parts) < 3 or path.parts[0] != "packages":
             return None

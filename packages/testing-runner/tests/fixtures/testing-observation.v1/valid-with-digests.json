@@ -1,0 +1,19 @@
+{
+  "schema": "testing-observation.v1",
+  "observation_id": "observation-2",
+  "kind": "visual-state",
+  "subject": "dashboard",
+  "value": "loaded",
+  "source_ref": {
+    "kind": "runner",
+    "ref": "observations/2",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "evidence_refs": [
+    {
+      "kind": "evidence",
+      "ref": "evidence/screenshot-1",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+  ]
+}

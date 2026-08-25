@@ -1,0 +1,1 @@
+{"schema":"testing-observation.v1","observation_id":"observation-1","kind":"fact","subject":"document","source_ref":{"kind":"runner","ref":"observations/1"},"evidence_refs":[]}

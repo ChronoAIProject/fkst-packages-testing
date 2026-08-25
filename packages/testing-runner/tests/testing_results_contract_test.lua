@@ -5,8 +5,40 @@ local real_sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
 local digest = string.rep("a", 64)
 local persisted_digest = string.rep("b", 64)
+local observation_fixture_root = "packages/testing-runner/tests/fixtures/testing-observation.v1"
+local invalid_observation_fixtures = {
+  "invalid-control-character",
+  "invalid-empty-kind",
+  "invalid-empty-observation-id",
+  "invalid-empty-reference-ref",
+  "invalid-empty-value",
+  "invalid-malformed-evidence-reference",
+  "invalid-malformed-source-reference",
+  "invalid-missing-required-field",
+  "invalid-multibyte-over-byte-limit",
+  "invalid-non-hex-digest",
+  "invalid-overlong-kind",
+  "invalid-overlong-observation-id",
+  "invalid-overlong-reference-kind",
+  "invalid-overlong-reference-ref",
+  "invalid-overlong-value",
+  "invalid-short-digest",
+  "invalid-too-many-evidence-references",
+  "invalid-unknown-evidence-reference-field",
+  "invalid-unknown-source-reference-field",
+  "invalid-unknown-top-level-field",
+  "invalid-unsupported-schema-major",
+  "invalid-unsupported-schema-name",
+  "invalid-uppercase-digest",
+}
 
 local function ref(kind, value) return { kind = kind, ref = value } end
+local function observation_fixture(name)
+  local handle = assert(io.open(observation_fixture_root .. "/" .. name .. ".json", "rb"))
+  local body = handle:read("*a")
+  handle:close()
+  return json.decode(body)
+end
 local function copy(value)
   if type(value) ~= "table" then return value end
   local result = {}
@@ -55,6 +87,15 @@ local function result_set(case, manifest)
 end
 
 return {
+  test_observation_shared_schema_fixtures_match_portable_validation = function()
+    for _, name in ipairs({"valid-with-digests", "valid-without-digests"}) do
+      local value = observation_fixture(name)
+      t.eq(results.validate_observation(value), value)
+    end
+    for _, name in ipairs(invalid_observation_fixtures) do
+      t.raises(function() results.validate_observation(observation_fixture(name)) end)
+    end
+  end,
   test_validates_cli_http_browser = function()
     for _, mode in ipairs({"cli", "http", "browser"}) do local value=valid_case("passed"); value.execution_mode=mode; t.eq(results.validate_case_result(value, authority()), value) end
   end,

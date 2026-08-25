@@ -14,7 +14,7 @@ raise SystemExit(0 if sys.version_info >= (3, 11) else 1)
 PY
     then command -v "$candidate"; return 0; fi
   done
-  echo "error: Python 3.11+ is required for manifest schema tests" >&2
+  echo "error: Python 3.11+ is required for schema tests" >&2
   return 1
 }
 
@@ -31,6 +31,8 @@ case "$1" in
       "$PYTHON_BIN" -S -B "$ROOT/scripts/testing_package_manifest_test.py"
     env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
       "$PYTHON_BIN" -S -B "$ROOT/scripts/testing_evidence_manifest_schema_test.py"
+    env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
+      "$PYTHON_BIN" -S -B "$ROOT/scripts/testing_observation_schema_test.py"
     ;;
   *)
     echo "usage: scripts/python_test_deps.sh <provision|test>" >&2
