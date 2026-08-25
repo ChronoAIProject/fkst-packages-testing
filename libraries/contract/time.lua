@@ -3,7 +3,7 @@ local T = {}
 
 function T.iso_timestamp_epoch_seconds(timestamp)
   local year, month, day, hour, minute, second = tostring(timestamp or ""):match(
-    "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d)[%-:](%d%d)[%-:](%d%d)Z$"
+    "^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)Z$"
   )
   if year == nil then
     return nil

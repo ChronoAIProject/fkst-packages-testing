@@ -814,11 +814,17 @@ class RunnerContractTest(unittest.TestCase):
 
 class AffectedTestContractTest(unittest.TestCase):
     def test_shared_manifest_fixture_changes_force_full_repository_tests(self) -> None:
-        fixture = (
-            "packages/testing-runner/tests/fixtures/"
-            "testing-package-manifest.v1/valid.json"
+        fixtures = (
+            "testing-package-manifest.v1/valid.json",
+            "testing-evidence-manifest.v1/valid.json",
         )
-        self.assertIsNone(test_affected.affected_packages([fixture]))
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertIsNone(
+                    test_affected.affected_packages(
+                        ["packages/testing-runner/tests/fixtures/" + fixture]
+                    )
+                )
         self.assertEqual(
             test_affected.affected_packages(
                 ["packages/testing-runner/tests/testing_package_manifest_contract_test.lua"]

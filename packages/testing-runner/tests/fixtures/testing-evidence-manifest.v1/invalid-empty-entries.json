@@ -1,0 +1,21 @@
+{
+  "schema": "testing-evidence-manifest.v1",
+  "manifest_id": "manifest-schema-fixture",
+  "canonicalization": "fkst-testing-evidence-manifest-canonical-json.v1",
+  "canonical_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "repository": {
+    "id": "ChronoAIProject/fkst-packages-testing",
+    "source_ref": {
+      "kind": "git",
+      "ref": "github.com/ChronoAIProject/fkst-packages-testing@0123456789abcdef0123456789abcdef01234567"
+    },
+    "source_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "run_id": "schema-run",
+  "plan_ref": {
+    "kind": "artifact",
+    "ref": ".testing/runs/schema-run/test-plan.json"
+  },
+  "plan_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+  "entries": []
+}
