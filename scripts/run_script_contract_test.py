@@ -11,6 +11,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import test_affected
+
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_RUN_SH = SOURCE_ROOT / "scripts" / "run.sh"
@@ -835,6 +837,21 @@ class RunnerContractTest(unittest.TestCase):
         result = invalid.run("test", "parent")
         self.assert_failure(result)
         self.assertIn("missing-root", result.stdout)
+
+
+class AffectedTestContractTest(unittest.TestCase):
+    def test_shared_manifest_fixture_changes_force_full_repository_tests(self) -> None:
+        fixture = (
+            "packages/testing-runner/tests/fixtures/"
+            "testing-package-manifest.v1/valid.json"
+        )
+        self.assertIsNone(test_affected.affected_packages([fixture]))
+        self.assertEqual(
+            test_affected.affected_packages(
+                ["packages/testing-runner/tests/testing_package_manifest_contract_test.lua"]
+            ),
+            ["testing-runner"],
+        )
 
 
 if __name__ == "__main__":

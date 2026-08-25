@@ -61,7 +61,7 @@ end
 
 local function package_id(value)
   bounded(value, "package_id", 180)
-  if value:find("[/\\\\]") ~= nil or value:find("%.%.", 1, true) ~= nil then
+  if value:find("[/\\\\]") ~= nil or value:find("..", 1, true) ~= nil then
     fail("unsafe-reference", "package_id must not contain a workspace path")
   end
 end

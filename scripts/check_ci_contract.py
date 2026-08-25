@@ -13,6 +13,7 @@ RUNNER = ROOT / "scripts" / "run.sh"
 REQUIRED_WORKFLOW_LINES = (
     "FKST_COMPETENCE_BASE_REF: ${{ github.event.pull_request.base.sha }}",
     "FKST_LUA_COVERAGE_BASE_REF: ${{ github.event.pull_request.base.sha || github.ref_name }}",
+    "scripts/python_test_deps.sh provision",
 )
 REQUIRED_RUNNER_LINES = (
     "env -u FKST_COMPETENCE_BASE_REF -u FKST_LUA_COVERAGE_BASE_REF -u GITHUB_BASE_REF",
