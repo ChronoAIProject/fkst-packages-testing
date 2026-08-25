@@ -12,6 +12,7 @@ local invalid_observation_fixtures = {
   "invalid-empty-observation-id",
   "invalid-empty-reference-ref",
   "invalid-empty-value",
+  "invalid-evidence-refs-object",
   "invalid-malformed-evidence-reference",
   "invalid-malformed-source-reference",
   "invalid-missing-required-field",

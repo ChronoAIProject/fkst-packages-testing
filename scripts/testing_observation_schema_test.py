@@ -23,6 +23,7 @@ INVALID_FIXTURES = {
     "invalid-empty-observation-id": "minLength",
     "invalid-empty-reference-ref": "minLength",
     "invalid-empty-value": "minLength",
+    "invalid-evidence-refs-object": "type",
     "invalid-malformed-evidence-reference": "type",
     "invalid-malformed-source-reference": "required",
     "invalid-missing-required-field": "required",
