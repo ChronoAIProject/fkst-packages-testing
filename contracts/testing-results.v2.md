@@ -7,8 +7,10 @@ The canonical execution result slice has four Draft 2020-12 documents:
 - `testing-case-result.v2`
 - `testing-case-result-set.v2`
 
-The JSON Schemas under `schemas/` are closed-world documents. Strings carry the
-`x-fkst-maxUtf8Bytes` annotation in addition to their character bound. Digests
+The JSON Schemas under `schemas/` are closed-world documents and expose the
+`fkst-testing-results-canonical-json.v1` profile through `x-fkst-canonicalization`.
+Strings carry `x-fkst-maxUtf8Bytes` plus the matching enforced `fkst-utf8-max-*`
+format in addition to their character bound. Digests
 are lowercase, exact 64-character SHA-256 values. References are bounded
 pointer records and evidence references are bounded to 64 entries. Timestamps
 are UTC second-resolution values in the strict `YYYY-MM-DDTHH:MM:SSZ` form;
@@ -40,4 +42,6 @@ cross-record comparison:
 
 `libraries/contract/testing_results.lua` remains the execution authority. The
 schemas describe the portable structural slice only and do not change wire
-behavior or add invocation/executor/browser-action contracts.
+behavior or add invocation/executor/browser-action contracts. Raw serialized payload-byte ceilings,
+including whitespace overhead, belong to the transport or artifact loader; the Lua authority defines
+bounded semantic fields and collections but no separate whole-document byte constant.

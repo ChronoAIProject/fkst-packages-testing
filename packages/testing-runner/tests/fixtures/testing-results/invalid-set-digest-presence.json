@@ -56,7 +56,7 @@
     "ref": ".testing/runs/run-1/evidence-manifest.json",
     "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
   },
-  "evidence_manifest_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "evidence_manifest_sha256": "e39a40b13dad006c690ed7bb8729b6b589dcecb3fa9fa74303faf165a5be6303",
   "trace_id": "trace-1",
   "dedup_key": "dedup-1"
 }

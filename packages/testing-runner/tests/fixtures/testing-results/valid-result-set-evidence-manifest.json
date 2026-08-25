@@ -2,7 +2,7 @@
   "schema": "testing-evidence-manifest.v1",
   "manifest_id": "result-set-manifest",
   "canonicalization": "fkst-testing-evidence-manifest-canonical-json.v1",
-  "canonical_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "canonical_sha256": "e39a40b13dad006c690ed7bb8729b6b589dcecb3fa9fa74303faf165a5be6303",
   "repository": {
     "id": "repo",
     "source_ref": {

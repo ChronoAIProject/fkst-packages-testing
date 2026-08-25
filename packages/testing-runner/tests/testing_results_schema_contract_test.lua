@@ -1,11 +1,21 @@
 local results = require("contract.testing_results")
 local t = fkst.test
 local host_json = json
+local sha256 = require("tests.fixtures.sha256_helpers")
 
 local fixture_root = "packages/testing-runner/tests/fixtures/testing-results"
 
 local function fixture(name)
-  local handle = assert(io.open(fixture_root .. "/" .. name .. ".json", "rb"))
+  local paths = {
+    fixture_root .. "/" .. name .. ".json",
+    "tests/fixtures/testing-results/" .. name .. ".json",
+  }
+  local handle
+  for _, path in ipairs(paths) do
+    handle = io.open(path, "rb")
+    if handle ~= nil then break end
+  end
+  assert(handle, "missing testing-results fixture " .. name)
   local body = handle:read("*a")
   handle:close()
   return host_json.decode(body)
@@ -24,7 +34,7 @@ return {
     end
     local result_set = fixture("valid-result-set")
     local evidence = fixture("valid-result-set-evidence-manifest")
-    t.eq(results.validate_case_result_set(result_set, nil, evidence).schema, "testing-case-result-set.v2")
+    t.eq(results.validate_case_result_set(result_set, nil, evidence, sha256).schema, "testing-case-result-set.v2")
   end,
 
   test_invalid_schema_fixtures_are_rejected_by_lua = function()
@@ -32,7 +42,8 @@ return {
       "invalid-unknown-field", "invalid-missing-required-field",
       "invalid-overlong-reference-kind", "invalid-malformed-digest",
       "invalid-impossible-date", "invalid-hyphen-time-separators",
-      "invalid-multibyte-over-byte-limit", "invalid-assertion-truth-table",
+      "invalid-multibyte-over-byte-limit", "invalid-nested-multibyte-over-byte-limit",
+      "invalid-assertion-truth-table",
       "invalid-case-outcome", "invalid-case-error-rule", "invalid-case-reason-rule",
       "invalid-required-assertion", "invalid-duration-negative", "invalid-duration-over-max",
     }) do

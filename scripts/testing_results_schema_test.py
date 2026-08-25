@@ -32,23 +32,24 @@ VALID = (
     "valid-case-year-zero",
     "valid-result-set",
 )
-INVALID = (
-    "invalid-unknown-field",
-    "invalid-missing-required-field",
-    "invalid-overlong-reference-kind",
-    "invalid-malformed-digest",
-    "invalid-impossible-date",
-    "invalid-hyphen-time-separators",
-    "invalid-multibyte-over-byte-limit",
-    "invalid-assertion-truth-table",
-    "invalid-case-outcome",
-    "invalid-case-error-rule",
-    "invalid-case-reason-rule",
-    "invalid-required-assertion",
-    "invalid-set-digest-presence",
-    "invalid-duration-negative",
-    "invalid-duration-over-max",
-)
+INVALID_VALIDATORS = {
+    "invalid-unknown-field": "additionalProperties",
+    "invalid-missing-required-field": "required",
+    "invalid-overlong-reference-kind": "x-fkst-maxUtf8Bytes",
+    "invalid-malformed-digest": "pattern",
+    "invalid-impossible-date": "format",
+    "invalid-hyphen-time-separators": "pattern",
+    "invalid-multibyte-over-byte-limit": "x-fkst-maxUtf8Bytes",
+    "invalid-nested-multibyte-over-byte-limit": "format",
+    "invalid-assertion-truth-table": "const",
+    "invalid-case-outcome": "const",
+    "invalid-case-error-rule": "not",
+    "invalid-case-reason-rule": "not",
+    "invalid-required-assertion": "contains",
+    "invalid-set-digest-presence": "required",
+    "invalid-duration-negative": "minimum",
+    "invalid-duration-over-max": "maximum",
+}
 
 
 def load(path: Path) -> dict[str, object]:
@@ -65,6 +66,16 @@ ResultsValidator = validators.extend(
     {"x-fkst-maxUtf8Bytes": utf8_max_bytes},
 )
 FORMAT_CHECKER = FormatChecker()
+
+
+def register_utf8_format(limit: int) -> None:
+    @FORMAT_CHECKER.checks(f"fkst-utf8-max-{limit}")
+    def utf8_format(value: object) -> bool:
+        return not isinstance(value, str) or len(value.encode("utf-8")) <= limit
+
+
+for byte_limit in (64, 96, 180, 512, 4096):
+    register_utf8_format(byte_limit)
 
 
 @FORMAT_CHECKER.checks("date-time")
@@ -111,11 +122,12 @@ def main() -> int:
         schema = load(SCHEMA_ROOT / name)
         Draft202012Validator.check_schema(schema)
         assert schema["$id"].endswith(name)
+        assert schema["x-fkst-canonicalization"] == "fkst-testing-results-canonical-json.v1"
 
     for name in VALID:
         validate_fixture(name, registry)
 
-    for name in INVALID:
+    for name, expected_validator in INVALID_VALIDATORS.items():
         value = load(FIXTURES / f"{name}.json")
         schema_name = {
             "testing-observation.v1": "testing-observation.v1.schema.json",
@@ -124,7 +136,12 @@ def main() -> int:
             "testing-case-result-set.v2": "testing-case-result-set.v2.schema.json",
         }[value["schema"]]
         errors = list(validator_for(schema_name, registry).iter_errors(value))
-        assert errors, f"schema accepted invalid fixture: {name}"
+        validators_seen = {str(error.validator) for error in errors}
+        assert expected_validator in validators_seen, (
+            name,
+            expected_validator,
+            sorted(validators_seen),
+        )
 
     print("testing-results-schema: PASS")
     return 0
