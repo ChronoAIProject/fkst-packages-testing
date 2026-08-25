@@ -948,7 +948,7 @@ cmd_host() {
     fi
     run_host_check "$python_shim_dir" || return $?
     PATH="$python_shim_dir:$PATH" \
-      env -u FKST_COMPETENCE_BASE_REF -u FKST_LUA_COVERAGE_BASE_REF -u FKST_RATCHET_TARGET_REF -u GITHUB_BASE_REF \
+      env -u FKST_COMPETENCE_BASE_REF -u FKST_LUA_COVERAGE_BASE_REF -u FKST_RATCHET_TARGET_REF -u GITHUB_BASE_REF -u GITHUB_EVENT_NAME -u GITHUB_EVENT_PATH -u GITHUB_REF_TYPE \
       "$shared/scripts/run.sh" test github-devloop-workflow
     return
   fi
