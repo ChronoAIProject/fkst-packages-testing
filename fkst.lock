@@ -1,0 +1,20 @@
+[[external_source]]
+id = "fkst-packages-platform"
+git = "https://github.com/ChronoAIProject/fkst-packages.git"
+
+[external_source.intent]
+rev = "549caa0fb921a3f7702a0726d6cc2fa6034d05d0"
+
+[external_source.resolved]
+rev = "549caa0fb921a3f7702a0726d6cc2fa6034d05d0"
+tree_sha256 = "sha256-4bcda025c0c1c58d58b1389a3266d05bf7738be820ad9ba3943fcca31194ecf1"
+
+[[external_source.libraries]]
+name = "forge"
+unit = "libraries/forge"
+exports_sha256 = "sha256-bcb1437e6e262deb8ccd81f1acc0a9eba663bb25a54452a1f02d9281dc633470"
+
+[[external_source.libraries]]
+name = "devloop"
+unit = "libraries/devloop"
+exports_sha256 = "sha256-96f161943ff81a920d6f0ee611d2408b8de1ae4f976eeb90a531718c3a9dddc1"
