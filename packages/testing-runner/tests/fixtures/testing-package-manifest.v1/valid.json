@@ -1,0 +1,44 @@
+{
+  "schema": "testing-package-manifest.v1",
+  "canonicalization": "fkst-testing-package-manifest-canonical-json.v1",
+  "package_id": "QA_RUNNER@V1",
+  "package_version": "1.0.0",
+  "source_commit": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "package_content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "supported_contracts": {
+    "majors": ["testing-runner.v1"],
+    "canonicalization_profiles": ["fkst-testing-package-manifest-canonical-json.v1"]
+  },
+  "entrypoints": [
+    {
+      "name": "testing-runner.run",
+      "contract_major": "testing-runner.v1",
+      "capabilities": ["semantic-runner"]
+    }
+  ],
+  "semantic_capabilities": ["semantic-runner"],
+  "runtime_requirements": {
+    "lua": "5.4.0",
+    "platforms": ["linux-amd64"]
+  },
+  "dependencies": {
+    "fkst_packages": {
+      "id": "fkst-packages",
+      "commit": "cccccccccccccccccccccccccccccccccccccccc"
+    },
+    "fkst_substrate": {
+      "id": "fkst-substrate",
+      "commit": "dddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "producer": {
+    "name": "fkst-packages-testing",
+    "version": "1.0.0",
+    "toolchain": "python-3.12"
+  },
+  "creation_metadata": {
+    "created_at": "2026-08-21T00:00:00Z",
+    "build_id": "schema-fixture"
+  },
+  "manifest_digest": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+}
