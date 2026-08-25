@@ -1,0 +1,175 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-case-result.v2.schema.json",
+  "title": "Testing Case Result v2",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema", "case_id", "repository", "reviewed_case_id", "plan_ref", "plan_sha256",
+    "execution_mode", "execution_status", "classification", "observations", "assertions",
+    "evidence_refs", "timing", "trace_id", "dedup_key"
+  ],
+  "properties": {
+    "schema": {"const": "testing-case-result.v2"},
+    "case_id": {"$ref": "#/$defs/boundedString180"},
+    "repository": {"$ref": "#/$defs/repository"},
+    "reviewed_case_id": {"$ref": "#/$defs/boundedString180"},
+    "asset_ref": {"$ref": "#/$defs/reference"},
+    "requirement_ref": {"$ref": "#/$defs/reference"},
+    "plan_ref": {"$ref": "#/$defs/reference"},
+    "plan_sha256": {"$ref": "#/$defs/sha256"},
+    "execution_mode": {"enum": ["cli", "http", "browser"]},
+    "execution_status": {"enum": ["passed", "failed", "skipped", "error", "blocked", "lost"]},
+    "classification": {"enum": ["deterministic", "assertion_failure", "not_applicable", "skipped", "execution_error", "blocked", "lost"]},
+    "observations": {
+      "type": "array", "maxItems": 64,
+      "items": {"$ref": "testing-observation.v1.schema.json"}
+    },
+    "assertions": {
+      "type": "array", "maxItems": 32,
+      "items": {"$ref": "testing-assertion-result.v1.schema.json"}
+    },
+    "evidence_refs": {
+      "type": "array", "maxItems": 64,
+      "items": {"$ref": "#/$defs/reference"}
+    },
+    "timing": {"$ref": "#/$defs/timing"},
+    "error": {"$ref": "#/$defs/error"},
+    "non_execution_reason": {"$ref": "#/$defs/boundedString96"},
+    "trace_id": {"$ref": "#/$defs/boundedString180"},
+    "dedup_key": {"$ref": "#/$defs/boundedString180"}
+  },
+  "allOf": [
+    {
+      "if": {"properties": {"execution_status": {"const": "passed"}}, "required": ["execution_status"]},
+      "then": {
+        "properties": {
+          "classification": {"const": "deterministic"},
+          "assertions": {
+            "items": {"properties": {"status": {"enum": ["passed", "skipped"]}}},
+            "contains": {"properties": {"required": {"const": true}, "status": {"const": "passed"}}, "required": ["required", "status"]},
+            "minContains": 1,
+            "not": {"contains": {"properties": {"required": {"const": true}, "status": {"const": "skipped"}}, "required": ["required", "status"]}}
+          }
+        },
+        "allOf": [{"not": {"required": ["error"]}}, {"not": {"required": ["non_execution_reason"]}}]
+      }
+    },
+    {
+      "if": {"properties": {"execution_status": {"const": "failed"}}, "required": ["execution_status"]},
+      "then": {
+        "properties": {
+          "classification": {"const": "assertion_failure"},
+          "assertions": {
+            "items": {"properties": {"status": {"enum": ["passed", "failed", "skipped"]}}},
+            "contains": {"properties": {"required": {"const": true}, "status": {"const": "failed"}}, "required": ["required", "status"]},
+            "minContains": 1
+          }
+        },
+        "allOf": [{"not": {"required": ["error"]}}, {"not": {"required": ["non_execution_reason"]}}]
+      }
+    },
+    {
+      "if": {"properties": {"execution_status": {"const": "skipped"}}, "required": ["execution_status"]},
+      "then": {
+        "properties": {
+          "classification": {"enum": ["skipped", "not_applicable"]},
+          "assertions": {"items": {"properties": {"status": {"const": "skipped"}}}}
+        },
+        "required": ["non_execution_reason"],
+        "not": {"required": ["error"]}
+      }
+    },
+    {
+      "if": {"properties": {"execution_status": {"const": "error"}}, "required": ["execution_status"]},
+      "then": {
+        "properties": {
+          "classification": {"const": "execution_error"},
+          "assertions": {"items": {"properties": {"status": {"enum": ["passed", "skipped"]}}}}
+        },
+        "required": ["error"],
+        "not": {"required": ["non_execution_reason"]}
+      }
+    },
+    {
+      "if": {"properties": {"execution_status": {"const": "blocked"}}, "required": ["execution_status"]},
+      "then": {
+        "properties": {
+          "classification": {"const": "blocked"},
+          "assertions": {"items": {"properties": {"status": {"enum": ["passed", "skipped"]}}}}
+        },
+        "required": ["non_execution_reason"],
+        "not": {"required": ["error"]}
+      }
+    },
+    {
+      "if": {"properties": {"execution_status": {"const": "lost"}}, "required": ["execution_status"]},
+      "then": {
+        "properties": {
+          "classification": {"const": "lost"},
+          "assertions": {"items": {"properties": {"status": {"enum": ["passed", "skipped"]}}}}
+        },
+        "required": ["non_execution_reason"],
+        "not": {"required": ["error"]}
+      }
+    }
+  ],
+  "$defs": {
+    "boundedString96": {
+      "type": "string", "minLength": 1, "maxLength": 96, "x-fkst-maxUtf8Bytes": 96,
+      "not": {"pattern": "[\\u0000-\\u001F]"}
+    },
+    "boundedString180": {
+      "type": "string", "minLength": 1, "maxLength": 180, "x-fkst-maxUtf8Bytes": 180,
+      "not": {"pattern": "[\\u0000-\\u001F]"}
+    },
+    "boundedString4096": {
+      "type": "string", "minLength": 1, "maxLength": 4096, "x-fkst-maxUtf8Bytes": 4096,
+      "not": {"pattern": "[\\u0000-\\u001F]"}
+    },
+    "sha256": {
+      "type": "string", "minLength": 64, "maxLength": 64, "x-fkst-maxUtf8Bytes": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "reference": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "ref"],
+      "properties": {
+        "kind": {"$ref": "#/$defs/boundedString96"},
+        "ref": {"$ref": "#/$defs/boundedString4096"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "repository": {
+      "type": "object", "additionalProperties": false, "required": ["id", "source_ref", "source_sha256"],
+      "properties": {
+        "id": {"$ref": "#/$defs/boundedString180"},
+        "source_ref": {"$ref": "#/$defs/reference"},
+        "source_sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "timestamp": {
+      "type": "string", "minLength": 20, "maxLength": 20, "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+    },
+    "timing": {
+      "type": "object", "additionalProperties": false,
+      "required": ["started_at", "completed_at", "duration_ms"],
+      "properties": {
+        "started_at": {"$ref": "#/$defs/timestamp"},
+        "completed_at": {"$ref": "#/$defs/timestamp"},
+        "duration_ms": {"type": "integer", "minimum": 0, "maximum": 86400000}
+      }
+    },
+    "error": {
+      "type": "object", "additionalProperties": false, "required": ["code", "message"],
+      "properties": {
+        "code": {"$ref": "#/$defs/boundedString96"},
+        "message": {"$ref": "#/$defs/boundedString512"}
+      }
+    },
+    "boundedString512": {
+      "type": "string", "minLength": 1, "maxLength": 512, "x-fkst-maxUtf8Bytes": 512,
+      "not": {"pattern": "[\\u0000-\\u001F]"}
+    }
+  }
+}

@@ -817,6 +817,7 @@ class AffectedTestContractTest(unittest.TestCase):
         fixtures = (
             "testing-package-manifest.v1/valid.json",
             "testing-evidence-manifest.v1/valid.json",
+            "testing-results/valid-case-passed.json",
         )
         for fixture in fixtures:
             with self.subTest(fixture=fixture):

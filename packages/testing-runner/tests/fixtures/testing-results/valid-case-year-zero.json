@@ -1,0 +1,17 @@
+{
+  "schema": "testing-case-result.v2",
+  "case_id": "case-year-zero",
+  "repository": {"id": "repo", "source_ref": {"kind": "git", "ref": "repo@commit"}, "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "reviewed_case_id": "reviewed-case-year-zero",
+  "plan_ref": {"kind": "plan", "ref": "plans/1"},
+  "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "execution_mode": "cli",
+  "execution_status": "passed",
+  "classification": "deterministic",
+  "observations": [],
+  "assertions": [{"schema": "testing-assertion-result.v1", "assertion_id": "assert-1", "type": "document-ready", "required": true, "status": "passed", "classification": "deterministic", "observation_ids": [], "evidence_refs": []}],
+  "evidence_refs": [],
+  "timing": {"started_at": "0000-02-29T00:00:00Z", "completed_at": "0000-02-29T00:00:01Z", "duration_ms": 1000},
+  "trace_id": "trace-1",
+  "dedup_key": "dedup-1"
+}

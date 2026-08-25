@@ -1,0 +1,18 @@
+{
+  "schema": "testing-case-result.v2",
+  "case_id": "case-skipped",
+  "repository": {"id": "repo", "source_ref": {"kind": "git", "ref": "repo@commit"}, "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "reviewed_case_id": "reviewed-case-skipped",
+  "plan_ref": {"kind": "plan", "ref": "plans/1"},
+  "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "execution_mode": "browser",
+  "execution_status": "skipped",
+  "classification": "skipped",
+  "observations": [],
+  "assertions": [{"schema": "testing-assertion-result.v1", "assertion_id": "assert-1", "type": "document-ready", "required": true, "status": "skipped", "classification": "skipped", "observation_ids": [], "evidence_refs": []}],
+  "evidence_refs": [],
+  "timing": {"started_at": "2026-08-25T00:00:00Z", "completed_at": "2026-08-25T00:00:00Z", "duration_ms": 0},
+  "non_execution_reason": "case-not-selected",
+  "trace_id": "trace-1",
+  "dedup_key": "dedup-1"
+}

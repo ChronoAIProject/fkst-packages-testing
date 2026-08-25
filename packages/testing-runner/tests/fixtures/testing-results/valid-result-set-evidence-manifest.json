@@ -1,0 +1,46 @@
+{
+  "schema": "testing-evidence-manifest.v1",
+  "manifest_id": "result-set-manifest",
+  "canonicalization": "fkst-testing-evidence-manifest-canonical-json.v1",
+  "canonical_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "repository": {
+    "id": "repo",
+    "source_ref": {
+      "kind": "git",
+      "ref": "repo@commit"
+    },
+    "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "run_id": "run-1",
+  "plan_ref": {
+    "kind": "plan",
+    "ref": "plans/1"
+  },
+  "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "entries": [
+    {
+      "evidence_id": "evidence-result-set",
+      "case_id": "case-passed",
+      "role": "runner-log",
+      "artifact_ref": {
+        "kind": "artifact",
+        "ref": ".testing/runs/run-1/evidence/runner.log"
+      },
+      "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "media_type": "text/plain",
+      "size_bytes": 1,
+      "producer": "testing-runner",
+      "producer_version": "1.0.0",
+      "created_at": "2026-08-25T00:00:01Z",
+      "sensitivity": "internal",
+      "redaction_classification": "none",
+      "policy_version": "evidence-policy-v1",
+      "policy_status": "approved",
+      "provenance": {
+        "source_kind": "runner",
+        "source_ref": "runner/execution",
+        "source_sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      }
+    }
+  ]
+}

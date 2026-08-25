@@ -1,0 +1,18 @@
+{
+  "schema": "testing-case-result.v2",
+  "case_id": "case-error",
+  "repository": {"id": "repo", "source_ref": {"kind": "git", "ref": "repo@commit"}, "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "reviewed_case_id": "reviewed-case-error",
+  "plan_ref": {"kind": "plan", "ref": "plans/1"},
+  "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "execution_mode": "cli",
+  "execution_status": "error",
+  "classification": "execution_error",
+  "observations": [],
+  "assertions": [{"schema": "testing-assertion-result.v1", "assertion_id": "assert-1", "type": "document-ready", "required": true, "status": "skipped", "classification": "skipped", "observation_ids": [], "evidence_refs": []}],
+  "evidence_refs": [],
+  "timing": {"started_at": "2026-08-25T00:00:00Z", "completed_at": "2026-08-25T00:00:01Z", "duration_ms": 1000},
+  "error": {"code": "provider-timeout", "message": "execution ended before assertions completed"},
+  "trace_id": "trace-1",
+  "dedup_key": "dedup-1"
+}
