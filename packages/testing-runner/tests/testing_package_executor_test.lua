@@ -463,6 +463,7 @@ return {
     local write = { schema=contract.schemas.write_receipt, status="failed", ref={kind="artifact",ref="x",sha256=string.rep("a",64)} }
     rejects(function() contract.validate_write_receipt(write) end)
     write.status="written"; write.ref.kind="wrong"; rejects(function() contract.validate_write_receipt(write) end)
+    receipt.status="succeeded"
     local execution = { schema=contract.schemas.execution, case_result={}, effect_receipt=receipt, case_result_ref={kind="wrong",ref="x",sha256=string.rep("a",64)} }
     rejects(function() contract.validate_execution(execution) end)
     local bad = fixture(); bad.ports.sha256 = function() return "bad" end
