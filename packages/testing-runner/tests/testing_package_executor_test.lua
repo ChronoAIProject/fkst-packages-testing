@@ -257,7 +257,7 @@ local function fixture(options)
         ref = {
           kind = "artifact",
           ref = ".testing/runs/dedup-walking-skeleton/" .. (write_request.kind == "evidence-manifest" and "evidence-manifest.json" or "case-result-set.json"),
-          sha256 = sha256(write_request.canonical_bytes),
+          sha256 = options.writer_digest or sha256(write_request.canonical_bytes),
         },
       }
     end,
@@ -526,6 +526,13 @@ return {
     t.eq(value.calls.writes[2].kind, "case-result-set")
     t.eq(#value.calls.completions, 1)
     t.eq(value.calls.now, 2)
+  end,
+
+  test_writer_receipt_digest_must_match_submitted_canonical_bytes = function()
+    local value = fixture({ writer_digest = string.rep("0", 64) })
+    expect_failure("digest-mismatch", function() runtime_executor.execute(value.request, value.ports) end)
+    t.eq(#value.calls.writes, 1)
+    t.eq(#value.calls.completions, 0)
   end,
 
   test_direct_and_runtime_adapter_execution_have_equal_semantics = function()

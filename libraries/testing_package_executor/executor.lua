@@ -131,6 +131,7 @@ local function write_artifact(resolved, ports, kind, value, manifest)
   contract.validate_write_receipt(receipt)
   local expected = ".testing/runs/" .. resolved.dedup_key .. "/" .. (kind == "evidence-manifest" and "evidence-manifest.json" or "case-result-set.json")
   if receipt.ref.ref ~= expected then fail("cross-run-pointer", "writer returned the wrong artifact path") end
+  if receipt.ref.sha256 ~= request.canonical_sha256 then fail("digest-mismatch", "writer receipt digest does not match canonical bytes") end
   return request, receipt
 end
 
