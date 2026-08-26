@@ -1,11 +1,48 @@
 local contract = require("contract.testing_package_executor")
+local error_facts = require("contract.error_facts")
 local package_manifest = require("contract.testing_package_manifest")
 local results = require("contract.testing_results")
 local executor = require("testing_package_executor.executor")
 local runtime_executor = require("testing_runtime.testing_package_executor")
-local json = require("testing_runtime.json")
+local host_json = json
+local runtime_json = require("testing_runtime.json")
 local sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
+
+local request_fixture_root = "packages/testing-runner/tests/fixtures/testing-package-executor.request.v1"
+local request_fixture_names = {
+  "valid-complete",
+  "invalid-top-level-unknown", "invalid-top-level-missing-dedup-key",
+  "invalid-request-schema", "invalid-identity-schema",
+  "invalid-executor-missing-package-id", "invalid-executor-extra-field",
+  "invalid-identity-package-id-non-string", "invalid-identity-entrypoint-empty",
+  "invalid-identity-contract-major-control", "invalid-identity-package-id-del",
+  "invalid-identity-package-id-over-byte-limit",
+  "invalid-identity-package-id-multibyte-over-byte-limit",
+  "invalid-execution-profile-empty", "invalid-trace-id-del",
+  "invalid-dedup-key-over-byte-limit", "invalid-semver-two-components",
+  "invalid-semver-prefixed", "invalid-digest-short", "invalid-digest-uppercase",
+  "invalid-digest-non-hex", "invalid-approved-refs-missing-policy",
+  "invalid-approved-refs-extra", "invalid-package-manifest-kind",
+  "invalid-source-kind", "invalid-plan-kind", "invalid-pql-input-kind",
+  "invalid-policy-kind", "invalid-capability-set-kind", "invalid-ref-empty",
+  "invalid-ref-mutable", "invalid-ref-query", "invalid-ref-fragment",
+  "invalid-ref-control", "invalid-ref-del", "invalid-ref-over-byte-limit",
+  "invalid-ref-multibyte-over-byte-limit", "invalid-reference-missing-sha256",
+  "invalid-reference-extra-field", "invalid-forbidden-execution-fields",
+  "invalid-forbidden-secret-fields", "invalid-forbidden-path-loader-fields",
+  "invalid-forbidden-browser-fields", "invalid-forbidden-talos-fields",
+  "invalid-forbidden-resolved-entrypoint",
+  "contextual-unsupported-execution-profile",
+  "contextual-unsupported-executor-mapping",
+}
+
+local function request_fixture(name)
+  local handle = assert(io.open(request_fixture_root .. "/" .. name .. ".json", "rb"))
+  local body = handle:read("*a")
+  handle:close()
+  return host_json.decode(body)
+end
 
 local function copy(value)
   if type(value) ~= "table" then return value end
@@ -103,7 +140,7 @@ local function fixture(options)
 
   local storage, decoded, approved = {}, {}, {}
   for _, field in ipairs(contract.reference_order) do
-    local bytes = json.encode(docs[field])
+    local bytes = runtime_json.encode(docs[field])
     local ref = refs[field]
     storage[ref.ref] = bytes
     decoded[bytes] = copy(docs[field])
@@ -194,11 +231,56 @@ end
 local function assert_semantics(actual, expected)
   t.eq(actual.case_result.execution_status, expected.case_result.execution_status)
   t.eq(actual.case_result.classification, expected.case_result.classification)
-  t.eq(json.encode(actual.case_result.observations), json.encode(expected.case_result.observations))
-  t.eq(json.encode(actual.case_result.assertions), json.encode(expected.case_result.assertions))
+  t.eq(runtime_json.encode(actual.case_result.observations), runtime_json.encode(expected.case_result.observations))
+  t.eq(runtime_json.encode(actual.case_result.assertions), runtime_json.encode(expected.case_result.assertions))
 end
 
 return {
+  test_shared_request_schema_fixtures_match_runtime_validation = function()
+    for _, name in ipairs(request_fixture_names) do
+      local shared = request_fixture(name)
+      t.eq(shared.case, name)
+      t.eq(type(shared.portable_valid), "boolean")
+      t.eq(type(shared.runtime_valid), "boolean")
+      t.eq(type(shared.resolver_error), "string")
+      t.eq(type(shared.request), "table")
+
+      local ok, result = pcall(function()
+        return contract.validate_request(shared.request)
+      end)
+      t.eq(ok, shared.runtime_valid)
+      if ok then t.eq(result, shared.request) end
+    end
+  end,
+
+  test_contextual_request_fixtures_are_rejected_only_by_resolver_mapping = function()
+    local profile = request_fixture("contextual-unsupported-execution-profile")
+    local value = fixture()
+    value.request.execution_profile = profile.request.execution_profile
+    contract.validate_request(value.request)
+    local ok, err = pcall(function() executor.resolve(value.request, value.ports) end)
+    t.eq(ok, false)
+    t.eq(error_facts.error_class_from_message(err), profile.resolver_error)
+
+    local mapping = request_fixture("contextual-unsupported-executor-mapping")
+    value = fixture({
+      change_documents = function(docs)
+        docs.package_manifest_ref.package_id = mapping.request.executor.package_id
+        docs.package_manifest_ref.supported_contracts.majors[1] = mapping.request.executor.contract_major
+        docs.package_manifest_ref.entrypoints[1].name = mapping.request.executor.entrypoint
+        docs.package_manifest_ref.entrypoints[1].contract_major = mapping.request.executor.contract_major
+      end,
+      recompute_manifest_digest = true,
+    })
+    value.request.executor.package_id = mapping.request.executor.package_id
+    value.request.executor.entrypoint = mapping.request.executor.entrypoint
+    value.request.executor.contract_major = mapping.request.executor.contract_major
+    contract.validate_request(value.request)
+    ok, err = pcall(function() executor.resolve(value.request, value.ports) end)
+    t.eq(ok, false)
+    t.eq(error_facts.error_class_from_message(err), mapping.resolver_error)
+  end,
+
   test_runtime_adapter_resolve_exposes_resolved_invocation = function()
     local value = fixture()
     local resolved = runtime_executor.resolve(value.request, value.ports)
@@ -218,15 +300,15 @@ return {
       value.request.approved_input_refs.policy_ref,
       value.request.approved_input_refs.capability_set_ref,
     }
-    t.eq(json.encode(value.calls.loads), json.encode(expected_loads))
+    t.eq(runtime_json.encode(value.calls.loads), runtime_json.encode(expected_loads))
     t.eq(#value.calls.freshness, 1)
-    t.eq(json.encode(value.calls.freshness[1]), json.encode({
+    t.eq(runtime_json.encode(value.calls.freshness[1]), runtime_json.encode({
       schema = "testing-package-executor.freshness-check.v1",
       dedup_key = "dedup-walking-skeleton",
       effect_id = "effect-case-home-title-title",
     }))
     t.eq(#value.calls.browser, 1)
-    t.eq(json.encode(value.calls.browser[1]), json.encode({
+    t.eq(runtime_json.encode(value.calls.browser[1]), runtime_json.encode({
       schema = "testing-package-executor.browser-read-title.v1",
       effect_id = "effect-case-home-title-title",
       url = "http://127.0.0.1:4173/",
@@ -237,12 +319,12 @@ return {
     t.eq(execution.schema, "testing-package-executor.execution.v1")
     t.eq(execution.case_result.execution_status, "passed")
     t.eq(execution.case_result.classification, "deterministic")
-    t.eq(json.encode(execution.case_result.timing), json.encode({
+    t.eq(runtime_json.encode(execution.case_result.timing), runtime_json.encode({
       started_at = "2026-08-21T00:00:00Z",
       completed_at = "2026-08-21T00:00:01Z",
       duration_ms = 1000,
     }))
-    t.eq(json.encode(execution.case_result_ref), json.encode({
+    t.eq(runtime_json.encode(execution.case_result_ref), runtime_json.encode({
       kind = "artifact",
       ref = ".testing/runs/dedup-walking-skeleton/case-result.json",
       sha256 = value.calls.writes[1].canonical_sha256,
@@ -381,6 +463,7 @@ return {
     local write = { schema=contract.schemas.write_receipt, status="failed", ref={kind="artifact",ref="x",sha256=string.rep("a",64)} }
     rejects(function() contract.validate_write_receipt(write) end)
     write.status="written"; write.ref.kind="wrong"; rejects(function() contract.validate_write_receipt(write) end)
+    receipt.status="succeeded"
     local execution = { schema=contract.schemas.execution, case_result={}, effect_receipt=receipt, case_result_ref={kind="wrong",ref="x",sha256=string.rep("a",64)} }
     rejects(function() contract.validate_execution(execution) end)
     local bad = fixture(); bad.ports.sha256 = function() return "bad" end
@@ -395,7 +478,7 @@ return {
     bad.docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(bad.docs.package_manifest_ref))
     bad.request.executor.manifest_digest = bad.docs.package_manifest_ref.manifest_digest
     local manifest_ref = bad.request.approved_input_refs.package_manifest_ref
-    bad.storage[manifest_ref.ref] = json.encode(bad.docs.package_manifest_ref)
+    bad.storage[manifest_ref.ref] = runtime_json.encode(bad.docs.package_manifest_ref)
     manifest_ref.sha256 = sha256(bad.storage[manifest_ref.ref])
     rejects(function() executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.request.executor.package_content_sha256 = string.rep("f", 64)
@@ -408,8 +491,8 @@ return {
     bad.docs.package_manifest_ref.manifest_digest = nil
     bad.docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(bad.docs.package_manifest_ref))
     bad.request.executor.manifest_digest = bad.docs.package_manifest_ref.manifest_digest
-    bad.request.approved_input_refs.package_manifest_ref.sha256 = sha256(json.encode(bad.docs.package_manifest_ref))
-    bad.storage[bad.request.approved_input_refs.package_manifest_ref.ref] = json.encode(bad.docs.package_manifest_ref)
+    bad.request.approved_input_refs.package_manifest_ref.sha256 = sha256(runtime_json.encode(bad.docs.package_manifest_ref))
+    bad.storage[bad.request.approved_input_refs.package_manifest_ref.ref] = runtime_json.encode(bad.docs.package_manifest_ref)
     rejects(function() executor.resolve(bad.request, bad.ports) end)
     local resolved_check = executor.resolve(value.request, value.ports)
     resolved_check.executor.package_id = "other"

@@ -819,6 +819,7 @@ class AffectedTestContractTest(unittest.TestCase):
             "testing-evidence-manifest.v1/valid.json",
             "testing-results/valid-case-passed.json",
             "testing-browser-action.v1/valid-click.json",
+            "testing-package-executor.request.v1/valid-complete.json",
         )
         for fixture in fixtures:
             with self.subTest(fixture=fixture):
