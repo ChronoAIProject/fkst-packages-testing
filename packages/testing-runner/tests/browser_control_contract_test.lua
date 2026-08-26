@@ -1,6 +1,35 @@
 local browser = require("contract.browser_control")
+local error_facts = require("contract.error_facts")
 local structured = require("contract.structured_execution")
+local host_json = json
 local t = fkst.test
+
+local action_fixture_root = "packages/testing-runner/tests/fixtures/testing-browser-action.v1"
+local action_fixture_names = {
+  "valid-click", "valid-type", "valid-submit", "valid-press-tab",
+  "valid-finish-success", "valid-finish-blocked", "invalid-unknown-kind",
+  "invalid-unknown-field", "invalid-missing-schema", "invalid-missing-turn",
+  "invalid-missing-kind", "invalid-missing-kind-field", "invalid-turn-zero",
+  "invalid-turn-nine", "invalid-turn-fractional", "invalid-click-secret-ref",
+  "invalid-click-advisory-status", "invalid-submit-secret-ref",
+  "invalid-submit-advisory-status", "invalid-type-missing-handle",
+  "invalid-type-missing-secret-ref", "invalid-type-advisory-status",
+  "invalid-press-tab-handle", "invalid-press-tab-secret-ref",
+  "invalid-press-tab-advisory-status", "invalid-finish-handle",
+  "invalid-finish-secret-ref", "invalid-finish-advisory-status",
+  "invalid-handle-empty", "invalid-handle-over-byte-limit",
+  "invalid-handle-multibyte-over-byte-limit", "invalid-handle-control-character",
+  "invalid-handle-del", "invalid-secret-ref-malformed",
+  "invalid-secret-ref-over-byte-limit", "invalid-forbidden-payload-fields",
+  "contextual-unauthorized-action", "contextual-unapproved-secret-ref",
+}
+
+local function action_fixture(name)
+  local handle = assert(io.open(action_fixture_root .. "/" .. name .. ".json", "rb"))
+  local body = handle:read("*a")
+  handle:close()
+  return host_json.decode(body)
+end
 
 local function digest(char) return string.rep(char, 64) end
 local function repository()
@@ -59,6 +88,34 @@ local function observation()
 end
 
 return {
+  test_shared_browser_action_schema_fixtures_match_runtime_validation = function()
+    for _, name in ipairs(action_fixture_names) do
+      local fixture = action_fixture(name)
+      t.eq(fixture.case, name)
+      t.eq(type(fixture.portable_valid), "boolean")
+      t.eq(type(fixture.runtime_valid), "boolean")
+      t.eq(type(fixture.expected_error), "string")
+      t.eq(type(fixture.allowed_actions), "table")
+      t.eq(type(fixture.approved_secret_refs), "table")
+      t.eq(type(fixture.action), "table")
+
+      local ok, result = pcall(function()
+        return browser.validate_action(
+          fixture.action,
+          fixture.allowed_actions,
+          fixture.approved_secret_refs
+        )
+      end)
+      t.eq(ok, fixture.runtime_valid)
+      if ok then
+        t.eq(result, fixture.action)
+        t.eq(fixture.expected_error, "")
+      else
+        t.eq(error_facts.error_class_from_message(result), fixture.expected_error)
+      end
+    end
+  end,
+
   test_browser_grant_binds_exact_origins_target_secrets_and_single_use = function()
     browser.validate_grant(grant(), "2026-07-20T00:30:00Z")
     for _, mutate in ipairs({

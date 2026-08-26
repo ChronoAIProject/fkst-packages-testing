@@ -1,0 +1,23 @@
+{
+  "case": "invalid-turn-nine",
+  "portable_valid": false,
+  "runtime_valid": false,
+  "expected_error": "malformed-action",
+  "allowed_actions": [
+    "click",
+    "type",
+    "submit",
+    "press_tab",
+    "finish"
+  ],
+  "approved_secret_refs": [
+    "primary-identity",
+    "primary-secret"
+  ],
+  "action": {
+    "schema": "testing-runner.ai-browser-control.action.v1",
+    "turn": 9,
+    "kind": "click",
+    "handle": "control-1"
+  }
+}

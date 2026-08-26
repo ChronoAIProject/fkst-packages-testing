@@ -1,0 +1,22 @@
+{
+  "case": "invalid-missing-kind",
+  "portable_valid": false,
+  "runtime_valid": false,
+  "expected_error": "malformed-action",
+  "allowed_actions": [
+    "click",
+    "type",
+    "submit",
+    "press_tab",
+    "finish"
+  ],
+  "approved_secret_refs": [
+    "primary-identity",
+    "primary-secret"
+  ],
+  "action": {
+    "schema": "testing-runner.ai-browser-control.action.v1",
+    "turn": 1,
+    "handle": "control-1"
+  }
+}

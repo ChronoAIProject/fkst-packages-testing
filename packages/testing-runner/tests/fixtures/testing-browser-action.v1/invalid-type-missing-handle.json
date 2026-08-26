@@ -1,0 +1,23 @@
+{
+  "case": "invalid-type-missing-handle",
+  "portable_valid": false,
+  "runtime_valid": false,
+  "expected_error": "unauthorized-secret-ref",
+  "allowed_actions": [
+    "click",
+    "type",
+    "submit",
+    "press_tab",
+    "finish"
+  ],
+  "approved_secret_refs": [
+    "primary-identity",
+    "primary-secret"
+  ],
+  "action": {
+    "schema": "testing-runner.ai-browser-control.action.v1",
+    "turn": 1,
+    "kind": "type",
+    "secret_ref": "primary-secret"
+  }
+}

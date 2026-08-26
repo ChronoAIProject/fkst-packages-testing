@@ -1,0 +1,24 @@
+{
+  "case": "valid-type",
+  "portable_valid": true,
+  "runtime_valid": true,
+  "expected_error": "",
+  "allowed_actions": [
+    "click",
+    "type",
+    "submit",
+    "press_tab",
+    "finish"
+  ],
+  "approved_secret_refs": [
+    "primary-identity",
+    "primary-secret"
+  ],
+  "action": {
+    "schema": "testing-runner.ai-browser-control.action.v1",
+    "turn": 1,
+    "kind": "type",
+    "handle": "control-2",
+    "secret_ref": "primary-secret"
+  }
+}
