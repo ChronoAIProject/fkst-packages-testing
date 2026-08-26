@@ -8,7 +8,8 @@ function M.resolve(request, host_ports) return resolver.resolve(request, host_po
 function M.try_resolve(request, host_ports)
   local ok, resolved = pcall(resolver.resolve, request, host_ports)
   if ok then return resolved end
-  return resolver.failure_receipt(request, resolved)
+  local failure = resolver.failure_receipt(request, resolved)
+  return failure
 end
 
 function M.execute(request, host_ports)
