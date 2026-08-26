@@ -164,7 +164,8 @@ local function fixture(options)
     dedup_key = "dedup-walking-skeleton",
   }
 
-  local calls = { loads = {}, freshness = {}, browser = {}, writes = {}, now = 0 }
+  local calls = { loads = {}, admissions = {}, freshness = {}, browser = {}, writes = {}, now = 0 }
+  local receipt_store = options.receipt_store or {}
   local clock = { "2026-08-21T00:00:00Z", "2026-08-21T00:00:01Z" }
   local ports = {
     load_immutable = function(ref)
@@ -174,6 +175,28 @@ local function fixture(options)
     sha256 = sha256,
     decode_json = function(bytes)
       return copy(assert(decoded[bytes], "unknown canonical JSON bytes"))
+    end,
+    admit_resolution = function(admission_request)
+      table.insert(calls.admissions, copy(admission_request))
+      local existing = receipt_store[admission_request.admission_key]
+      if existing ~= nil and existing.admission_digest ~= admission_request.admission_digest then
+        return {
+          schema = contract.schemas.admission_conflict,
+          status = "conflict",
+          admission_key = admission_request.admission_key,
+          admitted_digest = existing.admission_digest,
+          attempted_digest = admission_request.admission_digest,
+        }
+      end
+      if existing ~= nil then return copy(existing) end
+      local receipt = {
+        schema = contract.schemas.admission_receipt,
+        status = "admitted",
+        admission_key = admission_request.admission_key,
+        admission_digest = admission_request.admission_digest,
+      }
+      receipt_store[admission_request.admission_key] = copy(receipt)
+      return receipt
     end,
     check_freshness = function(check)
       table.insert(calls.freshness, copy(check))
@@ -213,6 +236,7 @@ local function fixture(options)
     request = request,
     ports = ports,
     calls = calls,
+    receipt_store = receipt_store,
   }
 end
 
@@ -258,7 +282,7 @@ return {
     local value = fixture()
     value.request.execution_profile = profile.request.execution_profile
     contract.validate_request(value.request)
-    local ok, err = pcall(function() executor.resolve(value.request, value.ports) end)
+    local ok, err = pcall(function() runtime_executor.resolve(value.request, value.ports) end)
     t.eq(ok, false)
     t.eq(error_facts.error_class_from_message(err), profile.resolver_error)
 
@@ -276,7 +300,7 @@ return {
     value.request.executor.entrypoint = mapping.request.executor.entrypoint
     value.request.executor.contract_major = mapping.request.executor.contract_major
     contract.validate_request(value.request)
-    ok, err = pcall(function() executor.resolve(value.request, value.ports) end)
+    ok, err = pcall(function() runtime_executor.resolve(value.request, value.ports) end)
     t.eq(ok, false)
     t.eq(error_facts.error_class_from_message(err), mapping.resolver_error)
   end,
@@ -285,7 +309,41 @@ return {
     local value = fixture()
     local resolved = runtime_executor.resolve(value.request, value.ports)
     t.eq(resolved.schema, contract.schemas.resolved_invocation)
+    t.eq(resolved.selected_entrypoint.executor_id, contract.executor_id)
+    t.eq(resolved.admission_receipt.admission_digest, resolved.admission_digest)
     t.eq(#value.calls.loads, 6)
+    t.eq(#value.calls.admissions, 1)
+  end,
+
+
+  test_same_key_replays_receipt_and_different_digest_conflicts = function()
+    local receipt_store = {}
+    local first = fixture({ receipt_store = receipt_store })
+    local admitted = runtime_executor.resolve(first.request, first.ports)
+    local replayed = runtime_executor.resolve(first.request, first.ports)
+    t.eq(runtime_json.encode(replayed.admission_receipt), runtime_json.encode(admitted.admission_receipt))
+    t.eq(#first.calls.admissions, 2)
+
+    local conflict = fixture({
+      receipt_store = receipt_store,
+      change_documents = function(docs) docs.package_manifest_ref.source_commit = string.rep("9", 40) end,
+      recompute_manifest_digest = true,
+    })
+    expect_failure("admission-conflict", function() runtime_executor.execute(conflict.request, conflict.ports) end)
+    t.eq(#conflict.calls.admissions, 1)
+    assert_zero_execution_effects(conflict)
+  end,
+
+  test_resolver_failure_receipts_are_stable_and_effect_free = function()
+    local value = fixture()
+    value.storage[value.request.approved_input_refs.plan_ref.ref] = "tampered"
+    local failure = runtime_executor.try_resolve(value.request, value.ports)
+    t.eq(failure.schema, contract.schemas.resolver_failure)
+    t.eq(failure.status, "rejected")
+    t.eq(failure.admission_key, value.request.dedup_key)
+    t.eq(failure.code, "digest-mismatch")
+    t.eq(#value.calls.admissions, 0)
+    assert_zero_execution_effects(value)
   end,
 
   test_runtime_adapter_executes_the_full_walking_skeleton = function()
@@ -333,7 +391,7 @@ return {
 
   test_direct_and_runtime_adapter_execution_have_equal_semantics = function()
     local direct_fixture = fixture()
-    local resolved = executor.resolve(direct_fixture.request, direct_fixture.ports)
+    local resolved = runtime_executor.resolve(direct_fixture.request, direct_fixture.ports)
     local direct = executor.execute(resolved, direct_fixture.ports)
     local adapter_fixture = fixture()
     local adapted = runtime_executor.execute(adapter_fixture.request, adapter_fixture.ports)
@@ -357,6 +415,7 @@ return {
       local ref = value.request.approved_input_refs[field].ref
       value.storage[ref] = value.storage[ref] .. " "
       expect_failure("digest-mismatch", function() runtime_executor.execute(value.request, value.ports) end)
+      t.eq(#value.calls.admissions, 0)
       assert_zero_execution_effects(value)
     end
   end,
@@ -467,9 +526,9 @@ return {
     local execution = { schema=contract.schemas.execution, case_result={}, effect_receipt=receipt, case_result_ref={kind="wrong",ref="x",sha256=string.rep("a",64)} }
     rejects(function() contract.validate_execution(execution) end)
     local bad = fixture(); bad.ports.sha256 = function() return "bad" end
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.request.execution_profile = "other"
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture({ change_documents=function(docs)
       docs.package_manifest_ref.semantic_capabilities = { "other" }
       docs.package_manifest_ref.entrypoints[1].capabilities = { "other" }
@@ -480,11 +539,11 @@ return {
     local manifest_ref = bad.request.approved_input_refs.package_manifest_ref
     bad.storage[manifest_ref.ref] = runtime_json.encode(bad.docs.package_manifest_ref)
     manifest_ref.sha256 = sha256(bad.storage[manifest_ref.ref])
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.request.executor.package_content_sha256 = string.rep("f", 64)
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.request.executor.manifest_digest = string.rep("f", 64)
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture({ change_documents=function(docs)
       docs.package_manifest_ref.semantic_capabilities = { "other" }
     end })
@@ -493,26 +552,32 @@ return {
     bad.request.executor.manifest_digest = bad.docs.package_manifest_ref.manifest_digest
     bad.request.approved_input_refs.package_manifest_ref.sha256 = sha256(runtime_json.encode(bad.docs.package_manifest_ref))
     bad.storage[bad.request.approved_input_refs.package_manifest_ref.ref] = runtime_json.encode(bad.docs.package_manifest_ref)
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
-    local resolved_check = executor.resolve(value.request, value.ports)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
+    local resolved_check = runtime_executor.resolve(value.request, value.ports)
     resolved_check.executor.package_id = "other"
     rejects(function() contract.validate_resolved_invocation(resolved_check) end)
-    resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
     resolved_check.execution_profile = "other"
     rejects(function() contract.validate_resolved_invocation(resolved_check) end)
-    resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
     resolved_check.selected_entrypoint.name = "other"
     rejects(function() contract.validate_resolved_invocation(resolved_check) end)
-    resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
     resolved_check.selected_entrypoint.contract_major = "other"
     rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
+    resolved_check.selected_entrypoint.executor_id = "other"
+    rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
+    resolved_check.admission_receipt.admission_digest = string.rep("f", 64)
+    rejects(function() contract.validate_resolved_invocation(resolved_check) end)
     bad = fixture({ change_documents=function(docs) docs.policy_ref.execution_profile = "other" end })
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.ports.now = function() return "not-time" end
-    local resolved = executor.resolve(bad.request, bad.ports)
+    local resolved = runtime_executor.resolve(bad.request, bad.ports)
     rejects(function() executor.execute(resolved, bad.ports) end)
     bad = fixture()
-    resolved = executor.resolve(bad.request, bad.ports)
+    resolved = runtime_executor.resolve(bad.request, bad.ports)
     bad.ports.sha256 = function(bytes) return "bad" end
     rejects(function() executor.execute(resolved, bad.ports) end)
   end,
@@ -524,7 +589,7 @@ return {
     t.eq(#value.calls.loads, 0)
 
     value = fixture()
-    local resolved = executor.resolve(value.request, value.ports)
+    local resolved = runtime_executor.resolve(value.request, value.ports)
     value.ports.browser_read_title = nil
     expect_failure("browser_read_title must be callable", function() executor.execute(resolved, value.ports) end)
     t.eq(#value.calls.freshness, 0)
