@@ -1,4 +1,5 @@
 local contract = require("contract.testing_package_executor")
+local error_facts = require("contract.error_facts")
 local package_manifest = require("contract.testing_package_manifest")
 local results = require("contract.testing_results")
 local executor = require("testing_package_executor.executor")
@@ -6,6 +7,41 @@ local runtime_executor = require("testing_runtime.testing_package_executor")
 local json = require("testing_runtime.json")
 local sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
+
+local request_fixture_root = "packages/testing-runner/tests/fixtures/testing-package-executor.request.v1"
+local request_fixture_names = {
+  "valid-complete",
+  "invalid-top-level-unknown", "invalid-top-level-missing-dedup-key",
+  "invalid-request-schema", "invalid-identity-schema",
+  "invalid-executor-missing-package-id", "invalid-executor-extra-field",
+  "invalid-identity-package-id-non-string", "invalid-identity-entrypoint-empty",
+  "invalid-identity-contract-major-control", "invalid-identity-package-id-del",
+  "invalid-identity-package-id-over-byte-limit",
+  "invalid-identity-package-id-multibyte-over-byte-limit",
+  "invalid-execution-profile-empty", "invalid-trace-id-del",
+  "invalid-dedup-key-over-byte-limit", "invalid-semver-two-components",
+  "invalid-semver-prefixed", "invalid-digest-short", "invalid-digest-uppercase",
+  "invalid-digest-non-hex", "invalid-approved-refs-missing-policy",
+  "invalid-approved-refs-extra", "invalid-package-manifest-kind",
+  "invalid-source-kind", "invalid-plan-kind", "invalid-pql-input-kind",
+  "invalid-policy-kind", "invalid-capability-set-kind", "invalid-ref-empty",
+  "invalid-ref-mutable", "invalid-ref-query", "invalid-ref-fragment",
+  "invalid-ref-control", "invalid-ref-del", "invalid-ref-over-byte-limit",
+  "invalid-ref-multibyte-over-byte-limit", "invalid-reference-missing-sha256",
+  "invalid-reference-extra-field", "invalid-forbidden-execution-fields",
+  "invalid-forbidden-secret-fields", "invalid-forbidden-path-loader-fields",
+  "invalid-forbidden-browser-fields", "invalid-forbidden-talos-fields",
+  "invalid-forbidden-resolved-entrypoint",
+  "contextual-unsupported-execution-profile",
+  "contextual-unsupported-executor-mapping",
+}
+
+local function request_fixture(name)
+  local handle = assert(io.open(request_fixture_root .. "/" .. name .. ".json", "rb"))
+  local body = handle:read("*a")
+  handle:close()
+  return json.decode(body)
+end
 
 local function copy(value)
   if type(value) ~= "table" then return value end
@@ -199,6 +235,51 @@ local function assert_semantics(actual, expected)
 end
 
 return {
+  test_shared_request_schema_fixtures_match_runtime_validation = function()
+    for _, name in ipairs(request_fixture_names) do
+      local shared = request_fixture(name)
+      t.eq(shared.case, name)
+      t.eq(type(shared.portable_valid), "boolean")
+      t.eq(type(shared.runtime_valid), "boolean")
+      t.eq(type(shared.resolver_error), "string")
+      t.eq(type(shared.request), "table")
+
+      local ok, result = pcall(function()
+        return contract.validate_request(shared.request)
+      end)
+      t.eq(ok, shared.runtime_valid)
+      if ok then t.eq(result, shared.request) end
+    end
+  end,
+
+  test_contextual_request_fixtures_are_rejected_only_by_resolver_mapping = function()
+    local profile = request_fixture("contextual-unsupported-execution-profile")
+    local value = fixture()
+    value.request.execution_profile = profile.request.execution_profile
+    contract.validate_request(value.request)
+    local ok, err = pcall(function() executor.resolve(value.request, value.ports) end)
+    t.eq(ok, false)
+    t.eq(error_facts.error_class_from_message(err), profile.resolver_error)
+
+    local mapping = request_fixture("contextual-unsupported-executor-mapping")
+    value = fixture({
+      change_documents = function(docs)
+        docs.package_manifest_ref.package_id = mapping.request.executor.package_id
+        docs.package_manifest_ref.supported_contracts.majors[1] = mapping.request.executor.contract_major
+        docs.package_manifest_ref.entrypoints[1].name = mapping.request.executor.entrypoint
+        docs.package_manifest_ref.entrypoints[1].contract_major = mapping.request.executor.contract_major
+      end,
+      recompute_manifest_digest = true,
+    })
+    value.request.executor.package_id = mapping.request.executor.package_id
+    value.request.executor.entrypoint = mapping.request.executor.entrypoint
+    value.request.executor.contract_major = mapping.request.executor.contract_major
+    contract.validate_request(value.request)
+    ok, err = pcall(function() executor.resolve(value.request, value.ports) end)
+    t.eq(ok, false)
+    t.eq(error_facts.error_class_from_message(err), mapping.resolver_error)
+  end,
+
   test_runtime_adapter_resolve_exposes_resolved_invocation = function()
     local value = fixture()
     local resolved = runtime_executor.resolve(value.request, value.ports)

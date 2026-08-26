@@ -36,6 +36,13 @@ SHARED_SCHEMA_FIXTURE_ROOTS = (
         "fixtures",
         "testing-browser-action.v1",
     ),
+    (
+        "packages",
+        "testing-runner",
+        "tests",
+        "fixtures",
+        "testing-package-executor.request.v1",
+    ),
 )
 
 
