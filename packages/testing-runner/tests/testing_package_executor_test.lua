@@ -764,7 +764,13 @@ return {
     rejects(function() executor.execute(resolved, bad.ports) end)
     bad = fixture()
     resolved = runtime_executor.resolve(bad.request, bad.ports)
-    bad.ports.sha256 = function(bytes) return "bad" end
+    local valid_execution_sha256 = bad.ports.sha256
+    bad.ports.sha256 = function(bytes)
+      if type(bytes) == "string" and bytes:find(contract.schemas.admission_request, 1, true) then
+        return valid_execution_sha256(bytes)
+      end
+      return "bad"
+    end
     rejects(function() executor.execute(resolved, bad.ports) end)
   end,
 
