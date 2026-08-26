@@ -166,10 +166,11 @@ local function fixture(options)
 
   local calls = {
     loads = {}, package_loads = {}, compatibility = {}, admissions = {},
-    freshness = {}, browser = {}, writes = {}, now = 0,
+    completed_queries = {}, claims = {}, freshness = {}, intents = {}, browser = {}, receipts = {}, writes = {}, completions = {}, now = 0,
   }
   local package_content_bytes = options.package_content_bytes or "testing-runner-1.0.0 admitted package bytes"
   local receipt_store = options.receipt_store or {}
+  local completed_store = options.completed_store or {}
   local clock = { "2026-08-21T00:00:00Z", "2026-08-21T00:00:01Z" }
   local ports = {
     load_immutable = function(ref)
@@ -215,9 +216,22 @@ local function fixture(options)
       receipt_store[admission_request.admission_key] = copy(receipt)
       return receipt
     end,
+    load_completed_execution = function(query)
+      table.insert(calls.completed_queries, copy(query))
+      return copy(completed_store[query.dedup_key .. ":" .. query.admission_digest])
+    end,
+    claim_execution = function(request)
+      table.insert(calls.claims, copy(request))
+      return { schema=contract.schemas.execution_claim_receipt, status="claimed", dedup_key=request.dedup_key,
+        admission_digest=request.admission_digest, claim_id="claim-" .. request.dedup_key }
+    end,
     check_freshness = function(check)
       table.insert(calls.freshness, copy(check))
       return options.freshness ~= false
+    end,
+    persist_effect_intent = function(intent)
+      table.insert(calls.intents, copy(intent))
+      return true
     end,
     browser_read_title = function(effect_request)
       table.insert(calls.browser, copy(effect_request))
@@ -225,9 +239,15 @@ local function fixture(options)
         schema = "testing-package-executor.effect-receipt.v1",
         effect_id = "effect-case-home-title-title",
         status = "succeeded",
+        observed_url = "http://127.0.0.1:4173/",
         observed_title = options.observed_title or "Fixture Home",
-        evidence_refs = {},
+        evidence_refs = { { kind="artifact", ref=".testing/runs/dedup-walking-skeleton/evidence/title.json", sha256=sha256(string.rep("x", 123)) } },
+        evidence_size_bytes = 123,
       }
+    end,
+    persist_effect_receipt = function(receipt)
+      table.insert(calls.receipts, copy(receipt))
+      return true
     end,
     write_canonical = function(write_request)
       table.insert(calls.writes, copy(write_request))
@@ -236,10 +256,15 @@ local function fixture(options)
         status = "written",
         ref = {
           kind = "artifact",
-          ref = ".testing/runs/dedup-walking-skeleton/case-result.json",
-          sha256 = write_request.canonical_sha256,
+          ref = ".testing/runs/dedup-walking-skeleton/" .. (write_request.kind == "evidence-manifest" and "evidence-manifest.json" or "case-result-set.json"),
+          sha256 = sha256(write_request.canonical_bytes),
         },
       }
+    end,
+    complete_execution = function(receipt)
+      table.insert(calls.completions, copy(receipt))
+      completed_store[receipt.dedup_key .. ":" .. receipt.admission_digest] = copy(receipt)
+      return copy(receipt)
     end,
     now = function()
       calls.now = calls.now + 1
@@ -254,6 +279,7 @@ local function fixture(options)
     ports = ports,
     calls = calls,
     receipt_store = receipt_store,
+    completed_store = completed_store,
   }
 end
 
@@ -265,16 +291,18 @@ end
 
 local function assert_zero_execution_effects(value)
   t.eq(value.calls.now, 0)
+  t.eq(#value.calls.completed_queries, 0)
+  t.eq(#value.calls.claims, 0)
   t.eq(#value.calls.freshness, 0)
+  t.eq(#value.calls.intents, 0)
+  t.eq(#value.calls.receipts, 0)
+  t.eq(#value.calls.completions, 0)
   t.eq(#value.calls.browser, 0)
   t.eq(#value.calls.writes, 0)
 end
 
 local function assert_semantics(actual, expected)
-  t.eq(actual.case_result.execution_status, expected.case_result.execution_status)
-  t.eq(actual.case_result.classification, expected.case_result.classification)
-  t.eq(runtime_json.encode(actual.case_result.observations), runtime_json.encode(expected.case_result.observations))
-  t.eq(runtime_json.encode(actual.case_result.assertions), runtime_json.encode(expected.case_result.assertions))
+  t.eq(runtime_json.encode(actual), runtime_json.encode(expected))
 end
 
 return {
@@ -346,6 +374,7 @@ return {
 
     local conflict = fixture({
       receipt_store = receipt_store,
+    completed_store = completed_store,
       change_documents = function(docs) docs.package_manifest_ref.source_commit = string.rep("9", 40) end,
       recompute_manifest_digest = true,
     })
@@ -479,47 +508,24 @@ return {
     t.eq(runtime_executor.failure_receipt(nil, "unclassified failure").admission_key, "unknown")
   end,
 
-  test_runtime_adapter_executes_the_full_walking_skeleton = function()
+  test_runtime_adapter_executes_and_replays_the_full_walking_skeleton = function()
     local value = fixture()
-    local execution = runtime_executor.execute(value.request, value.ports)
+    local completed = runtime_executor.execute(value.request, value.ports)
+    local replayed = runtime_executor.execute(value.request, value.ports)
 
-    local expected_loads = {
-      value.request.approved_input_refs.package_manifest_ref,
-      value.request.approved_input_refs.source_ref,
-      value.request.approved_input_refs.plan_ref,
-      value.request.approved_input_refs.pql_input_ref,
-      value.request.approved_input_refs.policy_ref,
-      value.request.approved_input_refs.capability_set_ref,
-    }
-    t.eq(runtime_json.encode(value.calls.loads), runtime_json.encode(expected_loads))
+    t.eq(completed.schema, contract.schemas.completed_execution)
+    t.eq(runtime_json.encode(replayed), runtime_json.encode(completed))
+    t.eq(#value.calls.completed_queries, 2)
+    t.eq(#value.calls.claims, 1)
     t.eq(#value.calls.freshness, 1)
-    t.eq(runtime_json.encode(value.calls.freshness[1]), runtime_json.encode({
-      schema = "testing-package-executor.freshness-check.v1",
-      dedup_key = "dedup-walking-skeleton",
-      effect_id = "effect-case-home-title-title",
-    }))
+    t.eq(#value.calls.intents, 1)
     t.eq(#value.calls.browser, 1)
-    t.eq(runtime_json.encode(value.calls.browser[1]), runtime_json.encode({
-      schema = "testing-package-executor.browser-read-title.v1",
-      effect_id = "effect-case-home-title-title",
-      url = "http://127.0.0.1:4173/",
-    }))
-    t.eq(#value.calls.writes, 1)
-    t.eq(sha256(value.calls.writes[1].canonical_bytes), value.calls.writes[1].canonical_sha256)
-    t.eq(results.canonicalize(execution.case_result), value.calls.writes[1].canonical_bytes)
-    t.eq(execution.schema, "testing-package-executor.execution.v1")
-    t.eq(execution.case_result.execution_status, "passed")
-    t.eq(execution.case_result.classification, "deterministic")
-    t.eq(runtime_json.encode(execution.case_result.timing), runtime_json.encode({
-      started_at = "2026-08-21T00:00:00Z",
-      completed_at = "2026-08-21T00:00:01Z",
-      duration_ms = 1000,
-    }))
-    t.eq(runtime_json.encode(execution.case_result_ref), runtime_json.encode({
-      kind = "artifact",
-      ref = ".testing/runs/dedup-walking-skeleton/case-result.json",
-      sha256 = value.calls.writes[1].canonical_sha256,
-    }))
+    t.eq(#value.calls.receipts, 1)
+    t.eq(#value.calls.writes, 2)
+    t.eq(value.calls.writes[1].kind, "evidence-manifest")
+    t.eq(value.calls.writes[2].kind, "case-result-set")
+    t.eq(#value.calls.completions, 1)
+    t.eq(value.calls.now, 2)
   end,
 
   test_direct_and_runtime_adapter_execution_have_equal_semantics = function()
@@ -531,15 +537,13 @@ return {
     assert_semantics(direct, adapted)
   end,
 
-  test_unequal_title_produces_canonical_assertion_failure = function()
+  test_unequal_title_is_rejected_before_canonical_writes = function()
     local value = fixture({ observed_title = "Unexpected Home" })
-    local execution = runtime_executor.execute(value.request, value.ports)
-    t.eq(execution.case_result.execution_status, "failed")
-    t.eq(execution.case_result.classification, "assertion_failure")
-    t.eq(execution.case_result.observations[1].value, "Unexpected Home")
-    t.eq(execution.case_result.assertions[1].status, "failed")
-    t.eq(execution.case_result.assertions[1].classification, "assertion_failure")
-    t.eq(#value.calls.writes, 1)
+    expect_failure("outside this walking skeleton", function() runtime_executor.execute(value.request, value.ports) end)
+    t.eq(#value.calls.browser, 1)
+    t.eq(#value.calls.receipts, 1)
+    t.eq(#value.calls.writes, 0)
+    t.eq(#value.calls.completions, 0)
   end,
 
   test_tampered_approved_bytes_fail_before_execution_effects = function()
@@ -591,7 +595,7 @@ return {
     })
     value.request.executor.manifest_digest = value.docs.package_manifest_ref.manifest_digest
     local execution = runtime_executor.execute(value.request, value.ports)
-    t.eq(execution.case_result.execution_status, "passed")
+    t.eq(execution.status, "completed")
   end,
 
   test_capability_set_mismatch_fails_without_execution_effects = function()

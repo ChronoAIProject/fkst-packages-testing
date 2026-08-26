@@ -13,9 +13,14 @@ end
 local function execution_ports(host_ports)
   if type(host_ports) ~= "table" then return host_ports end
   return {
+    load_completed_execution = host_ports.load_completed_execution,
+    claim_execution = host_ports.claim_execution,
     check_freshness = host_ports.check_freshness,
+    persist_effect_intent = host_ports.persist_effect_intent,
     browser_read_title = host_ports.browser_read_title,
+    persist_effect_receipt = host_ports.persist_effect_receipt,
     write_canonical = host_ports.write_canonical,
+    complete_execution = host_ports.complete_execution,
     now = host_ports.now,
     sha256 = host_ports.sha256,
   }
