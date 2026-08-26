@@ -28,18 +28,22 @@ plugins, workspaces, floating references, and credential-bearing fields are not 
 
 ## Admission identity
 
-Before effects, Local QA Runtime canonicalizes `testing-package-executor.admission-request.v1` and
-computes its SHA-256 digest. The canonical object binds the admission key to the complete verified
-executor identity, execution profile, all six immutable reference digests, and the selected
-`executor_id` / semantic entrypoint / contract-major / capability tuple.
+Before effects, Local QA Runtime loads the exact package-content bytes through its immutable release
+source, recomputes `package_content_sha256`, and checks the verified manifest's runtime requirements,
+source identity, and dependency locks through the Runtime-owned compatibility port. It then
+canonicalizes `testing-package-executor.admission-request.v1` and computes its SHA-256 digest. The
+canonical object binds the admission key to the complete verified executor identity, execution
+profile, all six immutable reference digests, and the selected `executor_id` / semantic entrypoint /
+contract-major / capability tuple.
 
 The injected `admit_resolution` port is the atomic Runtime-owned receipt-store seam:
 
 - no prior key returns `testing-package-executor.admission-receipt.v1` with status `admitted`;
 - the same key and digest returns the original receipt unchanged;
 - the same key and a different digest returns
-  `testing-package-executor.admission-conflict.v1` with both digests;
-- malformed receipts and conflicts fail closed.
+  `testing-package-executor.admission-conflict.v1` with both distinct digests;
+- malformed receipts, equal-digest conflicts, and conflicts whose attempted digest does not match the
+  verified request fail closed.
 
 Only a resolved invocation carrying a matching admission digest and receipt is accepted by
 `TestingPackageExecutor`. Resolver failures can be projected as

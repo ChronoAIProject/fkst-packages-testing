@@ -1,4 +1,5 @@
 -- contract.testing_package_executor: closed contracts for the provider-neutral walking skeleton.
+local canonical_json = require("contract.canonical_json")
 local error_facts = require("contract.error_facts")
 local M = {}
 
@@ -56,6 +57,7 @@ M.reference_kinds = {
 M.semantic_mappings = { {
   execution_profile = M.profile,
   package_id = M.package_id,
+  package_version = "1.0.0",
   contract_major = M.contract_major,
   capabilities = { M.capability },
   executor_id = M.executor_id,
@@ -75,6 +77,8 @@ M.resolver_failure_codes = {
   ["immutable-load-failed"] = true,
   ["mapping-ambiguous"] = true,
   ["mapping-missing"] = true,
+  ["package-content-mismatch"] = true,
+  ["runtime-incompatible"] = true,
   ["missing-port"] = true,
   ["missing-ports"] = true,
   ["policy-mismatch"] = true,
@@ -289,6 +293,26 @@ local function validate_entrypoint(value)
   return value
 end
 
+local function compute_admission_digest(executor, execution_profile, approved_input_refs, selected_entrypoint, admission_key, sha256_fn)
+  validate_identity(executor)
+  identity_string(execution_profile, "execution_profile")
+  validate_refs(approved_input_refs)
+  validate_entrypoint(selected_entrypoint)
+  identity_string(admission_key, "admission_key")
+  if type(sha256_fn) ~= "function" then fail("missing-sha256", "admission digest requires SHA-256") end
+  local bytes = canonical_json.encode({
+    schema = M.schemas.admission_request,
+    admission_key = admission_key,
+    executor = executor,
+    execution_profile = execution_profile,
+    approved_input_refs = approved_input_refs,
+    selected_entrypoint = selected_entrypoint,
+  })
+  local ok, value = pcall(sha256_fn, bytes)
+  if not ok then fail("sha256-failed", "admission SHA-256 failed") end
+  return digest(value, "admission SHA-256")
+end
+
 local function validate_admission_receipt(value, admission_key, admission_digest)
   fields(value, { schema = true, status = true, admission_key = true, admission_digest = true }, "admission-receipt")
   if value.schema ~= M.schemas.admission_receipt or value.status ~= "admitted" then
@@ -314,9 +338,13 @@ local function validate_admission_conflict(value, admission_key, attempted_diges
   if identity_string(required(value.admission_key, "admission_conflict.admission_key"), "admission_conflict.admission_key") ~= admission_key then
     fail("admission-mismatch", "admission conflict key does not match")
   end
-  digest(required(value.admitted_digest, "admission_conflict.admitted_digest"), "admission_conflict.admitted_digest")
-  if digest(required(value.attempted_digest, "admission_conflict.attempted_digest"), "admission_conflict.attempted_digest") ~= attempted_digest then
+  local admitted_digest = digest(required(value.admitted_digest, "admission_conflict.admitted_digest"), "admission_conflict.admitted_digest")
+  local actual_attempted_digest = digest(required(value.attempted_digest, "admission_conflict.attempted_digest"), "admission_conflict.attempted_digest")
+  if actual_attempted_digest ~= attempted_digest then
     fail("admission-mismatch", "admission conflict attempted digest does not match")
+  end
+  if admitted_digest == actual_attempted_digest then
+    fail("malformed-admission-conflict", "admission conflict digests must differ")
   end
   return value
 end
@@ -332,7 +360,7 @@ local function validate_resolver_failure(value)
   return value
 end
 
-local function validate_resolved_invocation(value)
+local function validate_resolved_invocation(value, sha256_fn)
   fields(value, {
     schema = true,
     executor = true,
@@ -365,6 +393,13 @@ local function validate_resolved_invocation(value)
   local admission_key = identity_string(required(value.dedup_key, "dedup_key"), "dedup_key")
   local admission_digest = digest(required(value.admission_digest, "admission_digest"), "admission_digest")
   validate_admission_receipt(required(value.admission_receipt, "admission_receipt"), admission_key, admission_digest)
+  if sha256_fn ~= nil then
+    local computed = compute_admission_digest(
+      value.executor, value.execution_profile, value.approved_input_refs,
+      value.selected_entrypoint, admission_key, sha256_fn
+    )
+    if computed ~= admission_digest then fail("admission-mismatch", "resolved invocation does not match its admission digest") end
+  end
   return value
 end
 
@@ -376,7 +411,10 @@ function M.validate_plan(value) return validate_plan(value) end
 function M.validate_pql_input(value) return validate_pql_input(value) end
 function M.validate_policy(value) return validate_policy(value) end
 function M.validate_capability_set(value) return validate_capability_set(value) end
-function M.validate_resolved_invocation(value) return validate_resolved_invocation(value) end
+function M.validate_resolved_invocation(value, sha256_fn) return validate_resolved_invocation(value, sha256_fn) end
+function M.compute_admission_digest(executor, execution_profile, approved_input_refs, selected_entrypoint, admission_key, sha256_fn)
+  return compute_admission_digest(executor, execution_profile, approved_input_refs, selected_entrypoint, admission_key, sha256_fn)
+end
 function M.validate_admission_receipt(value, admission_key, admission_digest) return validate_admission_receipt(value, admission_key, admission_digest) end
 function M.validate_admission_conflict(value, admission_key, attempted_digest) return validate_admission_conflict(value, admission_key, attempted_digest) end
 function M.validate_resolver_failure(value) return validate_resolver_failure(value) end

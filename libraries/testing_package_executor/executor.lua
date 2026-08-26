@@ -97,8 +97,8 @@ local function case_result(resolved, receipt, started_at, completed_at)
 end
 
 function M.execute(resolved, ports)
-  contract.validate_resolved_invocation(resolved)
   callable_ports(ports, { "check_freshness", "browser_read_title", "write_canonical", "now", "sha256" }, "execute")
+  contract.validate_resolved_invocation(resolved, ports.sha256)
 
   local started_at = timestamp(ports)
   local freshness = {
