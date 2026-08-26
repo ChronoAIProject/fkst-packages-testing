@@ -525,6 +525,48 @@ return {
     receipt.status="succeeded"
     local execution = { schema=contract.schemas.execution, case_result={}, effect_receipt=receipt, case_result_ref={kind="wrong",ref="x",sha256=string.rep("a",64)} }
     rejects(function() contract.validate_execution(execution) end)
+
+    local admission_digest = string.rep("a", 64)
+    local admission_receipt = {
+      schema=contract.schemas.admission_receipt, status="admitted",
+      admission_key="admission-key", admission_digest=admission_digest,
+    }
+    admission_receipt.status="wrong"
+    rejects(function() contract.validate_admission_receipt(admission_receipt, "admission-key", admission_digest) end)
+    admission_receipt.status="admitted"; admission_receipt.admission_key="wrong"
+    rejects(function() contract.validate_admission_receipt(admission_receipt, "admission-key", admission_digest) end)
+
+    local admission_conflict = {
+      schema=contract.schemas.admission_conflict, status="conflict",
+      admission_key="admission-key", admitted_digest=string.rep("b", 64),
+      attempted_digest=admission_digest,
+    }
+    admission_conflict.status="wrong"
+    rejects(function() contract.validate_admission_conflict(admission_conflict, "admission-key", admission_digest) end)
+    admission_conflict.status="conflict"; admission_conflict.admission_key="wrong"
+    rejects(function() contract.validate_admission_conflict(admission_conflict, "admission-key", admission_digest) end)
+    admission_conflict.admission_key="admission-key"; admission_conflict.attempted_digest=string.rep("c", 64)
+    rejects(function() contract.validate_admission_conflict(admission_conflict, "admission-key", admission_digest) end)
+
+    local resolver_failure = {
+      schema=contract.schemas.resolver_failure, status="wrong",
+      admission_key="admission-key", code="caught-failure",
+    }
+    rejects(function() contract.validate_resolver_failure(resolver_failure) end)
+
+    local try_value = fixture()
+    t.eq(runtime_executor.try_resolve(try_value.request, try_value.ports).schema, contract.schemas.resolved_invocation)
+    try_value.ports.decode_json = nil
+    t.eq(runtime_executor.try_resolve(try_value.request, try_value.ports).schema, contract.schemas.resolver_failure)
+
+    local bad_admission_sha = fixture()
+    local valid_sha256 = bad_admission_sha.ports.sha256
+    bad_admission_sha.ports.sha256 = function(bytes)
+      if type(bytes) == "string" and bytes:find(contract.schemas.admission_request, 1, true) then return "bad" end
+      return valid_sha256(bytes)
+    end
+    rejects(function() runtime_executor.resolve(bad_admission_sha.request, bad_admission_sha.ports) end)
+
     local bad = fixture(); bad.ports.sha256 = function() return "bad" end
     rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.request.execution_profile = "other"
