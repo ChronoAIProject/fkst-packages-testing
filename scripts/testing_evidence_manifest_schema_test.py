@@ -1,11 +1,9 @@
 #!/usr/bin/env python3
 from __future__ import annotations
 
-import json
-import re
 from pathlib import Path
 
-from jsonschema import Draft202012Validator, FormatChecker, ValidationError, validators
+from json_schema_test_support import load_json, validator_for_schema
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -41,48 +39,9 @@ INVALID_FIXTURES = {
 }
 
 
-def load_json(path: Path) -> dict[str, object]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
-def utf8_max_bytes(validator, limit, instance, schema):
-    if isinstance(instance, str) and len(instance.encode("utf-8")) > limit:
-        yield ValidationError(f"UTF-8 value exceeds {limit} bytes")
-
-
-EvidenceValidator = validators.extend(
-    Draft202012Validator,
-    {"x-fkst-maxUtf8Bytes": utf8_max_bytes},
-)
-FORMAT_CHECKER = FormatChecker()
-
-
-@FORMAT_CHECKER.checks("date-time")
-def strict_utc_timestamp(value: object) -> bool:
-    if not isinstance(value, str):
-        return True
-    match = re.fullmatch(
-        r"(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})Z",
-        value,
-    )
-    if match is None:
-        return False
-    year, month, day, hour, minute, second = map(int, match.groups())
-    leap = year % 4 == 0 and (year % 100 != 0 or year % 400 == 0)
-    days = (31, 29 if leap else 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31)
-    return (
-        1 <= month <= 12
-        and 1 <= day <= days[month - 1]
-        and hour <= 23
-        and minute <= 59
-        and second <= 59
-    )
-
-
 def main() -> int:
     schema = load_json(SCHEMA)
-    Draft202012Validator.check_schema(schema)
-    validator = EvidenceValidator(schema, format_checker=FORMAT_CHECKER)
+    validator = validator_for_schema(schema)
 
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["$id"] == (

@@ -813,11 +813,12 @@ class RunnerContractTest(unittest.TestCase):
 
 
 class AffectedTestContractTest(unittest.TestCase):
-    def test_shared_manifest_fixture_changes_force_full_repository_tests(self) -> None:
+    def test_shared_schema_fixture_changes_force_full_repository_tests(self) -> None:
         fixtures = (
             "testing-package-manifest.v1/valid.json",
             "testing-evidence-manifest.v1/valid.json",
             "testing-results/valid-case-passed.json",
+            "testing-browser-action.v1/valid-click.json",
         )
         for fixture in fixtures:
             with self.subTest(fixture=fixture):

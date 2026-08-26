@@ -64,6 +64,8 @@ The first release permits only:
 
 Unknown fields, literal secrets, selectors, arbitrary URLs, JavaScript, coordinates, arbitrary keys, stale handles, and unapproved secret refs are invalid. `finish` is advisory and performs no browser effect.
 
+The portable Draft 2020-12 schema `testing-runner.ai-browser-control.action.v1` validates only this standalone wire structure and its per-kind argument rules. Contextual authorization against the caller's allowed actions and approved secret references remains authoritative in `contract.browser_control.validate_action`. Actions have no independent canonicalization or digest contract; any canonicalization is owned by the containing artifact contract.
+
 Approved secret refs are resolved only by a host `exec_argv_with_secret_stdin` capability. The secret value travels over stdin to the runtime for the one `type` effect. It must never enter argv, environment variables, FKST events, Lua values, prompts, stdout, stderr, logs, receipts, or artifacts.
 
 ## Turn loop and terminal authority
