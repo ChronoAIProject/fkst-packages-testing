@@ -4,7 +4,8 @@ local package_manifest = require("contract.testing_package_manifest")
 local results = require("contract.testing_results")
 local executor = require("testing_package_executor.executor")
 local runtime_executor = require("testing_runtime.testing_package_executor")
-local json = require("testing_runtime.json")
+local host_json = json
+local runtime_json = require("testing_runtime.json")
 local sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
 
@@ -40,7 +41,7 @@ local function request_fixture(name)
   local handle = assert(io.open(request_fixture_root .. "/" .. name .. ".json", "rb"))
   local body = handle:read("*a")
   handle:close()
-  return json.decode(body)
+  return host_json.decode(body)
 end
 
 local function copy(value)
@@ -139,7 +140,7 @@ local function fixture(options)
 
   local storage, decoded, approved = {}, {}, {}
   for _, field in ipairs(contract.reference_order) do
-    local bytes = json.encode(docs[field])
+    local bytes = runtime_json.encode(docs[field])
     local ref = refs[field]
     storage[ref.ref] = bytes
     decoded[bytes] = copy(docs[field])
@@ -230,8 +231,8 @@ end
 local function assert_semantics(actual, expected)
   t.eq(actual.case_result.execution_status, expected.case_result.execution_status)
   t.eq(actual.case_result.classification, expected.case_result.classification)
-  t.eq(json.encode(actual.case_result.observations), json.encode(expected.case_result.observations))
-  t.eq(json.encode(actual.case_result.assertions), json.encode(expected.case_result.assertions))
+  t.eq(runtime_json.encode(actual.case_result.observations), runtime_json.encode(expected.case_result.observations))
+  t.eq(runtime_json.encode(actual.case_result.assertions), runtime_json.encode(expected.case_result.assertions))
 end
 
 return {
@@ -299,15 +300,15 @@ return {
       value.request.approved_input_refs.policy_ref,
       value.request.approved_input_refs.capability_set_ref,
     }
-    t.eq(json.encode(value.calls.loads), json.encode(expected_loads))
+    t.eq(runtime_json.encode(value.calls.loads), runtime_json.encode(expected_loads))
     t.eq(#value.calls.freshness, 1)
-    t.eq(json.encode(value.calls.freshness[1]), json.encode({
+    t.eq(runtime_json.encode(value.calls.freshness[1]), runtime_json.encode({
       schema = "testing-package-executor.freshness-check.v1",
       dedup_key = "dedup-walking-skeleton",
       effect_id = "effect-case-home-title-title",
     }))
     t.eq(#value.calls.browser, 1)
-    t.eq(json.encode(value.calls.browser[1]), json.encode({
+    t.eq(runtime_json.encode(value.calls.browser[1]), runtime_json.encode({
       schema = "testing-package-executor.browser-read-title.v1",
       effect_id = "effect-case-home-title-title",
       url = "http://127.0.0.1:4173/",
@@ -318,12 +319,12 @@ return {
     t.eq(execution.schema, "testing-package-executor.execution.v1")
     t.eq(execution.case_result.execution_status, "passed")
     t.eq(execution.case_result.classification, "deterministic")
-    t.eq(json.encode(execution.case_result.timing), json.encode({
+    t.eq(runtime_json.encode(execution.case_result.timing), runtime_json.encode({
       started_at = "2026-08-21T00:00:00Z",
       completed_at = "2026-08-21T00:00:01Z",
       duration_ms = 1000,
     }))
-    t.eq(json.encode(execution.case_result_ref), json.encode({
+    t.eq(runtime_json.encode(execution.case_result_ref), runtime_json.encode({
       kind = "artifact",
       ref = ".testing/runs/dedup-walking-skeleton/case-result.json",
       sha256 = value.calls.writes[1].canonical_sha256,
@@ -476,7 +477,7 @@ return {
     bad.docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(bad.docs.package_manifest_ref))
     bad.request.executor.manifest_digest = bad.docs.package_manifest_ref.manifest_digest
     local manifest_ref = bad.request.approved_input_refs.package_manifest_ref
-    bad.storage[manifest_ref.ref] = json.encode(bad.docs.package_manifest_ref)
+    bad.storage[manifest_ref.ref] = runtime_json.encode(bad.docs.package_manifest_ref)
     manifest_ref.sha256 = sha256(bad.storage[manifest_ref.ref])
     rejects(function() executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.request.executor.package_content_sha256 = string.rep("f", 64)
@@ -489,8 +490,8 @@ return {
     bad.docs.package_manifest_ref.manifest_digest = nil
     bad.docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(bad.docs.package_manifest_ref))
     bad.request.executor.manifest_digest = bad.docs.package_manifest_ref.manifest_digest
-    bad.request.approved_input_refs.package_manifest_ref.sha256 = sha256(json.encode(bad.docs.package_manifest_ref))
-    bad.storage[bad.request.approved_input_refs.package_manifest_ref.ref] = json.encode(bad.docs.package_manifest_ref)
+    bad.request.approved_input_refs.package_manifest_ref.sha256 = sha256(runtime_json.encode(bad.docs.package_manifest_ref))
+    bad.storage[bad.request.approved_input_refs.package_manifest_ref.ref] = runtime_json.encode(bad.docs.package_manifest_ref)
     rejects(function() executor.resolve(bad.request, bad.ports) end)
     local resolved_check = executor.resolve(value.request, value.ports)
     resolved_check.executor.package_id = "other"
