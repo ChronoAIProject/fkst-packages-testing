@@ -22,6 +22,13 @@ SHARED_MANIFEST_FIXTURE_ROOTS = (
         "fixtures",
         "testing-evidence-manifest.v1",
     ),
+    (
+        "packages",
+        "testing-runner",
+        "tests",
+        "fixtures",
+        "testing-results",
+    ),
 )
 
 

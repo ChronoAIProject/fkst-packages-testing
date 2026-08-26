@@ -1,0 +1,18 @@
+{
+  "schema": "testing-case-result.v2",
+  "case_id": "case-not-applicable",
+  "repository": {"id": "repo", "source_ref": {"kind": "git", "ref": "repo@commit"}, "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "reviewed_case_id": "reviewed-case-not-applicable",
+  "plan_ref": {"kind": "plan", "ref": "plans/1"},
+  "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "execution_mode": "cli",
+  "execution_status": "skipped",
+  "classification": "not_applicable",
+  "observations": [],
+  "assertions": [{"schema": "testing-assertion-result.v1", "assertion_id": "assert-1", "type": "document-ready", "required": true, "status": "skipped", "classification": "not_applicable", "observation_ids": [], "evidence_refs": []}],
+  "evidence_refs": [],
+  "timing": {"started_at": "2026-08-25T00:00:00Z", "completed_at": "2026-08-25T00:00:00Z", "duration_ms": 0},
+  "non_execution_reason": "platform-not-applicable",
+  "trace_id": "trace-1",
+  "dedup_key": "dedup-1"
+}

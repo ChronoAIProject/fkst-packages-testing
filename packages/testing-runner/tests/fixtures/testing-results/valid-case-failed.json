@@ -1,0 +1,17 @@
+{
+  "schema": "testing-case-result.v2",
+  "case_id": "case-failed",
+  "repository": {"id": "repo", "source_ref": {"kind": "git", "ref": "repo@commit"}, "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"},
+  "reviewed_case_id": "reviewed-case-failed",
+  "plan_ref": {"kind": "plan", "ref": "plans/1"},
+  "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "execution_mode": "http",
+  "execution_status": "failed",
+  "classification": "assertion_failure",
+  "observations": [{"schema": "testing-observation.v1", "observation_id": "obs-1", "kind": "normalized-fact", "subject": "document", "value": "not-ready", "source_ref": {"kind": "runner", "ref": "observations/1"}, "evidence_refs": []}],
+  "assertions": [{"schema": "testing-assertion-result.v1", "assertion_id": "assert-1", "type": "document-ready", "required": true, "status": "failed", "classification": "assertion_failure", "observation_ids": ["obs-1"], "evidence_refs": []}],
+  "evidence_refs": [],
+  "timing": {"started_at": "2026-08-25T00:00:00Z", "completed_at": "2026-08-25T00:00:01Z", "duration_ms": 1000},
+  "trace_id": "trace-1",
+  "dedup_key": "dedup-1"
+}
