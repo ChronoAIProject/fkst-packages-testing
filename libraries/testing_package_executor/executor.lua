@@ -1,6 +1,5 @@
 local contract = require("contract.testing_package_executor")
 local error_facts = require("contract.error_facts")
-local package_manifest = require("contract.testing_package_manifest")
 local results = require("contract.testing_results")
 local time = require("contract.time")
 
@@ -25,135 +24,6 @@ end
 
 local function copy_reference(value)
   return { kind = value.kind, ref = value.ref, sha256 = value.sha256 }
-end
-
-local function copy_identity(value)
-  return {
-    schema = value.schema,
-    package_id = value.package_id,
-    package_version = value.package_version,
-    package_content_sha256 = value.package_content_sha256,
-    manifest_digest = value.manifest_digest,
-    entrypoint = value.entrypoint,
-    contract_major = value.contract_major,
-  }
-end
-
-local function copy_refs(value)
-  local copied = {}
-  for _, field in ipairs(contract.reference_order) do copied[field] = copy_reference(value[field]) end
-  return copied
-end
-
-local function exact_capabilities(value)
-  return type(value) == "table" and #value == 1 and value[1] == contract.capability
-end
-
-local function load_document(request, ports, field, validator)
-  local reference = request.approved_input_refs[field]
-  local bytes = call_port(ports, "load_immutable", reference)
-  if type(bytes) ~= "string" or bytes == "" then fail("immutable-load-failed", field .. " did not return exact bytes") end
-  local computed = call_port(ports, "sha256", bytes)
-  if type(computed) ~= "string" or computed:match("^[0-9a-f]+$") == nil or #computed ~= 64 then
-    fail("sha256-failed", field .. " SHA-256 result is malformed")
-  end
-  if computed ~= reference.sha256 then fail("digest-mismatch", field .. " stored bytes do not match the approved digest") end
-  local decoded = call_port(ports, "decode_json", bytes)
-  if type(decoded) ~= "table" then fail("decode-failed", field .. " did not decode to an object") end
-  validator(decoded)
-  return decoded
-end
-
-local function validate_mapping(request, manifest, policy, capability_set)
-  if request.execution_profile ~= contract.profile
-    or request.executor.package_id ~= contract.package_id
-    or request.executor.package_version ~= "1.0.0"
-    or request.executor.entrypoint ~= contract.entrypoint
-    or request.executor.contract_major ~= contract.contract_major then
-    fail("unsupported-mapping", "request does not match browser-deterministic.v1")
-  end
-  if manifest.package_version ~= request.executor.package_version
-    or manifest.package_content_sha256 ~= request.executor.package_content_sha256
-    or manifest.manifest_digest ~= request.executor.manifest_digest then
-    fail("identity-mismatch", "verified manifest does not match executor identity")
-  end
-  if not exact_capabilities(manifest.semantic_capabilities) then fail("capability-mismatch", "manifest semantic capabilities do not match the execution profile") end
-  if policy.execution_profile ~= contract.profile
-    or policy.authorized_entrypoint ~= contract.entrypoint
-    or not exact_capabilities(policy.allowed_capabilities)
-    or not exact_capabilities(capability_set.capabilities) then
-    fail("policy-mismatch", "verified policy or capability set does not match the execution profile")
-  end
-
-  local selected, matches = nil, 0
-  for _, entrypoint in ipairs(manifest.entrypoints) do
-    if entrypoint.name == contract.entrypoint
-      and entrypoint.contract_major == contract.contract_major
-      and exact_capabilities(entrypoint.capabilities) then
-      selected = entrypoint
-      matches = matches + 1
-    end
-  end
-  if matches ~= 1 then fail("entrypoint-mismatch", "manifest must contain exactly one authorized matching entrypoint") end
-  return selected
-end
-
-function M.resolve(request, ports)
-  contract.validate_request(request)
-  callable_ports(ports, { "load_immutable", "sha256", "decode_json" }, "resolve")
-
-  local documents = {}
-  documents.package_manifest_ref = load_document(request, ports, "package_manifest_ref", function(value)
-    package_manifest.validate(value, {
-      package_id = request.executor.package_id,
-      package_version = request.executor.package_version,
-      package_content_sha256 = request.executor.package_content_sha256,
-      entrypoint = request.executor.entrypoint,
-      contract_major = request.executor.contract_major,
-      capability = contract.capability,
-    }, ports.sha256)
-  end)
-  documents.source_ref = load_document(request, ports, "source_ref", contract.validate_source)
-  documents.plan_ref = load_document(request, ports, "plan_ref", contract.validate_plan)
-  documents.pql_input_ref = load_document(request, ports, "pql_input_ref", contract.validate_pql_input)
-  documents.policy_ref = load_document(request, ports, "policy_ref", contract.validate_policy)
-  documents.capability_set_ref = load_document(request, ports, "capability_set_ref", contract.validate_capability_set)
-
-  local selected = validate_mapping(request, documents.package_manifest_ref, documents.policy_ref, documents.capability_set_ref)
-  local resolved = {
-    schema = contract.schemas.resolved_invocation,
-    executor = copy_identity(request.executor),
-    execution_profile = request.execution_profile,
-    approved_input_refs = copy_refs(request.approved_input_refs),
-    source = {
-      schema = documents.source_ref.schema,
-      source_id = documents.source_ref.source_id,
-      target_url = documents.source_ref.target_url,
-    },
-    plan = {
-      schema = documents.plan_ref.schema,
-      case_id = documents.plan_ref.case_id,
-      assertion = {
-        assertion_id = documents.plan_ref.assertion.assertion_id,
-        expected = documents.plan_ref.assertion.expected,
-        required = documents.plan_ref.assertion.required,
-        type = documents.plan_ref.assertion.type,
-      },
-    },
-    pql_input = {
-      schema = documents.pql_input_ref.schema,
-      requirement_id = documents.pql_input_ref.requirement_id,
-    },
-    selected_entrypoint = {
-      name = selected.name,
-      contract_major = selected.contract_major,
-      capabilities = { selected.capabilities[1] },
-    },
-    trace_id = request.trace_id,
-    dedup_key = request.dedup_key,
-  }
-  contract.validate_resolved_invocation(resolved)
-  return resolved
 end
 
 local function timestamp(ports)
@@ -227,8 +97,8 @@ local function case_result(resolved, receipt, started_at, completed_at)
 end
 
 function M.execute(resolved, ports)
-  contract.validate_resolved_invocation(resolved)
   callable_ports(ports, { "check_freshness", "browser_read_title", "write_canonical", "now", "sha256" }, "execute")
+  contract.validate_resolved_invocation(resolved, ports.sha256)
 
   local started_at = timestamp(ports)
   local freshness = {
