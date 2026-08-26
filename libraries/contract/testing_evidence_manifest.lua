@@ -60,7 +60,7 @@ local function relative_run_pointer(value, run_id, field, root)
   if value.kind ~= "artifact" or value.ref:sub(1, 1) == "/" or value.ref:match("^[A-Za-z]:") or value.ref:find("..", 1, true) then fail("invalid-pointer", field .. " must be a relative artifact pointer") end
   if not value.ref:find("/" .. run_id .. "/", 1, true) and value.ref:sub(-#run_id - 1) ~= "/" .. run_id then fail("cross-run-pointer", field .. " is outside the manifest run") end
 end
-local function canonical_json(value)
+local function canonical_json(value, omit_canonical_sha256)
   local kind = type(value)
   if kind == "boolean" then return value and "true" or "false" end
   if kind == "number" then if value ~= math.floor(value) then fail("canonicalization", "only integers are supported") end; return tostring(value) end
@@ -68,9 +68,9 @@ local function canonical_json(value)
   if kind ~= "table" then fail("canonicalization", "unsupported value type " .. kind) end
   local numeric, keys = 0, {}
   for key in pairs(value) do if type(key) == "number" then numeric = numeric + 1 else table.insert(keys, key) end end
-  if numeric > 0 or next(value) == nil then local parts = {}; for _, item in ipairs(value) do table.insert(parts, canonical_json(item)) end; return "[" .. table.concat(parts, ",") .. "]" end
+  if numeric > 0 or next(value) == nil then local parts = {}; for _, item in ipairs(value) do table.insert(parts, canonical_json(item, false)) end; return "[" .. table.concat(parts, ",") .. "]" end
   table.sort(keys); local parts = {}
-  for _, key in ipairs(keys) do if key ~= "canonical_sha256" then table.insert(parts, strings.json_string(key) .. ":" .. canonical_json(value[key])) end end
+  for _, key in ipairs(keys) do if not omit_canonical_sha256 or key ~= "canonical_sha256" then table.insert(parts, strings.json_string(key) .. ":" .. canonical_json(value[key], false)) end end
   return "{" .. table.concat(parts, ",") .. "}"
 end
 
@@ -142,9 +142,10 @@ function M.validate(value, result_set, sha256_fn, context)
       end
     end
   end
-  if sha256_fn ~= nil then if type(sha256_fn) ~= "function" then fail("missing-sha256", "SHA-256 function must be callable") end; local ok, computed = pcall(sha256_fn, canonical_json(value)); if not ok then fail("sha256-failed", "SHA-256 function failed") end; if computed ~= value.canonical_sha256 then fail("digest-mismatch", "canonical manifest digest does not match") end end
+  if sha256_fn ~= nil then if type(sha256_fn) ~= "function" then fail("missing-sha256", "SHA-256 function must be callable") end; local ok, computed = pcall(sha256_fn, canonical_json(value, true)); if not ok then fail("sha256-failed", "SHA-256 function failed") end; if computed ~= value.canonical_sha256 then fail("digest-mismatch", "canonical manifest digest does not match") end end
   return value
 end
-function M.canonicalize(value, context) M.validate(value, nil, nil, context); return canonical_json(value) end
-function M.sha256(value, sha256_fn, context) if type(sha256_fn) ~= "function" then fail("missing-sha256", "a host-supplied SHA-256 function is required") end; M.validate(value, nil, nil, context); local ok, result = pcall(sha256_fn, canonical_json(value)); if not ok then fail("sha256-failed", "the host SHA-256 function failed") end; digest(result, "sha256 result"); return result end
+function M.canonicalize(value, context) M.validate(value, nil, nil, context); return canonical_json(value, true) end
+function M.serialize(value, context) M.validate(value, nil, nil, context); return canonical_json(value, false) end
+function M.sha256(value, sha256_fn, context) if type(sha256_fn) ~= "function" then fail("missing-sha256", "a host-supplied SHA-256 function is required") end; M.validate(value, nil, nil, context); local ok, result = pcall(sha256_fn, canonical_json(value, true)); if not ok then fail("sha256-failed", "the host SHA-256 function failed") end; digest(result, "sha256 result"); return result end
 return M

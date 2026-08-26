@@ -123,7 +123,7 @@ local function evidence_manifest(resolved, receipt, completed_at, ports)
 end
 
 local function write_artifact(resolved, ports, kind, value, manifest)
-  local bytes = kind == "evidence-manifest" and evidence.canonicalize(value) or results.canonicalize(value, manifest, ports.sha256)
+  local bytes = kind == "evidence-manifest" and evidence.serialize(value) or results.canonicalize(value, manifest, ports.sha256)
   local request = { schema = contract.schemas.canonical_write, kind = kind, dedup_key = resolved.dedup_key,
     canonical_sha256 = sha256(ports, bytes, kind), canonical_bytes = bytes }
   contract.validate_canonical_write(request)
@@ -179,7 +179,7 @@ function M.execute(resolved, ports)
 
   local case = case_result(resolved, effect_receipt, started_at, completed_at)
   local manifest = evidence_manifest(resolved, effect_receipt, completed_at, ports)
-  local manifest_request, manifest_receipt = write_artifact(resolved, ports, "evidence-manifest", manifest)
+  local _, manifest_receipt = write_artifact(resolved, ports, "evidence-manifest", manifest)
   local result_set = {
     schema = results.schemas.case_result_set, set_id = resolved.dedup_key, run_id = resolved.dedup_key,
     plan_ref = copy_reference(resolved.approved_input_refs.plan_ref), plan_sha256 = resolved.approved_input_refs.plan_ref.sha256,
@@ -193,7 +193,7 @@ function M.execute(resolved, ports)
   local terminal = { schema = contract.schemas.completed_execution, status = "completed", dedup_key = resolved.dedup_key,
     admission_digest = resolved.admission_digest, claim_id = claim.claim_id, effect_id = contract.effect_id,
     case_result_set_ref = copy_reference(result_receipt.ref), case_result_set_sha256 = result_request.canonical_sha256,
-    evidence_manifest_ref = copy_reference(manifest_receipt.ref), evidence_manifest_sha256 = manifest_request.canonical_sha256 }
+    evidence_manifest_ref = copy_reference(manifest_receipt.ref), evidence_manifest_sha256 = manifest.canonical_sha256 }
   contract.validate_completed_execution(terminal, resolved.dedup_key, resolved.admission_digest)
   local stored = call_port(ports, "complete_execution", terminal)
   if type(stored) ~= "table" then fail("completion-failed", "completion did not return a receipt") end

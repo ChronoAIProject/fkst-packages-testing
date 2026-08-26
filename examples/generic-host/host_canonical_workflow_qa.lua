@@ -1586,7 +1586,6 @@ function M.testing_package_executor_ports(options)
       or result_artifact.digest ~= stored.value.case_result_set_ref.sha256 then
       error("completed testing execution artifacts are unavailable or digest-mismatched")
     end
-    manifest_artifact.value.canonical_sha256 = stored.value.evidence_manifest_sha256
     testing_results.validate_case_result_set(result_artifact.value, nil, manifest_artifact.value, sha256_bytes)
     testing_evidence_manifest.validate(manifest_artifact.value, result_artifact.value, sha256_bytes)
     return copy(stored.value)
