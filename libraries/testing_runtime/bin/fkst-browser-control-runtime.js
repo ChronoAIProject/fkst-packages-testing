@@ -59,9 +59,14 @@ async function readTitle(input) {
   if (input.schema !== "testing-runtime.browser-title-input.v1") throw new Error("browser title input schema is invalid");
   closedFields(input.request, ["schema", "effect_id", "url"], "browser title request");
   if (input.request.schema !== "testing-package-executor.browser-read-title.v1"
-    || input.request.effect_id !== "effect-case-home-title-title"
-    || input.request.url !== "http://127.0.0.1:4173/") throw new Error("browser title request is invalid");
-  if (input.evidence_path !== ".testing/runs/dedup-walking-skeleton/evidence/title.json") throw new Error("browser title evidence path is invalid");
+    || typeof input.request.effect_id !== "string" || input.request.effect_id.length < 1
+    || Buffer.byteLength(input.request.effect_id, "utf8") > 180
+    || typeof input.request.url !== "string") throw new Error("browser title request is invalid");
+  assertLocalHttpUrl(input.request.url, "Browser target URL");
+  if (typeof input.evidence_path !== "string"
+    || !/^\.testing\/runs\/[^/]+\/evidence\/title\.json$/u.test(input.evidence_path)) {
+    throw new Error("browser title evidence path is invalid");
+  }
   assertLocalHttpUrl(input.cdp_url, "CDP URL");
   if (typeof input.target_id !== "string" || input.target_sha256 !== sha256(input.target_id)) throw new Error("browser target digest binding is invalid");
   const target = await acquireTargetById(input.cdp_url, input.target_id);
@@ -79,7 +84,7 @@ async function readTitle(input) {
     fs.mkdirSync(path.dirname(input.evidence_path), { recursive: true });
     fs.writeFileSync(input.evidence_path, evidenceBytes, "utf8");
     return {
-      schema: "testing-package-executor.effect-receipt.v1",
+      schema: "testing-package-executor.browser-read-title-receipt.v1",
       effect_id: input.request.effect_id,
       status: "succeeded",
       observed_url: projected.observed_url,

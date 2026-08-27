@@ -1,5 +1,6 @@
 local contract = require("contract.browser_control")
 local executor_contract = require("contract.testing_package_executor")
+local strings = require("contract.strings")
 local json_codec = require("testing_runtime.json")
 
 local M = {}
@@ -99,7 +100,7 @@ function M.read_title(context, request, supplied_ports)
   if type(ports.sha256) ~= "function" then error("testing-runtime: browser-control-invalid-ports: missing sha256") end
   executor_contract.validate_browser_read_title(request)
   if type(context) ~= "table" or type(context.cdp_url) ~= "string" or type(context.target_id) ~= "string"
-    or type(context.target_sha256) ~= "string" or context.artifact_root ~= ".testing/runs/dedup-walking-skeleton" then
+    or type(context.target_sha256) ~= "string" or not strings.is_artifact_root(context.artifact_root, 4096) then
     error("testing-runtime: browser-title-context-invalid: approved Browser binding is required")
   end
   local runtime_paths = title_paths(context.artifact_root)
@@ -113,11 +114,22 @@ function M.read_title(context, request, supplied_ports)
   }) .. "\n")
   run(ports, { "node", runtime_cli, "read-title", "--input", runtime_paths.input, "--receipt", runtime_paths.receipt }, 30)
   local receipt = ports.decode(ports.read(runtime_paths.receipt))
-  executor_contract.validate_browser_read_title_receipt(receipt)
+  executor_contract.validate_browser_read_title_receipt(receipt, context.artifact_root)
   local evidence_bytes = ports.read(runtime_paths.evidence)
   if type(evidence_bytes) ~= "string" or #evidence_bytes ~= receipt.evidence_size_bytes
     or ports.sha256(evidence_bytes) ~= receipt.evidence_refs[1].sha256 then
     error("testing-runtime: browser-title-evidence-invalid: persisted evidence digest or size mismatch")
+  end
+  local ok, evidence_value = pcall(ports.decode, evidence_bytes)
+  local closed = ok and type(evidence_value) == "table"
+  if closed then
+    for key in pairs(evidence_value) do
+      if key ~= "observed_url" and key ~= "observed_title" then closed = false end
+    end
+  end
+  if not closed or evidence_value.observed_url ~= receipt.observed_url
+    or evidence_value.observed_title ~= receipt.observed_title then
+    error("testing-runtime: browser-title-evidence-invalid: persisted evidence content is not the closed title projection")
   end
   return receipt, runtime_paths
 end

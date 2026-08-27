@@ -1615,12 +1615,16 @@ function M.testing_package_executor_ports(options)
       testing_package_executor_contract.validate_effect_state_query(query)
       local stored = store:load(receipt_path(query.dedup_key))
       if stored == nil then return nil end
-      testing_package_executor_contract.validate_effect_receipt(stored.value)
+      testing_package_executor_contract.validate_effect_receipt(stored.value, ".testing/runs/" .. query.dedup_key)
       local artifact = store:load(stored.value.evidence_refs[1].ref)
       local evidence_value = artifact and artifact.value or nil
-      local evidence_fields_valid = type(evidence_value) == "table" and evidence_value.title == stored.value.observed_title
+      local evidence_fields_valid = type(evidence_value) == "table"
+        and evidence_value.observed_url == stored.value.observed_url
+        and evidence_value.observed_title == stored.value.observed_title
       if evidence_fields_valid then
-        for key in pairs(evidence_value) do if key ~= "title" then evidence_fields_valid = false end end
+        for key in pairs(evidence_value) do
+          if key ~= "observed_url" and key ~= "observed_title" then evidence_fields_valid = false end
+        end
       end
       if artifact == nil or artifact.digest ~= stored.value.evidence_refs[1].sha256
         or #artifact.raw ~= stored.value.evidence_size_bytes
@@ -1638,15 +1642,17 @@ function M.testing_package_executor_ports(options)
       counters.browser = counters.browser + 1
       local title = assert(options.browser_read_title, "browser_read_title adapter is required")(request.url)
       local path = ".testing/runs/dedup-walking-skeleton/evidence/title.json"
-      local bytes = json_codec.encode({ title=title })
-      if not store:write_raw(path, bytes, { title=title }) then error("Browser title evidence write conflicted") end
+      local evidence_value = { observed_url=request.url, observed_title=title }
+      local bytes = json_codec.encode(evidence_value)
+      if not store:write_raw(path, bytes, evidence_value) then error("Browser title evidence write conflicted") end
       local persisted = assert(store:load(path), "Browser title evidence reload failed")
       if persisted.raw ~= bytes or persisted.digest ~= sha256_bytes(persisted.raw) then error("Browser title evidence verification failed") end
-      return { schema=testing_package_executor_contract.schemas.effect_receipt, effect_id=request.effect_id, status="succeeded",
+      return { schema=testing_package_executor_contract.schemas.browser_read_title_receipt, effect_id=request.effect_id, status="succeeded",
         observed_url=request.url, observed_title=title,
         evidence_refs={ { kind="artifact", ref=path, sha256=persisted.digest } }, evidence_size_bytes=#persisted.raw }
     end,
     persist_effect_receipt = function(receipt)
+      testing_package_executor_contract.validate_effect_receipt(receipt, ".testing/runs/dedup-walking-skeleton")
       counters.receipts = counters.receipts + 1
       return store:write(receipt_path("dedup-walking-skeleton"), receipt)
     end,

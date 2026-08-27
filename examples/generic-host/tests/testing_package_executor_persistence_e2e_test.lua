@@ -1,4 +1,5 @@
 local package_manifest = require("contract.testing_package_manifest")
+local testing_package_executor = require("contract.testing_package_executor")
 local testing_evidence_manifest = require("contract.testing_evidence_manifest")
 local testing_results = require("contract.testing_results")
 local runtime_executor = require("testing_runtime.testing_package_executor")
@@ -82,6 +83,22 @@ local function reset_run()
 end
 
 return {
+  test_durable_host_rejects_raw_browser_receipts = function()
+    reset_run()
+    local host = support.testing_package_executor_ports({ browser_read_title=function() return "Fixture Home" end })
+    local evidence_bytes = runtime_json.encode({ observed_url=testing_package_executor.target_url, observed_title="Fixture Home" })
+    local raw = {
+      schema=testing_package_executor.schemas.browser_read_title_receipt,
+      effect_id=testing_package_executor.effect_id, status="succeeded",
+      observed_url=testing_package_executor.target_url, observed_title="Fixture Home",
+      evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=support.sha256_bytes(evidence_bytes)}},
+      evidence_size_bytes=#evidence_bytes,
+    }
+    t.raises(function() host.persist_effect_receipt(raw) end)
+    t.eq(host.counters.receipts, 0)
+    reset_run()
+  end,
+
   test_persists_and_replays_one_admitted_browser_title_result = function()
     reset_run()
     local server_script = "const http=require('http');const s=http.createServer((q,r)=>{r.writeHead(200,{'content-type':'text/html'});r.end('<title>Fixture Home</title>')});s.listen(4173,'127.0.0.1');"

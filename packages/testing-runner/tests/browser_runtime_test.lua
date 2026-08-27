@@ -95,7 +95,7 @@ return {
     local request = { schema=executor_contract.schemas.browser_read_title, effect_id=executor_contract.effect_id,
       url=executor_contract.target_url }
     local evidence_bytes = "{\"observed_title\":\"Fixture Home\",\"observed_url\":\"http://127.0.0.1:4173/\"}"
-    local title_receipt = { schema=executor_contract.schemas.effect_receipt, effect_id=executor_contract.effect_id,
+    local title_receipt = { schema=executor_contract.schemas.browser_read_title_receipt, effect_id=executor_contract.effect_id,
       status="succeeded", observed_url=executor_contract.target_url, observed_title="Fixture Home",
       evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=sha256(evidence_bytes)}},
       evidence_size_bytes=#evidence_bytes }
@@ -105,10 +105,59 @@ return {
       if path == ".testing/runs/dedup-walking-skeleton/evidence/title.json" then return evidence_bytes end
       return path
     end
+    title.value.decode = function(bytes)
+      if bytes == evidence_bytes then
+        return { observed_url=executor_contract.target_url, observed_title="Fixture Home" }
+      end
+      return title_receipt
+    end
+    t.raises(function() runtime.read_title({}, request, title.value) end)
     local value, paths = runtime.read_title(title_context, request, title.value)
     t.eq(value.observed_title, "Fixture Home")
     t.eq(title.calls[1].argv[3], "read-title")
     t.is_true(title.writes[paths.input] ~= nil)
+
+    local alternate_context = {
+      artifact_root=".testing/runs/alternate-run", cdp_url=title_context.cdp_url,
+      target_id=title_context.target_id, target_sha256=title_context.target_sha256,
+    }
+    local alternate_bytes = evidence_bytes
+    local alternate_receipt = {
+      schema=executor_contract.schemas.browser_read_title_receipt, effect_id=executor_contract.effect_id,
+      status="succeeded", observed_url=executor_contract.target_url, observed_title="Fixture Home",
+      evidence_refs={{kind="artifact",ref=".testing/runs/alternate-run/evidence/title.json",sha256=sha256(alternate_bytes)}},
+      evidence_size_bytes=#alternate_bytes,
+    }
+    local alternate = ports(alternate_receipt)
+    alternate.value.sha256 = sha256
+    alternate.value.read = function(path)
+      if path == ".testing/runs/alternate-run/evidence/title.json" then return alternate_bytes end
+      return path
+    end
+    alternate.value.decode = function(bytes)
+      if bytes == alternate_bytes then return { observed_url=executor_contract.target_url, observed_title="Fixture Home" } end
+      return alternate_receipt
+    end
+    t.eq(runtime.read_title(alternate_context, request, alternate.value).observed_title, "Fixture Home")
+
+    local leaked_bytes = '{"cookie":"secret"}'
+    local leaked_receipt = {
+      schema=executor_contract.schemas.browser_read_title_receipt, effect_id=executor_contract.effect_id,
+      status="succeeded", observed_url=executor_contract.target_url, observed_title="Fixture Home",
+      evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=sha256(leaked_bytes)}},
+      evidence_size_bytes=#leaked_bytes,
+    }
+    local leaked = ports(leaked_receipt)
+    leaked.value.sha256 = sha256
+    leaked.value.read = function(path)
+      if path == ".testing/runs/dedup-walking-skeleton/evidence/title.json" then return leaked_bytes end
+      return path
+    end
+    leaked.value.decode = function(bytes)
+      if bytes == leaked_bytes then return { cookie="secret" } end
+      return leaked_receipt
+    end
+    t.raises(function() runtime.read_title(title_context, request, leaked.value) end)
 
     title.value.sha256 = function() return string.rep("0", 64) end
     t.raises(function() runtime.read_title(title_context, request, title.value) end)

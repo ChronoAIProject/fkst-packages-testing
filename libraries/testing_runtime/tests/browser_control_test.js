@@ -138,6 +138,24 @@ test('exact target acquisition never falls back to the first page', async () => 
   }
 });
 
+test('CDP HTTP failures do not expose the private endpoint', async () => {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(500, { 'content-type': 'text/plain' });
+    response.end('failed');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await assert.rejects(() => acquireTargetById(endpoint, 'target-1'), (error) => {
+      assert.equal(error.message.includes(endpoint), false);
+      assert.match(error.message, /CDP HTTP GET request returned 500/);
+      return true;
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
 test('Browser title projection accepts only the exact target URL and bounded title', () => {
   const request = {
     schema: 'testing-package-executor.browser-read-title.v1',

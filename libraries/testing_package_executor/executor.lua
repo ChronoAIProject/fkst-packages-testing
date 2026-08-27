@@ -224,15 +224,14 @@ function M.execute(resolved, ports)
   local intent = call_port(ports, "load_effect_intent", state_query)
   local effect_receipt = call_port(ports, "load_effect_receipt", state_query)
   if intent ~= nil then contract.validate_effect_intent(intent, resolved.dedup_key, resolved.admission_digest) end
-  if effect_receipt ~= nil then contract.validate_effect_receipt(effect_receipt) end
+  if effect_receipt ~= nil then contract.validate_effect_receipt(effect_receipt, ".testing/runs/" .. resolved.dedup_key) end
   if effect_receipt ~= nil and intent == nil then fail("malformed-effect-state", "effect receipt exists without intent") end
 
   if intent ~= nil and effect_receipt == nil then
     return persist_terminal(resolved, ports, intent.claim_id, lost_case_result(resolved, intent.started_at), nil, intent.started_at)
   end
 
-  local started_at
-  local completed_at
+  local started_at, completed_at
   if intent == nil then
     local freshness = { schema = contract.schemas.freshness_check, dedup_key = resolved.dedup_key, effect_id = contract.effect_id }
     contract.validate_freshness_check(freshness)
@@ -244,11 +243,20 @@ function M.execute(resolved, ports)
     if call_port(ports, "persist_effect_intent", intent) ~= true then fail("intent-persist-failed", "effect intent was not persisted") end
     local effect_request = { schema = contract.schemas.browser_read_title, effect_id = contract.effect_id, url = contract.target_url }
     contract.validate_browser_read_title(effect_request)
-    effect_receipt = call_port(ports, "browser_read_title", effect_request)
-    contract.validate_browser_read_title_receipt(effect_receipt)
+    local browser_receipt = call_port(ports, "browser_read_title", effect_request)
+    contract.validate_browser_read_title_receipt(browser_receipt, ".testing/runs/" .. resolved.dedup_key)
     completed_at = timestamp(ports)
-    effect_receipt.completed_at = completed_at
-    contract.validate_effect_receipt(effect_receipt)
+    effect_receipt = {
+      schema = contract.schemas.effect_receipt,
+      effect_id = browser_receipt.effect_id,
+      status = browser_receipt.status,
+      observed_url = browser_receipt.observed_url,
+      observed_title = browser_receipt.observed_title,
+      evidence_refs = { copy_reference(browser_receipt.evidence_refs[1]) },
+      evidence_size_bytes = browser_receipt.evidence_size_bytes,
+      completed_at = completed_at,
+    }
+    contract.validate_effect_receipt(effect_receipt, ".testing/runs/" .. resolved.dedup_key)
     if call_port(ports, "persist_effect_receipt", effect_receipt) ~= true then fail("receipt-persist-failed", "effect receipt was not persisted") end
   else
     started_at = intent.started_at

@@ -1,6 +1,7 @@
 -- contract.testing_package_executor: closed contracts for the provider-neutral walking skeleton.
 local canonical_json = require("contract.canonical_json")
 local error_facts = require("contract.error_facts")
+local strings = require("contract.strings")
 local time = require("contract.time")
 local M = {}
 
@@ -25,6 +26,7 @@ M.schemas = {
   effect_intent = "testing-package-executor.effect-intent.v1",
   completed_execution = "testing-package-executor.completed-execution.v1",
   browser_read_title = "testing-package-executor.browser-read-title.v1",
+  browser_read_title_receipt = "testing-package-executor.browser-read-title-receipt.v1",
   effect_receipt = "testing-package-executor.effect-receipt.v1",
   canonical_write = "testing-package-executor.canonical-write.v1",
   write_receipt = "testing-package-executor.write-receipt.v1",
@@ -113,7 +115,7 @@ end
 
 local function bounded(value, field, limit)
   if type(value) ~= "string" or value == "" or #value > (limit or 4096)
-    or value:find("[%z\1-\31\127]") ~= nil then
+    or not canonical_json.is_valid_utf8(value) or value:find("[%z\1-\31\127]") ~= nil then
     fail("malformed-field", field .. " must be a bounded string without ASCII control characters")
   end
   return value
@@ -456,12 +458,12 @@ function M.validate_browser_read_title(value)
   return value
 end
 
-local function validate_effect_receipt(value, persisted)
+local function validate_effect_receipt(value, expected_schema, completed_required, context, artifact_root)
   local allowed = { schema = true, effect_id = true, status = true, observed_url = true, observed_title = true,
     evidence_refs = true, evidence_size_bytes = true }
-  if persisted then allowed.completed_at = true end
-  fields(value, allowed, "effect-receipt")
-  if value.schema ~= M.schemas.effect_receipt then fail("unknown-schema", "effect receipt schema") end
+  if completed_required then allowed.completed_at = true end
+  fields(value, allowed, context)
+  if value.schema ~= expected_schema then fail("unknown-schema", context .. " schema") end
   if identity_string(required(value.effect_id, "effect_receipt.effect_id"), "effect_receipt.effect_id") ~= M.effect_id then
     fail("mapping-mismatch", "effect receipt ID")
   end
@@ -475,18 +477,24 @@ local function validate_effect_receipt(value, persisted)
   local ref = value.evidence_refs[1]
   fields(ref, { kind=true, ref=true, sha256=true }, "effect-receipt-evidence-ref")
   if ref.kind ~= "artifact" then fail("reference-kind-mismatch", "effect evidence must be an artifact") end
-  local expected = ".testing/runs/dedup-walking-skeleton/evidence/title.json"
+  local root = artifact_root or ".testing/runs/dedup-walking-skeleton"
+  if not strings.is_artifact_root(root, 4096) then fail("cross-run-pointer", "effect artifact root") end
+  local expected = root .. "/evidence/title.json"
   if bounded(ref.ref, "effect_receipt.evidence_refs[1].ref") ~= expected then fail("cross-run-pointer", "effect evidence path") end
   digest(ref.sha256, "effect_receipt.evidence_refs[1].sha256")
   integer(required(value.evidence_size_bytes, "effect_receipt.evidence_size_bytes"), "effect_receipt.evidence_size_bytes", 0, 1000000000)
-  if persisted and time.iso_timestamp_epoch_seconds(required(value.completed_at, "effect_receipt.completed_at")) == nil then
+  if completed_required and time.iso_timestamp_epoch_seconds(required(value.completed_at, "effect_receipt.completed_at")) == nil then
     fail("invalid-timestamp", "effect_receipt.completed_at must be a UTC timestamp")
   end
   return value
 end
 
-function M.validate_browser_read_title_receipt(value) return validate_effect_receipt(value, false) end
-function M.validate_effect_receipt(value) return validate_effect_receipt(value, true) end
+function M.validate_browser_read_title_receipt(value, artifact_root)
+  return validate_effect_receipt(value, M.schemas.browser_read_title_receipt, false, "browser-read-title-receipt", artifact_root)
+end
+function M.validate_effect_receipt(value, artifact_root)
+  return validate_effect_receipt(value, M.schemas.effect_receipt, true, "effect-receipt", artifact_root)
+end
 
 function M.validate_canonical_write(value)
   fields(value, { schema = true, kind = true, dedup_key = true, canonical_sha256 = true, canonical_bytes = true }, "canonical-write")
@@ -580,7 +588,7 @@ function M.validate_execution(value)
   fields(value, { schema = true, case_result = true, effect_receipt = true, case_result_ref = true }, "execution")
   if value.schema ~= M.schemas.execution then fail("unknown-schema", "execution schema") end
   if type(required(value.case_result, "case_result")) ~= "table" then fail("malformed-execution", "case_result must be a table") end
-  M.validate_browser_read_title_receipt(required(value.effect_receipt, "effect_receipt"))
+  M.validate_effect_receipt(required(value.effect_receipt, "effect_receipt"))
   local ref = required(value.case_result_ref, "case_result_ref")
   fields(ref, { kind = true, ref = true, sha256 = true }, "case-result-ref")
   if identity_string(required(ref.kind, "case_result_ref.kind"), "case_result_ref.kind") ~= "artifact" then
