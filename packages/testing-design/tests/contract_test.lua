@@ -143,6 +143,24 @@ return {
     t.raises(function() contract.validate_request(value) end)
   end,
 
+  test_rejects_invalid_pql_request_bindings_and_bounds = function()
+    local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.repository.url = "https://example.invalid/foreign.git"
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.trace_id = "trace-foreign"
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.approved_assets = {}
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.created_at = "2026-08-27"
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    for _ = 2, contract.max_inputs do table.insert(value.inputs, input()) end
+    t.raises(function() contract.validate_request(value) end)
+  end,
+
   test_context_copy_is_deep_and_digest_bound = function()
     local key = digest("2")
     local paths = contract.artifact_paths(".testing/runs/testing-design")
