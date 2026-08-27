@@ -46,6 +46,47 @@ local function copy(value)
   return out
 end
 
+local function pql_input_set()
+  local asset_sha = digest("a")
+  local snapshot_sha = digest("b")
+  return {
+    schema = contract.schemas.pql_input_set,
+    producer = { name = "product-quality-loop", version = "pql.testing-design-fixture.v1" },
+    asset_set_id = "ASET-HOME-TITLE-1",
+    repository = { url = "https://example.invalid/testing-design.git", commit_sha = string.rep("c", 40) },
+    project_pack_snapshot = {
+      ref = { kind = "artifact", ref = ".testing/fixtures/pql/snapshots/home-title.json" },
+      sha256 = snapshot_sha,
+    },
+    approved_assets = {
+      {
+        asset_id = "TCA-HOME-TITLE",
+        asset_version = "1",
+        asset_kind = "test-case",
+        artifact_pointer = { kind = "artifact", ref = ".testing/fixtures/pql/assets/home-title-tests.txt" },
+        artifact_digest = asset_sha,
+        media_type = "text/plain; charset=utf-8",
+        requirement_refs = { { kind = "pql", ref = "REQ-HOME-TITLE" } },
+        review_decision = { ref = { kind = "artifact", ref = ".testing/fixtures/pql/reviews/home-title.json" }, sha256 = digest("d") },
+        promotion_receipt = { ref = { kind = "artifact", ref = ".testing/fixtures/pql/promotion/home-title.json" }, sha256 = digest("e") },
+        approval_subject = {
+          consumer = "testing-design",
+          repository_url = "https://example.invalid/testing-design.git",
+          repository_commit_sha = string.rep("c", 40),
+          project_pack_snapshot_ref = { kind = "artifact", ref = ".testing/fixtures/pql/snapshots/home-title.json" },
+          project_pack_snapshot_sha256 = snapshot_sha,
+          asset_id = "TCA-HOME-TITLE",
+          asset_version = "1",
+          asset_sha256 = asset_sha,
+        },
+      },
+    },
+    created_at = "2026-08-27T00:00:00Z",
+    trace_id = "trace-testing-design",
+    dedup_key = "dedup-testing-design",
+  }
+end
+
 return {
   test_accepts_pointer_only_request_and_missing_requirements = function()
     local value = request()
@@ -85,6 +126,47 @@ return {
     value = request(); value.browser_evidence.artifact_pointer = "/tmp/browser.json"
     t.raises(function() contract.validate_request(value) end)
     value = request(); value.trace_id = string.rep("x", 181)
+    t.raises(function() contract.validate_request(value) end)
+  end,
+
+  test_accepts_closed_pql_input_set = function()
+    local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    t.eq(contract.validate_request(value), value)
+  end,
+
+  test_rejects_unknown_pql_field_and_producer_version = function()
+    local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.unknown = true
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.producer.version = "pql.testing-design-fixture.v2"
+    t.raises(function() contract.validate_request(value) end)
+  end,
+
+  test_rejects_invalid_pql_digest_and_pointer = function()
+    local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.project_pack_snapshot.sha256 = "invalid"
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.project_pack_snapshot.ref = { kind = "artifact" }
+    t.raises(function() contract.validate_request(value) end)
+  end,
+
+  test_rejects_invalid_pql_request_bindings_and_bounds = function()
+    local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.repository.url = "https://example.invalid/foreign.git"
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.trace_id = "trace-foreign"
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.approved_assets = {}
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.created_at = "2026-08-27"
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    for _ = 2, contract.max_inputs do table.insert(value.inputs, input()) end
     t.raises(function() contract.validate_request(value) end)
   end,
 
