@@ -20,6 +20,7 @@ M.schemas = {
   completed_execution_query = "testing-package-executor.completed-execution-query.v1",
   execution_claim_request = "testing-package-executor.execution-claim-request.v1",
   execution_claim_receipt = "testing-package-executor.execution-claim-receipt.v1",
+  effect_state_query = "testing-package-executor.effect-state-query.v1",
   effect_intent = "testing-package-executor.effect-intent.v1",
   completed_execution = "testing-package-executor.completed-execution.v1",
   browser_read_title = "testing-package-executor.browser-read-title.v1",
@@ -499,6 +500,17 @@ end
 function M.validate_completed_execution_query(value) return execution_identity(value, M.schemas.completed_execution_query, "completed-execution-query") end
 function M.validate_execution_claim_request(value) return execution_identity(value, M.schemas.execution_claim_request, "execution-claim-request") end
 
+function M.validate_effect_state_query(value)
+  fields(value, { schema=true, dedup_key=true, admission_digest=true, effect_id=true }, "effect-state-query")
+  if value.schema ~= M.schemas.effect_state_query then fail("unknown-schema", "effect-state-query schema") end
+  identity_string(required(value.dedup_key, "effect_state_query.dedup_key"), "effect_state_query.dedup_key")
+  digest(required(value.admission_digest, "effect_state_query.admission_digest"), "effect_state_query.admission_digest")
+  if identity_string(required(value.effect_id, "effect_state_query.effect_id"), "effect_state_query.effect_id") ~= M.effect_id then
+    fail("mapping-mismatch", "effect-state-query effect ID")
+  end
+  return value
+end
+
 function M.validate_execution_claim_receipt(value, request)
   fields(value, { schema=true, status=true, dedup_key=true, admission_digest=true, claim_id=true }, "execution-claim-receipt")
   if value.schema ~= M.schemas.execution_claim_receipt or value.status ~= "claimed" then fail("claim-failed", "claim receipt schema or status") end
@@ -507,11 +519,14 @@ function M.validate_execution_claim_receipt(value, request)
   return value
 end
 
-function M.validate_effect_intent(value)
+function M.validate_effect_intent(value, dedup_key, admission_digest)
   fields(value, { schema=true, dedup_key=true, admission_digest=true, claim_id=true, effect_id=true, url=true }, "effect-intent")
   if value.schema ~= M.schemas.effect_intent then fail("unknown-schema", "effect intent schema") end
   identity_string(value.dedup_key, "intent.dedup_key"); digest(value.admission_digest, "intent.admission_digest"); identity_string(value.claim_id, "intent.claim_id")
   if value.effect_id ~= M.effect_id or value.url ~= M.target_url then fail("mapping-mismatch", "effect intent") end
+  if dedup_key and (value.dedup_key ~= dedup_key or value.admission_digest ~= admission_digest) then
+    fail("effect-state-mismatch", "effect intent identity")
+  end
   return value
 end
 

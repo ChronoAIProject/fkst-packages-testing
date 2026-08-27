@@ -1,4 +1,5 @@
 local contract = require("contract.browser_control")
+local executor_contract = require("contract.testing_package_executor")
 local json_codec = require("testing_runtime.json")
 
 local M = {}
@@ -24,6 +25,14 @@ local function paths(root, turn)
     capabilities = prefix .. "-capabilities.json",
     act_input = prefix .. "-act-input.json",
     step_receipt = prefix .. "-step-receipt.json",
+  }
+end
+
+local function title_paths(root)
+  return {
+    input = root .. "/browser-runtime/title-input.json",
+    receipt = root .. "/browser-runtime/title-receipt.json",
+    evidence = root .. "/evidence/title.json",
   }
 end
 
@@ -85,6 +94,35 @@ function M.act(context, turn, action, runtime_paths, supplied_ports)
   return receipt
 end
 
+function M.read_title(context, request, supplied_ports)
+  local ports = resolve(supplied_ports)
+  if type(ports.sha256) ~= "function" then error("testing-runtime: browser-control-invalid-ports: missing sha256") end
+  executor_contract.validate_browser_read_title(request)
+  if type(context) ~= "table" or type(context.cdp_url) ~= "string" or type(context.target_id) ~= "string"
+    or type(context.target_sha256) ~= "string" or context.artifact_root ~= ".testing/runs/dedup-walking-skeleton" then
+    error("testing-runtime: browser-title-context-invalid: approved Browser binding is required")
+  end
+  local runtime_paths = title_paths(context.artifact_root)
+  ports.write(runtime_paths.input, json_codec.encode({
+    schema = "testing-runtime.browser-title-input.v1",
+    cdp_url = context.cdp_url,
+    target_id = context.target_id,
+    target_sha256 = context.target_sha256,
+    request = request,
+    evidence_path = runtime_paths.evidence,
+  }) .. "\n")
+  run(ports, { "node", runtime_cli, "read-title", "--input", runtime_paths.input, "--receipt", runtime_paths.receipt }, 30)
+  local receipt = ports.decode(ports.read(runtime_paths.receipt))
+  executor_contract.validate_effect_receipt(receipt)
+  local evidence_bytes = ports.read(runtime_paths.evidence)
+  if type(evidence_bytes) ~= "string" or #evidence_bytes ~= receipt.evidence_size_bytes
+    or ports.sha256(evidence_bytes) ~= receipt.evidence_refs[1].sha256 then
+    error("testing-runtime: browser-title-evidence-invalid: persisted evidence digest or size mismatch")
+  end
+  return receipt, runtime_paths
+end
+
 M.paths = paths
+M.title_paths = title_paths
 
 return M

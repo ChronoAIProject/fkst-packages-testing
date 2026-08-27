@@ -2,6 +2,7 @@
 'use strict';
 
 const fs = require('fs');
+const path = require('path');
 const {
   CdpSocket,
   acquireTargetById,
@@ -32,6 +33,63 @@ function readJson(path) {
 
 function writeJson(path, value) {
   fs.writeFileSync(path, `${JSON.stringify(value)}\n`, 'utf8');
+}
+
+function closedFields(value, allowed, context) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error(context + " must be an object");
+  for (const key of Object.keys(value)) if (!allowed.includes(key)) throw new Error(context + " contains unknown field " + key);
+}
+
+function validateTitle(value) {
+  if (typeof value !== "string" || Buffer.byteLength(value, "utf8") < 1 || Buffer.byteLength(value, "utf8") > 4096
+    || /[\u0000-\u001f\u007f]/u.test(value) || /[\ud800-\udfff]/u.test(value)) {
+    throw new Error("browser title is missing, malformed, or unbounded");
+  }
+  return value;
+}
+
+function projectTitleResult(raw, request) {
+  closedFields(raw, ["url", "title"], "browser title result");
+  if (raw.url !== request.url) throw new Error("observed Browser URL does not match the approved target URL");
+  return { observed_url: raw.url, observed_title: validateTitle(raw.title) };
+}
+
+async function readTitle(input) {
+  closedFields(input, ["schema", "cdp_url", "target_id", "target_sha256", "request", "evidence_path"], "browser title input");
+  if (input.schema !== "testing-runtime.browser-title-input.v1") throw new Error("browser title input schema is invalid");
+  closedFields(input.request, ["schema", "effect_id", "url"], "browser title request");
+  if (input.request.schema !== "testing-package-executor.browser-read-title.v1"
+    || input.request.effect_id !== "effect-case-home-title-title"
+    || input.request.url !== "http://127.0.0.1:4173/") throw new Error("browser title request is invalid");
+  if (input.evidence_path !== ".testing/runs/dedup-walking-skeleton/evidence/title.json") throw new Error("browser title evidence path is invalid");
+  assertLocalHttpUrl(input.cdp_url, "CDP URL");
+  if (typeof input.target_id !== "string" || input.target_sha256 !== sha256(input.target_id)) throw new Error("browser target digest binding is invalid");
+  const target = await acquireTargetById(input.cdp_url, input.target_id);
+  if (target.url !== input.request.url) throw new Error("approved Browser target URL does not match the request");
+  const cdp = new CdpSocket(target.webSocketDebuggerUrl);
+  await cdp.connect();
+  try {
+    await cdp.send("Runtime.enable");
+    const evaluated = await cdp.send("Runtime.evaluate", {
+      expression: "({url: location.href, title: document.title})",
+      returnByValue: true,
+    });
+    const projected = projectTitleResult(evaluated.result && evaluated.result.value, input.request);
+    const evidenceBytes = JSON.stringify(projected);
+    fs.mkdirSync(path.dirname(input.evidence_path), { recursive: true });
+    fs.writeFileSync(input.evidence_path, evidenceBytes, "utf8");
+    return {
+      schema: "testing-package-executor.effect-receipt.v1",
+      effect_id: input.request.effect_id,
+      status: "succeeded",
+      observed_url: projected.observed_url,
+      observed_title: projected.observed_title,
+      evidence_refs: [{ kind: "artifact", ref: input.evidence_path, sha256: sha256(evidenceBytes) }],
+      evidence_size_bytes: Buffer.byteLength(evidenceBytes, "utf8"),
+    };
+  } finally {
+    cdp.close();
+  }
 }
 
 function rawObservationExpression() {
@@ -215,6 +273,12 @@ async function main() {
     writeJson(args.capabilities, projected.capabilities);
     return;
   }
+  if (command === 'read-title') {
+    const input = readJson(args.input);
+    const receipt = await readTitle(input);
+    writeJson(args.receipt, receipt);
+    return;
+  }
   if (command === 'act') {
     const input = readJson(args.input);
     const capabilities = readJson(args.capabilities);
@@ -233,4 +297,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { act, observe, rawObservationExpression };
+module.exports = { act, observe, projectTitleResult, rawObservationExpression, readTitle, validateTitle };

@@ -1,4 +1,6 @@
 local browser = require("contract.browser_control")
+local executor_contract = require("contract.testing_package_executor")
+local sha256 = require("tests.fixtures.sha256_helpers")
 local runtime = require("testing_runtime.browser_control")
 local t = fkst.test
 
@@ -85,6 +87,31 @@ return {
     local secret = ports(receipt(1, typed))
     runtime.act(context(), 1, typed, runtime.paths(context().artifact_root, 1), secret.value)
     t.eq(secret.calls[1].secret_ref, "primary-identity")
+  end,
+
+  test_read_title_validates_closed_receipt_and_persisted_evidence = function()
+    local title_context = { artifact_root=".testing/runs/dedup-walking-skeleton",
+      cdp_url="http://127.0.0.1:9222", target_id="target-1", target_sha256=sha256("target-1") }
+    local request = { schema=executor_contract.schemas.browser_read_title, effect_id=executor_contract.effect_id,
+      url=executor_contract.target_url }
+    local evidence_bytes = "{\"observed_title\":\"Fixture Home\",\"observed_url\":\"http://127.0.0.1:4173/\"}"
+    local title_receipt = { schema=executor_contract.schemas.effect_receipt, effect_id=executor_contract.effect_id,
+      status="succeeded", observed_url=executor_contract.target_url, observed_title="Fixture Home",
+      evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=sha256(evidence_bytes)}},
+      evidence_size_bytes=#evidence_bytes }
+    local title = ports(title_receipt)
+    title.value.sha256 = sha256
+    title.value.read = function(path)
+      if path == ".testing/runs/dedup-walking-skeleton/evidence/title.json" then return evidence_bytes end
+      return path
+    end
+    local value, paths = runtime.read_title(title_context, request, title.value)
+    t.eq(value.observed_title, "Fixture Home")
+    t.eq(title.calls[1].argv[3], "read-title")
+    t.is_true(title.writes[paths.input] ~= nil)
+
+    title.value.sha256 = function() return string.rep("0", 64) end
+    t.raises(function() runtime.read_title(title_context, request, title.value) end)
   end,
 
   test_runtime_ports_and_effect_failures_are_fail_closed = function()
