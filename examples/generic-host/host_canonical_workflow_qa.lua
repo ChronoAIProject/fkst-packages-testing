@@ -5,6 +5,9 @@ local json_codec = require("testing_runtime.json")
 local project_profile = require("contract.project_profile")
 local design_loop = require("testing_ai.module_ai_design_loop")
 local workflow_qa = require("contract.workflow_qa")
+local testing_evidence_manifest = require("contract.testing_evidence_manifest")
+local testing_package_executor_contract = require("contract.testing_package_executor")
+local testing_results = require("contract.testing_results")
 
 local M = {}
 
@@ -1562,8 +1565,90 @@ function M.new(options)
   return context
 end
 
+function M.testing_package_executor_ports(options)
+  options = options or {}
+  local store = options.store or Store.new()
+  local counters = options.counters or {
+    claims=0, freshness=0, browser=0, intents=0, receipts=0, writes=0, completions=0, clock=0,
+  }
+  local function completed_path(dedup_key) return ".testing/runs/" .. dedup_key .. "/execution/completed.json" end
+  local function artifact_path(dedup_key, kind)
+    return ".testing/runs/" .. dedup_key .. "/" .. (kind == "evidence-manifest" and "evidence-manifest.json" or "case-result-set.json")
+  end
+  local function load_completed(query)
+    local stored = store:load(completed_path(query.dedup_key))
+    if stored == nil then return nil end
+    testing_package_executor_contract.validate_completed_execution(stored.value, query.dedup_key, query.admission_digest)
+    local manifest_artifact = store:load(stored.value.evidence_manifest_ref.ref)
+    local result_artifact = store:load(stored.value.case_result_set_ref.ref)
+    if manifest_artifact == nil or result_artifact == nil
+      or manifest_artifact.digest ~= stored.value.evidence_manifest_ref.sha256
+      or result_artifact.digest ~= stored.value.case_result_set_ref.sha256 then
+      error("completed testing execution artifacts are unavailable or digest-mismatched")
+    end
+    testing_results.validate_case_result_set(result_artifact.value, nil, manifest_artifact.value, sha256_bytes)
+    testing_evidence_manifest.validate(manifest_artifact.value, result_artifact.value, sha256_bytes)
+    return copy(stored.value)
+  end
+  return {
+    store = store,
+    counters = counters,
+    load_completed_execution = load_completed,
+    claim_execution = function(request)
+      counters.claims = counters.claims + 1
+      return { schema=testing_package_executor_contract.schemas.execution_claim_receipt, status="claimed",
+        dedup_key=request.dedup_key, admission_digest=request.admission_digest, claim_id="claim-" .. request.dedup_key }
+    end,
+    check_freshness = function() counters.freshness = counters.freshness + 1; return true end,
+    persist_effect_intent = function(intent)
+      counters.intents = counters.intents + 1
+      return store:write(".testing/runs/" .. intent.dedup_key .. "/execution/effect-intent.json", intent)
+    end,
+    browser_read_title = function(request)
+      counters.browser = counters.browser + 1
+      local title = assert(options.browser_read_title, "browser_read_title adapter is required")(request.url)
+      local path = ".testing/runs/dedup-walking-skeleton/evidence/title.json"
+      local bytes = json_codec.encode({ title=title })
+      if not store:write_raw(path, bytes, { title=title }) then error("Browser title evidence write conflicted") end
+      local persisted = assert(store:load(path), "Browser title evidence reload failed")
+      if persisted.raw ~= bytes or persisted.digest ~= sha256_bytes(persisted.raw) then error("Browser title evidence verification failed") end
+      return { schema=testing_package_executor_contract.schemas.effect_receipt, effect_id=request.effect_id, status="succeeded",
+        observed_url=request.url, observed_title=title,
+        evidence_refs={ { kind="artifact", ref=path, sha256=persisted.digest } }, evidence_size_bytes=#persisted.raw }
+    end,
+    persist_effect_receipt = function(receipt)
+      counters.receipts = counters.receipts + 1
+      return store:write(".testing/runs/dedup-walking-skeleton/execution/effect-receipt.json", receipt)
+    end,
+    write_canonical = function(request)
+      counters.writes = counters.writes + 1
+      local path = artifact_path(request.dedup_key, request.kind)
+      if not store:write_raw(path, request.canonical_bytes) then error("canonical artifact write conflicted") end
+      local persisted = assert(store:load(path), "canonical artifact reload failed")
+      if persisted.raw ~= request.canonical_bytes or persisted.digest ~= sha256_bytes(persisted.raw) then error("canonical artifact verification failed") end
+      return { schema=testing_package_executor_contract.schemas.write_receipt, status="written",
+        ref={ kind="artifact", ref=path, sha256=persisted.digest } }
+    end,
+    complete_execution = function(receipt)
+      counters.completions = counters.completions + 1
+      if not store:write(completed_path(receipt.dedup_key), receipt) then error("completed execution write conflicted") end
+      return copy(assert(store:load(completed_path(receipt.dedup_key))).value)
+    end,
+    now = function()
+      counters.clock = counters.clock + 1
+      return counters.clock == 1 and "2026-08-21T00:00:00Z" or "2026-08-21T00:00:01Z"
+    end,
+    sha256 = sha256_bytes,
+  }
+end
+
 M.copy = copy
 M.equal = equal
 M.sha256_bytes = sha256_bytes
+M.spawn_process = spawn_process
+M.wait_http = wait_http
+M.http_request = http_request
+M.direct_exec = direct_exec
+M.remove_tree = remove_tree
 
 return M

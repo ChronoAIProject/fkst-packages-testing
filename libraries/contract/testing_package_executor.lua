@@ -17,6 +17,11 @@ M.schemas = {
   policy = "testing-package-policy.v1",
   capability_set = "testing-package-capability-set.v1",
   freshness_check = "testing-package-executor.freshness-check.v1",
+  completed_execution_query = "testing-package-executor.completed-execution-query.v1",
+  execution_claim_request = "testing-package-executor.execution-claim-request.v1",
+  execution_claim_receipt = "testing-package-executor.execution-claim-receipt.v1",
+  effect_intent = "testing-package-executor.effect-intent.v1",
+  completed_execution = "testing-package-executor.completed-execution.v1",
   browser_read_title = "testing-package-executor.browser-read-title.v1",
   effect_receipt = "testing-package-executor.effect-receipt.v1",
   canonical_write = "testing-package-executor.canonical-write.v1",
@@ -35,6 +40,7 @@ M.case_id = "case-home-title"
 M.assertion_id = "assert-home-title"
 M.effect_id = "effect-case-home-title-title"
 M.observation_id = "observation-home-title"
+M.evidence_id = "evidence-case-home-title-title"
 
 M.reference_order = {
   "package_manifest_ref",
@@ -119,6 +125,13 @@ local function digest(value, field)
   bounded(value, field, 64)
   if #value ~= 64 or value:match("^[0-9a-f]+$") == nil then
     fail("malformed-digest", field .. " must be lowercase SHA-256")
+  end
+  return value
+end
+
+local function integer(value, field, minimum, maximum)
+  if type(value) ~= "number" or value ~= math.floor(value) or value < minimum or value > maximum then
+    fail("malformed-field", field .. " must be an integer from " .. minimum .. " to " .. maximum)
   end
   return value
 end
@@ -442,7 +455,7 @@ function M.validate_browser_read_title(value)
 end
 
 function M.validate_effect_receipt(value)
-  fields(value, { schema = true, effect_id = true, status = true, observed_title = true, evidence_refs = true }, "effect-receipt")
+  fields(value, { schema = true, effect_id = true, status = true, observed_url = true, observed_title = true, evidence_refs = true, evidence_size_bytes = true }, "effect-receipt")
   if value.schema ~= M.schemas.effect_receipt then fail("unknown-schema", "effect receipt schema") end
   if identity_string(required(value.effect_id, "effect_receipt.effect_id"), "effect_receipt.effect_id") ~= M.effect_id then
     fail("mapping-mismatch", "effect receipt ID")
@@ -450,19 +463,72 @@ function M.validate_effect_receipt(value)
   if identity_string(required(value.status, "effect_receipt.status"), "effect_receipt.status") ~= "succeeded" then
     fail("effect-failed", "effect receipt status must be succeeded")
   end
-  bounded(required(value.observed_title, "effect_receipt.observed_title"), "effect_receipt.observed_title")
-  dense_list(required(value.evidence_refs, "effect_receipt.evidence_refs"), "effect_receipt.evidence_refs", 64, false)
-  if #value.evidence_refs ~= 0 then fail("unsupported-evidence", "effect receipt evidence is outside the walking skeleton") end
+  if bounded(required(value.observed_url, "effect_receipt.observed_url"), "effect_receipt.observed_url") ~= M.target_url then fail("mapping-mismatch", "effect receipt URL") end
+  bounded(required(value.observed_title, "effect_receipt.observed_title"), "effect_receipt.observed_title", 4096)
+  dense_list(required(value.evidence_refs, "effect_receipt.evidence_refs"), "effect_receipt.evidence_refs", 1, true)
+  if #value.evidence_refs ~= 1 then fail("unsupported-evidence", "effect receipt must contain one evidence artifact") end
+  local ref = value.evidence_refs[1]
+  fields(ref, { kind=true, ref=true, sha256=true }, "effect-receipt-evidence-ref")
+  if ref.kind ~= "artifact" then fail("reference-kind-mismatch", "effect evidence must be an artifact") end
+  local expected = ".testing/runs/dedup-walking-skeleton/evidence/title.json"
+  if bounded(ref.ref, "effect_receipt.evidence_refs[1].ref") ~= expected then fail("cross-run-pointer", "effect evidence path") end
+  digest(ref.sha256, "effect_receipt.evidence_refs[1].sha256")
+  integer(required(value.evidence_size_bytes, "effect_receipt.evidence_size_bytes"), "effect_receipt.evidence_size_bytes", 0, 1000000000)
   return value
 end
 
 function M.validate_canonical_write(value)
   fields(value, { schema = true, kind = true, dedup_key = true, canonical_sha256 = true, canonical_bytes = true }, "canonical-write")
   if value.schema ~= M.schemas.canonical_write then fail("unknown-schema", "canonical write schema") end
-  if identity_string(required(value.kind, "write.kind"), "write.kind") ~= "case-result" then fail("unsupported-write", "write kind") end
+  local kind = identity_string(required(value.kind, "write.kind"), "write.kind")
+  if kind ~= "evidence-manifest" and kind ~= "case-result-set" then fail("unsupported-write", "write kind") end
   identity_string(required(value.dedup_key, "write.dedup_key"), "write.dedup_key")
   digest(required(value.canonical_sha256, "write.canonical_sha256"), "write.canonical_sha256")
   bounded(required(value.canonical_bytes, "write.canonical_bytes"), "write.canonical_bytes", 65536)
+  return value
+end
+
+local function execution_identity(value, schema, context)
+  fields(value, { schema=true, dedup_key=true, admission_digest=true }, context)
+  if value.schema ~= schema then fail("unknown-schema", context .. " schema") end
+  identity_string(required(value.dedup_key, context .. ".dedup_key"), context .. ".dedup_key")
+  digest(required(value.admission_digest, context .. ".admission_digest"), context .. ".admission_digest")
+  return value
+end
+
+function M.validate_completed_execution_query(value) return execution_identity(value, M.schemas.completed_execution_query, "completed-execution-query") end
+function M.validate_execution_claim_request(value) return execution_identity(value, M.schemas.execution_claim_request, "execution-claim-request") end
+
+function M.validate_execution_claim_receipt(value, request)
+  fields(value, { schema=true, status=true, dedup_key=true, admission_digest=true, claim_id=true }, "execution-claim-receipt")
+  if value.schema ~= M.schemas.execution_claim_receipt or value.status ~= "claimed" then fail("claim-failed", "claim receipt schema or status") end
+  identity_string(value.dedup_key, "claim.dedup_key"); digest(value.admission_digest, "claim.admission_digest"); identity_string(value.claim_id, "claim.claim_id")
+  if request and (value.dedup_key ~= request.dedup_key or value.admission_digest ~= request.admission_digest) then fail("claim-mismatch", "claim identity") end
+  return value
+end
+
+function M.validate_effect_intent(value)
+  fields(value, { schema=true, dedup_key=true, admission_digest=true, claim_id=true, effect_id=true, url=true }, "effect-intent")
+  if value.schema ~= M.schemas.effect_intent then fail("unknown-schema", "effect intent schema") end
+  identity_string(value.dedup_key, "intent.dedup_key"); digest(value.admission_digest, "intent.admission_digest"); identity_string(value.claim_id, "intent.claim_id")
+  if value.effect_id ~= M.effect_id or value.url ~= M.target_url then fail("mapping-mismatch", "effect intent") end
+  return value
+end
+
+local function artifact_ref(value, field)
+  fields(value, { kind=true, ref=true, sha256=true }, field)
+  if value.kind ~= "artifact" then fail("reference-kind-mismatch", field) end
+  bounded(value.ref, field .. ".ref"); digest(value.sha256, field .. ".sha256")
+end
+
+function M.validate_completed_execution(value, dedup_key, admission_digest)
+  fields(value, { schema=true,status=true,dedup_key=true,admission_digest=true,claim_id=true,effect_id=true,case_result_set_ref=true,case_result_set_sha256=true,evidence_manifest_ref=true,evidence_manifest_sha256=true }, "completed-execution")
+  if value.schema ~= M.schemas.completed_execution or value.status ~= "completed" then fail("completion-failed", "completed receipt schema or status") end
+  identity_string(value.dedup_key, "completed.dedup_key"); digest(value.admission_digest, "completed.admission_digest"); identity_string(value.claim_id, "completed.claim_id")
+  if value.effect_id ~= M.effect_id then fail("mapping-mismatch", "completed effect ID") end
+  artifact_ref(value.case_result_set_ref, "completed.case_result_set_ref"); digest(value.case_result_set_sha256, "completed.case_result_set_sha256")
+  artifact_ref(value.evidence_manifest_ref, "completed.evidence_manifest_ref"); digest(value.evidence_manifest_sha256, "completed.evidence_manifest_sha256")
+  if dedup_key and (value.dedup_key ~= dedup_key or value.admission_digest ~= admission_digest) then fail("completion-mismatch", "completed identity") end
   return value
 end
 
