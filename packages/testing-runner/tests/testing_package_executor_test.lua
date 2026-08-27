@@ -528,6 +528,27 @@ return {
     t.eq(value.calls.now, 2)
   end,
 
+  test_completed_replay_rejects_cross_run_artifact_pointers_without_effects = function()
+    local value = fixture()
+    local completed = runtime_executor.execute(value.request, value.ports)
+    local key = completed.dedup_key .. ":" .. completed.admission_digest
+    value.completed_store[key].case_result_set_ref.ref = ".testing/runs/foreign/case-result-set.json"
+    local effects = {
+      claims=#value.calls.claims, freshness=#value.calls.freshness, intents=#value.calls.intents,
+      browser=#value.calls.browser, receipts=#value.calls.receipts, writes=#value.calls.writes,
+      completions=#value.calls.completions, now=value.calls.now,
+    }
+    expect_failure("cross-run-pointer", function() runtime_executor.execute(value.request, value.ports) end)
+    t.eq(#value.calls.claims, effects.claims)
+    t.eq(#value.calls.freshness, effects.freshness)
+    t.eq(#value.calls.intents, effects.intents)
+    t.eq(#value.calls.browser, effects.browser)
+    t.eq(#value.calls.receipts, effects.receipts)
+    t.eq(#value.calls.writes, effects.writes)
+    t.eq(#value.calls.completions, effects.completions)
+    t.eq(value.calls.now, effects.now)
+  end,
+
   test_writer_receipt_digest_must_match_submitted_canonical_bytes = function()
     local value = fixture({ writer_digest = string.rep("0", 64) })
     expect_failure("digest-mismatch", function() runtime_executor.execute(value.request, value.ports) end)
@@ -659,15 +680,25 @@ return {
     local effect = { schema=contract.schemas.browser_read_title, effect_id="other", url=contract.target_url }
     rejects(function() contract.validate_browser_read_title(effect) end)
     effect.effect_id=contract.effect_id; effect.url="http://127.0.0.1:4173/other"; rejects(function() contract.validate_browser_read_title(effect) end)
-    local receipt = { schema=contract.schemas.effect_receipt, effect_id="other", status="succeeded", observed_title="Fixture Home", evidence_refs={} }
+    local receipt = {
+      schema=contract.schemas.effect_receipt, effect_id="other", status="succeeded",
+      observed_url=contract.target_url, observed_title="Fixture Home",
+      evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=string.rep("a",64)}},
+      evidence_size_bytes=123,
+    }
     rejects(function() contract.validate_effect_receipt(receipt) end)
     receipt.effect_id=contract.effect_id; receipt.status="failed"
     rejects(function() contract.validate_effect_receipt(receipt) end)
+    receipt.status="succeeded"; receipt.evidence_size_bytes=1.5
+    rejects(function() contract.validate_effect_receipt(receipt) end)
+    receipt.evidence_size_bytes=123
     local write = { schema=contract.schemas.write_receipt, status="failed", ref={kind="artifact",ref="x",sha256=string.rep("a",64)} }
     rejects(function() contract.validate_write_receipt(write) end)
     write.status="written"; write.ref.kind="wrong"; rejects(function() contract.validate_write_receipt(write) end)
     receipt.status="succeeded"
-    local execution = { schema=contract.schemas.execution, case_result={}, effect_receipt=receipt, case_result_ref={kind="wrong",ref="x",sha256=string.rep("a",64)} }
+    local execution = { schema=contract.schemas.execution, case_result={}, effect_receipt=receipt, case_result_ref={kind="artifact",ref="x",sha256=string.rep("a",64)} }
+    t.eq(contract.validate_execution(execution), execution)
+    execution.case_result_ref.kind="wrong"
     rejects(function() contract.validate_execution(execution) end)
 
     local admission_digest = string.rep("a", 64)
@@ -777,10 +808,8 @@ return {
     resolved = runtime_executor.resolve(bad.request, bad.ports)
     local valid_execution_sha256 = bad.ports.sha256
     bad.ports.sha256 = function(bytes)
-      if type(bytes) == "string" and bytes:find(contract.schemas.admission_request, 1, true) then
-        return valid_execution_sha256(bytes)
-      end
-      return "bad"
+      if type(bytes) == "string" and bytes:find('"canonical_sha256"', 1, true) then return "bad" end
+      return valid_execution_sha256(bytes)
     end
     rejects(function() executor.execute(resolved, bad.ports) end)
   end,
