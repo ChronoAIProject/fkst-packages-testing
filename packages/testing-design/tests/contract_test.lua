@@ -143,6 +143,15 @@ return {
     t.raises(function() contract.validate_request(value) end)
   end,
 
+  test_rejects_invalid_pql_digest_and_pointer = function()
+    local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.project_pack_snapshot.sha256 = "invalid"
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.project_pack_snapshot.ref = { kind = "artifact" }
+    t.raises(function() contract.validate_request(value) end)
+  end,
+
   test_rejects_invalid_pql_request_bindings_and_bounds = function()
     local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
     value.pql_input_set.repository.url = "https://example.invalid/foreign.git"
