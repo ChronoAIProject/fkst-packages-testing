@@ -134,6 +134,138 @@ function verifyApproval(pointer, digest, workspace, expected) {
   return verified;
 }
 
+function assertOnly(value, fields, context) {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error(`testing-design: malformed-pql-envelope: ${context}`);
+  for (const key of Object.keys(value)) if (!fields.includes(key)) throw new Error(`testing-design: malformed-pql-envelope: unsupported field ${context}.${key}`);
+}
+
+function assertPqlString(value, context, limit = 180) {
+  if (typeof value !== 'string' || Buffer.byteLength(value, 'utf8') === 0 || Buffer.byteLength(value, 'utf8') > limit || /[\x00-\x1f\x7f]/.test(value)) {
+    throw new Error(`testing-design: malformed-pql-envelope: ${context}`);
+  }
+}
+
+function assertPqlDigest(value, context) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{64}$/.test(value)) throw new Error(`testing-design: malformed-pql-envelope: ${context}`);
+}
+
+function assertPqlCommit(value, context) {
+  if (typeof value !== 'string' || !/^[0-9a-f]{40}$/.test(value)) throw new Error(`testing-design: malformed-pql-envelope: ${context}`);
+}
+
+function assertPqlPointer(value, context) {
+  assertOnly(value, ['kind', 'ref'], context);
+  assertPqlString(value.kind, `${context}.kind`, 512);
+  assertPqlString(value.ref, `${context}.ref`, 512);
+  const lowered = value.ref.toLowerCase();
+  if (/[\x00-\x1f\x7f]/.test(value.kind + value.ref) || /[?#]/.test(lowered)
+    || /^https?:\/\/[^/]+@/.test(lowered) || ['bearer ', 'token=', 'password=', 'cookie=', 'authorization:'].some((token) => lowered.includes(token))) {
+    throw new Error(`testing-design: credential-pointer: ${context}`);
+  }
+}
+
+function assertPqlRepositoryUrl(value, context) {
+  assertPqlString(value, context, 1024);
+  if (!value.startsWith('https://') || /[@?#\\]/.test(value) || value.endsWith('/')) throw new Error(`testing-design: malformed-pql-envelope: ${context}`);
+}
+
+function assertPqlSubject(value, context) {
+  assertOnly(value, ['consumer', 'repository_url', 'repository_commit_sha', 'project_pack_snapshot_ref', 'project_pack_snapshot_sha256', 'asset_id', 'asset_version', 'asset_sha256'], context);
+  if (value.consumer !== 'testing-design') throw new Error(`testing-design: foreign-pql-binding: ${context}.consumer`);
+  assertPqlRepositoryUrl(value.repository_url, `${context}.repository_url`);
+  assertPqlCommit(value.repository_commit_sha, `${context}.repository_commit_sha`);
+  assertPqlPointer(value.project_pack_snapshot_ref, `${context}.project_pack_snapshot_ref`);
+  assertPqlDigest(value.project_pack_snapshot_sha256, `${context}.project_pack_snapshot_sha256`);
+  assertPqlString(value.asset_id, `${context}.asset_id`);
+  assertPqlString(value.asset_version, `${context}.asset_version`);
+  assertPqlDigest(value.asset_sha256, `${context}.asset_sha256`);
+}
+
+function verifyPqlDocument(pointer, digest, workspace, schema) {
+  const verified = verifyFile(pointer, digest, workspace, MAX_INPUT_BYTES);
+  if (!verified.ok) throw new Error(`testing-design: pql-document-verification-failed: ${verified.reason}`);
+  let document;
+  try { document = JSON.parse(verified.body.toString('utf8')); } catch (_error) { throw new Error(`testing-design: pql-document-invalid-json: ${schema}`); }
+  if (artifactBody(document) !== verified.body.toString('utf8')) throw new Error(`testing-design: pql-document-not-canonical: ${schema}`);
+  if (document.schema !== schema) throw new Error(`testing-design: pql-document-schema-mismatch: ${schema}`);
+  return { document, verified };
+}
+
+function pqlAdapter(request, workspace) {
+  const inputSet = request.pql_input_set;
+  if (!inputSet) return { inputs: [], lineage: null, verifiedKeys: new Set() };
+  assertOnly(inputSet, ['schema', 'producer', 'asset_set_id', 'repository', 'project_pack_snapshot', 'approved_assets', 'created_at', 'trace_id', 'dedup_key'], 'pql_input_set');
+  if (inputSet.schema !== 'pql.testing-design-input-set.v1') throw new Error('testing-design: unknown-pql-schema');
+  assertOnly(inputSet.producer, ['name', 'version'], 'pql_input_set.producer');
+  if (inputSet.producer.name !== 'product-quality-loop' || inputSet.producer.version !== 'pql.testing-design-fixture.v1') throw new Error('testing-design: unsupported-pql-producer');
+  assertPqlString(inputSet.asset_set_id, 'pql_input_set.asset_set_id');
+  assertOnly(inputSet.repository, ['url', 'commit_sha'], 'pql_input_set.repository');
+  assertPqlRepositoryUrl(inputSet.repository.url, 'pql_input_set.repository.url');
+  assertPqlCommit(inputSet.repository.commit_sha, 'pql_input_set.repository.commit_sha');
+  if (inputSet.repository.url !== request.repository.url || inputSet.repository.commit_sha !== request.repository.commit_sha) throw new Error('testing-design: foreign-pql-binding: repository');
+  assertPqlString(inputSet.trace_id, 'pql_input_set.trace_id'); assertPqlString(inputSet.dedup_key, 'pql_input_set.dedup_key');
+  if (inputSet.trace_id !== request.trace_id || inputSet.dedup_key !== request.dedup_key) throw new Error('testing-design: foreign-pql-binding: identity');
+  if (typeof inputSet.created_at !== 'string' || !/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/.test(inputSet.created_at)) throw new Error('testing-design: malformed-pql-envelope: created_at');
+  assertOnly(inputSet.project_pack_snapshot, ['ref', 'sha256'], 'pql_input_set.project_pack_snapshot');
+  assertPqlPointer(inputSet.project_pack_snapshot.ref, 'pql_input_set.project_pack_snapshot.ref');
+  assertPqlDigest(inputSet.project_pack_snapshot.sha256, 'pql_input_set.project_pack_snapshot.sha256');
+  if (!Array.isArray(inputSet.approved_assets) || inputSet.approved_assets.length < 1 || inputSet.approved_assets.length > 16) throw new Error('testing-design: malformed-pql-envelope: approved_assets');
+
+  const snapshot = verifyPqlDocument(inputSet.project_pack_snapshot.ref, inputSet.project_pack_snapshot.sha256, workspace, 'pql.project-pack-snapshot.v1').document;
+  assertOnly(snapshot, ['schema', 'snapshot_id', 'repository_url', 'repository_commit_sha', 'assets'], 'project_pack_snapshot');
+  assertPqlString(snapshot.snapshot_id, 'project_pack_snapshot.snapshot_id');
+  assertPqlRepositoryUrl(snapshot.repository_url, 'project_pack_snapshot.repository_url');
+  assertPqlCommit(snapshot.repository_commit_sha, 'project_pack_snapshot.repository_commit_sha');
+  if (snapshot.repository_url !== inputSet.repository.url || snapshot.repository_commit_sha !== inputSet.repository.commit_sha) throw new Error('testing-design: foreign-pql-binding: snapshot repository');
+  if (!Array.isArray(snapshot.assets) || snapshot.assets.length !== inputSet.approved_assets.length) throw new Error('testing-design: pql-snapshot-binding-mismatch');
+
+  const projected = [];
+  const lineageAssets = [];
+  const identities = new Map();
+  for (let index = 0; index < inputSet.approved_assets.length; index += 1) {
+    const asset = inputSet.approved_assets[index];
+    const context = `pql_input_set.approved_assets[${index}]`;
+    assertOnly(asset, ['asset_id', 'asset_version', 'asset_kind', 'artifact_pointer', 'artifact_digest', 'media_type', 'requirement_refs', 'review_decision', 'promotion_receipt', 'approval_subject'], context);
+    assertPqlString(asset.asset_id, `${context}.asset_id`); assertPqlString(asset.asset_version, `${context}.asset_version`);
+    if (asset.asset_kind !== 'test-case' || asset.media_type !== 'text/plain; charset=utf-8') throw new Error('testing-design: unsupported-pql-asset');
+    assertPqlPointer(asset.artifact_pointer, `${context}.artifact_pointer`); assertPqlDigest(asset.artifact_digest, `${context}.artifact_digest`);
+    if (!Array.isArray(asset.requirement_refs) || asset.requirement_refs.length < 1 || asset.requirement_refs.length > 32) throw new Error(`testing-design: malformed-pql-envelope: ${context}.requirement_refs`);
+    for (const requirement of asset.requirement_refs) assertPqlPointer(requirement, `${context}.requirement_ref`);
+    assertOnly(asset.review_decision, ['ref', 'sha256'], `${context}.review_decision`); assertPqlPointer(asset.review_decision.ref, `${context}.review_decision.ref`); assertPqlDigest(asset.review_decision.sha256, `${context}.review_decision.sha256`);
+    assertOnly(asset.promotion_receipt, ['ref', 'sha256'], `${context}.promotion_receipt`); assertPqlPointer(asset.promotion_receipt.ref, `${context}.promotion_receipt.ref`); assertPqlDigest(asset.promotion_receipt.sha256, `${context}.promotion_receipt.sha256`);
+    assertPqlSubject(asset.approval_subject, `${context}.approval_subject`);
+    const identity = `${asset.asset_id}\0${asset.asset_version}`;
+    if (identities.has(identity)) {
+      if (identities.get(identity) !== asset.artifact_digest) throw new Error('testing-design: pql-digest-conflict');
+      throw new Error('testing-design: duplicate-pql-asset');
+    }
+    identities.set(identity, asset.artifact_digest);
+    const snapshotAsset = snapshot.assets[index];
+    if (snapshotAsset && snapshotAsset.asset_id === asset.asset_id && snapshotAsset.asset_version === asset.asset_version && snapshotAsset.artifact_digest !== asset.artifact_digest) throw new Error('testing-design: pql-digest-conflict');
+    if (!snapshotAsset || stableStringify(snapshotAsset) !== stableStringify({ asset_id: asset.asset_id, asset_version: asset.asset_version, asset_kind: asset.asset_kind, artifact_pointer: asset.artifact_pointer, artifact_digest: asset.artifact_digest, media_type: asset.media_type, requirement_refs: asset.requirement_refs })) throw new Error('testing-design: pql-snapshot-binding-mismatch');
+    const subject = { ...asset.approval_subject };
+    if (subject.repository_url !== inputSet.repository.url || subject.repository_commit_sha !== inputSet.repository.commit_sha || stableStringify(subject.project_pack_snapshot_ref) !== stableStringify(inputSet.project_pack_snapshot.ref) || subject.project_pack_snapshot_sha256 !== inputSet.project_pack_snapshot.sha256 || subject.asset_id !== asset.asset_id || subject.asset_version !== asset.asset_version || subject.asset_sha256 !== asset.artifact_digest) throw new Error('testing-design: foreign-pql-binding: approval subject');
+    const review = verifyPqlDocument(asset.review_decision.ref, asset.review_decision.sha256, workspace, 'pql.review-decision.v1').document;
+    assertOnly(review, ['schema', 'decision', 'subject'], `${context}.review_decision.document`);
+    if (review.decision !== 'approved' || stableStringify(review.subject) !== stableStringify(subject)) throw new Error('testing-design: pql-review-binding-mismatch');
+    const promotion = verifyPqlDocument(asset.promotion_receipt.ref, asset.promotion_receipt.sha256, workspace, 'pql.promotion-receipt.v1').document;
+    assertOnly(promotion, ['schema', 'status', 'consumer', 'subject', 'review_decision_ref', 'review_decision_sha256'], `${context}.promotion_receipt.document`);
+    if (promotion.status !== 'promoted' || promotion.consumer !== 'testing-design' || stableStringify(promotion.subject) !== stableStringify(subject) || stableStringify(promotion.review_decision_ref) !== stableStringify(asset.review_decision.ref) || promotion.review_decision_sha256 !== asset.review_decision.sha256) throw new Error('testing-design: pql-promotion-binding-mismatch');
+    const artifact = verifyFile(asset.artifact_pointer, asset.artifact_digest, workspace, MAX_INPUT_BYTES);
+    if (!artifact.ok) throw new Error(`testing-design: pql-asset-verification-failed: ${artifact.reason}`);
+    const revision = `${asset.asset_id}@${asset.asset_version}`;
+    assertPqlString(revision, `${context}.projected_revision`);
+    const projectedInput = { kind: 'existing-tests', source_ref: asset.artifact_pointer, revision, content_sha256: asset.artifact_digest, approval_ref: asset.promotion_receipt.ref, approval_sha256: asset.promotion_receipt.sha256 };
+    projected.push(projectedInput);
+    lineageAssets.push({ asset_id: asset.asset_id, asset_version: asset.asset_version, asset_kind: asset.asset_kind, asset_ref: { kind: 'pql-test-case-asset', ref: `${asset.asset_id}@${asset.asset_version}`, sha256: asset.artifact_digest }, artifact_ref: { ...asset.artifact_pointer, sha256: asset.artifact_digest }, media_type: asset.media_type, requirement_refs: asset.requirement_refs, review_decision_ref: { ...asset.review_decision.ref, sha256: asset.review_decision.sha256 }, promotion_receipt_ref: { ...asset.promotion_receipt.ref, sha256: asset.promotion_receipt.sha256 }, approval_subject: subject });
+  }
+  return {
+    inputs: projected,
+    verifiedKeys: new Set(projected.map((input) => stableStringify(input))),
+    lineage: { schema: 'testing-design.pql-lineage.v1', producer: inputSet.producer, asset_set_id: inputSet.asset_set_id, repository: inputSet.repository, project_pack_snapshot: { ...inputSet.project_pack_snapshot.ref, sha256: inputSet.project_pack_snapshot.sha256 }, approved_assets: lineageAssets, created_at: inputSet.created_at, trace_id: inputSet.trace_id, dedup_key: inputSet.dedup_key },
+  };
+}
+
 function repositoryApprovalSubject(repository) {
   return {
     subject_kind: 'repository', repository_url: repository.url, workspace_ref: repository.workspace_ref,
@@ -430,7 +562,7 @@ function schemaSignals(text, input) {
   return routes;
 }
 
-function inputAnalysis(request, workspace, repository) {
+function inputAnalysis(request, workspace, repository, verifiedKeys = new Set()) {
   const index = {
     schema: SCHEMAS.requirementsIndex,
     analyzer_revision: ANALYZER_REVISION,
@@ -448,7 +580,7 @@ function inputAnalysis(request, workspace, repository) {
   const requirementRoutes = new Set();
   for (const input of request.inputs || []) {
     try {
-      verifyApproval(input.approval_ref, input.approval_sha256, workspace, inputApprovalSubject(input));
+      if (!verifiedKeys.has(stableStringify(input))) verifyApproval(input.approval_ref, input.approval_sha256, workspace, inputApprovalSubject(input));
     } catch (error) {
       const reason = String(error && error.message || error).includes('approval-subject-mismatch')
         ? 'approval-subject-mismatch' : 'approval-unreadable';
@@ -563,7 +695,7 @@ function designGaps(repository, requirements, browser) {
   return gaps;
 }
 
-function traceability(requirements, repository, gaps, request) {
+function traceability(requirements, repository, gaps, request, pqlLineage) {
   const signals = [
     ...repository.routes.map((item) => ({ id: item.id, label: item.route, kind: 'route', pointer: { kind: 'repository-path', ref: item.source_path } })),
     ...repository.apis.map((item) => ({ id: item.id, label: item.surface, kind: 'api', pointer: { kind: 'repository-path', ref: item.source_path } })),
@@ -611,6 +743,7 @@ function traceability(requirements, repository, gaps, request) {
     design_gaps: gaps,
     design_gap_count: gaps.length,
     limitations: ['Candidate objectives are seeded only from recorded evidence and do not authorize execution.'],
+    ...(pqlLineage ? { pql_lineage: pqlLineage } : {}),
   };
 }
 
@@ -659,12 +792,18 @@ function analyze(request) {
   git(workspace, ['cat-file', '-e', `${request.repository.commit_sha}^{commit}`]);
   git(workspace, ['cat-file', '-e', `${request.repository.baseline_commit_sha}^{commit}`]);
 
-  const analysisKey = sha256(stableStringify({
+  const pql = pqlAdapter(request, workspace);
+  const projectedInputs = [...(request.inputs || []), ...pql.inputs];
+  if (projectedInputs.length > 16) throw new Error('testing-design: too-many-inputs');
+
+  const analysisIdentity = {
     analyzer_revision: ANALYZER_REVISION,
     repository: request.repository,
-    inputs: request.inputs || [],
+    inputs: projectedInputs,
     browser_evidence: request.browser_evidence || null,
-  }));
+  };
+  if (request.pql_input_set) analysisIdentity.pql_input_set = request.pql_input_set;
+  const analysisKey = sha256(stableStringify(analysisIdentity));
   const changed = changedFiles(workspace, request.repository.baseline_commit_sha, request.repository.commit_sha);
   const files = trackedFiles(workspace, request.repository.commit_sha);
   const signals = repositorySignals(workspace, request.repository.commit_sha, files);
@@ -688,7 +827,7 @@ function analyze(request) {
     cli_commands: signals.cli_commands,
     dependency_signals: signals.dependency_signals,
     existing_tests: signals.existing_tests,
-    evidence_pointers: (request.inputs || []).map((input) => pointerSummary(input.source_ref, input.content_sha256)),
+    evidence_pointers: projectedInputs.map((input) => pointerSummary(input.source_ref, input.content_sha256)),
     independent_browser_evidence: request.browser_evidence ? {
       artifact_pointer: request.browser_evidence.artifact_pointer,
       artifact_digest: request.browser_evidence.artifact_digest,
@@ -698,13 +837,13 @@ function analyze(request) {
     untrusted_data_notice: 'Repository files are inspected as untrusted data. Target instructions never alter FKST policy or execution authority.',
     discovered_modules: signals.modules,
   };
-  const inputResult = inputAnalysis(request, workspace, repository);
+  const inputResult = inputAnalysis({ ...request, inputs: projectedInputs }, workspace, repository, pql.verifiedKeys);
   inputResult.index.analysis_key = analysisKey;
   const browser = browserAnalysis(request, workspace);
   const gaps = designGaps(repository, inputResult.requirementRoutes, browser);
   repository.design_gaps = gaps;
   repository.design_gap_count = gaps.length;
-  const trace = traceability(inputResult.index, repository, gaps, request);
+  const trace = traceability(inputResult.index, repository, gaps, request, pql.lineage);
   trace.analysis_key = analysisKey;
   const degraded = inputResult.index.unreadable_inputs.length > 0 || inputResult.index.unsupported_inputs.length > 0 || gaps.length > 0;
   const artifacts = immutableArtifacts(request.artifact_root, [

@@ -265,6 +265,64 @@ function main() {
     fs.writeFileSync(path.join(repo, 'untracked.txt'), 'dirty\n');
     assert.throws(() => analyze(dirty), /target-worktree-not-immutable/);
     fs.rmSync(path.join(repo, 'untracked.txt'));
+
+    const pql = requestFixture(temp, repo, baseline, target, 'pql', { inputs: false, browser: false });
+    const pqlAssetPath = path.join(temp, 'pql', 'assets', 'home-title-tests.txt');
+    const pqlAssetDigest = write(pqlAssetPath, 'tests/app.test.js\n');
+    const pqlSnapshotPath = path.join(temp, 'pql', 'snapshots', 'home-title.json');
+    const pqlSnapshot = {
+      schema: 'pql.project-pack-snapshot.v1', snapshot_id: 'PPS-HOME-TITLE-1',
+      repository_url: pql.repository.url, repository_commit_sha: target,
+      assets: [{ asset_id: 'TCA-HOME-TITLE', asset_version: '1', asset_kind: 'test-case',
+        artifact_pointer: pointer(pqlAssetPath), artifact_digest: pqlAssetDigest,
+        media_type: 'text/plain; charset=utf-8', requirement_refs: [{ kind: 'pql', ref: 'REQ-HOME-TITLE' }] }],
+    };
+    const pqlSnapshotDigest = write(pqlSnapshotPath, `${stableStringify(pqlSnapshot)}\n`);
+    const pqlSubject = {
+      consumer: 'testing-design', repository_url: pql.repository.url, repository_commit_sha: target,
+      project_pack_snapshot_ref: pointer(pqlSnapshotPath), project_pack_snapshot_sha256: pqlSnapshotDigest,
+      asset_id: 'TCA-HOME-TITLE', asset_version: '1', asset_sha256: pqlAssetDigest,
+    };
+    const pqlReviewPath = path.join(temp, 'pql', 'reviews', 'home-title.json');
+    const pqlReviewDigest = write(pqlReviewPath, `${stableStringify({ schema: 'pql.review-decision.v1', decision: 'approved', subject: pqlSubject })}\n`);
+    const pqlPromotionPath = path.join(temp, 'pql', 'promotion', 'home-title.json');
+    const pqlPromotion = {
+      schema: 'pql.promotion-receipt.v1', status: 'promoted', consumer: 'testing-design', subject: pqlSubject,
+      review_decision_ref: pointer(pqlReviewPath), review_decision_sha256: pqlReviewDigest,
+    };
+    const pqlPromotionDigest = write(pqlPromotionPath, `${stableStringify(pqlPromotion)}\n`);
+    pql.pql_input_set = {
+      schema: 'pql.testing-design-input-set.v1',
+      producer: { name: 'product-quality-loop', version: 'pql.testing-design-fixture.v1' },
+      asset_set_id: 'ASET-HOME-TITLE-1', repository: { url: pql.repository.url, commit_sha: target },
+      project_pack_snapshot: { ref: pointer(pqlSnapshotPath), sha256: pqlSnapshotDigest },
+      approved_assets: [{ asset_id: 'TCA-HOME-TITLE', asset_version: '1', asset_kind: 'test-case',
+        artifact_pointer: pointer(pqlAssetPath), artifact_digest: pqlAssetDigest,
+        media_type: 'text/plain; charset=utf-8', requirement_refs: [{ kind: 'pql', ref: 'REQ-HOME-TITLE' }],
+        review_decision: { ref: pointer(pqlReviewPath), sha256: pqlReviewDigest },
+        promotion_receipt: { ref: pointer(pqlPromotionPath), sha256: pqlPromotionDigest }, approval_subject: pqlSubject }],
+      created_at: '2026-08-27T00:00:00Z', trace_id: pql.trace_id, dedup_key: pql.dedup_key,
+    };
+    const pqlFirst = analyze(pql);
+    const pqlRepository = JSON.parse(fs.readFileSync(pqlFirst.context.repository_analysis.artifact_pointer, 'utf8'));
+    const pqlTrace = JSON.parse(fs.readFileSync(pqlFirst.context.traceability_seed.artifact_pointer, 'utf8'));
+    assert.strictEqual(pqlRepository.existing_tests.some((item) => item.path === 'tests/app.test.js'), true);
+    assert.deepStrictEqual(pqlTrace.pql_lineage.approved_assets[0].asset_ref, { kind: 'pql-test-case-asset', ref: 'TCA-HOME-TITLE@1', sha256: pqlAssetDigest });
+    assert.strictEqual(JSON.stringify(pqlTrace).includes('tests/app.test.js\n'), false);
+    assert.strictEqual(JSON.stringify(pqlTrace).includes('pql.project-pack-snapshot.v1'), false);
+    const pqlRepositoryBytes = fs.readFileSync(pqlFirst.context.repository_analysis.artifact_pointer);
+    const pqlTraceBytes = fs.readFileSync(pqlFirst.context.traceability_seed.artifact_pointer);
+    const pqlSecond = analyze(pql);
+    assert.strictEqual(pqlSecond.replayed, true);
+    assert.strictEqual(pqlSecond.analysis_key, pqlFirst.analysis_key);
+    assert.deepStrictEqual(fs.readFileSync(pqlSecond.context.repository_analysis.artifact_pointer), pqlRepositoryBytes);
+    assert.deepStrictEqual(fs.readFileSync(pqlSecond.context.traceability_seed.artifact_pointer), pqlTraceBytes);
+    const pqlInvalid = JSON.parse(JSON.stringify(pql));
+    pqlInvalid.artifact_root = `.testing/runs/testing-design-node-${process.pid}-pql-invalid`;
+    pqlInvalid.pql_input_set.approved_assets[0].artifact_digest = 'f'.repeat(64);
+    fs.rmSync(pqlInvalid.artifact_root, { recursive: true, force: true });
+    assert.throws(() => analyze(pqlInvalid), /pql-digest-conflict/);
+    assert.strictEqual(fs.existsSync(pqlInvalid.artifact_root), false);
   } finally {
     if (fs.existsSync('.testing/runs')) {
       for (const entry of fs.readdirSync('.testing/runs', { withFileTypes: true })) {
