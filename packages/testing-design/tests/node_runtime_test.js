@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { analyze, sha256, stableStringify } = require('../bin/testing-design-runtime');
+const pqlFixtureRoot = path.join(__dirname, 'fixtures', 'pql', 'v1');
 
 function run(argv, cwd) {
   const result = spawnSync(argv[0], argv.slice(1), { cwd, encoding: 'utf8', shell: false });
@@ -23,6 +24,13 @@ function pointer(filePath) {
   return { kind: 'file', ref: filePath };
 }
 
+function pqlFixture(relativePath) {
+  const body = fs.readFileSync(path.join(pqlFixtureRoot, relativePath), 'utf8');
+  const document = JSON.parse(body);
+  assert.strictEqual(body, `${stableStringify(document)}\n`);
+  return { document, digest: sha256(Buffer.from(body)) };
+}
+
 function approval(temp, name, record) {
   const filePath = path.join(temp, 'approvals', `${name}.json`);
   const digest = write(filePath, `${JSON.stringify({ schema: 'testing-design.approval.v1', ...record })}\n`);
@@ -36,7 +44,7 @@ function commit(repo, message) {
 }
 
 function requestFixture(temp, repo, baseline, target, suffix, options = {}) {
-  const repositoryUrl = 'https://example.invalid/testing-design-fixture.git';
+  const repositoryUrl = options.repositoryUrl || 'https://example.invalid/testing-design-fixture.git';
   const workspaceRef = { kind: 'workspace', ref: repo };
   const requirementsPath = path.join(temp, `requirements-${suffix}.md`);
   const requirementsBody = options.requirementsBody || [
@@ -266,43 +274,52 @@ function main() {
     assert.throws(() => analyze(dirty), /target-worktree-not-immutable/);
     fs.rmSync(path.join(repo, 'untracked.txt'));
 
-    const pql = requestFixture(temp, repo, baseline, target, 'pql', { inputs: false, browser: false });
+    const pqlInputSetFixture = pqlFixture('input-set.json');
+    const pqlSnapshotFixture = pqlFixture(path.join('snapshots', 'home-title.json'));
+    const pqlReviewFixture = pqlFixture(path.join('reviews', 'home-title.json'));
+    const pqlPromotionFixture = pqlFixture(path.join('promotion', 'home-title.json'));
+    const pqlAssetBody = fs.readFileSync(path.join(pqlFixtureRoot, 'assets', 'home-title-tests.txt'), 'utf8');
+    const pqlAssetFixtureDigest = sha256(Buffer.from(pqlAssetBody));
+    assert.strictEqual(pqlInputSetFixture.document.project_pack_snapshot.sha256, pqlSnapshotFixture.digest);
+    assert.strictEqual(pqlInputSetFixture.document.approved_assets[0].review_decision.sha256, pqlReviewFixture.digest);
+    assert.strictEqual(pqlInputSetFixture.document.approved_assets[0].promotion_receipt.sha256, pqlPromotionFixture.digest);
+    assert.strictEqual(pqlInputSetFixture.document.approved_assets[0].artifact_digest, pqlAssetFixtureDigest);
+
+    const pql = requestFixture(temp, repo, baseline, target, 'pql', {
+      inputs: false, browser: false, repositoryUrl: pqlInputSetFixture.document.repository.url,
+    });
+    pql.trace_id = pqlInputSetFixture.document.trace_id;
+    pql.dedup_key = pqlInputSetFixture.document.dedup_key;
     const pqlAssetPath = path.join(temp, 'pql', 'assets', 'home-title-tests.txt');
-    const pqlAssetDigest = write(pqlAssetPath, 'tests/app.test.js\n');
+    const pqlAssetDigest = write(pqlAssetPath, pqlAssetBody);
     const pqlSnapshotPath = path.join(temp, 'pql', 'snapshots', 'home-title.json');
-    const pqlSnapshot = {
-      schema: 'pql.project-pack-snapshot.v1', snapshot_id: 'PPS-HOME-TITLE-1',
-      repository_url: pql.repository.url, repository_commit_sha: target,
-      assets: [{ asset_id: 'TCA-HOME-TITLE', asset_version: '1', asset_kind: 'test-case',
-        artifact_pointer: pointer(pqlAssetPath), artifact_digest: pqlAssetDigest,
-        media_type: 'text/plain; charset=utf-8', requirement_refs: [{ kind: 'pql', ref: 'REQ-HOME-TITLE' }] }],
-    };
+    const pqlSnapshot = pqlSnapshotFixture.document;
+    pqlSnapshot.repository_commit_sha = target;
+    pqlSnapshot.assets[0].artifact_pointer = pointer(pqlAssetPath);
+    pqlSnapshot.assets[0].artifact_digest = pqlAssetDigest;
     const pqlSnapshotDigest = write(pqlSnapshotPath, `${stableStringify(pqlSnapshot)}\n`);
-    const pqlSubject = {
-      consumer: 'testing-design', repository_url: pql.repository.url, repository_commit_sha: target,
-      project_pack_snapshot_ref: pointer(pqlSnapshotPath), project_pack_snapshot_sha256: pqlSnapshotDigest,
-      asset_id: 'TCA-HOME-TITLE', asset_version: '1', asset_sha256: pqlAssetDigest,
-    };
+    const pqlReview = pqlReviewFixture.document;
+    const pqlSubject = pqlReview.subject;
+    pqlSubject.repository_commit_sha = target;
+    pqlSubject.project_pack_snapshot_ref = pointer(pqlSnapshotPath);
+    pqlSubject.project_pack_snapshot_sha256 = pqlSnapshotDigest;
+    pqlSubject.asset_sha256 = pqlAssetDigest;
     const pqlReviewPath = path.join(temp, 'pql', 'reviews', 'home-title.json');
-    const pqlReviewDigest = write(pqlReviewPath, `${stableStringify({ schema: 'pql.review-decision.v1', decision: 'approved', subject: pqlSubject })}\n`);
+    const pqlReviewDigest = write(pqlReviewPath, `${stableStringify(pqlReview)}\n`);
     const pqlPromotionPath = path.join(temp, 'pql', 'promotion', 'home-title.json');
-    const pqlPromotion = {
-      schema: 'pql.promotion-receipt.v1', status: 'promoted', consumer: 'testing-design', subject: pqlSubject,
-      review_decision_ref: pointer(pqlReviewPath), review_decision_sha256: pqlReviewDigest,
-    };
+    const pqlPromotion = pqlPromotionFixture.document;
+    pqlPromotion.subject = pqlSubject;
+    pqlPromotion.review_decision_ref = pointer(pqlReviewPath);
+    pqlPromotion.review_decision_sha256 = pqlReviewDigest;
     const pqlPromotionDigest = write(pqlPromotionPath, `${stableStringify(pqlPromotion)}\n`);
-    pql.pql_input_set = {
-      schema: 'pql.testing-design-input-set.v1',
-      producer: { name: 'product-quality-loop', version: 'pql.testing-design-fixture.v1' },
-      asset_set_id: 'ASET-HOME-TITLE-1', repository: { url: pql.repository.url, commit_sha: target },
-      project_pack_snapshot: { ref: pointer(pqlSnapshotPath), sha256: pqlSnapshotDigest },
-      approved_assets: [{ asset_id: 'TCA-HOME-TITLE', asset_version: '1', asset_kind: 'test-case',
-        artifact_pointer: pointer(pqlAssetPath), artifact_digest: pqlAssetDigest,
-        media_type: 'text/plain; charset=utf-8', requirement_refs: [{ kind: 'pql', ref: 'REQ-HOME-TITLE' }],
-        review_decision: { ref: pointer(pqlReviewPath), sha256: pqlReviewDigest },
-        promotion_receipt: { ref: pointer(pqlPromotionPath), sha256: pqlPromotionDigest }, approval_subject: pqlSubject }],
-      created_at: '2026-08-27T00:00:00Z', trace_id: pql.trace_id, dedup_key: pql.dedup_key,
-    };
+    pql.pql_input_set = pqlInputSetFixture.document;
+    pql.pql_input_set.repository.commit_sha = target;
+    pql.pql_input_set.project_pack_snapshot = { ref: pointer(pqlSnapshotPath), sha256: pqlSnapshotDigest };
+    pql.pql_input_set.approved_assets[0].artifact_pointer = pointer(pqlAssetPath);
+    pql.pql_input_set.approved_assets[0].artifact_digest = pqlAssetDigest;
+    pql.pql_input_set.approved_assets[0].review_decision = { ref: pointer(pqlReviewPath), sha256: pqlReviewDigest };
+    pql.pql_input_set.approved_assets[0].promotion_receipt = { ref: pointer(pqlPromotionPath), sha256: pqlPromotionDigest };
+    pql.pql_input_set.approved_assets[0].approval_subject = pqlSubject;
     const pqlFirst = analyze(pql);
     const pqlRepository = JSON.parse(fs.readFileSync(pqlFirst.context.repository_analysis.artifact_pointer, 'utf8'));
     const pqlTrace = JSON.parse(fs.readFileSync(pqlFirst.context.traceability_seed.artifact_pointer, 'utf8'));
