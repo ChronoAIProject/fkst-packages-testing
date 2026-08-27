@@ -45,11 +45,17 @@ end
 local function same_reference(left, right)
   return left.kind == right.kind and left.ref == right.ref
 end
-local function artifact_root(context)
-  if context == nil then return nil end
-  fields(context, { artifact_root=true }, "context")
-  if not strings.is_artifact_descendant(context.artifact_root .. "/artifact", context.artifact_root) then fail("invalid-context", "artifact_root must be a safe .testing/runs/... root") end
-  return context.artifact_root
+local function validation_context(context)
+  if context == nil then return nil, false end
+  fields(context, { artifact_root=true, allow_empty_entries=true }, "context")
+  if context.allow_empty_entries ~= nil and context.allow_empty_entries ~= true then
+    fail("invalid-context", "allow_empty_entries must be literal true when present")
+  end
+  if context.artifact_root ~= nil
+    and not strings.is_artifact_descendant(context.artifact_root .. "/artifact", context.artifact_root) then
+    fail("invalid-context", "artifact_root must be a safe .testing/runs/... root")
+  end
+  return context.artifact_root, context.allow_empty_entries == true
 end
 local function relative_run_pointer(value, run_id, field, root)
   reference(value, field)
@@ -96,12 +102,12 @@ local function validate_entry(entry, run_id, case_ids, assertion_ids, seen, enfo
 end
 
 function M.validate(value, result_set, sha256_fn, context)
-  local root = artifact_root(context)
+  local root, allow_empty_entries = validation_context(context)
   fields(value, { schema=true, manifest_id=true, canonicalization=true, canonical_sha256=true, repository=true, run_id=true, plan_ref=true, plan_sha256=true, entries=true }, "manifest")
   if value.schema ~= M.schema then fail("unknown-schema", "manifest schema") end
   bounded(value.manifest_id, "manifest_id", 180); if value.canonicalization ~= M.canonicalization then fail("unknown-canonicalization", "manifest canonicalization") end
   digest(value.canonical_sha256, "canonical_sha256"); fields(value.repository, { id=true, source_ref=true, source_sha256=true }, "repository"); bounded(value.repository.id, "repository.id", 180); reference(value.repository.source_ref, "repository.source_ref"); digest(value.repository.source_sha256, "repository.source_sha256")
-  bounded(value.run_id, "run_id", 180); reference(value.plan_ref, "plan_ref"); digest(value.plan_sha256, "plan_sha256"); list(value.entries, "entries", M.max_entries, true)
+  bounded(value.run_id, "run_id", 180); reference(value.plan_ref, "plan_ref"); digest(value.plan_sha256, "plan_sha256"); list(value.entries, "entries", M.max_entries, not allow_empty_entries)
   if root ~= nil and (value.plan_ref.kind ~= "artifact" or value.plan_ref.ref ~= root .. "/test-plan.json") then fail("cross-run-pointer", "manifest plan_ref is outside the artifact root") end
   local case_ids, assertion_ids = {}, {}
   if result_set ~= nil then

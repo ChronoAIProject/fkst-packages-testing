@@ -15,6 +15,8 @@ local function execution_ports(host_ports)
   return {
     load_completed_execution = host_ports.load_completed_execution,
     claim_execution = host_ports.claim_execution,
+    load_effect_intent = host_ports.load_effect_intent,
+    load_effect_receipt = host_ports.load_effect_receipt,
     check_freshness = host_ports.check_freshness,
     persist_effect_intent = host_ports.persist_effect_intent,
     browser_read_title = host_ports.browser_read_title,

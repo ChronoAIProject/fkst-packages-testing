@@ -4,6 +4,7 @@ const assert = require('node:assert/strict');
 const http = require('node:http');
 const test = require('node:test');
 const { acquireTargetById } = require('../lib/cdp_client');
+const { projectTitleResult, validateTitle } = require('../bin/fkst-browser-control-runtime');
 const {
   capabilityFor,
   parseLocation,
@@ -134,5 +135,54 @@ test('exact target acquisition never falls back to the first page', async () => 
       /exact approved CDP target/);
   } finally {
     await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('CDP HTTP failures do not expose the private endpoint', async () => {
+  const server = http.createServer((_request, response) => {
+    response.writeHead(500, { 'content-type': 'text/plain' });
+    response.end('failed');
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+  const endpoint = `http://127.0.0.1:${server.address().port}`;
+  try {
+    await assert.rejects(() => acquireTargetById(endpoint, 'target-1'), (error) => {
+      assert.equal(error.message.includes(endpoint), false);
+      assert.match(error.message, /CDP HTTP GET request returned 500/);
+      return true;
+    });
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+});
+
+test('Browser title projection accepts only the exact target URL and bounded title', () => {
+  const request = {
+    schema: 'testing-package-executor.browser-read-title.v1',
+    effect_id: 'effect-case-home-title-title',
+    url: 'http://127.0.0.1:4173/',
+  };
+  assert.deepEqual(projectTitleResult({ url: request.url, title: 'Fixture Home' }, request), {
+    observed_url: request.url,
+    observed_title: 'Fixture Home',
+  });
+  assert.throws(() => projectTitleResult({ url: 'http://127.0.0.1:4173/other', title: 'Fixture Home' }, request),
+    /does not match/);
+  assert.throws(() => projectTitleResult({ url: request.url, title: 'Fixture Home', cookies: [] }, request),
+    /unknown field/);
+});
+
+test('Browser title projection rejects missing malformed and over-limit titles', () => {
+  for (const title of [undefined, '', 'bad\nvalue', 'x'.repeat(4097), '\ud800']) {
+    assert.throws(() => validateTitle(title), /missing, malformed, or unbounded/);
+  }
+});
+
+test('Browser title receipt projection cannot leak Browser or credential state', () => {
+  const request = { url: 'http://127.0.0.1:4173/' };
+  const projected = projectTitleResult({ url: request.url, title: 'Fixture Home' }, request);
+  const serialized = JSON.stringify(projected);
+  for (const forbidden of ['cdp_url', 'webSocketDebuggerUrl', 'cookies', 'credentials', 'headers', 'storage']) {
+    assert.equal(serialized.includes(forbidden), false);
   }
 });

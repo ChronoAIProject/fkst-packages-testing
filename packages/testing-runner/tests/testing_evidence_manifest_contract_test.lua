@@ -42,6 +42,8 @@ return {
     t.eq(manifest.validate(value), value)
     local year_zero = fixture("valid-year-zero")
     t.eq(manifest.validate(year_zero), year_zero)
+    t.raises(function() manifest.validate(value, nil, nil, { allow_empty_entries=false }) end)
+    t.raises(function() manifest.validate(value, nil, nil, { artifact_root="unsafe-root" }) end)
 
     for _, name in ipairs(invalid_fixtures) do
       t.raises(function() manifest.validate(fixture(name)) end)

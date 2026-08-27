@@ -1,4 +1,5 @@
 local package_manifest = require("contract.testing_package_manifest")
+local testing_package_executor = require("contract.testing_package_executor")
 local testing_evidence_manifest = require("contract.testing_evidence_manifest")
 local testing_results = require("contract.testing_results")
 local runtime_executor = require("testing_runtime.testing_package_executor")
@@ -62,8 +63,44 @@ local function fixture()
   }
 end
 
+local function attach_resolver(host, value)
+  for name, port in pairs(value.resolver_ports) do host[name] = port end
+  host.sha256 = support.sha256_bytes
+  return host
+end
+
+local function persisted_pair(host, completed)
+  local manifest = assert(host.store:load(completed.evidence_manifest_ref.ref))
+  local result_set = assert(host.store:load(completed.case_result_set_ref.ref))
+  local manifest_context = #manifest.value.entries == 0 and { allow_empty_entries=true } or nil
+  testing_results.validate_case_result_set(result_set.value, nil, manifest.value, support.sha256_bytes, manifest_context)
+  testing_evidence_manifest.validate(manifest.value, result_set.value, support.sha256_bytes, manifest_context)
+  return manifest.value, result_set.value
+end
+
+local function reset_run()
+  support.remove_tree(".testing/runs/dedup-walking-skeleton", ".testing/runs/")
+end
+
 return {
+  test_durable_host_rejects_raw_browser_receipts = function()
+    reset_run()
+    local host = support.testing_package_executor_ports({ browser_read_title=function() return "Fixture Home" end })
+    local evidence_bytes = runtime_json.encode({ observed_url=testing_package_executor.target_url, observed_title="Fixture Home" })
+    local raw = {
+      schema=testing_package_executor.schemas.browser_read_title_receipt,
+      effect_id=testing_package_executor.effect_id, status="succeeded",
+      observed_url=testing_package_executor.target_url, observed_title="Fixture Home",
+      evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=support.sha256_bytes(evidence_bytes)}},
+      evidence_size_bytes=#evidence_bytes,
+    }
+    t.raises(function() host.persist_effect_receipt(raw) end)
+    t.eq(host.counters.receipts, 0)
+    reset_run()
+  end,
+
   test_persists_and_replays_one_admitted_browser_title_result = function()
+    reset_run()
     local server_script = "const http=require('http');const s=http.createServer((q,r)=>{r.writeHead(200,{'content-type':'text/html'});r.end('<title>Fixture Home</title>')});s.listen(4173,'127.0.0.1');"
     local pid = support.spawn_process({"node","-e",server_script}, ".", "/tmp/fkst-testing-package-executor-fixture")
     local ok, err = pcall(function()
@@ -76,8 +113,7 @@ return {
           return assert(response.body:match("<title>(.-)</title>"))
         end,
       })
-      for name, port in pairs(fixture.resolver_ports) do host[name] = port end
-      host.sha256 = support.sha256_bytes
+      attach_resolver(host, fixture)
 
       local first = runtime_executor.execute(fixture.request, host)
       local manifest = assert(host.store:load(first.evidence_manifest_ref.ref))
@@ -92,9 +128,98 @@ return {
       t.eq(host.counters.claims, 1); t.eq(host.counters.freshness, 1); t.eq(host.counters.browser, 1)
       t.eq(host.counters.intents, 1); t.eq(host.counters.receipts, 1); t.eq(host.counters.writes, 2)
       t.eq(host.counters.completions, 1); t.eq(host.counters.clock, 2)
+      reset_run()
     end)
     support.direct_exec({"kill",tostring(pid)})
     support.remove_tree("/tmp/fkst-testing-package-executor-fixture", "/tmp/")
     if not ok then error(err, 0) end
+  end,
+
+  test_persists_unequal_and_lost_terminal_outcomes = function()
+    reset_run()
+    local unequal_fixture = fixture()
+    local unequal_host = attach_resolver(support.testing_package_executor_ports({
+      browser_read_title=function() return "Unexpected Home" end,
+    }), unequal_fixture)
+    local unequal = runtime_executor.execute(unequal_fixture.request, unequal_host)
+    local _, unequal_result = persisted_pair(unequal_host, unequal)
+    t.eq(unequal_result.cases[1].execution_status, "failed")
+    t.eq(unequal_result.cases[1].classification, "assertion_failure")
+    t.eq(unequal_result.cases[1].observations[1].value, "Unexpected Home")
+    reset_run()
+
+    local lost_fixture = fixture()
+    local first_host = attach_resolver(support.testing_package_executor_ports({
+      browser_read_title=function() error("lost recovery must not call Browser") end,
+    }), lost_fixture)
+    local resolved = runtime_executor.resolve(lost_fixture.request, first_host)
+    t.is_true(first_host.persist_effect_intent({ schema="testing-package-executor.effect-intent.v1",
+      dedup_key=resolved.dedup_key, admission_digest=resolved.admission_digest,
+      claim_id="claim-dedup-walking-skeleton", effect_id="effect-case-home-title-title",
+      url="http://127.0.0.1:4173/", started_at="2026-08-21T00:00:00Z" }))
+    local restarted = attach_resolver(support.testing_package_executor_ports({ store=first_host.store,
+      browser_read_title=function() error("lost recovery must not call Browser") end,
+      now=function() error("lost recovery must use durable timing") end,
+    }), lost_fixture)
+    local lost = runtime_executor.execute(lost_fixture.request, restarted)
+    local lost_manifest, lost_result = persisted_pair(restarted, lost)
+    t.eq(#lost_manifest.entries, 0)
+    t.eq(lost_result.cases[1].execution_status, "lost")
+    t.eq(lost_result.cases[1].non_execution_reason, "execution-lost-between-action-and-assertion")
+    t.eq(restarted.counters.browser, 0); t.eq(restarted.counters.freshness, 0)
+    t.eq(restarted.counters.clock, 0)
+    reset_run()
+  end,
+
+  test_restart_and_acknowledgement_loss_do_not_repeat_browser_effects = function()
+    reset_run()
+    local value = fixture()
+    local first = attach_resolver(support.testing_package_executor_ports({
+      browser_read_title=function() return "Fixture Home" end,
+    }), value)
+    first.write_canonical = function() error("crash after receipt") end
+    local ok = pcall(function() runtime_executor.execute(value.request, first) end)
+    t.eq(ok, false); t.eq(first.counters.browser, 1); t.eq(first.counters.receipts, 1)
+    local restarted = attach_resolver(support.testing_package_executor_ports({ store=first.store,
+      browser_read_title=function() error("receipt recovery must not call Browser") end,
+      now=function() error("receipt recovery must use durable timing") end,
+    }), value)
+    local recovered = runtime_executor.execute(value.request, restarted)
+    persisted_pair(restarted, recovered)
+    t.eq(restarted.counters.browser, 0); t.eq(restarted.counters.intents, 0); t.eq(restarted.counters.receipts, 0)
+    t.eq(restarted.counters.clock, 0)
+    reset_run()
+
+    local ack_value = fixture()
+    local ack = { fired=false }
+    local ack_first = attach_resolver(support.testing_package_executor_ports({ writer_ack_loss=ack,
+      browser_read_title=function() return "Fixture Home" end,
+    }), ack_value)
+    ok = pcall(function() runtime_executor.execute(ack_value.request, ack_first) end)
+    t.eq(ok, false); t.eq(ack_first.counters.browser, 1)
+    local ack_restarted = attach_resolver(support.testing_package_executor_ports({ store=ack_first.store,
+      browser_read_title=function() error("writer recovery must not call Browser") end,
+      now=function() error("writer recovery must use durable timing") end,
+    }), ack_value)
+    local ack_completed = runtime_executor.execute(ack_value.request, ack_restarted)
+    persisted_pair(ack_restarted, ack_completed)
+    t.eq(ack_restarted.counters.browser, 0)
+    t.eq(ack_restarted.counters.clock, 0)
+    reset_run()
+
+    local completion_value = fixture()
+    local completion_first = attach_resolver(support.testing_package_executor_ports({ completion_ack_loss=true,
+      browser_read_title=function() return "Fixture Home" end,
+    }), completion_value)
+    ok = pcall(function() runtime_executor.execute(completion_value.request, completion_first) end)
+    t.eq(ok, false)
+    local completion_restarted = attach_resolver(support.testing_package_executor_ports({ store=completion_first.store,
+      browser_read_title=function() error("completed replay must not call Browser") end,
+    }), completion_value)
+    local replay = runtime_executor.execute(completion_value.request, completion_restarted)
+    t.eq(replay.status, "completed")
+    t.eq(completion_restarted.counters.claims, 0); t.eq(completion_restarted.counters.browser, 0)
+    t.eq(completion_restarted.counters.writes, 0); t.eq(completion_restarted.counters.completions, 0)
+    reset_run()
   end,
 }

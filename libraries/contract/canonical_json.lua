@@ -42,7 +42,7 @@ local function continuation(byte)
   return byte ~= nil and byte >= 0x80 and byte <= 0xbf
 end
 
-local function valid_utf8(value)
+function M.is_valid_utf8(value)
   local index = 1
   while index <= #value do
     local first = value:byte(index)
@@ -84,7 +84,7 @@ local function valid_utf8(value)
 end
 
 local function encode_string(value)
-  if not valid_utf8(value) then fail("strings must contain valid UTF-8") end
+  if not M.is_valid_utf8(value) then fail("strings must contain valid UTF-8") end
   local parts = { '"' }
   local start = 1
   for index = 1, #value do
@@ -166,7 +166,7 @@ function M.encode(value)
     local keys = {}
     for key in pairs(item) do
       if type(key) ~= "string" then fail("object keys must be strings") end
-      if not valid_utf8(key) then fail("object keys must contain valid UTF-8") end
+      if not M.is_valid_utf8(key) then fail("object keys must contain valid UTF-8") end
       keys[#keys + 1] = key
     end
     table.sort(keys)

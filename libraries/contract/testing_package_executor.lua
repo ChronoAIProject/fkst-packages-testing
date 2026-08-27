@@ -1,6 +1,8 @@
 -- contract.testing_package_executor: closed contracts for the provider-neutral walking skeleton.
 local canonical_json = require("contract.canonical_json")
 local error_facts = require("contract.error_facts")
+local strings = require("contract.strings")
+local time = require("contract.time")
 local M = {}
 
 M.schemas = {
@@ -20,9 +22,11 @@ M.schemas = {
   completed_execution_query = "testing-package-executor.completed-execution-query.v1",
   execution_claim_request = "testing-package-executor.execution-claim-request.v1",
   execution_claim_receipt = "testing-package-executor.execution-claim-receipt.v1",
+  effect_state_query = "testing-package-executor.effect-state-query.v1",
   effect_intent = "testing-package-executor.effect-intent.v1",
   completed_execution = "testing-package-executor.completed-execution.v1",
   browser_read_title = "testing-package-executor.browser-read-title.v1",
+  browser_read_title_receipt = "testing-package-executor.browser-read-title-receipt.v1",
   effect_receipt = "testing-package-executor.effect-receipt.v1",
   canonical_write = "testing-package-executor.canonical-write.v1",
   write_receipt = "testing-package-executor.write-receipt.v1",
@@ -111,7 +115,7 @@ end
 
 local function bounded(value, field, limit)
   if type(value) ~= "string" or value == "" or #value > (limit or 4096)
-    or value:find("[%z\1-\31\127]") ~= nil then
+    or not canonical_json.is_valid_utf8(value) or value:find("[%z\1-\31\127]") ~= nil then
     fail("malformed-field", field .. " must be a bounded string without ASCII control characters")
   end
   return value
@@ -454,9 +458,12 @@ function M.validate_browser_read_title(value)
   return value
 end
 
-function M.validate_effect_receipt(value)
-  fields(value, { schema = true, effect_id = true, status = true, observed_url = true, observed_title = true, evidence_refs = true, evidence_size_bytes = true }, "effect-receipt")
-  if value.schema ~= M.schemas.effect_receipt then fail("unknown-schema", "effect receipt schema") end
+local function validate_effect_receipt(value, expected_schema, completed_required, context, artifact_root)
+  local allowed = { schema = true, effect_id = true, status = true, observed_url = true, observed_title = true,
+    evidence_refs = true, evidence_size_bytes = true }
+  if completed_required then allowed.completed_at = true end
+  fields(value, allowed, context)
+  if value.schema ~= expected_schema then fail("unknown-schema", context .. " schema") end
   if identity_string(required(value.effect_id, "effect_receipt.effect_id"), "effect_receipt.effect_id") ~= M.effect_id then
     fail("mapping-mismatch", "effect receipt ID")
   end
@@ -470,11 +477,23 @@ function M.validate_effect_receipt(value)
   local ref = value.evidence_refs[1]
   fields(ref, { kind=true, ref=true, sha256=true }, "effect-receipt-evidence-ref")
   if ref.kind ~= "artifact" then fail("reference-kind-mismatch", "effect evidence must be an artifact") end
-  local expected = ".testing/runs/dedup-walking-skeleton/evidence/title.json"
+  local root = artifact_root or ".testing/runs/dedup-walking-skeleton"
+  if not strings.is_artifact_root(root, 4096) then fail("cross-run-pointer", "effect artifact root") end
+  local expected = root .. "/evidence/title.json"
   if bounded(ref.ref, "effect_receipt.evidence_refs[1].ref") ~= expected then fail("cross-run-pointer", "effect evidence path") end
   digest(ref.sha256, "effect_receipt.evidence_refs[1].sha256")
   integer(required(value.evidence_size_bytes, "effect_receipt.evidence_size_bytes"), "effect_receipt.evidence_size_bytes", 0, 1000000000)
+  if completed_required and time.iso_timestamp_epoch_seconds(required(value.completed_at, "effect_receipt.completed_at")) == nil then
+    fail("invalid-timestamp", "effect_receipt.completed_at must be a UTC timestamp")
+  end
   return value
+end
+
+function M.validate_browser_read_title_receipt(value, artifact_root)
+  return validate_effect_receipt(value, M.schemas.browser_read_title_receipt, false, "browser-read-title-receipt", artifact_root)
+end
+function M.validate_effect_receipt(value, artifact_root)
+  return validate_effect_receipt(value, M.schemas.effect_receipt, true, "effect-receipt", artifact_root)
 end
 
 function M.validate_canonical_write(value)
@@ -499,6 +518,17 @@ end
 function M.validate_completed_execution_query(value) return execution_identity(value, M.schemas.completed_execution_query, "completed-execution-query") end
 function M.validate_execution_claim_request(value) return execution_identity(value, M.schemas.execution_claim_request, "execution-claim-request") end
 
+function M.validate_effect_state_query(value)
+  fields(value, { schema=true, dedup_key=true, admission_digest=true, effect_id=true }, "effect-state-query")
+  if value.schema ~= M.schemas.effect_state_query then fail("unknown-schema", "effect-state-query schema") end
+  identity_string(required(value.dedup_key, "effect_state_query.dedup_key"), "effect_state_query.dedup_key")
+  digest(required(value.admission_digest, "effect_state_query.admission_digest"), "effect_state_query.admission_digest")
+  if identity_string(required(value.effect_id, "effect_state_query.effect_id"), "effect_state_query.effect_id") ~= M.effect_id then
+    fail("mapping-mismatch", "effect-state-query effect ID")
+  end
+  return value
+end
+
 function M.validate_execution_claim_receipt(value, request)
   fields(value, { schema=true, status=true, dedup_key=true, admission_digest=true, claim_id=true }, "execution-claim-receipt")
   if value.schema ~= M.schemas.execution_claim_receipt or value.status ~= "claimed" then fail("claim-failed", "claim receipt schema or status") end
@@ -507,11 +537,17 @@ function M.validate_execution_claim_receipt(value, request)
   return value
 end
 
-function M.validate_effect_intent(value)
-  fields(value, { schema=true, dedup_key=true, admission_digest=true, claim_id=true, effect_id=true, url=true }, "effect-intent")
+function M.validate_effect_intent(value, dedup_key, admission_digest)
+  fields(value, { schema=true, dedup_key=true, admission_digest=true, claim_id=true, effect_id=true, url=true, started_at=true }, "effect-intent")
   if value.schema ~= M.schemas.effect_intent then fail("unknown-schema", "effect intent schema") end
   identity_string(value.dedup_key, "intent.dedup_key"); digest(value.admission_digest, "intent.admission_digest"); identity_string(value.claim_id, "intent.claim_id")
   if value.effect_id ~= M.effect_id or value.url ~= M.target_url then fail("mapping-mismatch", "effect intent") end
+  if time.iso_timestamp_epoch_seconds(required(value.started_at, "intent.started_at")) == nil then
+    fail("invalid-timestamp", "intent.started_at must be a UTC timestamp")
+  end
+  if dedup_key and (value.dedup_key ~= dedup_key or value.admission_digest ~= admission_digest) then
+    fail("effect-state-mismatch", "effect intent identity")
+  end
   return value
 end
 
