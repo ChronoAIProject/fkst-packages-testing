@@ -139,9 +139,10 @@ return {
     t.is_true(first_host.persist_effect_intent({ schema="testing-package-executor.effect-intent.v1",
       dedup_key=resolved.dedup_key, admission_digest=resolved.admission_digest,
       claim_id="claim-dedup-walking-skeleton", effect_id="effect-case-home-title-title",
-      url="http://127.0.0.1:4173/" }))
+      url="http://127.0.0.1:4173/", started_at="2026-08-21T00:00:00Z" }))
     local restarted = attach_resolver(support.testing_package_executor_ports({ store=first_host.store,
       browser_read_title=function() error("lost recovery must not call Browser") end,
+      now=function() error("lost recovery must use durable timing") end,
     }), lost_fixture)
     local lost = runtime_executor.execute(lost_fixture.request, restarted)
     local lost_manifest, lost_result = persisted_pair(restarted, lost)
@@ -149,6 +150,7 @@ return {
     t.eq(lost_result.cases[1].execution_status, "lost")
     t.eq(lost_result.cases[1].non_execution_reason, "execution-lost-between-action-and-assertion")
     t.eq(restarted.counters.browser, 0); t.eq(restarted.counters.freshness, 0)
+    t.eq(restarted.counters.clock, 0)
     reset_run()
   end,
 
@@ -163,10 +165,12 @@ return {
     t.eq(ok, false); t.eq(first.counters.browser, 1); t.eq(first.counters.receipts, 1)
     local restarted = attach_resolver(support.testing_package_executor_ports({ store=first.store,
       browser_read_title=function() error("receipt recovery must not call Browser") end,
+      now=function() error("receipt recovery must use durable timing") end,
     }), value)
     local recovered = runtime_executor.execute(value.request, restarted)
     persisted_pair(restarted, recovered)
     t.eq(restarted.counters.browser, 0); t.eq(restarted.counters.intents, 0); t.eq(restarted.counters.receipts, 0)
+    t.eq(restarted.counters.clock, 0)
     reset_run()
 
     local ack_value = fixture()
@@ -178,10 +182,12 @@ return {
     t.eq(ok, false); t.eq(ack_first.counters.browser, 1)
     local ack_restarted = attach_resolver(support.testing_package_executor_ports({ store=ack_first.store,
       browser_read_title=function() error("writer recovery must not call Browser") end,
+      now=function() error("writer recovery must use durable timing") end,
     }), ack_value)
     local ack_completed = runtime_executor.execute(ack_value.request, ack_restarted)
     persisted_pair(ack_restarted, ack_completed)
     t.eq(ack_restarted.counters.browser, 0)
+    t.eq(ack_restarted.counters.clock, 0)
     reset_run()
 
     local completion_value = fixture()

@@ -612,7 +612,7 @@ return {
     local key = resolved.dedup_key .. ":" .. resolved.admission_digest
     value.intent_store[key] = { schema=contract.schemas.effect_intent, dedup_key=resolved.dedup_key,
       admission_digest=resolved.admission_digest, claim_id="claim-dedup-walking-skeleton",
-      effect_id=contract.effect_id, url=contract.target_url }
+      effect_id=contract.effect_id, url=contract.target_url, started_at="2026-08-21T00:00:00Z" }
     local completed = executor.execute(resolved, value.ports)
     local manifest = host_json.decode(value.calls.writes[1].canonical_bytes)
     local case = host_json.decode(value.calls.writes[2].canonical_bytes).cases[1]
@@ -625,7 +625,7 @@ return {
     t.eq(case.timing.duration_ms, 0)
     t.eq(#value.calls.freshness, 0); t.eq(#value.calls.browser, 0)
     t.eq(#value.calls.intents, 0); t.eq(#value.calls.receipts, 0)
-    t.eq(value.calls.now, 1)
+    t.eq(value.calls.now, 0)
   end,
 
   test_stored_intent_and_receipt_resume_without_repeating_effect = function()
@@ -634,9 +634,10 @@ return {
     local key = resolved.dedup_key .. ":" .. resolved.admission_digest
     value.intent_store[key] = { schema=contract.schemas.effect_intent, dedup_key=resolved.dedup_key,
       admission_digest=resolved.admission_digest, claim_id="claim-dedup-walking-skeleton",
-      effect_id=contract.effect_id, url=contract.target_url }
+      effect_id=contract.effect_id, url=contract.target_url, started_at="2026-08-21T00:00:00Z" }
     value.effect_receipt_store[key] = value.ports.browser_read_title({ schema=contract.schemas.browser_read_title,
       effect_id=contract.effect_id, url=contract.target_url })
+    value.effect_receipt_store[key].completed_at = "2026-08-21T00:00:01Z"
     value.calls.browser = {}
     local completed = executor.execute(resolved, value.ports)
     t.eq(completed.status, "completed")
@@ -651,6 +652,7 @@ return {
     local key = resolved.dedup_key .. ":" .. resolved.admission_digest
     value.effect_receipt_store[key] = value.ports.browser_read_title({ schema=contract.schemas.browser_read_title,
       effect_id=contract.effect_id, url=contract.target_url })
+    value.effect_receipt_store[key].completed_at = "2026-08-21T00:00:01Z"
     value.calls.browser = {}
     expect_failure("effect receipt exists without intent", function() executor.execute(resolved, value.ports) end)
     t.eq(#value.calls.browser, 0); t.eq(#value.calls.writes, 0); t.eq(value.calls.now, 0)
@@ -660,7 +662,7 @@ return {
     key = resolved.dedup_key .. ":" .. resolved.admission_digest
     value.intent_store[key] = { schema=contract.schemas.effect_intent, dedup_key="foreign",
       admission_digest=resolved.admission_digest, claim_id="claim-dedup-walking-skeleton",
-      effect_id=contract.effect_id, url=contract.target_url }
+      effect_id=contract.effect_id, url=contract.target_url, started_at="2026-08-21T00:00:00Z" }
     expect_failure("effect intent identity", function() executor.execute(resolved, value.ports) end)
     t.eq(#value.calls.freshness, 0); t.eq(#value.calls.browser, 0); t.eq(#value.calls.writes, 0)
   end,
@@ -672,10 +674,12 @@ return {
     expect_failure("writer acknowledgement lost", function() runtime_executor.execute(first.request, first.ports) end)
     t.eq(#first.calls.browser, 1)
     local second = fixture({ receipt_store=shared.receipts, completed_store=shared.completed, intent_store=shared.intents,
-      effect_receipt_store=shared.effects, canonical_store=shared.canonical })
+      effect_receipt_store=shared.effects, canonical_store=shared.canonical,
+      clock={ "2026-08-22T00:00:00Z", "2026-08-22T00:00:01Z" } })
     local completed = runtime_executor.execute(second.request, second.ports)
     t.eq(completed.status, "completed")
     t.eq(#second.calls.browser, 0); t.eq(#second.calls.intents, 0); t.eq(#second.calls.receipts, 0)
+    t.eq(second.calls.now, 0)
 
     local completion = fixture({ receipt_store={}, completed_store={}, intent_store={}, effect_receipt_store={}, completion_ack_loss=true })
     expect_failure("completion acknowledgement lost", function() runtime_executor.execute(completion.request, completion.ports) end)
@@ -802,12 +806,14 @@ return {
       evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=string.rep("a",64)}},
       evidence_size_bytes=123,
     }
-    rejects(function() contract.validate_effect_receipt(receipt) end)
+    rejects(function() contract.validate_browser_read_title_receipt(receipt) end)
     receipt.effect_id=contract.effect_id; receipt.status="failed"
-    rejects(function() contract.validate_effect_receipt(receipt) end)
+    rejects(function() contract.validate_browser_read_title_receipt(receipt) end)
     receipt.status="succeeded"; receipt.evidence_size_bytes=1.5
-    rejects(function() contract.validate_effect_receipt(receipt) end)
+    rejects(function() contract.validate_browser_read_title_receipt(receipt) end)
     receipt.evidence_size_bytes=123
+    receipt.completed_at="2026-08-21T00:00:01Z"
+    t.eq(contract.validate_effect_receipt(receipt), receipt)
     local write = { schema=contract.schemas.write_receipt, status="failed", ref={kind="artifact",ref="x",sha256=string.rep("a",64)} }
     rejects(function() contract.validate_write_receipt(write) end)
     write.status="written"; write.ref.kind="wrong"; rejects(function() contract.validate_write_receipt(write) end)

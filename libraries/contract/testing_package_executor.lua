@@ -1,6 +1,7 @@
 -- contract.testing_package_executor: closed contracts for the provider-neutral walking skeleton.
 local canonical_json = require("contract.canonical_json")
 local error_facts = require("contract.error_facts")
+local time = require("contract.time")
 local M = {}
 
 M.schemas = {
@@ -455,8 +456,11 @@ function M.validate_browser_read_title(value)
   return value
 end
 
-function M.validate_effect_receipt(value)
-  fields(value, { schema = true, effect_id = true, status = true, observed_url = true, observed_title = true, evidence_refs = true, evidence_size_bytes = true }, "effect-receipt")
+local function validate_effect_receipt(value, persisted)
+  local allowed = { schema = true, effect_id = true, status = true, observed_url = true, observed_title = true,
+    evidence_refs = true, evidence_size_bytes = true }
+  if persisted then allowed.completed_at = true end
+  fields(value, allowed, "effect-receipt")
   if value.schema ~= M.schemas.effect_receipt then fail("unknown-schema", "effect receipt schema") end
   if identity_string(required(value.effect_id, "effect_receipt.effect_id"), "effect_receipt.effect_id") ~= M.effect_id then
     fail("mapping-mismatch", "effect receipt ID")
@@ -475,8 +479,14 @@ function M.validate_effect_receipt(value)
   if bounded(ref.ref, "effect_receipt.evidence_refs[1].ref") ~= expected then fail("cross-run-pointer", "effect evidence path") end
   digest(ref.sha256, "effect_receipt.evidence_refs[1].sha256")
   integer(required(value.evidence_size_bytes, "effect_receipt.evidence_size_bytes"), "effect_receipt.evidence_size_bytes", 0, 1000000000)
+  if persisted and time.iso_timestamp_epoch_seconds(required(value.completed_at, "effect_receipt.completed_at")) == nil then
+    fail("invalid-timestamp", "effect_receipt.completed_at must be a UTC timestamp")
+  end
   return value
 end
+
+function M.validate_browser_read_title_receipt(value) return validate_effect_receipt(value, false) end
+function M.validate_effect_receipt(value) return validate_effect_receipt(value, true) end
 
 function M.validate_canonical_write(value)
   fields(value, { schema = true, kind = true, dedup_key = true, canonical_sha256 = true, canonical_bytes = true }, "canonical-write")
@@ -520,10 +530,13 @@ function M.validate_execution_claim_receipt(value, request)
 end
 
 function M.validate_effect_intent(value, dedup_key, admission_digest)
-  fields(value, { schema=true, dedup_key=true, admission_digest=true, claim_id=true, effect_id=true, url=true }, "effect-intent")
+  fields(value, { schema=true, dedup_key=true, admission_digest=true, claim_id=true, effect_id=true, url=true, started_at=true }, "effect-intent")
   if value.schema ~= M.schemas.effect_intent then fail("unknown-schema", "effect intent schema") end
   identity_string(value.dedup_key, "intent.dedup_key"); digest(value.admission_digest, "intent.admission_digest"); identity_string(value.claim_id, "intent.claim_id")
   if value.effect_id ~= M.effect_id or value.url ~= M.target_url then fail("mapping-mismatch", "effect intent") end
+  if time.iso_timestamp_epoch_seconds(required(value.started_at, "intent.started_at")) == nil then
+    fail("invalid-timestamp", "intent.started_at must be a UTC timestamp")
+  end
   if dedup_key and (value.dedup_key ~= dedup_key or value.admission_digest ~= admission_digest) then
     fail("effect-state-mismatch", "effect intent identity")
   end
@@ -567,7 +580,7 @@ function M.validate_execution(value)
   fields(value, { schema = true, case_result = true, effect_receipt = true, case_result_ref = true }, "execution")
   if value.schema ~= M.schemas.execution then fail("unknown-schema", "execution schema") end
   if type(required(value.case_result, "case_result")) ~= "table" then fail("malformed-execution", "case_result must be a table") end
-  M.validate_effect_receipt(required(value.effect_receipt, "effect_receipt"))
+  M.validate_browser_read_title_receipt(required(value.effect_receipt, "effect_receipt"))
   local ref = required(value.case_result_ref, "case_result_ref")
   fields(ref, { kind = true, ref = true, sha256 = true }, "case-result-ref")
   if identity_string(required(ref.kind, "case_result_ref.kind"), "case_result_ref.kind") ~= "artifact" then

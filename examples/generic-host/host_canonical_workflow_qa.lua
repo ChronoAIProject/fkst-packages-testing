@@ -1671,6 +1671,7 @@ function M.testing_package_executor_ports(options)
     end,
     now = function()
       counters.clock = counters.clock + 1
+      if options.now then return options.now(counters.clock) end
       return counters.clock == 1 and "2026-08-21T00:00:00Z" or "2026-08-21T00:00:01Z"
     end,
     sha256 = sha256_bytes,

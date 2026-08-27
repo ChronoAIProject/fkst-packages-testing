@@ -113,7 +113,7 @@ function M.read_title(context, request, supplied_ports)
   }) .. "\n")
   run(ports, { "node", runtime_cli, "read-title", "--input", runtime_paths.input, "--receipt", runtime_paths.receipt }, 30)
   local receipt = ports.decode(ports.read(runtime_paths.receipt))
-  executor_contract.validate_effect_receipt(receipt)
+  executor_contract.validate_browser_read_title_receipt(receipt)
   local evidence_bytes = ports.read(runtime_paths.evidence)
   if type(evidence_bytes) ~= "string" or #evidence_bytes ~= receipt.evidence_size_bytes
     or ports.sha256(evidence_bytes) ~= receipt.evidence_refs[1].sha256 then

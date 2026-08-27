@@ -228,8 +228,7 @@ function M.execute(resolved, ports)
   if effect_receipt ~= nil and intent == nil then fail("malformed-effect-state", "effect receipt exists without intent") end
 
   if intent ~= nil and effect_receipt == nil then
-    local occurred_at = timestamp(ports)
-    return persist_terminal(resolved, ports, intent.claim_id, lost_case_result(resolved, occurred_at), nil, occurred_at)
+    return persist_terminal(resolved, ports, intent.claim_id, lost_case_result(resolved, intent.started_at), nil, intent.started_at)
   end
 
   local started_at
@@ -240,18 +239,23 @@ function M.execute(resolved, ports)
     if call_port(ports, "check_freshness", freshness) ~= true then fail("freshness-denied", "freshness check did not authorize the Browser effect") end
     started_at = timestamp(ports)
     intent = { schema = contract.schemas.effect_intent, dedup_key = resolved.dedup_key, admission_digest = resolved.admission_digest,
-      claim_id = claim.claim_id, effect_id = contract.effect_id, url = contract.target_url }
+      claim_id = claim.claim_id, effect_id = contract.effect_id, url = contract.target_url, started_at = started_at }
     contract.validate_effect_intent(intent, resolved.dedup_key, resolved.admission_digest)
     if call_port(ports, "persist_effect_intent", intent) ~= true then fail("intent-persist-failed", "effect intent was not persisted") end
     local effect_request = { schema = contract.schemas.browser_read_title, effect_id = contract.effect_id, url = contract.target_url }
     contract.validate_browser_read_title(effect_request)
     effect_receipt = call_port(ports, "browser_read_title", effect_request)
+    contract.validate_browser_read_title_receipt(effect_receipt)
+    completed_at = timestamp(ports)
+    effect_receipt.completed_at = completed_at
     contract.validate_effect_receipt(effect_receipt)
     if call_port(ports, "persist_effect_receipt", effect_receipt) ~= true then fail("receipt-persist-failed", "effect receipt was not persisted") end
-    completed_at = timestamp(ports)
   else
-    started_at = timestamp(ports)
-    completed_at = timestamp(ports)
+    started_at = intent.started_at
+    completed_at = effect_receipt.completed_at
+  end
+  if time.iso_timestamp_epoch_seconds(completed_at) < time.iso_timestamp_epoch_seconds(started_at) then
+    fail("invalid-timing", "effect completion precedes its durable intent")
   end
 
   return persist_terminal(resolved, ports, intent.claim_id,
