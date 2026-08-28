@@ -1557,7 +1557,7 @@ function M.new(options)
             or "The canonical fixture exposes one local service surface.",
         },
       },
-      ai_design_loop_request = inventory_design_request,
+      ai_design_loop_request = not pql_home_title and inventory_design_request or nil,
     },
     structured_execution = {
       artifact_root = browser and artifact_root or artifact_root .. "/execution",
