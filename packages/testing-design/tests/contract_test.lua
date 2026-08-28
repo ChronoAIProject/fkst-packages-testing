@@ -155,6 +155,15 @@ return {
     t.raises(function() contract.validate_request(value) end)
   end,
 
+  test_rejects_pql_control_del_and_invalid_calendar_values = function()
+    local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.trace_id = "trace" .. string.char(127)
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.created_at = "2026-02-30T00:00:00Z"
+    t.raises(function() contract.validate_request(value) end)
+  end,
+
   test_rejects_invalid_pql_request_bindings_and_bounds = function()
     local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
     value.pql_input_set.repository.url = "https://example.invalid/foreign.git"

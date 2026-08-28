@@ -48,7 +48,7 @@ end
 
 local function bounded(value, limit)
   return strings.is_bounded_string(value, limit or max_string)
-    and value:find("[%z\1-\31]") == nil
+    and value:find("[%z\1-\31\127]") == nil
 end
 
 local function dense_list(value, limit)
@@ -210,7 +210,18 @@ function D.validate_pql_input_set(value, request)
     if identities[identity] then fail("duplicate-pql-asset", "pql asset identity is duplicated") end
     identities[identity] = true
   end
-  if type(value.created_at) ~= "string" or value.created_at:match("^%d%d%d%d%-%d%d%-%d%dT%d%d:%d%d:%d%dZ$") == nil then
+  if type(value.created_at) ~= "string" then
+    fail("malformed-identity", "pql_input_set.created_at must be an RFC 3339 UTC timestamp")
+  end
+  local year, month, day, hour, minute, second = value.created_at:match("^(%d%d%d%d)%-(%d%d)%-(%d%d)T(%d%d):(%d%d):(%d%d)Z$")
+  local month_days = { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 }
+  if year == nil then
+    fail("malformed-identity", "pql_input_set.created_at must be an RFC 3339 UTC timestamp")
+  end
+  local leap = tonumber(year) % 4 == 0 and (tonumber(year) % 100 ~= 0 or tonumber(year) % 400 == 0)
+  if tonumber(month) < 1 or tonumber(month) > 12 or tonumber(day) < 1
+    or tonumber(day) > month_days[tonumber(month)] + ((tonumber(month) == 2 and leap) and 1 or 0)
+    or tonumber(hour) > 23 or tonumber(minute) > 59 or tonumber(second) > 59 then
     fail("malformed-identity", "pql_input_set.created_at must be an RFC 3339 UTC timestamp")
   end
   validate_pql_identity(value.trace_id, "pql_input_set.trace_id")
