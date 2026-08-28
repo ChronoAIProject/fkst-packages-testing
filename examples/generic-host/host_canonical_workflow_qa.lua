@@ -1077,19 +1077,7 @@ function M.new(options)
   require_exec({ "git", "config", "user.name", "Generic Host Fixture" }, source_root)
   require_exec({ "git", "add", "." }, source_root)
   local commit_argv = { "git", "commit", "--quiet", "-m", fixture_name .. " fixture" }
-  if pql_home_title then
-    catalog_cases = { {
-      design_case_id = "TCA-HOME-TITLE@1", case_id = "home-title", kind = "browser",
-      goal = "Verify the Host-authorized home title behavior",
-      success_conditions = { "The Browser case reaches the Host-defined successful completion state" },
-      completion_assertions = {
-        { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
-        { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
-        { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
-        { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
-      },
-    } }
-  elseif browser then
+  if browser and not pql_home_title then
     commit_argv = { "env", "GIT_AUTHOR_DATE=2026-08-20T00:00:00Z",
       "GIT_COMMITTER_DATE=2026-08-20T00:00:00Z", table.unpack(commit_argv) }
   end
@@ -1243,7 +1231,19 @@ function M.new(options)
     }
   end
   local catalog_cases = {}
-  if browser then
+  if pql_home_title then
+    catalog_cases = { {
+      design_case_id = "TCA-HOME-TITLE@1", case_id = "home-title", kind = "browser",
+      goal = "Verify the Host-authorized home title behavior",
+      success_conditions = { "The Browser case reaches the Host-defined successful completion state" },
+      completion_assertions = {
+        { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+        { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+        { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+        { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+      },
+    } }
+  elseif browser then
     catalog_cases = { {
       design_case_id = "existing-user-login", case_id = "existing-user-login", kind = "browser",
       goal = "Authenticate the existing user through the approved browser target.",
