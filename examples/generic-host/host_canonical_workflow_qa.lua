@@ -1233,7 +1233,8 @@ function M.new(options)
   local catalog_cases = {}
   if pql_home_title then
     catalog_cases = { {
-      design_case_id = "TCA-HOME-TITLE@1", case_id = "home-title", kind = "browser",
+      design_case_id = options.catalog_design_case_id or "TCA-HOME-TITLE@1",
+      case_id = "home-title", kind = "browser",
       goal = "Verify the Host-authorized home title behavior",
       success_conditions = { "The Browser case reaches the Host-defined successful completion state" },
       completion_assertions = {

@@ -63,4 +63,32 @@ return {
     context:cleanup()
     if not ok then error(failure, 0) end
   end,
+  test_blocks_catalog_identity_mismatch_before_plan_publication = function()
+    local context = canonical.new({
+      scenario = "pql-home-title",
+      catalog_design_case_id = "TCA-HOME-TITLE@2",
+    })
+    local ok, failure = pcall(function()
+      local prepared = supervisor.prepare_phase(context, support.project_root, "structured-plan-pending")
+      t.is_true(prepared.prepared)
+      t.eq(prepared.stop_at, "structured-plan-pending")
+
+      local pending = prepared.pending_action.payload
+      local catalog = assert(context.store:load(context.request.structured_execution.case_catalog_ref))
+      t.eq(catalog.value.cases[1].design_case_id, "TCA-HOME-TITLE@2")
+      t.eq(pending.case_catalog_sha256, catalog.digest)
+
+      local plan_ref = pending.plan_ref
+      t.eq(context.store:load(plan_ref), nil)
+      local target_effect_count = #context.target_effects
+      local result = prepared.planning.compile(pending, context.structured_runtime)
+
+      t.eq(result.status, "blocked")
+      t.eq(context.store:load(plan_ref), nil)
+      t.eq(context.store:write_count(plan_ref), 0)
+      t.eq(#context.target_effects, target_effect_count)
+    end)
+    context:cleanup()
+    if not ok then error(failure, 0) end
+  end,
 }
