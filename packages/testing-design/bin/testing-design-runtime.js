@@ -191,9 +191,9 @@ function verifyPqlDocument(pointer, digest, workspace, schema) {
   return { document, verified };
 }
 
-function pqlAdapter(request, workspace) {
+function preflightPqlEnvelope(request) {
   const inputSet = request.pql_input_set;
-  if (!inputSet) return { inputs: [], lineage: null, verifiedKeys: new Set() };
+  if (!inputSet) return null;
   assertOnly(inputSet, ['schema', 'producer', 'asset_set_id', 'repository', 'project_pack_snapshot', 'approved_assets', 'created_at', 'trace_id', 'dedup_key'], 'pql_input_set');
   if (inputSet.schema !== 'pql.testing-design-input-set.v1') throw new Error('testing-design: unknown-pql-schema');
   assertOnly(inputSet.producer, ['name', 'version'], 'pql_input_set.producer');
@@ -211,16 +211,9 @@ function pqlAdapter(request, workspace) {
   assertPqlDigest(inputSet.project_pack_snapshot.sha256, 'pql_input_set.project_pack_snapshot.sha256');
   if (!Array.isArray(inputSet.approved_assets) || inputSet.approved_assets.length < 1 || inputSet.approved_assets.length > 16) throw new Error('testing-design: malformed-pql-envelope: approved_assets');
 
-  const snapshot = verifyPqlDocument(inputSet.project_pack_snapshot.ref, inputSet.project_pack_snapshot.sha256, workspace, 'pql.project-pack-snapshot.v1').document;
-  assertOnly(snapshot, ['schema', 'snapshot_id', 'repository_url', 'repository_commit_sha', 'assets'], 'project_pack_snapshot');
-  assertPqlString(snapshot.snapshot_id, 'project_pack_snapshot.snapshot_id');
-  assertPqlRepositoryUrl(snapshot.repository_url, 'project_pack_snapshot.repository_url');
-  assertPqlCommit(snapshot.repository_commit_sha, 'project_pack_snapshot.repository_commit_sha');
-  if (snapshot.repository_url !== inputSet.repository.url || snapshot.repository_commit_sha !== inputSet.repository.commit_sha) throw new Error('testing-design: foreign-pql-binding: snapshot repository');
-  if (!Array.isArray(snapshot.assets) || snapshot.assets.length !== inputSet.approved_assets.length) throw new Error('testing-design: pql-snapshot-binding-mismatch');
+  const inputCount = Array.isArray(request.inputs) ? request.inputs.length : 0;
+  if (inputCount + inputSet.approved_assets.length > 16) throw new Error('testing-design: too-many-inputs');
 
-  const projected = [];
-  const lineageAssets = [];
   const identities = new Map();
   for (let index = 0; index < inputSet.approved_assets.length; index += 1) {
     const asset = inputSet.approved_assets[index];
@@ -240,6 +233,28 @@ function pqlAdapter(request, workspace) {
       throw new Error('testing-design: duplicate-pql-asset');
     }
     identities.set(identity, asset.artifact_digest);
+    const subject = asset.approval_subject;
+    if (subject.repository_url !== inputSet.repository.url || subject.repository_commit_sha !== inputSet.repository.commit_sha || stableStringify(subject.project_pack_snapshot_ref) !== stableStringify(inputSet.project_pack_snapshot.ref) || subject.project_pack_snapshot_sha256 !== inputSet.project_pack_snapshot.sha256 || subject.asset_id !== asset.asset_id || subject.asset_version !== asset.asset_version || subject.asset_sha256 !== asset.artifact_digest) throw new Error('testing-design: foreign-pql-binding: approval subject');
+  }
+  return inputSet;
+}
+
+function resolvePqlFixtures(inputSet, workspace) {
+  if (!inputSet) return { inputs: [], lineage: null, verifiedKeys: new Set() };
+
+  const snapshot = verifyPqlDocument(inputSet.project_pack_snapshot.ref, inputSet.project_pack_snapshot.sha256, workspace, 'pql.project-pack-snapshot.v1').document;
+  assertOnly(snapshot, ['schema', 'snapshot_id', 'repository_url', 'repository_commit_sha', 'assets'], 'project_pack_snapshot');
+  assertPqlString(snapshot.snapshot_id, 'project_pack_snapshot.snapshot_id');
+  assertPqlRepositoryUrl(snapshot.repository_url, 'project_pack_snapshot.repository_url');
+  assertPqlCommit(snapshot.repository_commit_sha, 'project_pack_snapshot.repository_commit_sha');
+  if (snapshot.repository_url !== inputSet.repository.url || snapshot.repository_commit_sha !== inputSet.repository.commit_sha) throw new Error('testing-design: foreign-pql-binding: snapshot repository');
+  if (!Array.isArray(snapshot.assets) || snapshot.assets.length !== inputSet.approved_assets.length) throw new Error('testing-design: pql-snapshot-binding-mismatch');
+
+  const projected = [];
+  const lineageAssets = [];
+  for (let index = 0; index < inputSet.approved_assets.length; index += 1) {
+    const asset = inputSet.approved_assets[index];
+    const context = `pql_input_set.approved_assets[${index}]`;
     const snapshotAsset = snapshot.assets[index];
     if (snapshotAsset && snapshotAsset.asset_id === asset.asset_id && snapshotAsset.asset_version === asset.asset_version && snapshotAsset.artifact_digest !== asset.artifact_digest) throw new Error('testing-design: pql-digest-conflict');
     if (!snapshotAsset || stableStringify(snapshotAsset) !== stableStringify({ asset_id: asset.asset_id, asset_version: asset.asset_version, asset_kind: asset.asset_kind, artifact_pointer: asset.artifact_pointer, artifact_digest: asset.artifact_digest, media_type: asset.media_type, requirement_refs: asset.requirement_refs })) throw new Error('testing-design: pql-snapshot-binding-mismatch');
@@ -774,6 +789,7 @@ function immutableArtifacts(root, documents) {
 
 function analyze(request) {
   assertArtifactRoot(request.artifact_root);
+  const pqlInputSet = preflightPqlEnvelope(request);
   if (!request.repository || !request.repository.workspace_ref || request.repository.workspace_ref.kind !== 'workspace') {
     throw new Error('testing-design: approved-workspace-required');
   }
@@ -792,7 +808,7 @@ function analyze(request) {
   git(workspace, ['cat-file', '-e', `${request.repository.commit_sha}^{commit}`]);
   git(workspace, ['cat-file', '-e', `${request.repository.baseline_commit_sha}^{commit}`]);
 
-  const pql = pqlAdapter(request, workspace);
+  const pql = resolvePqlFixtures(pqlInputSet, workspace);
   const projectedInputs = [...(request.inputs || []), ...pql.inputs];
   if (projectedInputs.length > 16) throw new Error('testing-design: too-many-inputs');
 
