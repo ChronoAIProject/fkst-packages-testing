@@ -228,7 +228,11 @@ function M.run(context, project_root, options)
     stopped = prepared("module-pending", actions)
     if stopped ~= nil then return stopped end
 
-    local module_start = module_pipeline.start_module(actions[1].payload, {
+    local module_start_payload = actions[1].payload
+    if type(context.prepare_module_start) == "function" then
+      module_start_payload = context:prepare_module_start(module_start_payload)
+    end
+    local module_start = module_pipeline.start_module(module_start_payload, {
       read = function(path)
         local artifact = context.store:load(path)
         if artifact == nil then error("canonical lifecycle design artifact is unavailable: " .. path) end
