@@ -337,6 +337,7 @@ function main() {
     const pqlInvalid = JSON.parse(JSON.stringify(pql));
     pqlInvalid.artifact_root = `.testing/runs/testing-design-node-${process.pid}-pql-invalid`;
     pqlInvalid.pql_input_set.approved_assets[0].artifact_digest = 'f'.repeat(64);
+    pqlInvalid.pql_input_set.approved_assets[0].approval_subject.asset_sha256 = 'f'.repeat(64);
     fs.rmSync(pqlInvalid.artifact_root, { recursive: true, force: true });
     assert.throws(() => analyze(pqlInvalid), /pql-digest-conflict/);
     assert.strictEqual(fs.existsSync(pqlInvalid.artifact_root), false);
