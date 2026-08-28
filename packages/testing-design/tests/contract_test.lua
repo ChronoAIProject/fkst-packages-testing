@@ -139,6 +139,9 @@ return {
     value.pql_input_set.unknown = true
     t.raises(function() contract.validate_request(value) end)
     value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.approved_assets[1].unknown = true
+    t.raises(function() contract.validate_request(value) end)
+    value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
     value.pql_input_set.producer.version = "pql.testing-design-fixture.v2"
     t.raises(function() contract.validate_request(value) end)
   end,

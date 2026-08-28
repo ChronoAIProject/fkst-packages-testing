@@ -340,6 +340,16 @@ function main() {
     fs.rmSync(pqlInvalid.artifact_root, { recursive: true, force: true });
     assert.throws(() => analyze(pqlInvalid), /pql-digest-conflict/);
     assert.strictEqual(fs.existsSync(pqlInvalid.artifact_root), false);
+    const pqlMalformed = JSON.parse(JSON.stringify(pql));
+    pqlMalformed.artifact_root = `.testing/runs/testing-design-node-${process.pid}-pql-malformed`;
+    pqlMalformed.pql_input_set.project_pack_snapshot.ref = pointer(path.join(temp, 'pql', 'snapshots', 'missing.json'));
+    pqlMalformed.pql_input_set.approved_assets[0].unknown = true;
+    fs.rmSync(pqlMalformed.artifact_root, { recursive: true, force: true });
+    assert.throws(
+      () => analyze(pqlMalformed),
+      /testing-design: malformed-pql-envelope: unsupported field pql_input_set\.approved_assets\[0\]\.unknown/,
+    );
+    assert.strictEqual(fs.existsSync(pqlMalformed.artifact_root), false);
   } finally {
     if (fs.existsSync('.testing/runs')) {
       for (const entry of fs.readdirSync('.testing/runs', { withFileTypes: true })) {
