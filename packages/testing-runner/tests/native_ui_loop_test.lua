@@ -42,6 +42,24 @@ local function module_discovery()
   }
 end
 
+local function testing_design_context()
+  local function artifact_reference(schema, name, char)
+    return {
+      schema = "testing-design.artifact-reference.v1",
+      artifact_schema = schema,
+      artifact_pointer = ".testing/runs/module-a-inventory/design/" .. name .. ".json",
+      artifact_digest = string.rep(char, 64),
+    }
+  end
+  return {
+    schema = "testing-design.context-reference.v1",
+    analysis_key = string.rep("a", 64),
+    repository_analysis = artifact_reference("testing-design.repository-analysis.v1", "repository-analysis.v1", "b"),
+    requirements_index = artifact_reference("testing-design.requirements-index.v1", "requirements-index.v1", "c"),
+    traceability_seed = artifact_reference("testing-design.traceability-seed.v1", "traceability-seed.v1", "d"),
+  }
+end
+
 return {
   test_fkst_native_module_ui_loop_returns_degraded_pointer_summary = function()
     local called = false
@@ -119,6 +137,7 @@ return {
         mutation_policy = "read-only",
       },
       module_discovery = module_discovery(),
+      testing_design_context = testing_design_context(),
       artifact_root = ".testing/runs/module-a-inventory",
       source_ref = { kind = "host", ref = "module-a" },
       trace_id = "trace-module-a-inventory",
@@ -164,6 +183,7 @@ return {
     t.is_true(inventory:find("visible to the current local session", 1, true) ~= nil)
     t.is_true(feature_inventory:find('"schema":"testing-runner.feature-inventory.v1"', 1, true) ~= nil)
     t.is_true(test_plan:find('"schema":"testing-runner.module-test-plan.v1"', 1, true) ~= nil)
+    t.is_true(test_plan:find('"testing_design_context":{"analysis_key":"' .. string.rep("a", 64) .. '"', 1, true) ~= nil)
     t.is_true(metadata:find('"schema":"testing-runner.module-inventory-summary.v1"', 1, true) ~= nil)
     t.is_true(metadata:find('"inventory_path":".testing/runs/module-a-inventory/module-inventory.json"', 1, true) ~= nil)
     t.is_true(metadata:find('"feature_inventory_path":".testing/runs/module-a-inventory/feature-inventory.json"', 1, true) ~= nil)

@@ -48,6 +48,24 @@ local function find_case(module, suffix)
   return nil
 end
 
+local function testing_design_context(char)
+  local function artifact_reference(schema, name, digest_char)
+    return {
+      schema = "testing-design.artifact-reference.v1",
+      artifact_schema = schema,
+      artifact_pointer = ".testing/runs/module-a-inventory/design/" .. name .. ".json",
+      artifact_digest = string.rep(digest_char, 64),
+    }
+  end
+  return {
+    schema = "testing-design.context-reference.v1",
+    analysis_key = string.rep(char or "a", 64),
+    repository_analysis = artifact_reference("testing-design.repository-analysis.v1", "repository-analysis.v1", "b"),
+    requirements_index = artifact_reference("testing-design.requirements-index.v1", "requirements-index.v1", "c"),
+    traceability_seed = artifact_reference("testing-design.traceability-seed.v1", "traceability-seed.v1", "d"),
+  }
+end
+
 return {
   test_builds_feature_inventory_and_p0_p1_p2_plan = function()
     local artifacts = planning.build(inventory(), { mutation_policy = "read-only" }, ".testing/runs/module-a-inventory")
@@ -70,6 +88,34 @@ return {
     t.is_true(artifacts.test_plan.review_gate.executable_count > 0)
     t.is_true(artifacts.test_plan.review_gate.blocked_count > 0)
     t.is_true(artifacts.test_plan.review_gate.not_executed_risk_count > 0)
+    t.eq(artifacts.test_plan.testing_design_context, nil)
+  end,
+
+  test_copies_valid_optional_testing_design_context = function()
+    local context = testing_design_context()
+    local artifacts = planning.build(inventory(), { mutation_policy = "read-only" },
+      ".testing/runs/module-a-inventory", { testing_design_context = context })
+    t.eq(artifacts.test_plan.testing_design_context.analysis_key, context.analysis_key)
+    t.eq(artifacts.test_plan.testing_design_context.traceability_seed.artifact_pointer,
+      context.traceability_seed.artifact_pointer)
+    context.analysis_key = string.rep("e", 64)
+    context.traceability_seed.artifact_pointer = ".testing/runs/module-a-inventory/design/changed.json"
+    t.eq(artifacts.test_plan.testing_design_context.analysis_key, string.rep("a", 64))
+    t.eq(artifacts.test_plan.testing_design_context.traceability_seed.artifact_pointer,
+      ".testing/runs/module-a-inventory/design/traceability-seed.v1.json")
+  end,
+
+  test_rejects_malformed_or_foreign_testing_design_context = function()
+    local malformed = testing_design_context()
+    malformed.repository_analysis.extra = true
+    t.raises(function()
+      planning.build(inventory(), {}, ".testing/runs/module-a-inventory", { testing_design_context = malformed })
+    end)
+    local foreign = testing_design_context()
+    foreign.schema = "testing-design.context-reference.v2"
+    t.raises(function()
+      planning.build(inventory(), {}, ".testing/runs/module-a-inventory", { testing_design_context = foreign })
+    end)
   end,
 
   test_host_approved_mutation_policy_blocks_p2_until_fixtures_exist = function()
