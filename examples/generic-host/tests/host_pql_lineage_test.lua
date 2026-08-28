@@ -1,4 +1,4 @@
-local json = require("testing_runtime.json")
+local json_codec = require("testing_runtime.json")
 local lineage = require("host_pql_lineage")
 local support = require("host_canonical_workflow_qa_support")
 local t = fkst.test
@@ -33,7 +33,7 @@ local function traceability(overrides)
     requirement_refs = { { ref = "REQ-HOME-TITLE" } },
   }
   for key, value in pairs(overrides or {}) do asset[key] = value end
-  return json.encode({ pql_lineage = { approved_assets = { asset } } }) .. "\n"
+  return json_codec.encode({ pql_lineage = { approved_assets = { asset } } }) .. "\n"
 end
 
 local function accept(bytes, context_override, decode_json)
@@ -41,7 +41,7 @@ local function accept(bytes, context_override, decode_json)
   return lineage.accept(context_override or context(digest), {
     read_artifact_bytes = function() return bytes end,
     sha256_bytes = support.sha256_bytes,
-    decode_json = decode_json,
+    decode_json = decode_json or json.decode,
   })
 end
 
@@ -74,10 +74,10 @@ return {
   test_rejects_malformed_lineage_and_identity_values = function()
     for _, bytes in ipairs({
       "not-json\n",
-      json.encode({}) .. "\n",
-      json.encode({ pql_lineage = true }) .. "\n",
-      json.encode({ pql_lineage = { approved_assets = {} } }) .. "\n",
-      json.encode({ pql_lineage = { approved_assets = { {}, {} } } }) .. "\n",
+      json_codec.encode({}) .. "\n",
+      json_codec.encode({ pql_lineage = true }) .. "\n",
+      json_codec.encode({ pql_lineage = { approved_assets = {} } }) .. "\n",
+      json_codec.encode({ pql_lineage = { approved_assets = { {}, {} } } }) .. "\n",
       traceability({ asset_id = false }),
       traceability({ asset_id = "" }),
       traceability({ asset_version = false }),

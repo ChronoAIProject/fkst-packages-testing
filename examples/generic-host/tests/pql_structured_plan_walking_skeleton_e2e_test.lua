@@ -8,7 +8,10 @@ local root = ".testing/runs/pql-home-title"
 
 return {
   test_compiles_promoted_pql_browser_case_through_canonical_module_publication = function()
-    local context = canonical.new({ scenario = "pql-home-title" })
+    local context = canonical.new({
+      scenario = "pql-home-title",
+      publication_channel = "filesystem-dry-run-v1",
+    })
     local ok, failure = pcall(function()
       local lifecycle = supervisor.prepare(context, support.project_root)
       t.is_true(lifecycle.prepared)
@@ -67,6 +70,7 @@ return {
     local context = canonical.new({
       scenario = "pql-home-title",
       catalog_design_case_id = "TCA-HOME-TITLE@2",
+      publication_channel = "filesystem-dry-run-v1",
     })
     local ok, failure = pcall(function()
       local prepared = supervisor.prepare_phase(context, support.project_root, "structured-plan-pending")
