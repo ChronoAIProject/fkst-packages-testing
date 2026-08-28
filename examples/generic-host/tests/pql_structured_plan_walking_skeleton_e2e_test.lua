@@ -1,8 +1,9 @@
 local design_loop = require("testing_ai.module_ai_design_loop")
 local json_codec = require("testing_runtime.json")
-local planning = require("module_planning")
-local structured_planning = require("structured_planning")
 local support = require("host_canonical_workflow_qa_support")
+local supervisor = require("test_support.host_workflow_qa_supervisor")
+local planning = supervisor.load_package_module(support.project_root, "testing-runner", "module_planning")
+local structured_planning = supervisor.load_package_module(support.project_root, "testing-runner", "structured_planning")
 local testing_design = require("contract.testing_design")
 local t = fkst.test
 
@@ -159,21 +160,23 @@ return {
     local temp_root = "/tmp/fkst-pql-structured-plan"
     support.require_exec({ "rm", "-rf", temp_root, support.absolute(root) })
     local prepared = support.direct_exec({
-      "node", support.project_root .. "/packages/generic-host/test_support/pql_design_runtime_fixture.js",
+      "node", support.project_root .. "/examples/generic-host/test_support/pql_design_runtime_fixture.js",
       support.project_root, temp_root, root .. "/design",
     })
-    t.eq(prepared.exit_code, 0)
+    t.is_true(prepared.exit_code == 0, "PQL fixture preparation failed: " .. tostring(prepared.stderr))
     local runtime = support.direct_exec({
       "env", "FKST_TESTING_DESIGN_REQUEST_JSON=" .. prepared.stdout,
       "node", support.project_root .. "/packages/testing-design/bin/testing-design-runtime.js", "analyze-env",
     })
     t.eq(runtime.exit_code, 0)
-    local design_result = json_codec.decode(runtime.stdout)
+    local runtime_envelope = json.decode(runtime.stdout)
+    t.eq(runtime_envelope.ok, true)
+    local design_result = runtime_envelope.result
     testing_design.validate_context_reference(design_result.context)
     local traceability_bytes = assert(support.read_file(
       support.absolute(design_result.context.traceability_seed.artifact_pointer)))
     t.eq(support.sha256_bytes(traceability_bytes), design_result.context.traceability_seed.artifact_digest)
-    local traceability = json_codec.decode(traceability_bytes)
+    local traceability = json.decode(traceability_bytes)
     local lineage = traceability.pql_lineage.approved_assets[1]
     t.eq(lineage.asset_id, "TCA-HOME-TITLE")
     t.eq(lineage.asset_version, "1")

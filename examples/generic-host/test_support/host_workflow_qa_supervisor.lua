@@ -54,6 +54,10 @@ local function package_loader(project_root, package_name)
   return load_module
 end
 
+function M.load_package_module(project_root, package_name, module_name)
+  return package_loader(project_root, package_name)(module_name)
+end
+
 local function checkpoint_written(prepared, comment_id)
   return {
     schema = "github-proxy.comment-written.v1",
