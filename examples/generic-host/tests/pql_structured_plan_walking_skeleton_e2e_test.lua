@@ -170,8 +170,10 @@ return {
     t.eq(runtime.exit_code, 0)
     local design_result = json_codec.decode(runtime.stdout)
     testing_design.validate_context_reference(design_result.context)
-    local traceability = json_codec.decode(assert(support.read_file(
-      support.absolute(design_result.context.traceability_seed.artifact_pointer))))
+    local traceability_bytes = assert(support.read_file(
+      support.absolute(design_result.context.traceability_seed.artifact_pointer)))
+    t.eq(support.sha256_bytes(traceability_bytes), design_result.context.traceability_seed.artifact_digest)
+    local traceability = json_codec.decode(traceability_bytes)
     local lineage = traceability.pql_lineage.approved_assets[1]
     t.eq(lineage.asset_id, "TCA-HOME-TITLE")
     t.eq(lineage.asset_version, "1")
