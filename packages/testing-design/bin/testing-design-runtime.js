@@ -80,18 +80,21 @@ function resolvePointer(pointer, workspace, requireWorkspace = false) {
   }
   if (pointer.kind === 'artifact' || pointer.kind === 'file' || pointer.kind === 'browser-evidence') {
     const root = fs.realpathSync(workspace);
-    const candidate = path.resolve(pointer.ref);
+    const candidate = requireWorkspace && pointer.kind === 'artifact'
+      ? path.resolve(root, pointer.ref)
+      : path.resolve(pointer.ref);
     if (requireWorkspace && pointer.kind === 'artifact' && candidate !== root && !candidate.startsWith(`${root}${path.sep}`)) {
       return { supported: false, reason: 'pointer-leaves-workspace' };
     }
     if (requireWorkspace && pointer.kind === 'artifact') {
-      try {
-        const resolved = fs.realpathSync(candidate);
-        if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
-          return { supported: false, reason: 'pointer-leaves-workspace' };
-        }
-      } catch (_error) {
+      let resolved;
+      try { resolved = fs.realpathSync(candidate); } catch (_error) {
+        return { supported: true, filePath: candidate };
       }
+      if (resolved !== root && !resolved.startsWith(`${root}${path.sep}`)) {
+        return { supported: false, reason: 'pointer-leaves-workspace' };
+      }
+      return { supported: true, filePath: resolved };
     }
     return { supported: true, filePath: candidate };
   }
@@ -178,6 +181,16 @@ function assertPqlPointer(value, context) {
   }
 }
 
+function assertPqlArtifactPointer(value, context) {
+  assertPqlPointer(value, context);
+  if (value.kind !== 'artifact') throw new Error(`testing-design: malformed-pql-envelope: ${context}.kind`);
+  if (value.ref.split(/[\\/]+/).includes('..')) throw new Error(`testing-design: malformed-pql-envelope: ${context}.ref`);
+}
+
+function assertPqlRequirementRef(value, context) {
+  assertPqlPointer(value, context);
+}
+
 function assertPqlRepositoryUrl(value, context) {
   assertPqlString(value, context, 1024);
   if (!value.startsWith('https://') || /[@?#\\]/.test(value) || value.endsWith('/')) throw new Error(`testing-design: malformed-pql-envelope: ${context}`);
@@ -199,7 +212,7 @@ function assertPqlSubject(value, context) {
   if (value.consumer !== 'testing-design') throw new Error(`testing-design: foreign-pql-binding: ${context}.consumer`);
   assertPqlRepositoryUrl(value.repository_url, `${context}.repository_url`);
   assertPqlCommit(value.repository_commit_sha, `${context}.repository_commit_sha`);
-  assertPqlPointer(value.project_pack_snapshot_ref, `${context}.project_pack_snapshot_ref`);
+  assertPqlArtifactPointer(value.project_pack_snapshot_ref, `${context}.project_pack_snapshot_ref`);
   assertPqlDigest(value.project_pack_snapshot_sha256, `${context}.project_pack_snapshot_sha256`);
   assertPqlString(value.asset_id, `${context}.asset_id`);
   assertPqlString(value.asset_version, `${context}.asset_version`);
@@ -235,7 +248,7 @@ function preflightPqlEnvelope(request) {
   if (inputSet.trace_id !== request.trace_id || inputSet.dedup_key !== request.dedup_key) throw new Error('testing-design: foreign-pql-binding: identity');
   assertPqlTimestamp(inputSet.created_at, 'pql_input_set.created_at');
   assertOnly(inputSet.project_pack_snapshot, ['ref', 'sha256'], 'pql_input_set.project_pack_snapshot');
-  assertPqlPointer(inputSet.project_pack_snapshot.ref, 'pql_input_set.project_pack_snapshot.ref');
+  assertPqlArtifactPointer(inputSet.project_pack_snapshot.ref, 'pql_input_set.project_pack_snapshot.ref');
   assertPqlDigest(inputSet.project_pack_snapshot.sha256, 'pql_input_set.project_pack_snapshot.sha256');
   if (!Array.isArray(inputSet.approved_assets) || inputSet.approved_assets.length < 1 || inputSet.approved_assets.length > 16) throw new Error('testing-design: malformed-pql-envelope: approved_assets');
 
@@ -249,11 +262,11 @@ function preflightPqlEnvelope(request) {
     assertOnly(asset, ['asset_id', 'asset_version', 'asset_kind', 'artifact_pointer', 'artifact_digest', 'media_type', 'requirement_refs', 'review_decision', 'promotion_receipt', 'approval_subject'], context);
     assertPqlString(asset.asset_id, `${context}.asset_id`); assertPqlString(asset.asset_version, `${context}.asset_version`);
     if (asset.asset_kind !== 'test-case' || asset.media_type !== 'text/plain; charset=utf-8') throw new Error('testing-design: unsupported-pql-asset');
-    assertPqlPointer(asset.artifact_pointer, `${context}.artifact_pointer`); assertPqlDigest(asset.artifact_digest, `${context}.artifact_digest`);
+    assertPqlArtifactPointer(asset.artifact_pointer, `${context}.artifact_pointer`); assertPqlDigest(asset.artifact_digest, `${context}.artifact_digest`);
     if (!Array.isArray(asset.requirement_refs) || asset.requirement_refs.length < 1 || asset.requirement_refs.length > 32) throw new Error(`testing-design: malformed-pql-envelope: ${context}.requirement_refs`);
-    for (const requirement of asset.requirement_refs) assertPqlPointer(requirement, `${context}.requirement_ref`);
-    assertOnly(asset.review_decision, ['ref', 'sha256'], `${context}.review_decision`); assertPqlPointer(asset.review_decision.ref, `${context}.review_decision.ref`); assertPqlDigest(asset.review_decision.sha256, `${context}.review_decision.sha256`);
-    assertOnly(asset.promotion_receipt, ['ref', 'sha256'], `${context}.promotion_receipt`); assertPqlPointer(asset.promotion_receipt.ref, `${context}.promotion_receipt.ref`); assertPqlDigest(asset.promotion_receipt.sha256, `${context}.promotion_receipt.sha256`);
+    for (const requirement of asset.requirement_refs) assertPqlRequirementRef(requirement, `${context}.requirement_ref`);
+    assertOnly(asset.review_decision, ['ref', 'sha256'], `${context}.review_decision`); assertPqlArtifactPointer(asset.review_decision.ref, `${context}.review_decision.ref`); assertPqlDigest(asset.review_decision.sha256, `${context}.review_decision.sha256`);
+    assertOnly(asset.promotion_receipt, ['ref', 'sha256'], `${context}.promotion_receipt`); assertPqlArtifactPointer(asset.promotion_receipt.ref, `${context}.promotion_receipt.ref`); assertPqlDigest(asset.promotion_receipt.sha256, `${context}.promotion_receipt.sha256`);
     assertPqlSubject(asset.approval_subject, `${context}.approval_subject`);
     const identity = `${asset.asset_id}\0${asset.asset_version}`;
     if (identities.has(identity)) {
@@ -265,6 +278,27 @@ function preflightPqlEnvelope(request) {
     if (subject.repository_url !== inputSet.repository.url || subject.repository_commit_sha !== inputSet.repository.commit_sha || stableStringify(subject.project_pack_snapshot_ref) !== stableStringify(inputSet.project_pack_snapshot.ref) || subject.project_pack_snapshot_sha256 !== inputSet.project_pack_snapshot.sha256 || subject.asset_id !== asset.asset_id || subject.asset_version !== asset.asset_version || subject.asset_sha256 !== asset.artifact_digest) throw new Error('testing-design: foreign-pql-binding: approval subject');
   }
   return inputSet;
+}
+
+function preflightPqlArtifactContainment(inputSet, workspace) {
+  if (!inputSet) return;
+  const pointers = [
+    ['pql_input_set.project_pack_snapshot.ref', inputSet.project_pack_snapshot.ref],
+  ];
+  for (let index = 0; index < inputSet.approved_assets.length; index += 1) {
+    const asset = inputSet.approved_assets[index];
+    const context = `pql_input_set.approved_assets[${index}]`;
+    pointers.push(
+      [`${context}.artifact_pointer`, asset.artifact_pointer],
+      [`${context}.review_decision.ref`, asset.review_decision.ref],
+      [`${context}.promotion_receipt.ref`, asset.promotion_receipt.ref],
+      [`${context}.approval_subject.project_pack_snapshot_ref`, asset.approval_subject.project_pack_snapshot_ref],
+    );
+  }
+  for (const [context, pointer] of pointers) {
+    const resolved = resolvePointer(pointer, workspace, true);
+    if (!resolved.supported) throw new Error(`testing-design: pql-artifact-pointer-rejected: ${context}: ${resolved.reason}`);
+  }
 }
 
 function resolvePqlFixtures(inputSet, workspace) {
@@ -840,6 +874,7 @@ function analyze(request) {
   git(workspace, ['cat-file', '-e', `${request.repository.commit_sha}^{commit}`]);
   git(workspace, ['cat-file', '-e', `${request.repository.baseline_commit_sha}^{commit}`]);
 
+  preflightPqlArtifactContainment(pqlInputSet, workspace);
   const pql = resolvePqlFixtures(pqlInputSet, workspace);
   const projectedInputs = [...(request.inputs || []), ...pql.inputs];
   if (projectedInputs.length > 16) throw new Error('testing-design: too-many-inputs');
