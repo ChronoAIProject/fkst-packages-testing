@@ -119,6 +119,22 @@ local function validate_pql_pointer(value, field)
   validate_source(value, field)
 end
 
+local function validate_pql_artifact_pointer(value, field)
+  validate_pql_pointer(value, field)
+  if value.kind ~= "artifact" then
+    fail("malformed-pql-envelope", field .. ".kind must be artifact")
+  end
+  local normalized = value.ref:gsub("\\", "/")
+  if normalized == ".." or normalized:match("^%.%./") ~= nil
+    or normalized:match("/%.%./") ~= nil or normalized:match("/%.%.$") ~= nil then
+    fail("malformed-pql-envelope", field .. ".ref must not contain traversal segments")
+  end
+end
+
+local function validate_pql_requirement_ref(value, field)
+  validate_pql_pointer(value, field)
+end
+
 local function validate_pql_digest(value, field)
   require_sha256(value, field)
 end
@@ -137,7 +153,7 @@ local function validate_pql_subject(value, field)
   if value.consumer ~= "testing-design" then fail("foreign-pql-binding", field .. ".consumer is invalid") end
   validate_repository_url(value.repository_url)
   require_commit(value.repository_commit_sha, field .. ".repository_commit_sha")
-  validate_pql_pointer(value.project_pack_snapshot_ref, field .. ".project_pack_snapshot_ref")
+  validate_pql_artifact_pointer(value.project_pack_snapshot_ref, field .. ".project_pack_snapshot_ref")
   validate_pql_digest(value.project_pack_snapshot_sha256, field .. ".project_pack_snapshot_sha256")
   validate_pql_identity(value.asset_id, field .. ".asset_id")
   validate_pql_identity(value.asset_version, field .. ".asset_version")
@@ -148,7 +164,7 @@ local function validate_pql_requirement_refs(value, field)
   if not dense_list(value, 32) or #value == 0 then fail("malformed-pql-envelope", field .. " must be a non-empty dense list") end
   for index, item in ipairs(value) do
     only_fields(item, { kind = true, ref = true }, field .. "[" .. index .. "]")
-    validate_pql_pointer(item, field .. "[" .. index .. "]")
+    validate_pql_requirement_ref(item, field .. "[" .. index .. "]")
   end
 end
 
@@ -162,13 +178,13 @@ local function validate_pql_asset(value, index)
   validate_pql_identity(value.asset_id, field .. ".asset_id")
   validate_pql_identity(value.asset_version, field .. ".asset_version")
   if value.asset_kind ~= "test-case" then fail("unsupported-pql-asset", field .. ".asset_kind is unsupported") end
-  validate_pql_pointer(value.artifact_pointer, field .. ".artifact_pointer")
+  validate_pql_artifact_pointer(value.artifact_pointer, field .. ".artifact_pointer")
   validate_pql_digest(value.artifact_digest, field .. ".artifact_digest")
   if value.media_type ~= "text/plain; charset=utf-8" then fail("unsupported-pql-asset", field .. ".media_type is unsupported") end
   validate_pql_requirement_refs(value.requirement_refs, field .. ".requirement_refs")
   for _, relation in ipairs({ "review_decision", "promotion_receipt" }) do
     only_fields(value[relation], { ref = true, sha256 = true }, field .. "." .. relation)
-    validate_pql_pointer(value[relation].ref, field .. "." .. relation .. ".ref")
+    validate_pql_artifact_pointer(value[relation].ref, field .. "." .. relation .. ".ref")
     validate_pql_digest(value[relation].sha256, field .. "." .. relation .. ".sha256")
   end
   validate_pql_subject(value.approval_subject, field .. ".approval_subject")
@@ -198,7 +214,7 @@ function D.validate_pql_input_set(value, request)
     end
   end
   only_fields(value.project_pack_snapshot, { ref = true, sha256 = true }, "pql-input-set.project-pack-snapshot")
-  validate_pql_pointer(value.project_pack_snapshot.ref, "pql_input_set.project_pack_snapshot.ref")
+  validate_pql_artifact_pointer(value.project_pack_snapshot.ref, "pql_input_set.project_pack_snapshot.ref")
   validate_pql_digest(value.project_pack_snapshot.sha256, "pql_input_set.project_pack_snapshot.sha256")
   if not dense_list(value.approved_assets, 16) or #value.approved_assets == 0 then
     fail("malformed-pql-envelope", "pql_input_set.approved_assets must contain 1 to 16 assets")

@@ -155,6 +155,29 @@ return {
     t.raises(function() contract.validate_request(value) end)
   end,
 
+  test_restricts_every_pql_fixture_pointer_to_artifact_kind = function()
+    local setters = {
+      function(value, pointer) value.pql_input_set.project_pack_snapshot.ref = pointer end,
+      function(value, pointer) value.pql_input_set.approved_assets[1].artifact_pointer = pointer end,
+      function(value, pointer) value.pql_input_set.approved_assets[1].review_decision.ref = pointer end,
+      function(value, pointer) value.pql_input_set.approved_assets[1].promotion_receipt.ref = pointer end,
+      function(value, pointer) value.pql_input_set.approved_assets[1].approval_subject.project_pack_snapshot_ref = pointer end,
+    }
+    for _, kind in ipairs({ "file", "browser-evidence", "unknown" }) do
+      for _, set_pointer in ipairs(setters) do
+        local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+        set_pointer(value, { kind = kind, ref = ".testing/fixtures/pql/fixture.json" })
+        t.raises(function() contract.validate_request(value) end)
+      end
+    end
+  end,
+
+  test_keeps_pql_requirement_lineage_reference = function()
+    local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
+    value.pql_input_set.approved_assets[1].requirement_refs = { { kind = "pql", ref = "REQ-HOME-TITLE" } }
+    t.eq(contract.validate_request(value), value)
+  end,
+
   test_rejects_pql_control_del_and_invalid_calendar_values = function()
     local value = request(); value.inputs = {}; value.browser_evidence = nil; value.pql_input_set = pql_input_set()
     value.pql_input_set.trace_id = "trace" .. string.char(127)
