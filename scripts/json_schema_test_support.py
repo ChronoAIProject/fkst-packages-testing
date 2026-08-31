@@ -4,11 +4,12 @@ import json
 import re
 from pathlib import Path
 from typing import Sequence
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError, validators
 from referencing import Registry, Resource
 from referencing.exceptions import Unresolvable
+from referencing.jsonschema import DRAFT202012
 
 
 def load_json(path: Path) -> dict[str, object]:
@@ -64,20 +65,85 @@ def validator_for_schema(schema: dict[str, object], **kwargs) -> JsonSchemaValid
     return JsonSchemaValidator(schema, format_checker=FORMAT_CHECKER, **kwargs)
 
 
-def offline_registry(schema_paths: Sequence[Path]) -> Registry:
+def _json_locations(value: object) -> dict[int, str]:
+    locations = {}
+
+    def visit(child: object, location: str) -> None:
+        locations[id(child)] = location
+        if isinstance(child, dict):
+            for key, nested in child.items():
+                token = str(key).replace("~", "~0").replace("/", "~1")
+                visit(nested, f"{location}/{token}")
+        elif isinstance(child, list):
+            for index, nested in enumerate(child):
+                visit(nested, f"{location}/{index}")
+
+    visit(value, "#")
+    return locations
+
+
+def _effective_resource_uri(identifier: object, base_uri: str, owner: str) -> str:
+    if not isinstance(identifier, str) or not identifier:
+        raise AssertionError(f"schema resource has an empty or invalid $id: {owner}")
+    if any(
+        ord(character) <= 0x20 or ord(character) == 0x7F or ord(character) >= 0x80
+        for character in identifier
+    ):
+        raise AssertionError(f"schema resource has an empty or invalid $id: {owner}")
+    if re.search(r"%(?![0-9A-Fa-f]{2})", identifier):
+        raise AssertionError(f"schema resource has an empty or invalid $id: {owner}")
+    try:
+        parsed = urlsplit(identifier)
+        effective = urljoin(base_uri, identifier) if base_uri else identifier
+        effective_parsed = urlsplit(effective)
+    except ValueError as error:
+        raise AssertionError(f"schema resource has an empty or invalid $id: {owner}") from error
+    if parsed.fragment:
+        raise AssertionError(f"schema resource $id must not contain a non-empty fragment: {owner}")
+    if not effective_parsed.scheme:
+        raise AssertionError(f"schema resource $id does not resolve to an absolute URI: {owner}")
+    return effective.removesuffix("#")
+
+
+def _schema_resource_uris(path: Path, schema: dict[str, object]) -> tuple[tuple[str, str], ...]:
+    if not isinstance(schema.get("$id"), str) or not schema["$id"]:
+        raise AssertionError(f"schema is missing a non-empty $id: {path}")
+    locations = _json_locations(schema)
     resources = []
-    schema_ids = set()
-    for path in schema_paths:
+
+    def visit(contents: object, base_uri: str, location: str, root: bool = False) -> None:
+        current_base = base_uri
+        if isinstance(contents, dict) and (root or "$id" in contents):
+            owner = f"{path}:{location}"
+            current_base = _effective_resource_uri(contents.get("$id"), base_uri, owner)
+            resources.append((current_base, owner))
+        for subresource in DRAFT202012.subresources_of(contents):
+            visit(
+                subresource,
+                current_base,
+                locations.get(id(subresource), f"{location}/<subresource>"),
+            )
+
+    visit(schema, "", "#", root=True)
+    return tuple(resources)
+
+
+def offline_registry(schema_paths: Sequence[Path]) -> Registry:
+    loaded = []
+    owners = {}
+    for path in sorted(schema_paths, key=lambda candidate: str(candidate)):
         schema = load_json(path)
         Draft202012Validator.check_schema(schema)
-        schema_id = schema.get("$id")
-        if not isinstance(schema_id, str) or not schema_id:
-            raise AssertionError(f"schema is missing a non-empty $id: {path}")
-        if schema_id in schema_ids:
-            raise AssertionError(f"duplicate schema $id: {schema_id}")
-        schema_ids.add(schema_id)
-        resources.append((schema_id, Resource.from_contents(schema)))
-    return Registry().with_resources(resources).crawl()
+        resource_uris = _schema_resource_uris(path, schema)
+        for resource_uri, owner in resource_uris:
+            previous = owners.get(resource_uri)
+            if previous is not None:
+                raise AssertionError(
+                    f"duplicate schema resource URI {resource_uri!r}: {previous}; {owner}"
+                )
+            owners[resource_uri] = owner
+        loaded.append((resource_uris[0][0], Resource.from_contents(schema)))
+    return Registry().with_resources(loaded).crawl()
 
 
 def assert_all_refs_resolve(

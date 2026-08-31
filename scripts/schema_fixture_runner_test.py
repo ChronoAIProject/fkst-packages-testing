@@ -239,6 +239,21 @@ def write_json(path: Path, value: object) -> None:
     path.write_text(json.dumps(value), encoding="utf-8")
 
 
+def assert_fails_before_callbacks(spec: SchemaSuiteSpec, expected: str) -> None:
+    callbacks = []
+    try:
+        run_schema_fixture_suite(
+            spec,
+            assert_schema=lambda path, schema: callbacks.append(("schema", path.name)),
+            assert_case=lambda result: callbacks.append(("case", result.name)),
+        )
+    except AssertionError as error:
+        assert expected in str(error), str(error)
+    else:
+        raise AssertionError(f"expected failure containing {expected!r}")
+    assert callbacks == []
+
+
 def test_runner() -> None:
     with tempfile.TemporaryDirectory() as directory:
         root = Path(directory)
@@ -299,7 +314,7 @@ def test_runner() -> None:
                 fixtures=DeclaredFixtureSource(fixtures, (
                     DeclaredCase("second", "second.json", primary, False, "payload", "minimum"),
                     DeclaredCase("first", "first.json", primary, True, "payload"),
-                )),
+                ), exhaustive=False),
             )
         )
         assert tuple(result.name for result in declared) == ("second", "first")
@@ -311,7 +326,7 @@ def test_runner() -> None:
                     schemas=(primary,), dependencies=(dependency,),
                     fixtures=DeclaredFixtureSource(fixtures, (
                         DeclaredCase("second", "second.json", primary, True, "payload"),
-                    )),
+                    ), exhaustive=False),
                 )
             )
         except AssertionError as error:
@@ -333,7 +348,7 @@ def test_runner() -> None:
                     schemas=(unresolved,), dependencies=(),
                     fixtures=DeclaredFixtureSource(fixtures, (
                         DeclaredCase("first", "first.json", unresolved, True, "payload"),
-                    )),
+                    ), exhaustive=False),
                 ),
                 assert_case=lambda result: called.append(result.name),
             )
@@ -413,6 +428,196 @@ def test_runner() -> None:
                 pass
             else:
                 raise AssertionError(f"invalid fixture wrapper was accepted: {fixture!r}")
+
+
+def test_fail_closed_fixture_policies() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        schema = root / "schema.json"
+        fixtures = root / "fixtures"
+        write_json(schema, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/schema.json",
+            "type": "object",
+        })
+        case = DeclaredCase("first", "first.json", schema, True, "payload")
+
+        for fixture, expected in (
+            ({"portable_valid": True, "payload": {}}, "required field 'case'"),
+            ({"case": "first", "payload": {}}, "required field 'portable_valid'"),
+            ({"case": "first", "portable_valid": "true", "payload": {}}, "Boolean"),
+        ):
+            write_json(fixtures / "first.json", fixture)
+            assert_fails_before_callbacks(
+                SchemaSuiteSpec(
+                    schemas=(schema,), dependencies=(),
+                    fixtures=DeclaredFixtureSource(
+                        fixtures,
+                        (case,),
+                        required_fields=frozenset({"case", "portable_valid"}),
+                    ),
+                ),
+                expected,
+            )
+
+        write_json(fixtures / "first.json", {"value": 1})
+        raw = run_schema_fixture_suite(SchemaSuiteSpec(
+            schemas=(schema,), dependencies=(),
+            fixtures=DeclaredFixtureSource(
+                fixtures,
+                (DeclaredCase("first", "first.json", schema, True),),
+            ),
+        ))
+        assert raw[0].instance == {"value": 1}
+
+        write_json(fixtures / "extra.json", {})
+        assert_fails_before_callbacks(
+            SchemaSuiteSpec(
+                schemas=(schema,), dependencies=(),
+                fixtures=DeclaredFixtureSource(
+                    fixtures,
+                    (DeclaredCase("first", "first.json", schema, True),),
+                ),
+            ),
+            "unlisted fixture files",
+        )
+        permitted = run_schema_fixture_suite(SchemaSuiteSpec(
+            schemas=(schema,), dependencies=(),
+            fixtures=DeclaredFixtureSource(
+                fixtures,
+                (DeclaredCase("first", "first.json", schema, True),),
+                excluded_files=("extra.json",),
+            ),
+        ))
+        assert len(permitted) == 1
+
+        for exclusions, expected in (
+            (("../outside.json",), "escapes"),
+            (("extra.json", "extra.json"), "unique"),
+            (("first.json",), "overlap"),
+            (("missing.json",), "does not exist"),
+        ):
+            assert_fails_before_callbacks(
+                SchemaSuiteSpec(
+                    schemas=(schema,), dependencies=(),
+                    fixtures=DeclaredFixtureSource(
+                        fixtures,
+                        (DeclaredCase("first", "first.json", schema, True),),
+                        excluded_files=exclusions,
+                    ),
+                ),
+                expected,
+            )
+
+        write_json(fixtures / "index.json", {
+            "schema": "example-index.v1",
+            "cases": [{"name": "first", "file": "first.json"}],
+        })
+        write_json(fixtures / "first.json", {
+            "case": "first", "portable_valid": True, "payload": {},
+        })
+        assert_fails_before_callbacks(
+            SchemaSuiteSpec(
+                schemas=(schema,), dependencies=(),
+                fixtures=IndexedFixtureSource(
+                    fixtures,
+                    "example-index.v1",
+                    schema,
+                    "payload",
+                    frozenset({"case", "portable_valid", "payload"}),
+                ),
+            ),
+            "unlisted fixture files",
+        )
+
+        write_json(fixtures / "index.json", {"schema": "example-index.v1", "cases": []})
+        assert_fails_before_callbacks(
+            SchemaSuiteSpec(
+                schemas=(schema,), dependencies=(),
+                fixtures=IndexedFixtureSource(
+                    fixtures,
+                    "example-index.v1",
+                    schema,
+                    "payload",
+                    frozenset({"case", "portable_valid", "payload"}),
+                    excluded_files=("first.json", "extra.json"),
+                ),
+            ),
+            "must not be empty",
+        )
+
+
+def test_nested_resource_identity() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        fixtures = root / "fixtures"
+        write_json(fixtures / "first.json", {})
+
+        top = root / "top.json"
+        nested = root / "nested.json"
+        write_json(top, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/top.json",
+            "$defs": {"branch": {"$id": "nested.json", "type": "integer"}},
+        })
+        write_json(nested, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/nested.json",
+            "type": "integer",
+        })
+        for paths in ((top, nested), (nested, top)):
+            assert_fails_before_callbacks(
+                SchemaSuiteSpec(
+                    schemas=paths, dependencies=(),
+                    fixtures=DeclaredFixtureSource(
+                        fixtures,
+                        (DeclaredCase("first", "first.json", paths[0], True),),
+                    ),
+                ),
+                "duplicate schema resource URI",
+            )
+
+        sibling = root / "sibling.json"
+        write_json(sibling, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/sibling.json",
+            "$defs": {
+                "first": {"$id": "shared.json", "type": "integer"},
+                "second": {"$id": "https://example.test/shared.json", "type": "string"},
+            },
+        })
+        try:
+            support.offline_registry((sibling,))
+        except AssertionError as error:
+            assert "duplicate schema resource URI" in str(error)
+        else:
+            raise AssertionError("duplicate nested resource URI was accepted")
+
+        distinct = root / "distinct.json"
+        write_json(distinct, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/root/main.json",
+            "$defs": {
+                "number": {"$id": "types/number.json", "type": "integer"},
+                "holder": {
+                    "$id": "models/holder.json",
+                    "type": "object",
+                    "properties": {"value": {"$ref": "../types/number.json"}},
+                },
+            },
+            "$ref": "models/holder.json",
+        })
+        registry = support.offline_registry((distinct,))
+        support.assert_all_refs_resolve(support.load_json(distinct), registry=registry)
+        support.validator_for_schema(support.load_json(distinct), registry=registry).validate({"value": 1})
+
+        annotation = root / "annotation.json"
+        write_json(annotation, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/annotation.json",
+            "examples": [{"$id": "https://example.test/annotation.json"}],
+        })
+        support.offline_registry((annotation,))
 
 
 def test_adapter_ownership() -> None:
@@ -550,6 +755,8 @@ def main() -> int:
     test_support()
     test_aggregator()
     test_runner()
+    test_fail_closed_fixture_policies()
+    test_nested_resource_identity()
     test_adapter_ownership()
     test_adapters()
     test_results_and_evidence()

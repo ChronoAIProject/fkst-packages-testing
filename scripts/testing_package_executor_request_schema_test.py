@@ -63,6 +63,7 @@ def main() -> int:
             fixtures=DeclaredFixtureSource(
                 root=FIXTURES,
                 cases=tuple(DeclaredCase(name, f"{name}.json", SCHEMA, not name.startswith("invalid-"), "request") for name in CASE_NAMES),
+                required_fields=frozenset({"case", "portable_valid"}),
             ),
         ),
         assert_schema=assert_schema,

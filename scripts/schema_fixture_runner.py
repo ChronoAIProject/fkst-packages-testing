@@ -31,12 +31,17 @@ class IndexedFixtureSource:
     schema_path: Path
     instance_field: str
     wrapper_fields: frozenset[str]
+    exhaustive: bool = True
+    excluded_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
 class DeclaredFixtureSource:
     root: Path
     cases: tuple[DeclaredCase, ...]
+    required_fields: frozenset[str] = frozenset()
+    exhaustive: bool = True
+    excluded_files: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -67,8 +72,13 @@ def _mapping(path: Path) -> dict[str, object]:
 
 
 def _safe_path(root: Path, filename: str) -> Path:
-    if not filename or Path(filename).is_absolute():
+    relative = Path(filename)
+    if not filename or relative.is_absolute():
         raise AssertionError(f"fixture file must be a non-empty relative path: {filename!r}")
+    if ".." in relative.parts:
+        raise AssertionError(f"fixture path escapes its root: {filename!r}")
+    if "." in relative.parts or relative.as_posix() != filename:
+        raise AssertionError(f"fixture path must be normalized: {filename!r}")
     root = root.resolve()
     path = (root / filename).resolve()
     try:
@@ -80,7 +90,58 @@ def _safe_path(root: Path, filename: str) -> Path:
     return path
 
 
+def _inventory_files(root: Path) -> frozenset[str]:
+    root = root.resolve()
+    files = []
+    for path in root.rglob("*.json"):
+        relative = path.relative_to(root).as_posix()
+        _safe_path(root, relative)
+        files.append(relative)
+    return frozenset(files)
+
+
+def _validate_source_policy(
+    source: IndexedFixtureSource | DeclaredFixtureSource,
+    case_files: frozenset[str],
+) -> None:
+    if not isinstance(source.exhaustive, bool):
+        raise AssertionError("fixture exhaustive policy must be Boolean")
+    exclusions = source.excluded_files
+    if not isinstance(exclusions, tuple) or not all(
+        isinstance(filename, str) for filename in exclusions
+    ):
+        raise AssertionError("fixture exclusions must be an ordered tuple of paths")
+    if len(exclusions) != len(set(exclusions)):
+        raise AssertionError("fixture exclusions must be unique")
+    excluded = frozenset(exclusions)
+    overlap = case_files & excluded
+    if overlap:
+        raise AssertionError(f"fixture exclusions overlap case files: {sorted(overlap)}")
+    for filename in exclusions:
+        if not filename.endswith(".json"):
+            raise AssertionError(f"fixture exclusion must name a JSON file: {filename!r}")
+        _safe_path(source.root, filename)
+    for filename in case_files:
+        _safe_path(source.root, filename)
+    if not source.exhaustive:
+        return
+    expected = case_files | excluded
+    if isinstance(source, IndexedFixtureSource):
+        expected |= {"index.json"}
+    actual = _inventory_files(source.root)
+    unlisted = sorted(actual - expected)
+    missing = sorted(expected - actual)
+    if unlisted:
+        raise AssertionError(f"unlisted fixture files: {unlisted}")
+    if missing:
+        raise AssertionError(f"missing fixture files: {missing}")
+
+
 def _declared_cases(source: DeclaredFixtureSource) -> tuple[DeclaredCase, ...]:
+    if not isinstance(source.required_fields, frozenset) or not all(
+        isinstance(field, str) and field for field in source.required_fields
+    ):
+        raise AssertionError("declared required_fields must be non-empty strings")
     names = set()
     files = set()
     for case in source.cases:
@@ -110,6 +171,8 @@ def _indexed_cases(source: IndexedFixtureSource) -> tuple[DeclaredCase, ...]:
     entries = index["cases"]
     if not isinstance(entries, list):
         raise AssertionError("fixture index cases must be an array")
+    if not entries:
+        raise AssertionError("fixture index cases must not be empty")
     cases = []
     names = set()
     files = set()
@@ -147,6 +210,38 @@ def _indexed_cases(source: IndexedFixtureSource) -> tuple[DeclaredCase, ...]:
     return tuple(cases)
 
 
+def _fixture_case(
+    source: IndexedFixtureSource | DeclaredFixtureSource,
+    case: DeclaredCase,
+) -> tuple[Path, dict[str, object], object]:
+    path = _safe_path(source.root, case.file)
+    fixture = _mapping(path)
+    if isinstance(source, DeclaredFixtureSource):
+        for field in sorted(source.required_fields):
+            if field not in fixture:
+                raise AssertionError(
+                    f"fixture is missing required field {field!r}: {case.name}"
+                )
+    if "case" in fixture and fixture["case"] != case.name:
+        raise AssertionError(f"fixture case does not match declaration: {case.name}")
+    if "portable_valid" in fixture:
+        if not isinstance(fixture["portable_valid"], bool):
+            raise AssertionError(f"fixture portable_valid must be Boolean: {case.name}")
+        if fixture["portable_valid"] is not case.portable_valid:
+            raise AssertionError(
+                f"fixture portable_valid does not match declaration: {case.name}"
+            )
+    if case.instance_field is None:
+        instance = fixture
+    else:
+        if case.instance_field not in fixture:
+            raise AssertionError(
+                f"fixture is missing instance field {case.instance_field!r}: {case.name}"
+            )
+        instance = fixture[case.instance_field]
+    return path, fixture, instance
+
+
 def run_schema_fixture_suite(
     spec: SchemaSuiteSpec,
     *,
@@ -163,35 +258,21 @@ def run_schema_fixture_suite(
         schemas[path] = schema
         validators[path] = validator
 
-    if assert_schema is not None:
-        for path in spec.schemas:
-            assert_schema(path, schemas[path])
-
     source = spec.fixtures
     cases = (
         _indexed_cases(source)
         if isinstance(source, IndexedFixtureSource)
         else _declared_cases(source)
     )
+    _validate_source_policy(source, frozenset(case.file for case in cases))
+    prepared = tuple((case, *_fixture_case(source, case)) for case in cases)
+
+    if assert_schema is not None:
+        for path in spec.schemas:
+            assert_schema(path, schemas[path])
+
     results = []
-    for case in cases:
-        path = _safe_path(source.root, case.file)
-        fixture = _mapping(path)
-        if "case" in fixture and fixture["case"] != case.name:
-            raise AssertionError(f"fixture case does not match declaration: {case.name}")
-        if "portable_valid" in fixture:
-            if not isinstance(fixture["portable_valid"], bool):
-                raise AssertionError(f"fixture portable_valid must be Boolean: {case.name}")
-            if fixture["portable_valid"] is not case.portable_valid:
-                raise AssertionError(f"fixture portable_valid does not match declaration: {case.name}")
-        if case.instance_field is None:
-            instance = fixture
-        else:
-            if case.instance_field not in fixture:
-                raise AssertionError(
-                    f"fixture is missing instance field {case.instance_field!r}: {case.name}"
-                )
-            instance = fixture[case.instance_field]
+    for case, path, fixture, instance in prepared:
         validator = validators.get(case.schema_path)
         if validator is None:
             raise AssertionError(f"case schema is not registered: {case.schema_path}")
