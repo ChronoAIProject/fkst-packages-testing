@@ -42,7 +42,7 @@ BROWSER_CASES = (
     "invalid-finish-secret-ref", "invalid-forbidden-payload-fields",
     "invalid-handle-control-character", "invalid-handle-del", "invalid-handle-empty",
     "invalid-handle-multibyte-over-byte-limit", "invalid-handle-over-byte-limit",
-    "invalid-missing-kind", "invalid-missing-kind-field", "invalid-missing-schema",
+    "invalid-missing-kind-field", "invalid-missing-kind", "invalid-missing-schema",
     "invalid-missing-turn", "invalid-press-tab-advisory-status", "invalid-press-tab-handle",
     "invalid-press-tab-secret-ref", "invalid-secret-ref-malformed",
     "invalid-secret-ref-over-byte-limit", "invalid-submit-advisory-status",
@@ -230,7 +230,7 @@ def test_adapters() -> None:
             assert module.main() == 0
         assert (stdout.getvalue(), stderr.getvalue()) == (line, "")
         result = subprocess.run(
-            [sys.executable, "-S", "-B", str(ROOT / "scripts" / name)],
+            [sys.executable, "-S", "-B", "-W", "ignore::DeprecationWarning", str(ROOT / "scripts" / name)],
             cwd=ROOT, env=os.environ.copy(),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
@@ -323,7 +323,7 @@ def test_invocation_and_manifest() -> None:
     assert not errors(support.validator_for_schema(schema, resolver=resolver), fixture["request"])
     assert schema["additionalProperties"] is False and set(schema["required"]) == set(schema["properties"])
 
-    manifest_dir = ROOT / "scripts/fixtures/testing-package-manifest.v1"
+    manifest_dir = ROOT / "packages/testing-runner/tests/fixtures/testing-package-manifest.v1"
     manifest_schema = support.load_json(SCHEMA_ROOT / "testing-package-manifest.v1.schema.json")
     Draft202012Validator.check_schema(manifest_schema)
     assert set(manifest_schema["properties"]) == set(manifest_schema["required"]) and len(manifest_schema["required"]) == 14
