@@ -25,6 +25,27 @@ class FixtureResult:
     errors: tuple[ValidationError, ...]
 
 
+def _freeze_json(value: object) -> object:
+    if isinstance(value, dict):
+        return MappingProxyType(
+            {key: _freeze_json(item) for key, item in value.items()}
+        )
+    if isinstance(value, list):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
+def mutable_fixture_copy(fixture: Mapping[str, object]) -> dict[str, object]:
+    def copy_json(value: object) -> object:
+        if isinstance(value, Mapping):
+            return {key: copy_json(item) for key, item in value.items()}
+        if isinstance(value, tuple):
+            return [copy_json(item) for item in value]
+        return value
+
+    return {key: copy_json(value) for key, value in fixture.items()}
+
+
 def discover_fixtures(directory: Path) -> tuple[FixtureSpec, ...]:
     return tuple(
         FixtureSpec(path.stem, path)
@@ -102,7 +123,9 @@ def run_fixtures(
 
         result = FixtureResult(
             spec=spec,
-            fixture=MappingProxyType(fixture),
+            fixture=MappingProxyType(
+                {key: _freeze_json(value) for key, value in fixture.items()}
+            ),
             errors=errors,
         )
         if after_validate is not None:

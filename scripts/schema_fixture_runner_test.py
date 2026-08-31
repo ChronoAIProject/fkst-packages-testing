@@ -9,6 +9,7 @@ import os
 import subprocess
 import sys
 import tempfile
+from collections.abc import Mapping
 from pathlib import Path
 
 from jsonschema import Draft202012Validator, SchemaError
@@ -182,12 +183,16 @@ def test_support() -> None:
 def test_runner() -> None:
     with tempfile.TemporaryDirectory() as directory:
         fixtures = Path(directory)
-        (fixtures / "valid.json").write_text('{"value": 1}', encoding="utf-8")
+        (fixtures / "valid.json").write_text(
+            '{"value":1,"nested":{"trusted":true},"items":[{"trusted":true}]}',
+            encoding="utf-8",
+        )
         (fixtures / "invalid.json").write_text('{"value": "no"}', encoding="utf-8")
         schema_path = fixtures / "schema.json"
         schema_path.write_text(
             '{"$schema":"https://json-schema.org/draft/2020-12/schema",'
-            '"type":"object","properties":{"value":{"type":"integer"}},'
+            '"type":"object","properties":{"value":{"type":"integer"},'
+            '"nested":{"type":"object"},"items":{"type":"array"}},'
             '"required":["value"],"additionalProperties":false}',
             encoding="utf-8",
         )
@@ -208,6 +213,22 @@ def test_runner() -> None:
         assert [result.spec.name for result in results] == ["valid", "invalid"]
         assert not results[0].errors
         assert {error.validator for error in results[1].errors} == {"type"}
+        nested = results[0].fixture["nested"]
+        assert isinstance(nested, Mapping)
+        try:
+            nested["trusted"] = False
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("nested fixture mapping is mutable")
+        items = results[0].fixture["items"]
+        assert isinstance(items, tuple)
+        try:
+            items[0]["trusted"] = False
+        except TypeError:
+            pass
+        else:
+            raise AssertionError("fixture list member is mutable")
 
 
 def run_suite(arguments: list[str]) -> tuple[int, str, str]:

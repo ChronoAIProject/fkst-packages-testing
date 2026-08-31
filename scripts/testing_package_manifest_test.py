@@ -13,6 +13,7 @@ from jsonschema import Draft202012Validator
 from schema_fixture_runner import (
     FixtureSpec,
     load_schema_validator,
+    mutable_fixture_copy,
     raise_first_error,
     run_fixtures,
 )
@@ -104,7 +105,7 @@ def validate_shared_schema_fixtures() -> None:
         before_validate=before_validate,
         valid_failure=raise_first_error,
     )
-    valid = dict(results[0].fixture)
+    valid = mutable_fixture_copy(results[0].fixture)
 
     for codepoint in range(0x20):
         fixture = deepcopy(valid)
