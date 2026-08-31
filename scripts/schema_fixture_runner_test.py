@@ -11,7 +11,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from jsonschema import Draft202012Validator, RefResolver, SchemaError
+from jsonschema import Draft202012Validator, SchemaError
 
 import json_schema_test_support as support
 import schema_test_suite
@@ -319,8 +319,8 @@ def test_invocation_and_manifest() -> None:
     assert fixture["case"] == "valid-canonical-envelope" and fixture["portable_valid"] is True and fixture["lua_valid"] is True and fixture["lua_error"] == ""
     schema = support.load_json(SCHEMA_ROOT / "testing-runner-invocation.v1.schema.json")
     dependency = support.load_json(SCHEMA_ROOT / "testing-package-executor.request.v1.schema.json")
-    resolver = RefResolver.from_schema(schema, store={dependency["$id"]: dependency})
-    assert not errors(support.validator_for_schema(schema, resolver=resolver), fixture["request"])
+    registry = __import__("referencing").Registry().with_resource(dependency["$id"], __import__("referencing").Resource.from_contents(dependency))
+    assert not errors(support.validator_for_schema(schema, registry=registry), fixture["request"])
     assert schema["additionalProperties"] is False and set(schema["required"]) == set(schema["properties"])
 
     manifest_dir = ROOT / "packages/testing-runner/tests/fixtures/testing-package-manifest.v1"
