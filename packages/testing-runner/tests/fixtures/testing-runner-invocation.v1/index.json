@@ -1,6 +1,661 @@
 {
   "schema": "testing-runner-invocation-fixture-index.v1",
   "cases": [
-    { "name": "valid-canonical-envelope", "file": "valid-canonical-envelope.json" }
+    {
+      "name": "valid-canonical-envelope",
+      "file": "valid-canonical-envelope.json"
+    },
+    {
+      "name": "missing-root-schema",
+      "file": "missing-root-schema.json"
+    },
+    {
+      "name": "missing-root-canonicalization",
+      "file": "missing-root-canonicalization.json"
+    },
+    {
+      "name": "missing-root-invocation-id",
+      "file": "missing-root-invocation-id.json"
+    },
+    {
+      "name": "missing-root-qa-run-ref",
+      "file": "missing-root-qa-run-ref.json"
+    },
+    {
+      "name": "missing-root-attempt-ref",
+      "file": "missing-root-attempt-ref.json"
+    },
+    {
+      "name": "missing-root-executor",
+      "file": "missing-root-executor.json"
+    },
+    {
+      "name": "missing-root-resolved-executor",
+      "file": "missing-root-resolved-executor.json"
+    },
+    {
+      "name": "missing-root-execution-profile",
+      "file": "missing-root-execution-profile.json"
+    },
+    {
+      "name": "missing-root-approved-input-refs",
+      "file": "missing-root-approved-input-refs.json"
+    },
+    {
+      "name": "missing-root-requested-capabilities",
+      "file": "missing-root-requested-capabilities.json"
+    },
+    {
+      "name": "missing-root-budgets",
+      "file": "missing-root-budgets.json"
+    },
+    {
+      "name": "missing-root-deadline-epoch-seconds",
+      "file": "missing-root-deadline-epoch-seconds.json"
+    },
+    {
+      "name": "missing-root-producer",
+      "file": "missing-root-producer.json"
+    },
+    {
+      "name": "missing-root-trace-id",
+      "file": "missing-root-trace-id.json"
+    },
+    {
+      "name": "missing-root-dedup-key",
+      "file": "missing-root-dedup-key.json"
+    },
+    {
+      "name": "missing-root-canonical-request-sha256",
+      "file": "missing-root-canonical-request-sha256.json"
+    },
+    {
+      "name": "unknown-root-field",
+      "file": "unknown-root-field.json"
+    },
+    {
+      "name": "unknown-executor-field",
+      "file": "unknown-executor-field.json"
+    },
+    {
+      "name": "unknown-resolved-executor-field",
+      "file": "unknown-resolved-executor-field.json"
+    },
+    {
+      "name": "unknown-approved-input-refs-field",
+      "file": "unknown-approved-input-refs-field.json"
+    },
+    {
+      "name": "unknown-source-ref-field",
+      "file": "unknown-source-ref-field.json"
+    },
+    {
+      "name": "unknown-pql-input-set-ref-field",
+      "file": "unknown-pql-input-set-ref-field.json"
+    },
+    {
+      "name": "unknown-approved-test-case-set-ref-field",
+      "file": "unknown-approved-test-case-set-ref-field.json"
+    },
+    {
+      "name": "unknown-structured-plan-ref-field",
+      "file": "unknown-structured-plan-ref-field.json"
+    },
+    {
+      "name": "unknown-package-release-ref-field",
+      "file": "unknown-package-release-ref-field.json"
+    },
+    {
+      "name": "unknown-package-manifest-ref-field",
+      "file": "unknown-package-manifest-ref-field.json"
+    },
+    {
+      "name": "unknown-schema-catalog-ref-field",
+      "file": "unknown-schema-catalog-ref-field.json"
+    },
+    {
+      "name": "unknown-capability-port-set-ref-field",
+      "file": "unknown-capability-port-set-ref-field.json"
+    },
+    {
+      "name": "unknown-policy-ref-field",
+      "file": "unknown-policy-ref-field.json"
+    },
+    {
+      "name": "unknown-budgets-field",
+      "file": "unknown-budgets-field.json"
+    },
+    {
+      "name": "unknown-producer-field",
+      "file": "unknown-producer-field.json"
+    },
+    {
+      "name": "missing-executor-schema",
+      "file": "missing-executor-schema.json"
+    },
+    {
+      "name": "missing-executor-package-id",
+      "file": "missing-executor-package-id.json"
+    },
+    {
+      "name": "missing-executor-package-version",
+      "file": "missing-executor-package-version.json"
+    },
+    {
+      "name": "missing-executor-package-content-sha256",
+      "file": "missing-executor-package-content-sha256.json"
+    },
+    {
+      "name": "missing-executor-manifest-digest",
+      "file": "missing-executor-manifest-digest.json"
+    },
+    {
+      "name": "missing-executor-entrypoint",
+      "file": "missing-executor-entrypoint.json"
+    },
+    {
+      "name": "missing-executor-contract-major",
+      "file": "missing-executor-contract-major.json"
+    },
+    {
+      "name": "missing-resolved-executor-executor-id",
+      "file": "missing-resolved-executor-executor-id.json"
+    },
+    {
+      "name": "missing-resolved-executor-version",
+      "file": "missing-resolved-executor-version.json"
+    },
+    {
+      "name": "missing-resolved-executor-capability-digest",
+      "file": "missing-resolved-executor-capability-digest.json"
+    },
+    {
+      "name": "missing-approved-input-source-ref",
+      "file": "missing-approved-input-source-ref.json"
+    },
+    {
+      "name": "missing-approved-input-pql-input-set-ref",
+      "file": "missing-approved-input-pql-input-set-ref.json"
+    },
+    {
+      "name": "missing-approved-input-approved-test-case-set-ref",
+      "file": "missing-approved-input-approved-test-case-set-ref.json"
+    },
+    {
+      "name": "missing-approved-input-structured-plan-ref",
+      "file": "missing-approved-input-structured-plan-ref.json"
+    },
+    {
+      "name": "missing-approved-input-package-release-ref",
+      "file": "missing-approved-input-package-release-ref.json"
+    },
+    {
+      "name": "missing-approved-input-package-manifest-ref",
+      "file": "missing-approved-input-package-manifest-ref.json"
+    },
+    {
+      "name": "missing-approved-input-schema-catalog-ref",
+      "file": "missing-approved-input-schema-catalog-ref.json"
+    },
+    {
+      "name": "missing-approved-input-capability-port-set-ref",
+      "file": "missing-approved-input-capability-port-set-ref.json"
+    },
+    {
+      "name": "missing-approved-input-policy-ref",
+      "file": "missing-approved-input-policy-ref.json"
+    },
+    {
+      "name": "missing-source-ref-kind",
+      "file": "missing-source-ref-kind.json"
+    },
+    {
+      "name": "missing-source-ref-ref",
+      "file": "missing-source-ref-ref.json"
+    },
+    {
+      "name": "missing-source-ref-sha256",
+      "file": "missing-source-ref-sha256.json"
+    },
+    {
+      "name": "missing-budgets-step-budget",
+      "file": "missing-budgets-step-budget.json"
+    },
+    {
+      "name": "missing-budgets-time-budget-seconds",
+      "file": "missing-budgets-time-budget-seconds.json"
+    },
+    {
+      "name": "missing-producer-name",
+      "file": "missing-producer-name.json"
+    },
+    {
+      "name": "missing-producer-version",
+      "file": "missing-producer-version.json"
+    },
+    {
+      "name": "alias-attempt-id",
+      "file": "alias-attempt-id.json"
+    },
+    {
+      "name": "alias-plan-ref",
+      "file": "alias-plan-ref.json"
+    },
+    {
+      "name": "alias-pql-input-ref",
+      "file": "alias-pql-input-ref.json"
+    },
+    {
+      "name": "alias-schema-set-ref",
+      "file": "alias-schema-set-ref.json"
+    },
+    {
+      "name": "alias-capability-set-ref",
+      "file": "alias-capability-set-ref.json"
+    },
+    {
+      "name": "wrong-schema",
+      "file": "wrong-schema.json"
+    },
+    {
+      "name": "decode-only-session-input-schema",
+      "file": "decode-only-session-input-schema.json"
+    },
+    {
+      "name": "wrong-canonicalization",
+      "file": "wrong-canonicalization.json"
+    },
+    {
+      "name": "wrong-executor-identity-schema",
+      "file": "wrong-executor-identity-schema.json"
+    },
+    {
+      "name": "wrong-contract-major",
+      "file": "wrong-contract-major.json"
+    },
+    {
+      "name": "unsupported-contract-major",
+      "file": "unsupported-contract-major.json"
+    },
+    {
+      "name": "malformed-semver-one-component",
+      "file": "malformed-semver-one-component.json"
+    },
+    {
+      "name": "malformed-semver-two-component",
+      "file": "malformed-semver-two-component.json"
+    },
+    {
+      "name": "malformed-semver-prefixed",
+      "file": "malformed-semver-prefixed.json"
+    },
+    {
+      "name": "malformed-semver-prerelease",
+      "file": "malformed-semver-prerelease.json"
+    },
+    {
+      "name": "malformed-semver-nonnumeric",
+      "file": "malformed-semver-nonnumeric.json"
+    },
+    {
+      "name": "identity-root-empty",
+      "file": "identity-root-empty.json"
+    },
+    {
+      "name": "identity-nested-empty",
+      "file": "identity-nested-empty.json"
+    },
+    {
+      "name": "identity-root-nul",
+      "file": "identity-root-nul.json"
+    },
+    {
+      "name": "identity-nested-nul",
+      "file": "identity-nested-nul.json"
+    },
+    {
+      "name": "identity-root-unit-separator",
+      "file": "identity-root-unit-separator.json"
+    },
+    {
+      "name": "identity-nested-unit-separator",
+      "file": "identity-nested-unit-separator.json"
+    },
+    {
+      "name": "identity-root-del",
+      "file": "identity-root-del.json"
+    },
+    {
+      "name": "identity-nested-del",
+      "file": "identity-nested-del.json"
+    },
+    {
+      "name": "identity-root-ascii-181-bytes",
+      "file": "identity-root-ascii-181-bytes.json"
+    },
+    {
+      "name": "identity-nested-ascii-181-bytes",
+      "file": "identity-nested-ascii-181-bytes.json"
+    },
+    {
+      "name": "identity-root-multibyte-over-180-bytes",
+      "file": "identity-root-multibyte-over-180-bytes.json"
+    },
+    {
+      "name": "identity-nested-multibyte-over-180-bytes",
+      "file": "identity-nested-multibyte-over-180-bytes.json"
+    },
+    {
+      "name": "identity-root-non-string",
+      "file": "identity-root-non-string.json"
+    },
+    {
+      "name": "identity-nested-non-string",
+      "file": "identity-nested-non-string.json"
+    },
+    {
+      "name": "canonical-digest-63-characters",
+      "file": "canonical-digest-63-characters.json"
+    },
+    {
+      "name": "canonical-digest-65-characters",
+      "file": "canonical-digest-65-characters.json"
+    },
+    {
+      "name": "canonical-digest-uppercase",
+      "file": "canonical-digest-uppercase.json"
+    },
+    {
+      "name": "canonical-digest-non-hexadecimal",
+      "file": "canonical-digest-non-hexadecimal.json"
+    },
+    {
+      "name": "canonical-digest-non-string",
+      "file": "canonical-digest-non-string.json"
+    },
+    {
+      "name": "canonical-digest-mismatch",
+      "file": "canonical-digest-mismatch.json"
+    },
+    {
+      "name": "wrong-kind-source-ref",
+      "file": "wrong-kind-source-ref.json"
+    },
+    {
+      "name": "wrong-kind-pql-input-set-ref",
+      "file": "wrong-kind-pql-input-set-ref.json"
+    },
+    {
+      "name": "wrong-kind-approved-test-case-set-ref",
+      "file": "wrong-kind-approved-test-case-set-ref.json"
+    },
+    {
+      "name": "wrong-kind-structured-plan-ref",
+      "file": "wrong-kind-structured-plan-ref.json"
+    },
+    {
+      "name": "wrong-kind-package-release-ref",
+      "file": "wrong-kind-package-release-ref.json"
+    },
+    {
+      "name": "wrong-kind-package-manifest-ref",
+      "file": "wrong-kind-package-manifest-ref.json"
+    },
+    {
+      "name": "wrong-kind-schema-catalog-ref",
+      "file": "wrong-kind-schema-catalog-ref.json"
+    },
+    {
+      "name": "wrong-kind-capability-port-set-ref",
+      "file": "wrong-kind-capability-port-set-ref.json"
+    },
+    {
+      "name": "wrong-kind-policy-ref",
+      "file": "wrong-kind-policy-ref.json"
+    },
+    {
+      "name": "extra-source-ref-field",
+      "file": "extra-source-ref-field.json"
+    },
+    {
+      "name": "source-ref-empty",
+      "file": "source-ref-empty.json"
+    },
+    {
+      "name": "source-ref-mutable",
+      "file": "source-ref-mutable.json"
+    },
+    {
+      "name": "source-ref-query",
+      "file": "source-ref-query.json"
+    },
+    {
+      "name": "source-ref-fragment",
+      "file": "source-ref-fragment.json"
+    },
+    {
+      "name": "source-ref-nul",
+      "file": "source-ref-nul.json"
+    },
+    {
+      "name": "source-ref-del",
+      "file": "source-ref-del.json"
+    },
+    {
+      "name": "source-ref-ascii-4097-bytes",
+      "file": "source-ref-ascii-4097-bytes.json"
+    },
+    {
+      "name": "source-ref-multibyte-over-4096-bytes",
+      "file": "source-ref-multibyte-over-4096-bytes.json"
+    },
+    {
+      "name": "source-ref-malformed-digest",
+      "file": "source-ref-malformed-digest.json"
+    },
+    {
+      "name": "capabilities-empty",
+      "file": "capabilities-empty.json"
+    },
+    {
+      "name": "capabilities-65-items",
+      "file": "capabilities-65-items.json"
+    },
+    {
+      "name": "capabilities-duplicate",
+      "file": "capabilities-duplicate.json"
+    },
+    {
+      "name": "capability-item-empty",
+      "file": "capability-item-empty.json"
+    },
+    {
+      "name": "capability-item-control",
+      "file": "capability-item-control.json"
+    },
+    {
+      "name": "capability-item-over-byte-limit",
+      "file": "capability-item-over-byte-limit.json"
+    },
+    {
+      "name": "valid-capabilities-ordered",
+      "file": "valid-capabilities-ordered.json"
+    },
+    {
+      "name": "valid-capabilities-reordered",
+      "file": "valid-capabilities-reordered.json"
+    },
+    {
+      "name": "step-budget-zero",
+      "file": "step-budget-zero.json"
+    },
+    {
+      "name": "step-budget-above-max",
+      "file": "step-budget-above-max.json"
+    },
+    {
+      "name": "step-budget-fractional",
+      "file": "step-budget-fractional.json"
+    },
+    {
+      "name": "step-budget-string",
+      "file": "step-budget-string.json"
+    },
+    {
+      "name": "time-budget-zero",
+      "file": "time-budget-zero.json"
+    },
+    {
+      "name": "time-budget-above-max",
+      "file": "time-budget-above-max.json"
+    },
+    {
+      "name": "time-budget-fractional",
+      "file": "time-budget-fractional.json"
+    },
+    {
+      "name": "time-budget-string",
+      "file": "time-budget-string.json"
+    },
+    {
+      "name": "deadline-zero",
+      "file": "deadline-zero.json"
+    },
+    {
+      "name": "deadline-above-max",
+      "file": "deadline-above-max.json"
+    },
+    {
+      "name": "deadline-fractional",
+      "file": "deadline-fractional.json"
+    },
+    {
+      "name": "deadline-string",
+      "file": "deadline-string.json"
+    },
+    {
+      "name": "valid-step-budget-8",
+      "file": "valid-step-budget-8.json"
+    },
+    {
+      "name": "valid-time-budget-1",
+      "file": "valid-time-budget-1.json"
+    },
+    {
+      "name": "valid-time-budget-600",
+      "file": "valid-time-budget-600.json"
+    },
+    {
+      "name": "valid-deadline-1",
+      "file": "valid-deadline-1.json"
+    },
+    {
+      "name": "valid-deadline-max",
+      "file": "valid-deadline-max.json"
+    },
+    {
+      "name": "forbidden-talos-authority",
+      "file": "forbidden-talos-authority.json"
+    },
+    {
+      "name": "forbidden-nyx-secrets",
+      "file": "forbidden-nyx-secrets.json"
+    },
+    {
+      "name": "forbidden-pool-machine-selection",
+      "file": "forbidden-pool-machine-selection.json"
+    },
+    {
+      "name": "forbidden-host-absolute-path",
+      "file": "forbidden-host-absolute-path.json"
+    },
+    {
+      "name": "forbidden-shell-execution",
+      "file": "forbidden-shell-execution.json"
+    },
+    {
+      "name": "forbidden-plugin-import",
+      "file": "forbidden-plugin-import.json"
+    },
+    {
+      "name": "forbidden-cdp-profile",
+      "file": "forbidden-cdp-profile.json"
+    },
+    {
+      "name": "forbidden-browser-state",
+      "file": "forbidden-browser-state.json"
+    },
+    {
+      "name": "forbidden-model-inference",
+      "file": "forbidden-model-inference.json"
+    },
+    {
+      "name": "forbidden-caller-entrypoint",
+      "file": "forbidden-caller-entrypoint.json"
+    },
+    {
+      "name": "forbidden-inline-artifact-body",
+      "file": "forbidden-inline-artifact-body.json"
+    },
+    {
+      "name": "runtime-mapping-ambiguous",
+      "file": "runtime-mapping-ambiguous.json"
+    },
+    {
+      "name": "runtime-mapping-missing",
+      "file": "runtime-mapping-missing.json"
+    },
+    {
+      "name": "runtime-unsupported-execution-profile",
+      "file": "runtime-unsupported-execution-profile.json"
+    },
+    {
+      "name": "runtime-unsupported-mapping",
+      "file": "runtime-unsupported-mapping.json"
+    },
+    {
+      "name": "runtime-capability-mismatch",
+      "file": "runtime-capability-mismatch.json"
+    },
+    {
+      "name": "runtime-policy-mismatch",
+      "file": "runtime-policy-mismatch.json"
+    },
+    {
+      "name": "runtime-lineage-mismatch",
+      "file": "runtime-lineage-mismatch.json"
+    },
+    {
+      "name": "runtime-lineage-rebuilt",
+      "file": "runtime-lineage-rebuilt.json"
+    },
+    {
+      "name": "runtime-lineage-substituted",
+      "file": "runtime-lineage-substituted.json"
+    },
+    {
+      "name": "runtime-stale-plan",
+      "file": "runtime-stale-plan.json"
+    },
+    {
+      "name": "runtime-deadline-expired",
+      "file": "runtime-deadline-expired.json"
+    },
+    {
+      "name": "runtime-cancelled",
+      "file": "runtime-cancelled.json"
+    },
+    {
+      "name": "runtime-current-claim-unavailable",
+      "file": "runtime-current-claim-unavailable.json"
+    },
+    {
+      "name": "runtime-current-claim-superseded",
+      "file": "runtime-current-claim-superseded.json"
+    },
+    {
+      "name": "runtime-replay-conflict",
+      "file": "runtime-replay-conflict.json"
+    }
   ]
 }

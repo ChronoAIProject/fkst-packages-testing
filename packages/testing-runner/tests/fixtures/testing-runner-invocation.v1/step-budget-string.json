@@ -1,0 +1,90 @@
+{
+  "case": "step-budget-string",
+  "portable_valid": false,
+  "lua_valid": false,
+  "lua_error": "malformed-field",
+  "request": {
+    "schema": "testing-runner-invocation.v1",
+    "canonicalization": "fkst-testing-runner-invocation-canonical-json.v1",
+    "invocation_id": "invocation-walking-skeleton",
+    "qa_run_ref": "qa-run-walking-skeleton",
+    "attempt_ref": "attempt-walking-skeleton",
+    "executor": {
+      "schema": "testing-package-executor.identity.v1",
+      "package_id": "testing-runner",
+      "package_version": "1.0.0",
+      "package_content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "manifest_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+      "entrypoint": "testing-runner.run",
+      "contract_major": "testing-runner.v1"
+    },
+    "resolved_executor": {
+      "executor_id": "testing-package-executor.browser-title.v1",
+      "version": "1.0.0",
+      "capability_digest": "9999999999999999999999999999999999999999999999999999999999999999"
+    },
+    "execution_profile": "browser-deterministic.v1",
+    "approved_input_refs": {
+      "source_ref": {
+        "kind": "testing-package-source",
+        "ref": "immutable://inputs/source.json",
+        "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "pql_input_set_ref": {
+        "kind": "testing-package-pql-input",
+        "ref": "immutable://inputs/pql-input-set.json",
+        "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      },
+      "approved_test_case_set_ref": {
+        "kind": "testing-approved-test-case-set",
+        "ref": "immutable://inputs/approved-test-case-set.json",
+        "sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      },
+      "structured_plan_ref": {
+        "kind": "testing-structured-plan",
+        "ref": "immutable://inputs/structured-plan.json",
+        "sha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      },
+      "package_release_ref": {
+        "kind": "testing-package-release",
+        "ref": "immutable://packages/testing-runner/1.0.0/release.json",
+        "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+      },
+      "package_manifest_ref": {
+        "kind": "testing-package-manifest",
+        "ref": "immutable://packages/testing-runner/1.0.0/manifest.json",
+        "sha256": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      "schema_catalog_ref": {
+        "kind": "testing-schema-catalog",
+        "ref": "immutable://packages/testing-runner/1.0.0/schema-catalog.json",
+        "sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+      },
+      "capability_port_set_ref": {
+        "kind": "testing-package-capability-set",
+        "ref": "immutable://inputs/capabilities.json",
+        "sha256": "9999999999999999999999999999999999999999999999999999999999999999"
+      },
+      "policy_ref": {
+        "kind": "testing-package-policy",
+        "ref": "immutable://inputs/policy.json",
+        "sha256": "8888888888888888888888888888888888888888888888888888888888888888"
+      }
+    },
+    "requested_capabilities": [
+      "browser.read-title.v1"
+    ],
+    "budgets": {
+      "step_budget": "1",
+      "time_budget_seconds": 30
+    },
+    "deadline_epoch_seconds": 4102444800,
+    "producer": {
+      "name": "fkst-packages-testing",
+      "version": "1.0.0"
+    },
+    "trace_id": "trace-walking-skeleton",
+    "dedup_key": "dedup-walking-skeleton",
+    "canonical_request_sha256": "e307a583193b235addb17935725e3c52fa125860b4f3fa340431b6e6d43e9066"
+  }
+}
