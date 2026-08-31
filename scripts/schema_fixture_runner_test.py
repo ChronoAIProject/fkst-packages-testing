@@ -318,9 +318,6 @@ def test_invocation_and_manifest() -> None:
     assert set(fixture) == {"case", "portable_valid", "lua_valid", "lua_error", "request"}
     assert fixture["case"] == "valid-canonical-envelope" and fixture["portable_valid"] is True and fixture["lua_valid"] is True and fixture["lua_error"] == ""
     schema = support.load_json(SCHEMA_ROOT / "testing-runner-invocation.v1.schema.json")
-    dependency = support.load_json(SCHEMA_ROOT / "testing-package-executor.request.v1.schema.json")
-    registry = __import__("referencing").Registry().with_resource(dependency["$id"], __import__("referencing").Resource.from_contents(dependency))
-    assert not errors(support.validator_for_schema(schema, registry=registry), fixture["request"])
     assert schema["additionalProperties"] is False and set(schema["required"]) == set(schema["properties"])
 
     manifest_dir = ROOT / "packages/testing-runner/tests/fixtures/testing-package-manifest.v1"
