@@ -1,0 +1,6 @@
+{
+  "schema": "testing-runner-invocation-fixture-index.v1",
+  "cases": [
+    { "name": "valid-canonical-envelope", "file": "valid-canonical-envelope.json" }
+  ]
+}

@@ -2,24 +2,11 @@ local results = require("contract.testing_results")
 local t = fkst.test
 local host_json = json
 local sha256 = require("tests.fixtures.sha256_helpers")
+local conformance = require("tests.fixtures.conformance_runner_helpers")
 
 local fixture_root = "packages/testing-runner/tests/fixtures/testing-results"
 
-local function fixture(name)
-  local paths = {
-    fixture_root .. "/" .. name .. ".json",
-    "tests/fixtures/testing-results/" .. name .. ".json",
-  }
-  local handle
-  for _, path in ipairs(paths) do
-    handle = io.open(path, "rb")
-    if handle ~= nil then break end
-  end
-  assert(handle, "missing testing-results fixture " .. name)
-  local body = handle:read("*a")
-  handle:close()
-  return host_json.decode(body)
-end
+local function fixture(name) return conformance.fixture(fixture_root, name) end
 
 return {
   test_valid_schema_fixtures_match_lua_contract = function()
