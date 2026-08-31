@@ -3,8 +3,12 @@ from __future__ import annotations
 import json
 import re
 from pathlib import Path
+from typing import Sequence
+from urllib.parse import urljoin
 
 from jsonschema import Draft202012Validator, FormatChecker, ValidationError, validators
+from referencing import Registry, Resource
+from referencing.exceptions import Unresolvable
 
 
 def load_json(path: Path) -> dict[str, object]:
@@ -58,3 +62,59 @@ def strict_utc_timestamp(value: object) -> bool:
 def validator_for_schema(schema: dict[str, object], **kwargs) -> JsonSchemaValidator:
     Draft202012Validator.check_schema(schema)
     return JsonSchemaValidator(schema, format_checker=FORMAT_CHECKER, **kwargs)
+
+
+def offline_registry(schema_paths: Sequence[Path]) -> Registry:
+    resources = []
+    schema_ids = set()
+    for path in schema_paths:
+        schema = load_json(path)
+        Draft202012Validator.check_schema(schema)
+        schema_id = schema.get("$id")
+        if not isinstance(schema_id, str) or not schema_id:
+            raise AssertionError(f"schema is missing a non-empty $id: {path}")
+        if schema_id in schema_ids:
+            raise AssertionError(f"duplicate schema $id: {schema_id}")
+        schema_ids.add(schema_id)
+        resources.append((schema_id, Resource.from_contents(schema)))
+    return Registry().with_resources(resources).crawl()
+
+
+def assert_all_refs_resolve(
+    schema: dict[str, object],
+    *,
+    registry: Registry,
+) -> None:
+    schema_id = schema.get("$id")
+    if not isinstance(schema_id, str) or not schema_id:
+        raise AssertionError("schema is missing a non-empty $id")
+
+    def visit(value: object, base_uri: str) -> None:
+        if isinstance(value, dict):
+            nested_id = value.get("$id")
+            if isinstance(nested_id, str):
+                base_uri = urljoin(base_uri, nested_id)
+            reference = value.get("$ref")
+            if isinstance(reference, str):
+                try:
+                    registry.resolver(base_uri).lookup(reference)
+                except Unresolvable as error:
+                    raise AssertionError(
+                        f"unresolved $ref {reference!r} from {base_uri!r}"
+                    ) from error
+            for child in value.values():
+                visit(child, base_uri)
+        elif isinstance(value, list):
+            for child in value:
+                visit(child, base_uri)
+
+    visit(schema, schema_id)
+
+
+def validator_for_schema_file(
+    path: Path,
+    *,
+    registry: Registry,
+) -> tuple[dict[str, object], JsonSchemaValidator]:
+    schema = load_json(path)
+    return schema, validator_for_schema(schema, registry=registry)
