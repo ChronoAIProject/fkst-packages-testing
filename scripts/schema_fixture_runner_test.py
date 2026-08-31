@@ -678,9 +678,15 @@ def test_schema_resource_id_validation() -> None:
             ("root backslash", "https://example.test\\schema.json", None),
             ("root space", "https://example.test/schema name.json", None),
             ("root control", "https://example.test/schema\x01.json", None),
+            ("root trailing LF", "https://example.test/schema.json\n", None),
             ("root DEL", "https://example.test/schema\x7f.json", None),
             ("root non-ASCII", "https://example.test/schéma.json", None),
             ("empty nested", "https://example.test/main.json", ""),
+            (
+                "nested trailing LF",
+                "https://example.test/main.json",
+                "nested.json\n",
+            ),
             (
                 "nested fragment",
                 "https://example.test/main.json",

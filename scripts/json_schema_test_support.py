@@ -86,6 +86,10 @@ def _effective_resource_uri(identifier: object, base_uri: str, owner: str) -> st
     if (
         not isinstance(identifier, str)
         or not identifier
+        or any(
+            ord(character) < 0x20 or ord(character) == 0x7F
+            for character in identifier
+        )
         or not FORMAT_CHECKER.conforms(identifier, "uri-reference")
     ):
         raise AssertionError(f"schema resource has an empty or invalid $id: {owner}")
