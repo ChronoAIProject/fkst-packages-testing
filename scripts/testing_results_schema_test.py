@@ -65,7 +65,11 @@ def main() -> int:
         SchemaSuiteSpec(
             schemas=tuple(SCHEMAS.values()),
             dependencies=(DEPENDENCY,),
-            fixtures=DeclaredFixtureSource(FIXTURES, cases),
+            fixtures=DeclaredFixtureSource(
+                FIXTURES,
+                cases,
+                excluded_files=("valid-result-set-evidence-manifest.json",),
+            ),
         ),
         assert_schema=assert_schema,
     )
