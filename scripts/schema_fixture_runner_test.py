@@ -231,7 +231,7 @@ def test_adapters() -> None:
         assert (stdout.getvalue(), stderr.getvalue()) == (line, "")
         result = subprocess.run(
             [sys.executable, "-S", "-B", str(ROOT / "scripts" / name)],
-            cwd=ROOT, env={**os.environ, "PYTHONPATH": str(ROOT / "scripts")},
+            cwd=ROOT, env=os.environ.copy(),
             text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE, check=False,
         )
         assert (result.returncode, result.stdout, result.stderr) == (0, line, "")
