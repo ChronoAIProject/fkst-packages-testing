@@ -315,7 +315,7 @@ def test_runner() -> None:
                 fixtures=DeclaredFixtureSource(fixtures, (
                     DeclaredCase("second", "second.json", primary, False, "payload", "minimum"),
                     DeclaredCase("first", "first.json", primary, True, "payload"),
-                ), exhaustive=False),
+                ), excluded_files=("index.json",)),
             )
         )
         assert tuple(result.name for result in declared) == ("second", "first")
@@ -327,7 +327,7 @@ def test_runner() -> None:
                     schemas=(primary,), dependencies=(dependency,),
                     fixtures=DeclaredFixtureSource(fixtures, (
                         DeclaredCase("second", "second.json", primary, True, "payload"),
-                    ), exhaustive=False),
+                    ), excluded_files=("index.json", "first.json")),
                 )
             )
         except AssertionError as error:
@@ -349,7 +349,7 @@ def test_runner() -> None:
                     schemas=(unresolved,), dependencies=(),
                     fixtures=DeclaredFixtureSource(fixtures, (
                         DeclaredCase("first", "first.json", unresolved, True, "payload"),
-                    ), exhaustive=False),
+                    ), excluded_files=("index.json", "second.json")),
                 ),
                 assert_case=lambda result: called.append(result.name),
             )
@@ -621,6 +621,150 @@ def test_nested_resource_identity() -> None:
         support.offline_registry((annotation,))
 
 
+def test_schema_resource_id_validation() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        fixtures = root / "fixtures"
+        write_json(fixtures / "first.json", {})
+
+        valid_cases = (
+            ("absolute HTTPS root", "https://example.test/schema.json", None),
+            ("URN root", "urn:example:schema", None),
+            (
+                "relative nested path",
+                "https://example.test/schemas/main.json",
+                "types/number.json",
+            ),
+            (
+                "relative nested parent segment",
+                "https://example.test/schemas/models/main.json",
+                "../types/value.json",
+            ),
+            (
+                "absolute nested ID",
+                "https://example.test/schemas/main.json",
+                "https://schemas.example.test/value.json",
+            ),
+            (
+                "percent-encoded path",
+                "https://example.test/schemas/main.json",
+                "types/value%20schema.json",
+            ),
+        )
+        for name, root_id, nested_id in valid_cases:
+            schema = root / f"valid-{name.replace(' ', '-')}.json"
+            value: dict[str, object] = {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": root_id,
+                "type": "object",
+            }
+            if nested_id is not None:
+                value["$defs"] = {
+                    "nested": {"$id": nested_id, "type": "integer"},
+                }
+            write_json(schema, value)
+            support.offline_registry((schema,))
+
+        invalid_cases = (
+            ("empty root", "", None),
+            ("relative root", "schemas/main.json", None),
+            ("root fragment", "https://example.test/schema.json#value", None),
+            ("root invalid port", "https://example.test:bad/schema.json", None),
+            ("root malformed IPv6", "https://[2001:db8/schema.json", None),
+            ("root invalid host escape", "https://exa%mple.test/schema.json", None),
+            ("root invalid path escape", "https://example.test/%ZZ", None),
+            ("root angle bracket", "https://example.test/<schema>.json", None),
+            ("root quote", 'https://example.test/"schema".json', None),
+            ("root backslash", "https://example.test\\schema.json", None),
+            ("root space", "https://example.test/schema name.json", None),
+            ("root control", "https://example.test/schema\x01.json", None),
+            ("root DEL", "https://example.test/schema\x7f.json", None),
+            ("root non-ASCII", "https://example.test/schéma.json", None),
+            ("empty nested", "https://example.test/main.json", ""),
+            (
+                "nested fragment",
+                "https://example.test/main.json",
+                "nested.json#value",
+            ),
+            (
+                "nested invalid port",
+                "https://example.test/main.json",
+                "//example.test:bad/nested.json",
+            ),
+            (
+                "nested malformed authority",
+                "https://example.test/main.json",
+                "//[2001:db8/nested.json",
+            ),
+            (
+                "nested malformed reference",
+                "https://example.test/main.json",
+                "../<nested>.json",
+            ),
+            (
+                "nested non-absolute effective URI",
+                "urn:example:main",
+                "types/nested.json",
+            ),
+        )
+        for name, root_id, nested_id in invalid_cases:
+            schema = root / f"invalid-{name.replace(' ', '-')}.json"
+            value = {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "$id": root_id,
+                "type": "object",
+            }
+            if nested_id is not None:
+                value["$defs"] = {
+                    "nested": {"$id": nested_id, "type": "integer"},
+                }
+            write_json(schema, value)
+            assert_fails_before_callbacks(
+                SchemaSuiteSpec(
+                    schemas=(schema,),
+                    dependencies=(),
+                    fixtures=DeclaredFixtureSource(
+                        fixtures,
+                        (DeclaredCase("first", "first.json", schema, True),),
+                    ),
+                ),
+                "$id",
+            )
+
+        annotation = root / "annotation-instance.json"
+        write_json(annotation, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/annotation-instance.json",
+            "examples": [{"$id": "not a URI reference"}],
+            "default": {"$id": "also not a URI reference"},
+        })
+        support.offline_registry((annotation,))
+
+
+def test_exhaustive_inventory_ownership() -> None:
+    assert "exhaustive" not in IndexedFixtureSource.__dataclass_fields__
+    assert "exhaustive" not in DeclaredFixtureSource.__dataclass_fields__
+    for source_type, arguments in (
+        (
+            IndexedFixtureSource,
+            (
+                Path("fixtures"),
+                "index.v1",
+                Path("schema.json"),
+                "payload",
+                frozenset(),
+            ),
+        ),
+        (DeclaredFixtureSource, (Path("fixtures"), ())),
+    ):
+        try:
+            source_type(*arguments, exhaustive=False)
+        except TypeError:
+            pass
+        else:
+            raise AssertionError(f"{source_type.__name__} accepted exhaustive=False")
+
+
 def test_adapter_ownership() -> None:
     forbidden_imports = {"RefResolver", "Registry", "Resource", "Draft202012Validator"}
     for name in ADAPTERS:
@@ -797,6 +941,8 @@ def main() -> int:
     test_runner()
     test_fail_closed_fixture_policies()
     test_nested_resource_identity()
+    test_schema_resource_id_validation()
+    test_exhaustive_inventory_ownership()
     test_adapter_ownership()
     test_adapter_required_metadata()
     test_adapters()

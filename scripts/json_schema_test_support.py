@@ -83,24 +83,20 @@ def _json_locations(value: object) -> dict[int, str]:
 
 
 def _effective_resource_uri(identifier: object, base_uri: str, owner: str) -> str:
-    if not isinstance(identifier, str) or not identifier:
-        raise AssertionError(f"schema resource has an empty or invalid $id: {owner}")
-    if any(
-        ord(character) <= 0x20 or ord(character) == 0x7F or ord(character) >= 0x80
-        for character in identifier
+    if (
+        not isinstance(identifier, str)
+        or not identifier
+        or not FORMAT_CHECKER.conforms(identifier, "uri-reference")
     ):
-        raise AssertionError(f"schema resource has an empty or invalid $id: {owner}")
-    if re.search(r"%(?![0-9A-Fa-f]{2})", identifier):
         raise AssertionError(f"schema resource has an empty or invalid $id: {owner}")
     try:
         parsed = urlsplit(identifier)
         effective = urljoin(base_uri, identifier) if base_uri else identifier
-        effective_parsed = urlsplit(effective)
     except ValueError as error:
         raise AssertionError(f"schema resource has an empty or invalid $id: {owner}") from error
     if parsed.fragment:
         raise AssertionError(f"schema resource $id must not contain a non-empty fragment: {owner}")
-    if not effective_parsed.scheme:
+    if not FORMAT_CHECKER.conforms(effective, "uri"):
         raise AssertionError(f"schema resource $id does not resolve to an absolute URI: {owner}")
     return effective.removesuffix("#")
 
@@ -133,8 +129,8 @@ def offline_registry(schema_paths: Sequence[Path]) -> Registry:
     owners = {}
     for path in sorted(schema_paths, key=lambda candidate: str(candidate)):
         schema = load_json(path)
-        Draft202012Validator.check_schema(schema)
         resource_uris = _schema_resource_uris(path, schema)
+        Draft202012Validator.check_schema(schema)
         for resource_uri, owner in resource_uris:
             previous = owners.get(resource_uri)
             if previous is not None:

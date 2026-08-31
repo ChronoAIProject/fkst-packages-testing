@@ -23,11 +23,13 @@ EXPECTED = {
     "jsonschema": "4.26.0",
     "jsonschema-specifications": "2025.9.1",
     "referencing": "0.37.0",
+    "rfc3986-validator": "0.1.1",
     "rpds-py": "2026.6.3",
     "typing-extensions": "4.16.0",
 }
 IMPORTS = (
     "attrs",
+    "rfc3986_validator",
     "jsonschema",
     "jsonschema_specifications",
     "referencing",
@@ -86,9 +88,22 @@ def verify(target: Path) -> None:
         module_path = Path(module.__file__ or "").resolve()
         if not module_path.is_relative_to(target):
             fail(f"Python test dependency {module_name} resolved outside cache: {module_path}")
+    format_checker = importlib.import_module("jsonschema").FormatChecker()
+    if not (
+        format_checker.conforms("https://example.test/schema.json", "uri")
+        and not format_checker.conforms("relative/schema.json", "uri")
+        and format_checker.conforms("relative/schema.json", "uri-reference")
+        and not format_checker.conforms(
+            "https://example.test:bad/schema.json",
+            "uri-reference",
+        )
+    ):
+        fail("jsonschema uri and uri-reference format checks are not active")
     print(
         "PASS python-test-deps "
-        f"jsonschema={EXPECTED['jsonschema']} path={target} cache=verified"
+        f"jsonschema={EXPECTED['jsonschema']} "
+        f"rfc3986-validator={EXPECTED['rfc3986-validator']} "
+        f"path={target} cache=verified formats=uri,uri-reference"
     )
 
 
