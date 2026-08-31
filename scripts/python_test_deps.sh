@@ -35,6 +35,8 @@ case "$1" in
       "$ROOT/scripts/testing_browser_action_schema_test.py" \
       "$ROOT/scripts/testing_package_executor_request_schema_test.py" \
       "$ROOT/scripts/testing_runner_invocation_schema_test.py"
+    env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
+      "$PYTHON_BIN" -S -B "$ROOT/scripts/schema_fixture_runner_test.py"
     ;;
   *)
     echo "usage: scripts/python_test_deps.sh <provision|test>" >&2
