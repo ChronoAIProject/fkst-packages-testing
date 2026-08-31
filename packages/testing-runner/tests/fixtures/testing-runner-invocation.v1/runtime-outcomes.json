@@ -1,0 +1,65 @@
+{
+  "schema": "testing-runner-invocation-runtime-outcomes.v1",
+  "cases": [
+    {
+      "name": "runtime-mapping-ambiguous",
+      "runtime_reason": "mapping-ambiguous"
+    },
+    {
+      "name": "runtime-mapping-missing",
+      "runtime_reason": "mapping-missing"
+    },
+    {
+      "name": "runtime-unsupported-execution-profile",
+      "runtime_reason": "unsupported-execution-profile"
+    },
+    {
+      "name": "runtime-unsupported-mapping",
+      "runtime_reason": "unsupported-mapping"
+    },
+    {
+      "name": "runtime-capability-mismatch",
+      "runtime_reason": "capability-mismatch"
+    },
+    {
+      "name": "runtime-policy-mismatch",
+      "runtime_reason": "policy-mismatch"
+    },
+    {
+      "name": "runtime-lineage-mismatch",
+      "runtime_reason": "lineage-mismatch"
+    },
+    {
+      "name": "runtime-lineage-rebuilt",
+      "runtime_reason": "lineage-rebuilt"
+    },
+    {
+      "name": "runtime-lineage-substituted",
+      "runtime_reason": "lineage-substituted"
+    },
+    {
+      "name": "runtime-stale-plan",
+      "runtime_reason": "stale-plan"
+    },
+    {
+      "name": "runtime-deadline-expired",
+      "runtime_reason": "deadline-expired"
+    },
+    {
+      "name": "runtime-cancelled",
+      "runtime_reason": "cancelled"
+    },
+    {
+      "name": "runtime-current-claim-unavailable",
+      "runtime_reason": "current-claim-unavailable"
+    },
+    {
+      "name": "runtime-current-claim-superseded",
+      "runtime_reason": "current-claim-superseded"
+    },
+    {
+      "name": "runtime-replay-conflict",
+      "runtime_reason": "replay-conflict"
+    }
+  ]
+}

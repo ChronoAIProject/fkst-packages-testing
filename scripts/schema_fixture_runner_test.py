@@ -917,7 +917,17 @@ def test_results_and_evidence() -> None:
 def test_invocation_and_manifest() -> None:
     fixture_dir = ROOT / "packages/testing-runner/tests/fixtures/testing-runner-invocation.v1"
     index = support.load_json(fixture_dir / "index.json")
-    assert index == {"schema": "testing-runner-invocation-fixture-index.v1", "cases": [{"name": "valid-canonical-envelope", "file": "valid-canonical-envelope.json"}]}
+    assert set(index) == {"schema", "cases"}
+    assert index["schema"] == "testing-runner-invocation-fixture-index.v1"
+    assert len(index["cases"]) == 164
+    assert index["cases"][0] == {"name": "valid-canonical-envelope", "file": "valid-canonical-envelope.json"}
+    assert all(set(case) == {"name", "file"} and case["file"] == f"{case['name']}.json" for case in index["cases"])
+    assert len({case["name"] for case in index["cases"]}) == len(index["cases"])
+    runtime_outcomes = support.load_json(fixture_dir / "runtime-outcomes.json")
+    assert set(runtime_outcomes) == {"schema", "cases"}
+    assert runtime_outcomes["schema"] == "testing-runner-invocation-runtime-outcomes.v1"
+    assert len(runtime_outcomes["cases"]) == 15
+    assert all(set(case) == {"name", "runtime_reason"} for case in runtime_outcomes["cases"])
     fixture = support.load_json(fixture_dir / "valid-canonical-envelope.json")
     assert set(fixture) == {"case", "portable_valid", "lua_valid", "lua_error", "request"}
     assert fixture["case"] == "valid-canonical-envelope" and fixture["portable_valid"] is True and fixture["lua_valid"] is True and fixture["lua_error"] == ""
