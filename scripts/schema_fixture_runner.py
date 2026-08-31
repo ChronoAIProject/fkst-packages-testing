@@ -31,7 +31,6 @@ class IndexedFixtureSource:
     schema_path: Path
     instance_field: str
     wrapper_fields: frozenset[str]
-    exhaustive: bool = True
     excluded_files: tuple[str, ...] = ()
 
 
@@ -40,7 +39,6 @@ class DeclaredFixtureSource:
     root: Path
     cases: tuple[DeclaredCase, ...]
     required_fields: frozenset[str] = frozenset()
-    exhaustive: bool = True
     excluded_files: tuple[str, ...] = ()
 
 
@@ -104,8 +102,6 @@ def _validate_source_policy(
     source: IndexedFixtureSource | DeclaredFixtureSource,
     case_files: frozenset[str],
 ) -> None:
-    if not isinstance(source.exhaustive, bool):
-        raise AssertionError("fixture exhaustive policy must be Boolean")
     exclusions = source.excluded_files
     if not isinstance(exclusions, tuple) or not all(
         isinstance(filename, str) for filename in exclusions
@@ -123,8 +119,6 @@ def _validate_source_policy(
         _safe_path(source.root, filename)
     for filename in case_files:
         _safe_path(source.root, filename)
-    if not source.exhaustive:
-        return
     expected = case_files | excluded
     if isinstance(source, IndexedFixtureSource):
         expected |= {"index.json"}
