@@ -3,15 +3,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import subprocess
 import sys
 import tempfile
-from copy import deepcopy
 from pathlib import Path
 
-from jsonschema import Draft202012Validator
-
 import generate_testing_package_manifest as generator
+from schema_fixture_runner import CaseResult, DeclaredCase, DeclaredFixtureSource, SchemaSuiteSpec, run_schema_fixture_suite
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -71,27 +70,36 @@ def load_json(path: Path) -> dict[str, object]:
     return json.loads(path.read_text(encoding="utf-8"))
 
 
-def validate_shared_schema_fixtures() -> None:
-    schema = load_json(SCHEMA)
-    Draft202012Validator.check_schema(schema)
-    validator = Draft202012Validator(schema)
-    valid = load_json(SHARED_FIXTURES / "valid.json")
-    assert valid["package_id"] == "QA_RUNNER@V1"
+def assert_shared_schema(path: Path, schema: dict[str, object]) -> None:
+    assert path == SCHEMA
     assert set(schema["properties"]) == set(schema["required"])
     assert len(schema["required"]) == 14
-    validator.validate(valid)
-
-    for name in INVALID_SHARED_FIXTURES:
-        fixture = load_json(SHARED_FIXTURES / f"{name}.json")
-        errors = list(validator.iter_errors(fixture))
-        assert errors, f"schema accepted invalid shared fixture: {name}"
-
+    control_pattern = schema["properties"]["package_id"]["allOf"][0]["not"]["pattern"]
     for codepoint in range(0x20):
-        fixture = deepcopy(valid)
-        fixture["package_id"] = f"QA{chr(codepoint)}RUNNER@V1"
-        assert not validator.is_valid(fixture), (
+        assert re.search(control_pattern, f"QA{chr(codepoint)}RUNNER@V1"), (
             f"schema accepted package_id control U+{codepoint:04X}"
         )
+
+
+def assert_shared_case(result: CaseResult) -> None:
+    if result.name == "valid":
+        assert result.fixture["package_id"] == "QA_RUNNER@V1"
+
+
+def validate_shared_schema_fixtures() -> None:
+    cases = (DeclaredCase("valid", "valid.json", SCHEMA, True),) + tuple(
+        DeclaredCase(name, f"{name}.json", SCHEMA, False)
+        for name in INVALID_SHARED_FIXTURES
+    )
+    run_schema_fixture_suite(
+        SchemaSuiteSpec(
+            schemas=(SCHEMA,),
+            dependencies=(),
+            fixtures=DeclaredFixtureSource(SHARED_FIXTURES, cases),
+        ),
+        assert_schema=assert_shared_schema,
+        assert_case=assert_shared_case,
+    )
 
 
 def main() -> int:

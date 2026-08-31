@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import contextlib
+import ast
 import importlib
 import io
 import json
@@ -15,6 +16,13 @@ from jsonschema import Draft202012Validator, SchemaError
 
 import json_schema_test_support as support
 import schema_test_suite
+from schema_fixture_runner import (
+    DeclaredCase,
+    DeclaredFixtureSource,
+    IndexedFixtureSource,
+    SchemaSuiteSpec,
+    run_schema_fixture_suite,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 SCHEMA_ROOT = ROOT / "schemas"
@@ -212,13 +220,213 @@ def test_aggregator() -> None:
         assert code == 1 and stdout == ""
         assert stderr == "first.py: first failure\nsecond.py: second failure\n"
         assert marker.read_text() == "first-ran|second-ran"
-        assert run_suite([str(returning)]) == (0, "", "")
+        assert run_suite([str(returning)]) == (
+            1,
+            "",
+            "returning.py: adapter returned nonzero status: 7\n",
+        )
+        assert schema_test_suite.main([]) == 0
         try:
             run_suite([str(importing)])
         except RuntimeError as error:
             assert str(error) == "import failure"
         else:
             raise AssertionError("import-time adapter exception was aggregated")
+
+
+def write_json(path: Path, value: object) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(value), encoding="utf-8")
+
+
+def test_runner() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        root = Path(directory)
+        schemas = root / "schemas"
+        fixtures = root / "fixtures"
+        dependency = schemas / "defs.json"
+        primary = schemas / "main.json"
+        write_json(dependency, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/schemas/defs.json",
+            "$defs": {"positive": {"type": "integer", "minimum": 1}},
+        })
+        write_json(primary, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/schemas/main.json",
+            "type": "object",
+            "required": ["value"],
+            "properties": {"value": {"$ref": "defs.json#/$defs/positive"}},
+            "$defs": {
+                "absolute": {
+                    "$ref": "https://example.test/schemas/defs.json#/$defs/positive"
+                },
+                "nested": {
+                    "$id": "nested/branch.json",
+                    "if": {"const": "unused"},
+                    "then": {"$ref": "../defs.json#/$defs/positive"},
+                }
+            },
+        })
+        write_json(fixtures / "index.json", {
+            "schema": "example-index.v1",
+            "cases": [
+                {"name": "first", "file": "first.json"},
+                {"name": "second", "file": "second.json"},
+            ],
+        })
+        write_json(fixtures / "first.json", {"case": "first", "portable_valid": True, "payload": {"value": 1}})
+        write_json(fixtures / "second.json", {"case": "second", "portable_valid": False, "payload": {"value": 0}})
+        callbacks = []
+        results = run_schema_fixture_suite(
+            SchemaSuiteSpec(
+                schemas=(primary,), dependencies=(dependency,),
+                fixtures=IndexedFixtureSource(
+                    fixtures, "example-index.v1", primary, "payload",
+                    frozenset({"case", "portable_valid", "payload"}),
+                ),
+            ),
+            assert_schema=lambda path, schema: callbacks.append(("schema", path.name)),
+            assert_case=lambda result: callbacks.append(("case", result.name)),
+        )
+        assert tuple(result.name for result in results) == ("first", "second")
+        assert callbacks == [("schema", "main.json"), ("case", "first"), ("case", "second")]
+
+        declared = run_schema_fixture_suite(
+            SchemaSuiteSpec(
+                schemas=(primary,), dependencies=(dependency,),
+                fixtures=DeclaredFixtureSource(fixtures, (
+                    DeclaredCase("second", "second.json", primary, False, "payload", "minimum"),
+                    DeclaredCase("first", "first.json", primary, True, "payload"),
+                )),
+            )
+        )
+        assert tuple(result.name for result in declared) == ("second", "first")
+        assert declared[0].expected_validator == "minimum"
+
+        try:
+            run_schema_fixture_suite(
+                SchemaSuiteSpec(
+                    schemas=(primary,), dependencies=(dependency,),
+                    fixtures=DeclaredFixtureSource(fixtures, (
+                        DeclaredCase("second", "second.json", primary, True, "payload"),
+                    )),
+                )
+            )
+        except AssertionError as error:
+            assert "second" in str(error)
+        else:
+            raise AssertionError("flipped portable validity did not fail")
+
+        unresolved = schemas / "unresolved.json"
+        write_json(unresolved, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/schemas/unresolved.json",
+            "type": "object",
+            "allOf": [{"if": {"const": 1}, "then": {"$ref": "https://example.test/missing.json"}}],
+        })
+        called = []
+        try:
+            run_schema_fixture_suite(
+                SchemaSuiteSpec(
+                    schemas=(unresolved,), dependencies=(),
+                    fixtures=DeclaredFixtureSource(fixtures, (
+                        DeclaredCase("first", "first.json", unresolved, True, "payload"),
+                    )),
+                ),
+                assert_case=lambda result: called.append(result.name),
+            )
+        except AssertionError as error:
+            assert "missing.json" in str(error)
+        else:
+            raise AssertionError("unused unresolved reference did not fail")
+        assert called == []
+
+        missing_id = schemas / "missing-id.json"
+        duplicate_id = schemas / "duplicate-id.json"
+        write_json(missing_id, {"type": "object"})
+        write_json(duplicate_id, {
+            "$schema": "https://json-schema.org/draft/2020-12/schema",
+            "$id": "https://example.test/schemas/main.json",
+            "type": "object",
+        })
+        for paths, expected in (((missing_id,), "missing"), ((primary, duplicate_id), "duplicate")):
+            try:
+                support.offline_registry(paths)
+            except AssertionError as error:
+                assert expected in str(error)
+            else:
+                raise AssertionError(f"{expected} $id was accepted")
+
+        invalid_indexes = (
+            {"schema": "wrong", "cases": []},
+            {"schema": "example-index.v1", "cases": [], "extra": True},
+            {"schema": "example-index.v1", "cases": [{"name": "first", "file": "first.json", "extra": True}]},
+            {"schema": "example-index.v1", "cases": [{"name": "", "file": "first.json"}]},
+            {"schema": "example-index.v1", "cases": [
+                {"name": "first", "file": "first.json"},
+                {"name": "first", "file": "second.json"},
+            ]},
+            {"schema": "example-index.v1", "cases": [{"name": "escape", "file": "../first.json"}]},
+        )
+        for index in invalid_indexes:
+            write_json(fixtures / "index.json", index)
+            try:
+                run_schema_fixture_suite(
+                    SchemaSuiteSpec(
+                        schemas=(primary,), dependencies=(dependency,),
+                        fixtures=IndexedFixtureSource(
+                            fixtures, "example-index.v1", primary, "payload",
+                            frozenset({"case", "portable_valid", "payload"}),
+                        ),
+                    )
+                )
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError(f"invalid index was accepted: {index!r}")
+
+        write_json(fixtures / "index.json", {
+            "schema": "example-index.v1",
+            "cases": [{"name": "first", "file": "first.json"}],
+        })
+        invalid_fixtures = (
+            {"case": "first", "portable_valid": True},
+            {"case": "wrong", "portable_valid": True, "payload": {"value": 1}},
+            {"case": "first", "portable_valid": "true", "payload": {"value": 1}},
+            {"case": "first", "portable_valid": True, "payload": {"value": 1}, "extra": True},
+        )
+        for fixture in invalid_fixtures:
+            write_json(fixtures / "first.json", fixture)
+            try:
+                run_schema_fixture_suite(
+                    SchemaSuiteSpec(
+                        schemas=(primary,), dependencies=(dependency,),
+                        fixtures=IndexedFixtureSource(
+                            fixtures, "example-index.v1", primary, "payload",
+                            frozenset({"case", "portable_valid", "payload"}),
+                        ),
+                    )
+                )
+            except AssertionError:
+                pass
+            else:
+                raise AssertionError(f"invalid fixture wrapper was accepted: {fixture!r}")
+
+
+def test_adapter_ownership() -> None:
+    forbidden_imports = {"RefResolver", "Registry", "Resource", "Draft202012Validator"}
+    for name in ADAPTERS:
+        tree = ast.parse((ROOT / "scripts" / name).read_text(encoding="utf-8"))
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                assert not forbidden_imports.intersection(alias.name for alias in node.names), name
+            if isinstance(node, ast.Call):
+                function = node.func
+                if isinstance(function, ast.Name):
+                    assert function.id not in forbidden_imports, (name, function.id)
+                if isinstance(function, ast.Attribute):
+                    assert function.attr not in {"glob", "iter_errors"}, (name, function.attr)
 
 
 def test_adapters() -> None:
@@ -340,6 +548,8 @@ def test_invocation_and_manifest() -> None:
 def main() -> int:
     test_support()
     test_aggregator()
+    test_runner()
+    test_adapter_ownership()
     test_adapters()
     test_results_and_evidence()
     test_invocation_and_manifest()
