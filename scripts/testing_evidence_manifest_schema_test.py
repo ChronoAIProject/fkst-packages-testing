@@ -3,7 +3,13 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from json_schema_test_support import load_json, validator_for_schema
+from json_schema_test_support import load_json
+from schema_fixture_runner import (
+    FixtureSpec,
+    load_schema_validator,
+    raise_first_error,
+    run_fixtures,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -40,8 +46,7 @@ INVALID_FIXTURES = {
 
 
 def main() -> int:
-    schema = load_json(SCHEMA)
-    validator = validator_for_schema(schema)
+    schema, validator = load_schema_validator(SCHEMA)
 
     assert schema["$schema"] == "https://json-schema.org/draft/2020-12/schema"
     assert schema["$id"] == (
@@ -69,19 +74,26 @@ def main() -> int:
         "screenshot",
         "sanitized-json",
     ]
-    for name in valid_fixture_names:
-        validator.validate(load_json(FIXTURES / f"{name}.json"))
-
-    for name, expected_validator in INVALID_FIXTURES.items():
-        fixture = load_json(FIXTURES / f"{name}.json")
-        errors = list(validator.iter_errors(fixture))
-        assert errors, f"schema accepted invalid shared fixture: {name}"
-        validators = {error.validator for error in errors}
-        assert expected_validator in validators, (
-            name,
-            expected_validator,
-            sorted(str(value) for value in validators),
-        )
+    run_fixtures(
+        (
+            FixtureSpec(name, FIXTURES / f"{name}.json", expected_valid=True)
+            for name in valid_fixture_names
+        ),
+        validator_for=lambda _spec, _fixture: validator,
+        valid_failure=raise_first_error,
+    )
+    run_fixtures(
+        (
+            FixtureSpec(
+                name,
+                FIXTURES / f"{name}.json",
+                expected_valid=False,
+                expected_validator=expected_validator,
+            )
+            for name, expected_validator in INVALID_FIXTURES.items()
+        ),
+        validator_for=lambda _spec, _fixture: validator,
+    )
 
     print("testing-evidence-manifest-schema: PASS")
     return 0

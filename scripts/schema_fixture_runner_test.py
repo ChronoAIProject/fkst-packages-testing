@@ -14,6 +14,7 @@ from pathlib import Path
 from jsonschema import Draft202012Validator, SchemaError
 
 import json_schema_test_support as support
+import schema_fixture_runner as runner
 import schema_test_suite
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -178,6 +179,37 @@ def test_support() -> None:
     assert not support.FORMAT_CHECKER.conforms("2024-01-01T24:00:00Z", "date-time")
 
 
+def test_runner() -> None:
+    with tempfile.TemporaryDirectory() as directory:
+        fixtures = Path(directory)
+        (fixtures / "valid.json").write_text('{"value": 1}', encoding="utf-8")
+        (fixtures / "invalid.json").write_text('{"value": "no"}', encoding="utf-8")
+        schema_path = fixtures / "schema.json"
+        schema_path.write_text(
+            '{"$schema":"https://json-schema.org/draft/2020-12/schema",'
+            '"type":"object","properties":{"value":{"type":"integer"}},'
+            '"required":["value"],"additionalProperties":false}',
+            encoding="utf-8",
+        )
+        _schema, validator = runner.load_schema_validator(schema_path)
+        specs = (
+            runner.FixtureSpec("valid", fixtures / "valid.json", expected_valid=True),
+            runner.FixtureSpec(
+                "invalid",
+                fixtures / "invalid.json",
+                expected_valid=False,
+                expected_validator="type",
+            ),
+        )
+        results = runner.run_fixtures(
+            specs,
+            validator_for=lambda _spec, _fixture: validator,
+        )
+        assert [result.spec.name for result in results] == ["valid", "invalid"]
+        assert not results[0].errors
+        assert {error.validator for error in results[1].errors} == {"type"}
+
+
 def run_suite(arguments: list[str]) -> tuple[int, str, str]:
     old_argv = sys.argv
     sys.argv = [str(ROOT / "scripts/schema_test_suite.py"), *arguments]
@@ -339,6 +371,7 @@ def test_invocation_and_manifest() -> None:
 
 def main() -> int:
     test_support()
+    test_runner()
     test_aggregator()
     test_adapters()
     test_results_and_evidence()

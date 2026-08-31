@@ -6,6 +6,12 @@ from pathlib import Path
 from referencing import Registry, Resource
 
 from json_schema_test_support import load_json, validator_for_schema
+from schema_fixture_runner import (
+    FixtureSpec,
+    load_schema_validator,
+    raise_first_error,
+    run_fixtures,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +55,12 @@ INVALID_VALIDATORS = {
     "invalid-duration-negative": "minimum",
     "invalid-duration-over-max": "maximum",
 }
+SCHEMA_BY_DISCRIMINATOR = {
+    "testing-observation.v1": "testing-observation.v1.schema.json",
+    "testing-assertion-result.v1": "testing-assertion-result.v1.schema.json",
+    "testing-case-result.v2": "testing-case-result.v2.schema.json",
+    "testing-case-result-set.v2": "testing-case-result-set.v2.schema.json",
+}
 
 
 def make_registry() -> Registry:
@@ -60,46 +72,44 @@ def make_registry() -> Registry:
 
 
 def validator_for(name: str, registry: Registry):
-    return validator_for_schema(load_json(SCHEMA_ROOT / name), registry=registry)
-
-
-def validate_fixture(name: str, registry: Registry) -> None:
-    value = load_json(FIXTURES / f"{name}.json")
-    schema_name = {
-        "testing-observation.v1": "testing-observation.v1.schema.json",
-        "testing-assertion-result.v1": "testing-assertion-result.v1.schema.json",
-        "testing-case-result.v2": "testing-case-result.v2.schema.json",
-        "testing-case-result-set.v2": "testing-case-result-set.v2.schema.json",
-    }[value["schema"]]
-    validator_for(schema_name, registry).validate(value)
+    _, validator = load_schema_validator(
+        SCHEMA_ROOT / name,
+        validator_factory=lambda schema: validator_for_schema(schema, registry=registry),
+    )
+    return validator
 
 
 def main() -> int:
     registry = make_registry()
     for name in SCHEMA_NAMES:
-        schema = load_json(SCHEMA_ROOT / name)
-        validator_for_schema(schema)
+        schema, _validator = load_schema_validator(SCHEMA_ROOT / name)
         assert schema["$id"].endswith(name)
         assert schema["x-fkst-canonicalization"] == "fkst-testing-results-canonical-json.v1"
 
-    for name in VALID:
-        validate_fixture(name, registry)
+    def validator_for_fixture(_spec, fixture):
+        return validator_for(SCHEMA_BY_DISCRIMINATOR[fixture["schema"]], registry)
 
-    for name, expected_validator in INVALID_VALIDATORS.items():
-        value = load_json(FIXTURES / f"{name}.json")
-        schema_name = {
-            "testing-observation.v1": "testing-observation.v1.schema.json",
-            "testing-assertion-result.v1": "testing-assertion-result.v1.schema.json",
-            "testing-case-result.v2": "testing-case-result.v2.schema.json",
-            "testing-case-result-set.v2": "testing-case-result-set.v2.schema.json",
-        }[value["schema"]]
-        errors = list(validator_for(schema_name, registry).iter_errors(value))
-        validators_seen = {str(error.validator) for error in errors}
-        assert expected_validator in validators_seen, (
-            name,
-            expected_validator,
-            sorted(validators_seen),
-        )
+    run_fixtures(
+        (
+            FixtureSpec(name, FIXTURES / f"{name}.json", expected_valid=True)
+            for name in VALID
+        ),
+        validator_for=validator_for_fixture,
+        valid_failure=raise_first_error,
+    )
+    run_fixtures(
+        (
+            FixtureSpec(
+                name,
+                FIXTURES / f"{name}.json",
+                expected_valid=False,
+                expected_validator=expected_validator,
+            )
+            for name, expected_validator in INVALID_VALIDATORS.items()
+        ),
+        validator_for=validator_for_fixture,
+        validator_key=lambda error: str(error.validator),
+    )
 
     print("testing-results-schema: PASS")
     return 0

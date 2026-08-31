@@ -10,7 +10,12 @@ from copy import deepcopy
 from pathlib import Path
 
 from jsonschema import Draft202012Validator
-
+from schema_fixture_runner import (
+    FixtureSpec,
+    load_schema_validator,
+    raise_first_error,
+    run_fixtures,
+)
 import generate_testing_package_manifest as generator
 
 
@@ -67,24 +72,39 @@ def assert_rejected(arguments: list[str], expected: str) -> None:
     assert expected in result.stderr, (expected, result.stderr)
 
 
-def load_json(path: Path) -> dict[str, object]:
-    return json.loads(path.read_text(encoding="utf-8"))
-
-
 def validate_shared_schema_fixtures() -> None:
-    schema = load_json(SCHEMA)
-    Draft202012Validator.check_schema(schema)
-    validator = Draft202012Validator(schema)
-    valid = load_json(SHARED_FIXTURES / "valid.json")
-    assert valid["package_id"] == "QA_RUNNER@V1"
-    assert set(schema["properties"]) == set(schema["required"])
-    assert len(schema["required"]) == 14
-    validator.validate(valid)
+    def validator_factory(schema):
+        Draft202012Validator.check_schema(schema)
+        return Draft202012Validator(schema)
 
-    for name in INVALID_SHARED_FIXTURES:
-        fixture = load_json(SHARED_FIXTURES / f"{name}.json")
-        errors = list(validator.iter_errors(fixture))
-        assert errors, f"schema accepted invalid shared fixture: {name}"
+    schema, validator = load_schema_validator(
+        SCHEMA,
+        validator_factory=validator_factory,
+    )
+
+    def before_validate(spec, fixture) -> None:
+        if spec.expected_valid:
+            assert fixture["package_id"] == "QA_RUNNER@V1"
+            assert set(schema["properties"]) == set(schema["required"])
+            assert len(schema["required"]) == 14
+
+    results = run_fixtures(
+        (
+            FixtureSpec("valid", SHARED_FIXTURES / "valid.json", expected_valid=True),
+            *(
+                FixtureSpec(
+                    name,
+                    SHARED_FIXTURES / f"{name}.json",
+                    expected_valid=False,
+                )
+                for name in INVALID_SHARED_FIXTURES
+            ),
+        ),
+        validator_for=lambda _spec, _fixture: validator,
+        before_validate=before_validate,
+        valid_failure=raise_first_error,
+    )
+    valid = dict(results[0].fixture)
 
     for codepoint in range(0x20):
         fixture = deepcopy(valid)
