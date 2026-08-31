@@ -7,6 +7,7 @@ import importlib
 import io
 import json
 import os
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -635,6 +636,45 @@ def test_adapter_ownership() -> None:
                     assert function.attr not in {"glob", "iter_errors"}, (name, function.attr)
 
 
+def test_adapter_required_metadata() -> None:
+    adapters = (
+        ("testing_browser_action_schema_test", "valid-click.json"),
+        ("testing_package_executor_request_schema_test", "valid-complete.json"),
+    )
+    for module_name, fixture_name in adapters:
+        module = importlib.import_module(module_name)
+        for required_field in ("case", "portable_valid"):
+            with tempfile.TemporaryDirectory() as directory:
+                fixtures = Path(directory) / "fixtures"
+                shutil.copytree(module.FIXTURES, fixtures)
+                fixture_path = fixtures / fixture_name
+                fixture = support.load_json(fixture_path)
+                del fixture[required_field]
+                write_json(fixture_path, fixture)
+
+                callbacks = []
+                original_fixtures = module.FIXTURES
+                original_assert_schema = module.assert_schema
+                original_assert_case = module.assert_case
+                module.FIXTURES = fixtures
+                module.assert_schema = lambda path, schema: callbacks.append("schema")
+                module.assert_case = lambda result: callbacks.append("case")
+                try:
+                    try:
+                        module.main()
+                    except AssertionError as error:
+                        assert f"required field {required_field!r}" in str(error), str(error)
+                    else:
+                        raise AssertionError(
+                            f"{module_name} accepted fixture missing {required_field!r}"
+                        )
+                finally:
+                    module.FIXTURES = original_fixtures
+                    module.assert_schema = original_assert_schema
+                    module.assert_case = original_assert_case
+                assert callbacks == []
+
+
 def test_adapters() -> None:
     expected = dict(zip(ADAPTERS, ADAPTER_OUTPUTS))
     for name, line in expected.items():
@@ -758,6 +798,7 @@ def main() -> int:
     test_fail_closed_fixture_policies()
     test_nested_resource_identity()
     test_adapter_ownership()
+    test_adapter_required_metadata()
     test_adapters()
     test_results_and_evidence()
     test_invocation_and_manifest()
