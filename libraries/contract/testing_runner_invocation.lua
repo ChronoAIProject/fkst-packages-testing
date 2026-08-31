@@ -20,6 +20,17 @@ end
 local function integer(value, field, minimum, maximum)
   if type(value) ~= "number" or value ~= math.floor(value) or value < minimum or value > maximum then fail("malformed-field", field .. " must be an integer in range") end
 end
+local function dense_list(value, field, limit, nonempty)
+  if type(value) ~= "table" then fail("malformed-list", field .. " must be a list") end
+  local count, highest = 0, 0
+  for key in pairs(value) do
+    if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then fail("malformed-list", field .. " must be dense") end
+    count = count + 1
+    highest = math.max(highest, key)
+  end
+  if count ~= highest or count > limit or (nonempty and count == 0) then fail("malformed-list", field .. " has an invalid size") end
+  return value
+end
 local function validate_ref(value, field, kind) executor.validate_reference(value, field, kind) end
 local reference_kinds = { source_ref="testing-package-source", pql_input_set_ref="testing-package-pql-input", approved_test_case_set_ref="testing-approved-test-case-set", structured_plan_ref="testing-structured-plan", package_release_ref="testing-package-release", package_manifest_ref="testing-package-manifest", schema_catalog_ref="testing-schema-catalog", capability_port_set_ref="testing-package-capability-set", policy_ref="testing-package-policy" }
 local function validate_refs(value)
@@ -60,7 +71,7 @@ function M.validate(value, sha256_fn)
   fields(value, { schema=true, canonicalization=true, invocation_id=true, qa_run_ref=true, attempt_ref=true, executor=true, resolved_executor=true, execution_profile=true, approved_input_refs=true, requested_capabilities=true, budgets=true, deadline_epoch_seconds=true, producer=true, trace_id=true, dedup_key=true, canonical_request_sha256=true }, "invocation")
   if required(value, "schema") ~= M.schema then fail("unknown-schema", "schema") end; if required(value, "canonicalization") ~= M.canonicalization then fail("unsupported-canonicalization", "canonicalization") end
   identity(required(value, "invocation_id"), "invocation_id"); identity(required(value, "qa_run_ref"), "qa_run_ref"); identity(required(value, "attempt_ref"), "attempt_ref"); validate_executor(required(value, "executor")); validate_resolved(required(value, "resolved_executor")); identity(required(value, "execution_profile"), "execution_profile"); validate_refs(required(value, "approved_input_refs"))
-  local capabilities = required(value, "requested_capabilities"); if type(capabilities) ~= "table" then fail("malformed-field", "requested_capabilities must be an array") end; if #capabilities < 1 or #capabilities > 64 then fail("malformed-field", "requested_capabilities has an invalid item count") end
+  local capabilities = dense_list(required(value, "requested_capabilities"), "requested_capabilities", 64, true)
   local seen = {}; for index, item in ipairs(capabilities) do identity(item, "requested_capabilities[" .. index .. "]"); if seen[item] then fail("duplicate-item", "requested_capabilities must be unique") end; seen[item] = true end
   validate_budgets(required(value, "budgets")); integer(required(value, "deadline_epoch_seconds"), "deadline_epoch_seconds", 1, canonical_json.max_integer); validate_producer(required(value, "producer")); identity(required(value, "trace_id"), "trace_id"); identity(required(value, "dedup_key"), "dedup_key"); digest(required(value, "canonical_request_sha256"), "canonical_request_sha256")
   if type(sha256_fn) ~= "function" then fail("missing-sha256", "SHA-256 function must be callable") end
