@@ -1,5 +1,6 @@
 local core = require("core")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "module_loop_keepalive_tick" },
@@ -14,4 +15,4 @@ local function act(event)
   log.info("module-test-loop dept=seam tag=REDRIVE actions=" .. tostring(#actions))
 end
 
-return saga.department(spec, { done = function() return false end, act = act, name = "seam" })
+return saga.department(spec, { done = function() return false end, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "module-test-loop.seam" })

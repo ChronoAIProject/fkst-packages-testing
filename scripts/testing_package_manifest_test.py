@@ -6,13 +6,35 @@ import json
 import subprocess
 import sys
 import tempfile
+from copy import deepcopy
 from pathlib import Path
+
+from jsonschema import Draft202012Validator
 
 import generate_testing_package_manifest as generator
 
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "scripts" / "fixtures" / "testing-package-manifest.v1"
+SCHEMA = ROOT / "schemas" / "testing-package-manifest.v1.schema.json"
+SHARED_FIXTURES = (
+    ROOT
+    / "packages"
+    / "testing-runner"
+    / "tests"
+    / "fixtures"
+    / "testing-package-manifest.v1"
+)
+INVALID_SHARED_FIXTURES = (
+    "invalid-package-id-u0000",
+    "invalid-package-id-u001f",
+    "invalid-package-id-slash",
+    "invalid-package-id-backslash",
+    "invalid-package-id-dot-dot",
+    "invalid-unknown-top-level-field",
+    "invalid-malformed-digest",
+    "invalid-unsupported-major",
+)
 
 
 def base_arguments(root: Path, output: Path) -> list[str]:
@@ -45,7 +67,35 @@ def assert_rejected(arguments: list[str], expected: str) -> None:
     assert expected in result.stderr, (expected, result.stderr)
 
 
+def load_json(path: Path) -> dict[str, object]:
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def validate_shared_schema_fixtures() -> None:
+    schema = load_json(SCHEMA)
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    valid = load_json(SHARED_FIXTURES / "valid.json")
+    assert valid["package_id"] == "QA_RUNNER@V1"
+    assert set(schema["properties"]) == set(schema["required"])
+    assert len(schema["required"]) == 14
+    validator.validate(valid)
+
+    for name in INVALID_SHARED_FIXTURES:
+        fixture = load_json(SHARED_FIXTURES / f"{name}.json")
+        errors = list(validator.iter_errors(fixture))
+        assert errors, f"schema accepted invalid shared fixture: {name}"
+
+    for codepoint in range(0x20):
+        fixture = deepcopy(valid)
+        fixture["package_id"] = f"QA{chr(codepoint)}RUNNER@V1"
+        assert not validator.is_valid(fixture), (
+            f"schema accepted package_id control U+{codepoint:04X}"
+        )
+
+
 def main() -> int:
+    validate_shared_schema_fixtures()
     vector = json.loads((FIXTURES / "canonical-vector.json").read_text(encoding="utf-8"))
     canonical_bytes = generator.canonical(vector["input"])
     assert canonical_bytes == vector["canonical"].encode("utf-8")

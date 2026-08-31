@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-runner.ai-browser-control.action.v1.schema.json",
+  "title": "Testing Runner AI Browser Control Action v1",
+  "description": "Portable validation covers standalone wire structure only. Contextual authorization against allowed actions and approved secret references remains owned by contract.browser_control.validate_action, and canonicalization remains owned by any containing artifact contract.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "turn", "kind"],
+  "properties": {
+    "schema": {"const": "testing-runner.ai-browser-control.action.v1"},
+    "turn": {"type": "integer", "minimum": 1, "maximum": 8},
+    "kind": {"enum": ["click", "type", "submit", "press_tab", "finish"]},
+    "handle": {"$ref": "#/$defs/handle"},
+    "secret_ref": {"$ref": "#/$defs/secretRef"},
+    "advisory_status": {"enum": ["success", "blocked"]}
+  },
+  "oneOf": [
+    {
+      "properties": {"kind": {"const": "click"}},
+      "required": ["handle"],
+      "not": {"anyOf": [{"required": ["secret_ref"]}, {"required": ["advisory_status"]}]}
+    },
+    {
+      "properties": {"kind": {"const": "type"}},
+      "required": ["handle", "secret_ref"],
+      "not": {"required": ["advisory_status"]}
+    },
+    {
+      "properties": {"kind": {"const": "submit"}},
+      "required": ["handle"],
+      "not": {"anyOf": [{"required": ["secret_ref"]}, {"required": ["advisory_status"]}]}
+    },
+    {
+      "properties": {"kind": {"const": "press_tab"}},
+      "not": {
+        "anyOf": [
+          {"required": ["handle"]},
+          {"required": ["secret_ref"]},
+          {"required": ["advisory_status"]}
+        ]
+      }
+    },
+    {
+      "properties": {"kind": {"const": "finish"}},
+      "required": ["advisory_status"],
+      "not": {"anyOf": [{"required": ["handle"]}, {"required": ["secret_ref"]}]}
+    }
+  ],
+  "$defs": {
+    "handle": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80,
+      "x-fkst-maxUtf8Bytes": 80,
+      "format": "fkst-utf8-max-80",
+      "not": {"pattern": "[\\u0000-\\u001F\\u007F]"}
+    },
+    "secretRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "x-fkst-maxUtf8Bytes": 180,
+      "format": "fkst-utf8-max-180",
+      "pattern": "^[A-Za-z0-9_.-]+$"
+    }
+  }
+}

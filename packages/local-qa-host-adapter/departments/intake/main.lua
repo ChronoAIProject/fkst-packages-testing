@@ -1,5 +1,6 @@
 local adapter = require("adapter")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "qa_run_request" },
@@ -19,5 +20,5 @@ end
 return saga.department(spec, {
   done = function() return false end,
   act = act,
-  name = "intake",
+  wrap = workflow_logging.wrap_pipeline_failure, name = "local-qa-host-adapter.intake",
 })

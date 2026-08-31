@@ -5,6 +5,10 @@ local json_codec = require("testing_runtime.json")
 local project_profile = require("contract.project_profile")
 local design_loop = require("testing_ai.module_ai_design_loop")
 local workflow_qa = require("contract.workflow_qa")
+local testing_evidence_manifest = require("contract.testing_evidence_manifest")
+local testing_package_executor_contract = require("contract.testing_package_executor")
+local testing_results = require("contract.testing_results")
+local pql_lineage = require("host_pql_lineage")
 
 local M = {}
 
@@ -323,8 +327,22 @@ function Context:_testing_design_runtime()
       if context.browser_walking_skeleton then
         context.testing_design_invocations = context.testing_design_invocations + 1
         context.testing_design_runtime_path = "packages/testing-design/bin/testing-design-runtime.js"
+        local runtime_request = request
+        if context.pql_home_title then
+          local prepared = direct_exec({
+            "node", context.project_root .. "/examples/generic-host/test_support/pql_design_runtime_fixture.js",
+            context.project_root, context.temp_root .. "/pql-design", request.artifact_root,
+          }, context.project_root)
+          if prepared.exit_code ~= 0 then
+            error("canonical PQL testing-design fixture failed: " .. tostring(prepared.stderr))
+          end
+          runtime_request = json.decode(prepared.stdout)
+          runtime_request.source_ref = copy(request.source_ref)
+          runtime_request.trace_id = request.trace_id
+          runtime_request.dedup_key = request.dedup_key
+        end
         local response = direct_exec({
-          "env", "FKST_TESTING_DESIGN_REQUEST_JSON=" .. json_codec.encode(request),
+          "env", "FKST_TESTING_DESIGN_REQUEST_JSON=" .. json_codec.encode(runtime_request),
           "node", context.project_root .. "/" .. context.testing_design_runtime_path, "analyze-env",
         }, context.project_root)
         if response.exit_code ~= 0 then
@@ -376,6 +394,74 @@ function Context:_testing_design_runtime()
       return copy(result)
     end,
   }
+end
+
+function Context:prepare_module_start(payload)
+  if not self.pql_home_title then return payload end
+  local accepted = pql_lineage.accept(payload.testing_design_context, {
+    read_artifact_bytes = function(path) return read_file(absolute(path)) end,
+    sha256_bytes = sha256_bytes,
+    decode_json = json.decode,
+  })
+  local prepared = copy(payload)
+  local input_root = prepared.artifact_root .. "/design-loop-inputs"
+  local design_root = prepared.artifact_root .. "/design-loop"
+  local seed_cases = {
+    schema = design_loop.schemas.seed_cases,
+    cases = { {
+      id = accepted.design_case_id,
+      module_id = prepared.module,
+      priority = "P0",
+      title = "Promoted PQL design case",
+      objective = "Retain the accepted design identity for Host authorization.",
+      case_kind = "read-only-interaction",
+      actions = { {
+        action = "open-visible-surface",
+        target = "Host-authorized home surface",
+        expected = "The Host-defined successful completion state remains observable",
+      } },
+      expected_observable = "The Host-authorized home behavior remains observable.",
+      coverage_subject_ids = { accepted.requirement_refs[1].ref },
+      provenance = {
+        origin = "user-seed",
+        source_pointer = accepted.context.traceability_seed.artifact_pointer,
+      },
+      review_status = "executable",
+    } },
+  }
+  local coverage_scope = {
+    schema = design_loop.schemas.coverage_scope,
+    subjects = { {
+      id = accepted.requirement_refs[1].ref,
+      kind = "requirement",
+      priority = "P0",
+      evidence_pointer = accepted.context.traceability_seed.artifact_pointer,
+    } },
+  }
+  local deterministic_cases = { schema = design_loop.schemas.deterministic_cases, cases = {} }
+  local seed_ref = input_root .. "/seed-cases.json"
+  local coverage_ref = input_root .. "/coverage-scope.json"
+  local deterministic_ref = input_root .. "/deterministic-cases.json"
+  assert(self.store:write(seed_ref, seed_cases))
+  assert(self.store:write(coverage_ref, coverage_scope))
+  assert(self.store:write(deterministic_ref, deterministic_cases))
+  prepared.ai_design_loop_request = {
+    schema = design_loop.schemas.request,
+    artifact_root = design_root,
+    seed_cases_ref = { artifact_pointer = seed_ref, artifact_digest = design_loop.document_digest(seed_cases) },
+    coverage_scope_ref = { artifact_pointer = coverage_ref, artifact_digest = design_loop.document_digest(coverage_scope) },
+    deterministic_cases_ref = {
+      artifact_pointer = deterministic_ref,
+      artifact_digest = design_loop.document_digest(deterministic_cases),
+    },
+    max_rounds = 1,
+    case_budget = 1,
+    action_budget = 1,
+    trace_id = prepared.trace_id,
+    dedup_key = prepared.dedup_key,
+  }
+  self.pql_lineage = copy(accepted)
+  return prepared
 end
 
 function Context:_structured_runtime()
@@ -959,14 +1045,15 @@ end
 function M.new(options)
   options = options or {}
   local inventory = options.scenario == "downstream-inventory"
-  local browser = type(options.scenario) == "string"
+  local pql_home_title = options.scenario == "pql-home-title"
+  local browser = pql_home_title or type(options.scenario) == "string"
     and options.scenario:sub(1, #"canonical-browser") == "canonical-browser"
   local port = reserve_port()
   local cdp_port = reserve_port()
   local run_prefix = inventory and "inventory-initial-state-"
     or browser and "canonical-browser-" or "canonical-workflow-qa-"
   local fixture_name = inventory and "downstream-inventory" or "canonical-qa"
-  local run_id = run_prefix .. tostring(port)
+  local run_id = pql_home_title and "pql-home-title" or run_prefix .. tostring(port)
   local artifact_root = ".testing/runs/" .. run_id
   local temp_root = "/tmp/fkst-generic-host-" .. run_id
   local source_root = temp_root .. "/source"
@@ -990,7 +1077,7 @@ function M.new(options)
   require_exec({ "git", "config", "user.name", "Generic Host Fixture" }, source_root)
   require_exec({ "git", "add", "." }, source_root)
   local commit_argv = { "git", "commit", "--quiet", "-m", fixture_name .. " fixture" }
-  if browser then
+  if browser and not pql_home_title then
     commit_argv = { "env", "GIT_AUTHOR_DATE=2026-08-20T00:00:00Z",
       "GIT_COMMITTER_DATE=2026-08-20T00:00:00Z", table.unpack(commit_argv) }
   end
@@ -1006,7 +1093,7 @@ function M.new(options)
     commit_sha = commit_sha,
   }
   local trace_id = "trace-" .. run_id
-  local dedup_key = run_id
+  local dedup_key = pql_home_title and "dedup-pql-home-title" or run_id
   local origin = "http://127.0.0.1:" .. tostring(port)
   local base_url = origin .. (inventory and "/inventory/SKU-001" or "/health")
   local profile_ref = ref(artifact_root .. "/authorization/profile.json")
@@ -1144,7 +1231,20 @@ function M.new(options)
     }
   end
   local catalog_cases = {}
-  if browser then
+  if pql_home_title then
+    catalog_cases = { {
+      design_case_id = options.catalog_design_case_id or "TCA-HOME-TITLE@1",
+      case_id = "home-title", kind = "browser",
+      goal = "Verify the Host-authorized home title behavior",
+      success_conditions = { "The Browser case reaches the Host-defined successful completion state" },
+      completion_assertions = {
+        { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+        { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+        { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+        { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+      },
+    } }
+  elseif browser then
     catalog_cases = { {
       design_case_id = "existing-user-login", case_id = "existing-user-login", kind = "browser",
       goal = "Authenticate the existing user through the approved browser target.",
@@ -1421,7 +1521,7 @@ function M.new(options)
         approval_sha256 = store:digest(analysis_approval_ref.ref),
       },
       inputs = {},
-      artifact_root = artifact_root .. "/analysis",
+      artifact_root = artifact_root .. (pql_home_title and "/design" or "/analysis"),
       source_ref = { kind = "workflow-qa", ref = run_id },
       trace_id = trace_id,
       dedup_key = dedup_key,
@@ -1432,7 +1532,7 @@ function M.new(options)
       backend = "fkst-native",
       no_browser = false,
       dry_run = false,
-      artifact_root = artifact_root .. "/design",
+      artifact_root = artifact_root .. (pql_home_title and "/module" or "/design"),
       source_ref = { kind = "workflow-qa", ref = run_id },
       trace_id = trace_id,
       dedup_key = dedup_key,
@@ -1457,7 +1557,7 @@ function M.new(options)
             or "The canonical fixture exposes one local service surface.",
         },
       },
-      ai_design_loop_request = inventory_design_request,
+      ai_design_loop_request = not pql_home_title and inventory_design_request or nil,
     },
     structured_execution = {
       artifact_root = browser and artifact_root or artifact_root .. "/execution",
@@ -1521,9 +1621,12 @@ function M.new(options)
     fixture_source_root = absolute("examples/generic-host/fixtures/" .. fixture_name),
     use_local_qa_departments = inventory,
     local_qa_department_calls = {},
-    temp_root_prefix = "/tmp/fkst-generic-host-" .. run_prefix,
-    artifact_root_prefix = project_root .. "/.testing/runs/" .. run_prefix,
+    temp_root_prefix = pql_home_title and "/tmp/fkst-generic-host-pql-"
+      or "/tmp/fkst-generic-host-" .. run_prefix,
+    artifact_root_prefix = pql_home_title and project_root .. "/.testing/runs/pql-"
+      or project_root .. "/.testing/runs/" .. run_prefix,
     browser_walking_skeleton = browser,
+    pql_home_title = pql_home_title,
     testing_design_invocations = 0,
     browser_grant_claims = 0,
     browser_effects = {},
@@ -1562,8 +1665,132 @@ function M.new(options)
   return context
 end
 
+function M.testing_package_executor_ports(options)
+  options = options or {}
+  local store = options.store or Store.new()
+  local counters = options.counters or {
+    claims=0, freshness=0, browser=0, intents=0, receipts=0, writes=0, completions=0, clock=0,
+  }
+  local function completed_path(dedup_key) return ".testing/runs/" .. dedup_key .. "/execution/completed.json" end
+  local function intent_path(dedup_key) return ".testing/runs/" .. dedup_key .. "/execution/effect-intent.json" end
+  local function receipt_path(dedup_key) return ".testing/runs/" .. dedup_key .. "/execution/effect-receipt.json" end
+  local function artifact_path(dedup_key, kind)
+    return ".testing/runs/" .. dedup_key .. "/" .. (kind == "evidence-manifest" and "evidence-manifest.json" or "case-result-set.json")
+  end
+  local function load_completed(query)
+    local stored = store:load(completed_path(query.dedup_key))
+    if stored == nil then return nil end
+    testing_package_executor_contract.validate_completed_execution(stored.value, query.dedup_key, query.admission_digest)
+    local manifest_artifact = store:load(stored.value.evidence_manifest_ref.ref)
+    local result_artifact = store:load(stored.value.case_result_set_ref.ref)
+    if manifest_artifact == nil or result_artifact == nil
+      or manifest_artifact.digest ~= stored.value.evidence_manifest_ref.sha256
+      or result_artifact.digest ~= stored.value.case_result_set_ref.sha256
+      or manifest_artifact.value.canonical_sha256 ~= stored.value.evidence_manifest_sha256
+      or result_artifact.digest ~= stored.value.case_result_set_sha256 then
+      error("completed testing execution artifacts are unavailable or digest-mismatched")
+    end
+    local manifest_context = #manifest_artifact.value.entries == 0 and { allow_empty_entries=true } or nil
+    testing_results.validate_case_result_set(result_artifact.value, nil, manifest_artifact.value, sha256_bytes, manifest_context)
+    testing_evidence_manifest.validate(manifest_artifact.value, result_artifact.value, sha256_bytes, manifest_context)
+    return copy(stored.value)
+  end
+  return {
+    store = store,
+    counters = counters,
+    load_completed_execution = load_completed,
+    claim_execution = function(request)
+      counters.claims = counters.claims + 1
+      return { schema=testing_package_executor_contract.schemas.execution_claim_receipt, status="claimed",
+        dedup_key=request.dedup_key, admission_digest=request.admission_digest, claim_id="claim-" .. request.dedup_key }
+    end,
+    load_effect_intent = function(query)
+      testing_package_executor_contract.validate_effect_state_query(query)
+      local stored = store:load(intent_path(query.dedup_key))
+      if stored == nil then return nil end
+      testing_package_executor_contract.validate_effect_intent(stored.value, query.dedup_key, query.admission_digest)
+      return copy(stored.value)
+    end,
+    load_effect_receipt = function(query)
+      testing_package_executor_contract.validate_effect_state_query(query)
+      local stored = store:load(receipt_path(query.dedup_key))
+      if stored == nil then return nil end
+      testing_package_executor_contract.validate_effect_receipt(stored.value, ".testing/runs/" .. query.dedup_key)
+      local artifact = store:load(stored.value.evidence_refs[1].ref)
+      local evidence_value = artifact and artifact.value or nil
+      local evidence_fields_valid = type(evidence_value) == "table"
+        and evidence_value.observed_url == stored.value.observed_url
+        and evidence_value.observed_title == stored.value.observed_title
+      if evidence_fields_valid then
+        for key in pairs(evidence_value) do
+          if key ~= "observed_url" and key ~= "observed_title" then evidence_fields_valid = false end
+        end
+      end
+      if artifact == nil or artifact.digest ~= stored.value.evidence_refs[1].sha256
+        or #artifact.raw ~= stored.value.evidence_size_bytes
+        or not evidence_fields_valid then
+        error("stored Browser receipt evidence is unavailable or digest-mismatched")
+      end
+      return copy(stored.value)
+    end,
+    check_freshness = function() counters.freshness = counters.freshness + 1; return options.freshness ~= false end,
+    persist_effect_intent = function(intent)
+      counters.intents = counters.intents + 1
+      return store:write(intent_path(intent.dedup_key), intent)
+    end,
+    browser_read_title = function(request)
+      counters.browser = counters.browser + 1
+      local title = assert(options.browser_read_title, "browser_read_title adapter is required")(request.url)
+      local path = ".testing/runs/dedup-walking-skeleton/evidence/title.json"
+      local evidence_value = { observed_url=request.url, observed_title=title }
+      local bytes = json_codec.encode(evidence_value)
+      if not store:write_raw(path, bytes, evidence_value) then error("Browser title evidence write conflicted") end
+      local persisted = assert(store:load(path), "Browser title evidence reload failed")
+      if persisted.raw ~= bytes or persisted.digest ~= sha256_bytes(persisted.raw) then error("Browser title evidence verification failed") end
+      return { schema=testing_package_executor_contract.schemas.browser_read_title_receipt, effect_id=request.effect_id, status="succeeded",
+        observed_url=request.url, observed_title=title,
+        evidence_refs={ { kind="artifact", ref=path, sha256=persisted.digest } }, evidence_size_bytes=#persisted.raw }
+    end,
+    persist_effect_receipt = function(receipt)
+      testing_package_executor_contract.validate_effect_receipt(receipt, ".testing/runs/dedup-walking-skeleton")
+      counters.receipts = counters.receipts + 1
+      return store:write(receipt_path("dedup-walking-skeleton"), receipt)
+    end,
+    write_canonical = function(request)
+      counters.writes = counters.writes + 1
+      local path = artifact_path(request.dedup_key, request.kind)
+      if not store:write_raw(path, request.canonical_bytes) then error("canonical artifact write conflicted") end
+      local persisted = assert(store:load(path), "canonical artifact reload failed")
+      if persisted.raw ~= request.canonical_bytes or persisted.digest ~= sha256_bytes(persisted.raw) then error("canonical artifact verification failed") end
+      if options.writer_ack_loss and not options.writer_ack_loss.fired then
+        options.writer_ack_loss.fired = true
+        error("canonical writer acknowledgement lost")
+      end
+      return { schema=testing_package_executor_contract.schemas.write_receipt, status="written",
+        ref={ kind="artifact", ref=path, sha256=persisted.digest } }
+    end,
+    complete_execution = function(receipt)
+      counters.completions = counters.completions + 1
+      if not store:write(completed_path(receipt.dedup_key), receipt) then error("completed execution write conflicted") end
+      if options.completion_ack_loss then error("completion acknowledgement lost") end
+      return copy(assert(store:load(completed_path(receipt.dedup_key))).value)
+    end,
+    now = function()
+      counters.clock = counters.clock + 1
+      if options.now then return options.now(counters.clock) end
+      return counters.clock == 1 and "2026-08-21T00:00:00Z" or "2026-08-21T00:00:01Z"
+    end,
+    sha256 = sha256_bytes,
+  }
+end
+
 M.copy = copy
 M.equal = equal
 M.sha256_bytes = sha256_bytes
+M.spawn_process = spawn_process
+M.wait_http = wait_http
+M.http_request = http_request
+M.direct_exec = direct_exec
+M.remove_tree = remove_tree
 
 return M

@@ -1,7 +1,7 @@
 local M = {}
 local stdout_policy = require("forge.github.stdout_policy")
 
-local function issue_comments_argv(repo, issue_number)
+function M.issue_comments_argv(repo, issue_number)
   return {
     "gh",
     "api",
@@ -23,31 +23,32 @@ local function issue_comment_create_argv(repo, issue_number, body_file)
   }
 end
 
-local function comment_update_argv(repo, comment_id, body_file)
+local function require_comment_id(comment_id)
   if comment_id == nil or tostring(comment_id) == "" then
-    error("forge.github.comments: invalid comment id")
+    error("forge.github.comments: comment-id-missing: invalid comment id")
   end
+  return tostring(comment_id)
+end
+
+local function comment_update_argv(repo, comment_id, body_file)
   return {
     "gh",
     "api",
     "--method",
     "PATCH",
-    "repos/" .. tostring(repo) .. "/issues/comments/" .. tostring(comment_id),
+    "repos/" .. tostring(repo) .. "/issues/comments/" .. require_comment_id(comment_id),
     "--field",
     "body=@" .. tostring(body_file),
   }
 end
 
 local function comment_get_argv(repo, comment_id)
-  if comment_id == nil or tostring(comment_id) == "" then
-    error("forge.github.comments: invalid comment id")
-  end
   return {
     "gh",
     "api",
     "--method",
     "GET",
-    "repos/" .. tostring(repo) .. "/issues/comments/" .. tostring(comment_id),
+    "repos/" .. tostring(repo) .. "/issues/comments/" .. require_comment_id(comment_id),
   }
 end
 
@@ -66,11 +67,11 @@ end
 
 function M.install(handle)
   function handle.issue_comments(repo, issue_number, timeout)
-    return handle._exec(issue_comments_argv(repo, issue_number), timeout, "gh issue comments", stdout_policy.content_json("issue_comments"))
+    return handle._exec(M.issue_comments_argv(repo, issue_number), timeout, "gh issue comments", stdout_policy.content_json("issue_comments"))
   end
 
   function handle.pr_comments(repo, pr_number, timeout)
-    return handle._exec(issue_comments_argv(repo, pr_number), timeout, "gh PR comments", stdout_policy.content_json("pr_comments"))
+    return handle._exec(M.issue_comments_argv(repo, pr_number), timeout, "gh PR comments", stdout_policy.content_json("pr_comments"))
   end
 
   function handle.issue_comment_create(repo, issue_number, body_file, timeout)

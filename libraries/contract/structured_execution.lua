@@ -1,3 +1,4 @@
+local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 local time = require("contract.time")
 
@@ -28,7 +29,7 @@ local browser_completion_fields = {
 }
 
 local function fail(classification, message)
-  error("contract.structured-execution: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.structured-execution", classification, message))
 end
 
 local function bounded(value, limit)

@@ -7,7 +7,7 @@ local function stderr_of(result)
   return type(result) == "table" and tostring(result.stderr or "") or ""
 end
 
-function M.is_rate_limited(result)
+local function is_rate_limited(result)
   local stderr = stderr_of(result):lower()
   for _, needle in ipairs({
     -- Broad "api rate limit" covers both "API rate limit exceeded" and the
@@ -31,16 +31,16 @@ function M.is_rate_limited(result)
   return false
 end
 
-function M.is_issue_assign_permission_denied(result, context)
+local function is_issue_assign_permission_denied(result, context)
   return tostring(context or "") == "gh issue assign"
     and stderr_of(result):lower():find("permission%-denied", 1, false) ~= nil
 end
 
 function M.error_class(result, context)
-  if M.is_rate_limited(result) then
+  if is_rate_limited(result) then
     return "gh-rate-limited"
   end
-  if M.is_issue_assign_permission_denied(result, context) then
+  if is_issue_assign_permission_denied(result, context) then
     return "gh-issue-assign-permission-denied"
   end
   return "gh-command-failed"

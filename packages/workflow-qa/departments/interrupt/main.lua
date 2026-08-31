@@ -1,6 +1,7 @@
 local actions = require("departments.actions")
 local core = require("core")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "qa_interrupt_request" }, published_seam = { "qa_interrupt_request" },
@@ -14,4 +15,4 @@ local function act(event)
   actions.raise_all(raised)
 end
 
-return saga.department(spec, { done = function() return false end, act = act, name = "interrupt" })
+return saga.department(spec, { done = function() return false end, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "workflow-qa.interrupt" })

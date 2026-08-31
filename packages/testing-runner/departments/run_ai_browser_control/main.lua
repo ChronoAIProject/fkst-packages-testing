@@ -1,5 +1,6 @@
 local browser_control = require("ai_browser_control")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "ai_browser_control_request" },
@@ -18,5 +19,5 @@ end
 return saga.department(spec, {
   done = function() return false end,
   act = act,
-  name = "run_ai_browser_control",
+  wrap = workflow_logging.wrap_pipeline_failure, name = "testing-runner.run_ai_browser_control",
 })

@@ -611,6 +611,7 @@ local function write_module_inventory(result, payload, context, opts)
     generated_case_agent_review = ((payload.cdp_execution or {}).generated_case_agent_review),
     ai_design_loop_state = ai_design_loop_state,
     ai_design_loop_authoritative = ai_design_loop_state ~= nil,
+    testing_design_context = payload.testing_design_context,
     step_budget = ((payload.cdp_execution or {}).step_budget),
     case_priorities = ((payload.cdp_execution or {}).case_priorities),
   }

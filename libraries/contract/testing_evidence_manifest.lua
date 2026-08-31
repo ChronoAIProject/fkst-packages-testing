@@ -1,4 +1,5 @@
 -- contract.testing_evidence_manifest: canonical, pointer-only evidence manifests.
+local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 local time = require("contract.time")
 
@@ -12,7 +13,9 @@ M.sensitivities = { public = true, internal = true, restricted = true }
 M.policy_statuses = { approved = true, redacted = true, withheld = true }
 M.max_entries = 256
 
-local function fail(classification, message) error("contract.testing-evidence-manifest: " .. classification .. ": " .. message) end
+local function fail(classification, message)
+  error(error_facts.error_message("contract.testing-evidence-manifest", classification, message))
+end
 local function bounded(value, field, limit)
   if type(value) ~= "string" or value == "" or #value > (limit or 512) or value:find("[%z\1-\31]") ~= nil then fail("malformed-field", field .. " must be a bounded string") end
   return value
@@ -42,11 +45,17 @@ end
 local function same_reference(left, right)
   return left.kind == right.kind and left.ref == right.ref
 end
-local function artifact_root(context)
-  if context == nil then return nil end
-  fields(context, { artifact_root=true }, "context")
-  if not strings.is_artifact_descendant(context.artifact_root .. "/artifact", context.artifact_root) then fail("invalid-context", "artifact_root must be a safe .testing/runs/... root") end
-  return context.artifact_root
+local function validation_context(context)
+  if context == nil then return nil, false end
+  fields(context, { artifact_root=true, allow_empty_entries=true }, "context")
+  if context.allow_empty_entries ~= nil and context.allow_empty_entries ~= true then
+    fail("invalid-context", "allow_empty_entries must be literal true when present")
+  end
+  if context.artifact_root ~= nil
+    and not strings.is_artifact_descendant(context.artifact_root .. "/artifact", context.artifact_root) then
+    fail("invalid-context", "artifact_root must be a safe .testing/runs/... root")
+  end
+  return context.artifact_root, context.allow_empty_entries == true
 end
 local function relative_run_pointer(value, run_id, field, root)
   reference(value, field)
@@ -57,7 +66,7 @@ local function relative_run_pointer(value, run_id, field, root)
   if value.kind ~= "artifact" or value.ref:sub(1, 1) == "/" or value.ref:match("^[A-Za-z]:") or value.ref:find("..", 1, true) then fail("invalid-pointer", field .. " must be a relative artifact pointer") end
   if not value.ref:find("/" .. run_id .. "/", 1, true) and value.ref:sub(-#run_id - 1) ~= "/" .. run_id then fail("cross-run-pointer", field .. " is outside the manifest run") end
 end
-local function canonical_json(value)
+local function canonical_json(value, omit_canonical_sha256)
   local kind = type(value)
   if kind == "boolean" then return value and "true" or "false" end
   if kind == "number" then if value ~= math.floor(value) then fail("canonicalization", "only integers are supported") end; return tostring(value) end
@@ -65,9 +74,9 @@ local function canonical_json(value)
   if kind ~= "table" then fail("canonicalization", "unsupported value type " .. kind) end
   local numeric, keys = 0, {}
   for key in pairs(value) do if type(key) == "number" then numeric = numeric + 1 else table.insert(keys, key) end end
-  if numeric > 0 or next(value) == nil then local parts = {}; for _, item in ipairs(value) do table.insert(parts, canonical_json(item)) end; return "[" .. table.concat(parts, ",") .. "]" end
+  if numeric > 0 or next(value) == nil then local parts = {}; for _, item in ipairs(value) do table.insert(parts, canonical_json(item, false)) end; return "[" .. table.concat(parts, ",") .. "]" end
   table.sort(keys); local parts = {}
-  for _, key in ipairs(keys) do if key ~= "canonical_sha256" then table.insert(parts, strings.json_string(key) .. ":" .. canonical_json(value[key])) end end
+  for _, key in ipairs(keys) do if not omit_canonical_sha256 or key ~= "canonical_sha256" then table.insert(parts, strings.json_string(key) .. ":" .. canonical_json(value[key], false)) end end
   return "{" .. table.concat(parts, ",") .. "}"
 end
 
@@ -93,12 +102,12 @@ local function validate_entry(entry, run_id, case_ids, assertion_ids, seen, enfo
 end
 
 function M.validate(value, result_set, sha256_fn, context)
-  local root = artifact_root(context)
+  local root, allow_empty_entries = validation_context(context)
   fields(value, { schema=true, manifest_id=true, canonicalization=true, canonical_sha256=true, repository=true, run_id=true, plan_ref=true, plan_sha256=true, entries=true }, "manifest")
   if value.schema ~= M.schema then fail("unknown-schema", "manifest schema") end
   bounded(value.manifest_id, "manifest_id", 180); if value.canonicalization ~= M.canonicalization then fail("unknown-canonicalization", "manifest canonicalization") end
   digest(value.canonical_sha256, "canonical_sha256"); fields(value.repository, { id=true, source_ref=true, source_sha256=true }, "repository"); bounded(value.repository.id, "repository.id", 180); reference(value.repository.source_ref, "repository.source_ref"); digest(value.repository.source_sha256, "repository.source_sha256")
-  bounded(value.run_id, "run_id", 180); reference(value.plan_ref, "plan_ref"); digest(value.plan_sha256, "plan_sha256"); list(value.entries, "entries", M.max_entries, true)
+  bounded(value.run_id, "run_id", 180); reference(value.plan_ref, "plan_ref"); digest(value.plan_sha256, "plan_sha256"); list(value.entries, "entries", M.max_entries, not allow_empty_entries)
   if root ~= nil and (value.plan_ref.kind ~= "artifact" or value.plan_ref.ref ~= root .. "/test-plan.json") then fail("cross-run-pointer", "manifest plan_ref is outside the artifact root") end
   local case_ids, assertion_ids = {}, {}
   if result_set ~= nil then
@@ -139,9 +148,10 @@ function M.validate(value, result_set, sha256_fn, context)
       end
     end
   end
-  if sha256_fn ~= nil then if type(sha256_fn) ~= "function" then fail("missing-sha256", "SHA-256 function must be callable") end; local ok, computed = pcall(sha256_fn, canonical_json(value)); if not ok then fail("sha256-failed", "SHA-256 function failed") end; if computed ~= value.canonical_sha256 then fail("digest-mismatch", "canonical manifest digest does not match") end end
+  if sha256_fn ~= nil then if type(sha256_fn) ~= "function" then fail("missing-sha256", "SHA-256 function must be callable") end; local ok, computed = pcall(sha256_fn, canonical_json(value, true)); if not ok then fail("sha256-failed", "SHA-256 function failed") end; if computed ~= value.canonical_sha256 then fail("digest-mismatch", "canonical manifest digest does not match") end end
   return value
 end
-function M.canonicalize(value, context) M.validate(value, nil, nil, context); return canonical_json(value) end
-function M.sha256(value, sha256_fn, context) if type(sha256_fn) ~= "function" then fail("missing-sha256", "a host-supplied SHA-256 function is required") end; M.validate(value, nil, nil, context); local ok, result = pcall(sha256_fn, canonical_json(value)); if not ok then fail("sha256-failed", "the host SHA-256 function failed") end; digest(result, "sha256 result"); return result end
+function M.canonicalize(value, context) M.validate(value, nil, nil, context); return canonical_json(value, true) end
+function M.serialize(value, context) M.validate(value, nil, nil, context); return canonical_json(value, false) end
+function M.sha256(value, sha256_fn, context) if type(sha256_fn) ~= "function" then fail("missing-sha256", "a host-supplied SHA-256 function is required") end; M.validate(value, nil, nil, context); local ok, result = pcall(sha256_fn, canonical_json(value, true)); if not ok then fail("sha256-failed", "the host SHA-256 function failed") end; digest(result, "sha256 result"); return result end
 return M

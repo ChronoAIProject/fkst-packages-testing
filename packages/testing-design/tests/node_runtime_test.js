@@ -6,6 +6,7 @@ const os = require('os');
 const path = require('path');
 const { spawnSync } = require('child_process');
 const { analyze, sha256, stableStringify } = require('../bin/testing-design-runtime');
+const pqlFixtureRoot = path.join(__dirname, 'fixtures', 'pql', 'v1');
 
 function run(argv, cwd) {
   const result = spawnSync(argv[0], argv.slice(1), { cwd, encoding: 'utf8', shell: false });
@@ -23,6 +24,17 @@ function pointer(filePath) {
   return { kind: 'file', ref: filePath };
 }
 
+function artifactPointer(ref) {
+  return { kind: 'artifact', ref };
+}
+
+function pqlFixture(relativePath) {
+  const body = fs.readFileSync(path.join(pqlFixtureRoot, relativePath), 'utf8');
+  const document = JSON.parse(body);
+  assert.strictEqual(body, `${stableStringify(document)}\n`);
+  return { document, digest: sha256(Buffer.from(body)) };
+}
+
 function approval(temp, name, record) {
   const filePath = path.join(temp, 'approvals', `${name}.json`);
   const digest = write(filePath, `${JSON.stringify({ schema: 'testing-design.approval.v1', ...record })}\n`);
@@ -36,7 +48,7 @@ function commit(repo, message) {
 }
 
 function requestFixture(temp, repo, baseline, target, suffix, options = {}) {
-  const repositoryUrl = 'https://example.invalid/testing-design-fixture.git';
+  const repositoryUrl = options.repositoryUrl || 'https://example.invalid/testing-design-fixture.git';
   const workspaceRef = { kind: 'workspace', ref: repo };
   const requirementsPath = path.join(temp, `requirements-${suffix}.md`);
   const requirementsBody = options.requirementsBody || [
@@ -265,6 +277,145 @@ function main() {
     fs.writeFileSync(path.join(repo, 'untracked.txt'), 'dirty\n');
     assert.throws(() => analyze(dirty), /target-worktree-not-immutable/);
     fs.rmSync(path.join(repo, 'untracked.txt'));
+
+    const pqlInputSetFixture = pqlFixture('input-set.json');
+    const pqlSnapshotFixture = pqlFixture(path.join('snapshots', 'home-title.json'));
+    const pqlReviewFixture = pqlFixture(path.join('reviews', 'home-title.json'));
+    const pqlPromotionFixture = pqlFixture(path.join('promotion', 'home-title.json'));
+    const pqlAssetBody = fs.readFileSync(path.join(pqlFixtureRoot, 'assets', 'home-title-tests.txt'), 'utf8');
+    const pqlAssetFixtureDigest = sha256(Buffer.from(pqlAssetBody));
+    assert.strictEqual(pqlInputSetFixture.document.project_pack_snapshot.sha256, pqlSnapshotFixture.digest);
+    assert.strictEqual(pqlInputSetFixture.document.approved_assets[0].review_decision.sha256, pqlReviewFixture.digest);
+    assert.strictEqual(pqlInputSetFixture.document.approved_assets[0].promotion_receipt.sha256, pqlPromotionFixture.digest);
+    assert.strictEqual(pqlInputSetFixture.document.approved_assets[0].artifact_digest, pqlAssetFixtureDigest);
+
+    const pql = requestFixture(temp, repo, baseline, target, 'pql', {
+      inputs: false, browser: false, repositoryUrl: pqlInputSetFixture.document.repository.url,
+    });
+    pql.trace_id = pqlInputSetFixture.document.trace_id;
+    pql.dedup_key = pqlInputSetFixture.document.dedup_key;
+    fs.appendFileSync(path.join(repo, '.git', 'info', 'exclude'), '\n.testing/fixtures/pql/\n');
+    const pqlAssetRef = path.join('.testing', 'fixtures', 'pql', 'assets', 'home-title-tests.txt');
+    const pqlAssetPath = path.join(repo, pqlAssetRef);
+    const pqlAssetDigest = write(pqlAssetPath, pqlAssetBody);
+    const pqlSnapshotRef = path.join('.testing', 'fixtures', 'pql', 'snapshots', 'home-title.json');
+    const pqlSnapshotPath = path.join(repo, pqlSnapshotRef);
+    const pqlSnapshot = pqlSnapshotFixture.document;
+    pqlSnapshot.repository_commit_sha = target;
+    pqlSnapshot.assets[0].artifact_pointer = artifactPointer(pqlAssetRef);
+    pqlSnapshot.assets[0].artifact_digest = pqlAssetDigest;
+    const pqlSnapshotDigest = write(pqlSnapshotPath, `${stableStringify(pqlSnapshot)}\n`);
+    const pqlReview = pqlReviewFixture.document;
+    const pqlSubject = pqlReview.subject;
+    pqlSubject.repository_commit_sha = target;
+    pqlSubject.project_pack_snapshot_ref = artifactPointer(pqlSnapshotRef);
+    pqlSubject.project_pack_snapshot_sha256 = pqlSnapshotDigest;
+    pqlSubject.asset_sha256 = pqlAssetDigest;
+    const pqlReviewRef = path.join('.testing', 'fixtures', 'pql', 'reviews', 'home-title.json');
+    const pqlReviewPath = path.join(repo, pqlReviewRef);
+    const pqlReviewDigest = write(pqlReviewPath, `${stableStringify(pqlReview)}\n`);
+    const pqlPromotionRef = path.join('.testing', 'fixtures', 'pql', 'promotion', 'home-title.json');
+    const pqlPromotionPath = path.join(repo, pqlPromotionRef);
+    const pqlPromotion = pqlPromotionFixture.document;
+    pqlPromotion.subject = pqlSubject;
+    pqlPromotion.review_decision_ref = artifactPointer(pqlReviewRef);
+    pqlPromotion.review_decision_sha256 = pqlReviewDigest;
+    const pqlPromotionDigest = write(pqlPromotionPath, `${stableStringify(pqlPromotion)}\n`);
+    pql.pql_input_set = pqlInputSetFixture.document;
+    pql.pql_input_set.repository.commit_sha = target;
+    pql.pql_input_set.project_pack_snapshot = { ref: artifactPointer(pqlSnapshotRef), sha256: pqlSnapshotDigest };
+    pql.pql_input_set.approved_assets[0].artifact_pointer = artifactPointer(pqlAssetRef);
+    pql.pql_input_set.approved_assets[0].artifact_digest = pqlAssetDigest;
+    pql.pql_input_set.approved_assets[0].review_decision = { ref: artifactPointer(pqlReviewRef), sha256: pqlReviewDigest };
+    pql.pql_input_set.approved_assets[0].promotion_receipt = { ref: artifactPointer(pqlPromotionRef), sha256: pqlPromotionDigest };
+    pql.pql_input_set.approved_assets[0].approval_subject = pqlSubject;
+    assert.deepStrictEqual(pql.pql_input_set.approved_assets[0].requirement_refs, [{ kind: 'pql', ref: 'REQ-HOME-TITLE' }]);
+
+    const pointerCases = [
+      ['snapshot', (value, next) => { value.pql_input_set.project_pack_snapshot.ref = next; }],
+      ['asset', (value, next) => { value.pql_input_set.approved_assets[0].artifact_pointer = next; }],
+      ['review', (value, next) => { value.pql_input_set.approved_assets[0].review_decision.ref = next; }],
+      ['promotion', (value, next) => { value.pql_input_set.approved_assets[0].promotion_receipt.ref = next; }],
+      ['approval-subject', (value, next) => { value.pql_input_set.approved_assets[0].approval_subject.project_pack_snapshot_ref = next; }],
+    ];
+    for (const kind of ['file', 'browser-evidence', 'unknown']) {
+      for (const [name, setPointer] of pointerCases) {
+        const invalidKind = JSON.parse(JSON.stringify(pql));
+        invalidKind.artifact_root = `.testing/runs/testing-design-node-${process.pid}-pql-kind-${kind}-${name}`;
+        fs.rmSync(invalidKind.artifact_root, { recursive: true, force: true });
+        setPointer(invalidKind, { kind, ref: pqlSnapshotRef });
+        assert.throws(() => analyze(invalidKind), /testing-design: malformed-pql-envelope: .*\.kind/);
+        assert.strictEqual(fs.existsSync(invalidKind.artifact_root), false);
+      }
+    }
+
+    const outsideFixturePath = path.join(temp, 'outside-pql-fixture.json');
+    write(outsideFixturePath, '{}\n');
+    const symlinkRef = path.join('.testing', 'fixtures', 'pql', 'linked-outside.json');
+    fs.symlinkSync(outsideFixturePath, path.join(repo, symlinkRef));
+    const escapePointers = [
+      ['absolute', artifactPointer(outsideFixturePath)],
+      ['traversal', artifactPointer(path.join('..', 'outside-pql-fixture.json'))],
+      ['symlink', artifactPointer(symlinkRef)],
+    ];
+    const containmentCases = [
+      ['snapshot', (value, next) => {
+        value.pql_input_set.project_pack_snapshot.ref = next;
+        value.pql_input_set.approved_assets[0].approval_subject.project_pack_snapshot_ref = next;
+      }],
+      ['asset', (value, next) => { value.pql_input_set.approved_assets[0].artifact_pointer = next; }],
+      ['review', (value, next) => { value.pql_input_set.approved_assets[0].review_decision.ref = next; }],
+      ['promotion', (value, next) => { value.pql_input_set.approved_assets[0].promotion_receipt.ref = next; }],
+      ['approval-subject', (value, next) => {
+        value.pql_input_set.project_pack_snapshot.ref = next;
+        value.pql_input_set.approved_assets[0].approval_subject.project_pack_snapshot_ref = next;
+      }],
+    ];
+    for (const [escapeName, next] of escapePointers) {
+      for (const [name, setPointer] of containmentCases) {
+        const escaped = JSON.parse(JSON.stringify(pql));
+        escaped.artifact_root = `.testing/runs/testing-design-node-${process.pid}-pql-${escapeName}-${name}`;
+        fs.rmSync(escaped.artifact_root, { recursive: true, force: true });
+        setPointer(escaped, next);
+        const expected = escapeName === 'traversal'
+          ? /testing-design: malformed-pql-envelope: .*\.ref/
+          : /testing-design: pql-artifact-pointer-rejected: .*pointer-leaves-workspace/;
+        assert.throws(() => analyze(escaped), expected);
+        assert.strictEqual(fs.existsSync(escaped.artifact_root), false);
+      }
+    }
+
+    const pqlFirst = analyze(pql);
+    const pqlRepository = JSON.parse(fs.readFileSync(pqlFirst.context.repository_analysis.artifact_pointer, 'utf8'));
+    const pqlTrace = JSON.parse(fs.readFileSync(pqlFirst.context.traceability_seed.artifact_pointer, 'utf8'));
+    assert.strictEqual(pqlRepository.existing_tests.some((item) => item.path === 'tests/app.test.js'), true);
+    assert.deepStrictEqual(pqlTrace.pql_lineage.approved_assets[0].asset_ref, { kind: 'pql-test-case-asset', ref: 'TCA-HOME-TITLE@1', sha256: pqlAssetDigest });
+    assert.strictEqual(JSON.stringify(pqlTrace).includes('tests/app.test.js\n'), false);
+    assert.strictEqual(JSON.stringify(pqlTrace).includes('pql.project-pack-snapshot.v1'), false);
+    const pqlRepositoryBytes = fs.readFileSync(pqlFirst.context.repository_analysis.artifact_pointer);
+    const pqlTraceBytes = fs.readFileSync(pqlFirst.context.traceability_seed.artifact_pointer);
+    const pqlSecond = analyze(pql);
+    assert.strictEqual(pqlSecond.replayed, true);
+    assert.strictEqual(pqlSecond.analysis_key, pqlFirst.analysis_key);
+    assert.deepStrictEqual(fs.readFileSync(pqlSecond.context.repository_analysis.artifact_pointer), pqlRepositoryBytes);
+    assert.deepStrictEqual(fs.readFileSync(pqlSecond.context.traceability_seed.artifact_pointer), pqlTraceBytes);
+    const pqlInvalid = JSON.parse(JSON.stringify(pql));
+    pqlInvalid.artifact_root = `.testing/runs/testing-design-node-${process.pid}-pql-invalid`;
+    pqlInvalid.pql_input_set.approved_assets[0].artifact_digest = 'f'.repeat(64);
+    pqlInvalid.pql_input_set.approved_assets[0].approval_subject.asset_sha256 = 'f'.repeat(64);
+    fs.rmSync(pqlInvalid.artifact_root, { recursive: true, force: true });
+    assert.throws(() => analyze(pqlInvalid), /pql-digest-conflict/);
+    assert.strictEqual(fs.existsSync(pqlInvalid.artifact_root), false);
+    const pqlMalformed = JSON.parse(JSON.stringify(pql));
+    pqlMalformed.artifact_root = `.testing/runs/testing-design-node-${process.pid}-pql-malformed`;
+    pqlMalformed.pql_input_set.project_pack_snapshot.ref = artifactPointer(path.join('.testing', 'fixtures', 'pql', 'snapshots', 'missing.json'));
+    pqlMalformed.pql_input_set.approved_assets[0].unknown = true;
+    fs.rmSync(pqlMalformed.artifact_root, { recursive: true, force: true });
+    assert.throws(
+      () => analyze(pqlMalformed),
+      /testing-design: malformed-pql-envelope: unsupported field pql_input_set\.approved_assets\[0\]\.unknown/,
+    );
+    assert.strictEqual(fs.existsSync(pqlMalformed.artifact_root), false);
   } finally {
     if (fs.existsSync('.testing/runs')) {
       for (const entry of fs.readdirSync('.testing/runs', { withFileTypes: true })) {

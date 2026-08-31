@@ -1,0 +1,332 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-evidence-manifest.v1.schema.json",
+  "title": "Testing Evidence Manifest v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "manifest_id",
+    "canonicalization",
+    "canonical_sha256",
+    "repository",
+    "run_id",
+    "plan_ref",
+    "plan_sha256",
+    "entries"
+  ],
+  "properties": {
+    "schema": {
+      "const": "testing-evidence-manifest.v1"
+    },
+    "manifest_id": {
+      "$ref": "#/$defs/boundedString180"
+    },
+    "canonicalization": {
+      "const": "fkst-testing-evidence-manifest-canonical-json.v1"
+    },
+    "canonical_sha256": {
+      "$ref": "#/$defs/exactSha256"
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "source_ref",
+        "source_sha256"
+      ],
+      "properties": {
+        "id": {
+          "$ref": "#/$defs/boundedString180"
+        },
+        "source_ref": {
+          "$ref": "#/$defs/reference"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/exactSha256"
+        }
+      }
+    },
+    "run_id": {
+      "$ref": "#/$defs/boundedString180"
+    },
+    "plan_ref": {
+      "$ref": "#/$defs/reference"
+    },
+    "plan_sha256": {
+      "$ref": "#/$defs/exactSha256"
+    },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 256,
+      "uniqueItems": true,
+      "items": {
+        "$ref": "#/$defs/entry"
+      }
+    }
+  },
+  "$defs": {
+    "boundedString32": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 32,
+      "x-fkst-maxUtf8Bytes": 32,
+      "not": {
+        "pattern": "[\\u0000-\\u001F]"
+      }
+    },
+    "boundedString64": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 64,
+      "x-fkst-maxUtf8Bytes": 64,
+      "not": {
+        "pattern": "[\\u0000-\\u001F]"
+      }
+    },
+    "boundedString96": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 96,
+      "x-fkst-maxUtf8Bytes": 96,
+      "not": {
+        "pattern": "[\\u0000-\\u001F]"
+      }
+    },
+    "boundedString120": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 120,
+      "x-fkst-maxUtf8Bytes": 120,
+      "not": {
+        "pattern": "[\\u0000-\\u001F]"
+      }
+    },
+    "boundedString180": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "x-fkst-maxUtf8Bytes": 180,
+      "not": {
+        "pattern": "[\\u0000-\\u001F]"
+      }
+    },
+    "boundedString4096": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "x-fkst-maxUtf8Bytes": 4096,
+      "not": {
+        "pattern": "[\\u0000-\\u001F]"
+      }
+    },
+    "exactSha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "x-fkst-maxUtf8Bytes": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/boundedString96"
+        },
+        "ref": {
+          "$ref": "#/$defs/boundedString4096"
+        }
+      }
+    },
+    "artifactReference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "ref"
+      ],
+      "properties": {
+        "kind": {
+          "const": "artifact"
+        },
+        "ref": {
+          "allOf": [
+            {
+              "$ref": "#/$defs/boundedString4096"
+            },
+            {
+              "not": {
+                "pattern": "^/"
+              }
+            },
+            {
+              "not": {
+                "pattern": "^[A-Za-z]:"
+              }
+            },
+            {
+              "not": {
+                "pattern": "\\.\\."
+              }
+            }
+          ]
+        }
+      }
+    },
+    "utcTimestamp": {
+      "type": "string",
+      "minLength": 20,
+      "maxLength": 20,
+      "format": "date-time",
+      "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_kind",
+        "source_ref",
+        "source_sha256"
+      ],
+      "properties": {
+        "source_kind": {
+          "$ref": "#/$defs/boundedString96"
+        },
+        "source_ref": {
+          "$ref": "#/$defs/boundedString4096"
+        },
+        "source_sha256": {
+          "$ref": "#/$defs/exactSha256"
+        }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "evidence_id",
+        "case_id",
+        "role",
+        "artifact_ref",
+        "sha256",
+        "media_type",
+        "size_bytes",
+        "producer",
+        "producer_version",
+        "created_at",
+        "sensitivity",
+        "redaction_classification",
+        "policy_version",
+        "policy_status",
+        "provenance"
+      ],
+      "properties": {
+        "evidence_id": {
+          "$ref": "#/$defs/boundedString180"
+        },
+        "case_id": {
+          "$ref": "#/$defs/boundedString180"
+        },
+        "assertion_id": {
+          "$ref": "#/$defs/boundedString180"
+        },
+        "role": {
+          "enum": [
+            "runner-log",
+            "screenshot",
+            "sanitized-json"
+          ]
+        },
+        "artifact_ref": {
+          "$ref": "#/$defs/artifactReference"
+        },
+        "sha256": {
+          "$ref": "#/$defs/exactSha256"
+        },
+        "media_type": {
+          "enum": [
+            "text/plain",
+            "image/png",
+            "application/json"
+          ]
+        },
+        "size_bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 1000000000
+        },
+        "producer": {
+          "$ref": "#/$defs/boundedString180"
+        },
+        "producer_version": {
+          "$ref": "#/$defs/boundedString96"
+        },
+        "created_at": {
+          "$ref": "#/$defs/utcTimestamp"
+        },
+        "sensitivity": {
+          "enum": [
+            "public",
+            "internal",
+            "restricted"
+          ]
+        },
+        "redaction_classification": {
+          "$ref": "#/$defs/boundedString64"
+        },
+        "policy_version": {
+          "$ref": "#/$defs/boundedString96"
+        },
+        "policy_status": {
+          "enum": [
+            "approved",
+            "redacted",
+            "withheld"
+          ]
+        },
+        "provenance": {
+          "$ref": "#/$defs/provenance"
+        }
+      },
+      "oneOf": [
+        {
+          "properties": {
+            "role": {
+              "const": "runner-log"
+            },
+            "media_type": {
+              "const": "text/plain"
+            }
+          }
+        },
+        {
+          "properties": {
+            "role": {
+              "const": "screenshot"
+            },
+            "media_type": {
+              "const": "image/png"
+            }
+          }
+        },
+        {
+          "properties": {
+            "role": {
+              "const": "sanitized-json"
+            },
+            "media_type": {
+              "const": "application/json"
+            }
+          }
+        }
+      ]
+    }
+  }
+}

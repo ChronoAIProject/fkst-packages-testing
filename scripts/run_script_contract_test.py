@@ -11,6 +11,8 @@ import textwrap
 import unittest
 from pathlib import Path
 
+import test_affected
+
 
 SOURCE_ROOT = Path(__file__).resolve().parents[1]
 SOURCE_RUN_SH = SOURCE_ROOT / "scripts" / "run.sh"
@@ -240,12 +242,11 @@ class RunnerWorkspace:
             ".fkst/run/fkst-packages-conformance/packages/platform-dep/tests/platform_dep_test.lua",
             "return {}\n",
         )
-        for name in ("forge", "devloop"):
+        for name in ("forge", "devloop", "testkit_internal", "workflow_internal"):
             self.write(
                 f".fkst/run/fkst-packages-conformance/libraries/{name}/fkst.toml",
                 f'kind = "library"\n[library]\nname = "{name}"\n',
             )
-
         subprocess.run(["git", "init", "-q"], cwd=checkout, check=True)
         subprocess.run(["git", "config", "user.email", "fixture@example.invalid"], cwd=checkout, check=True)
         subprocess.run(["git", "config", "user.name", "Fixture"], cwd=checkout, check=True)
@@ -255,7 +256,6 @@ class RunnerWorkspace:
             ["git", "rev-parse", "HEAD"], cwd=checkout, check=True, text=True, stdout=subprocess.PIPE
         ).stdout.strip()
         self.write(".fkst/conformance/fkst-packages.pin", f"{pin}\n")
-
         self.write(
             "fixture-framework",
             dedent(
@@ -271,6 +271,9 @@ class RunnerWorkspace:
                 if subcommand == "init-package-repo":
                     Path(".fkst-substrate-ref").write_text({SUBSTRATE_PIN!r} + "\\n", encoding="utf-8")
                     print("init-package-repo substrate_ref=" + {SUBSTRATE_PIN!r})
+                    raise SystemExit(0)
+                if argv[:2] == ["host", "lock"]:
+                    Path("fkst.lock").write_text("# fixture host lock\\n", encoding="utf-8")
                     raise SystemExit(0)
                 project_root = None
                 package_roots = []
@@ -807,6 +810,30 @@ class RunnerContractTest(unittest.TestCase):
         result = invalid.run("test", "parent")
         self.assert_failure(result)
         self.assertIn("missing-root", result.stdout)
+
+
+class AffectedTestContractTest(unittest.TestCase):
+    def test_shared_schema_fixture_changes_force_full_repository_tests(self) -> None:
+        fixtures = (
+            "testing-package-manifest.v1/valid.json",
+            "testing-evidence-manifest.v1/valid.json",
+            "testing-results/valid-case-passed.json",
+            "testing-browser-action.v1/valid-click.json",
+            "testing-package-executor.request.v1/valid-complete.json",
+        )
+        for fixture in fixtures:
+            with self.subTest(fixture=fixture):
+                self.assertIsNone(
+                    test_affected.affected_packages(
+                        ["packages/testing-runner/tests/fixtures/" + fixture]
+                    )
+                )
+        self.assertEqual(
+            test_affected.affected_packages(
+                ["packages/testing-runner/tests/testing_package_manifest_contract_test.lua"]
+            ),
+            ["testing-runner"],
+        )
 
 
 if __name__ == "__main__":

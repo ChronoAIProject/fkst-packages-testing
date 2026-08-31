@@ -101,6 +101,8 @@ For online regression, native no-browser execution is only the HTTP heartbeat pa
 
 Payloads must carry small control fields and artifact pointers only; large report bodies, browser storage, credentials, cookies, and tokens stay outside fkst events.
 
+The public pre-resolution `testing-package-executor.request.v1` shape is published as Draft 2020-12 JSON Schema at `schemas/testing-package-executor.request.v1.schema.json`. The portable schema validates only the closed request structure and lexical constraints. `contract.testing_package_executor.validate_request` remains the executable runtime validator, while `testing_package_executor.resolve` remains authoritative for loading immutable bytes, recomputing digests, validating referenced documents, enforcing package, manifest, policy, and capability agreement, and selecting exactly one authorized entrypoint. Structurally valid profile and executor identities are therefore not restricted to the current Browser mapping by the portable schema.
+
 Structured execution uses the independent plan, grant, and executor seams documented in
 `structured-execution.v2.md`. Fixed API/CLI execution does not extend legacy module `native_argv`
 authority: every plan requires a separate authenticated single-use grant bound to the plan digest

@@ -1,4 +1,5 @@
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "analysis_keepalive_tick" },
@@ -10,5 +11,5 @@ local spec = {
 return saga.department(spec, {
   done = function() return false end,
   act = function() return end,
-  name = "seam",
+  wrap = workflow_logging.wrap_pipeline_failure, name = "testing-design.seam",
 })

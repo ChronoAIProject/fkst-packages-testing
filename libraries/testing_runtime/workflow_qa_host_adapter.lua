@@ -22,10 +22,10 @@ function M.new(options)
   local error_prefix = options.error_prefix or "workflow-qa-host"
   local default_ports = options.default_ports or function() return nil end
   if type(error_prefix) ~= "string" or error_prefix == "" then
-    error("testing-runtime: workflow QA host adapter error_prefix must be a non-empty string")
+    error("testing-runtime: workflow-qa-host-error-prefix-invalid: error_prefix must be a non-empty string")
   end
   if type(default_ports) ~= "function" then
-    error("testing-runtime: workflow QA host adapter default_ports must be a function")
+    error("testing-runtime: workflow-qa-host-default-ports-invalid: default_ports must be a function")
   end
 
   local adapter = {}

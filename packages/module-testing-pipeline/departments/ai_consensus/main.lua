@@ -1,14 +1,14 @@
 local core = require("core")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
-  consumes = { "consensus.consensus_reached", "consensus.consensus_converge" },
+  consumes = { "ai_consensus_result" },
   produces = {
-    "consensus.proposal",
+    "ai_consensus_request",
     "module-test-loop.module_loop_request",
     "testing_result",
   },
-  fanout = { "consensus.consensus_reached", "consensus.consensus_converge" },
   stall_window = "5m",
   retry = false,
 }
@@ -19,7 +19,7 @@ end
 
 local function raise_action(action)
   if action.kind == "review-proposal" then
-    raise("consensus.proposal", action.proposal)
+    raise("ai_consensus_request", action.proposal)
     return
   end
   if action.kind == "module-loop-request" then
@@ -46,6 +46,6 @@ local function act(event)
   raise_action(action)
 end
 
-local M = saga.department(spec, { done = done, act = act, name = "ai_consensus" })
+local M = saga.department(spec, { done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "module-testing-pipeline.ai_consensus" })
 M.pipeline = _G.pipeline
 return M

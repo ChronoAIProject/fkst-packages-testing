@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-observation.v1.schema.json",
+  "title": "Testing Observation v1",
+  "x-fkst-canonicalization": "fkst-testing-results-canonical-json.v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "observation_id", "kind", "subject", "value", "source_ref", "evidence_refs"],
+  "properties": {
+    "schema": {"const": "testing-observation.v1"},
+    "observation_id": {"$ref": "#/$defs/boundedString180"},
+    "kind": {"$ref": "#/$defs/boundedString96"},
+    "subject": {"$ref": "#/$defs/boundedString180"},
+    "value": {"$ref": "#/$defs/boundedString512"},
+    "source_ref": {"$ref": "#/$defs/reference"},
+    "evidence_refs": {
+      "type": "array",
+      "maxItems": 64,
+      "items": {"$ref": "#/$defs/reference"}
+    }
+  },
+  "$defs": {
+    "boundedString96": {
+      "type": "string", "minLength": 1, "maxLength": 96, "x-fkst-maxUtf8Bytes": 96, "format": "fkst-utf8-max-96",
+      "not": {"pattern": "[\\u0000-\\u001F]"}
+    },
+    "boundedString180": {
+      "type": "string", "minLength": 1, "maxLength": 180, "x-fkst-maxUtf8Bytes": 180, "format": "fkst-utf8-max-180",
+      "not": {"pattern": "[\\u0000-\\u001F]"}
+    },
+    "boundedString512": {
+      "type": "string", "minLength": 1, "maxLength": 512, "x-fkst-maxUtf8Bytes": 512, "format": "fkst-utf8-max-512",
+      "not": {"pattern": "[\\u0000-\\u001F]"}
+    },
+    "boundedString4096": {
+      "type": "string", "minLength": 1, "maxLength": 4096, "x-fkst-maxUtf8Bytes": 4096, "format": "fkst-utf8-max-4096",
+      "not": {"pattern": "[\\u0000-\\u001F]"}
+    },
+    "sha256": {
+      "type": "string", "minLength": 64, "maxLength": 64, "x-fkst-maxUtf8Bytes": 64, "format": "fkst-utf8-max-64",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "reference": {
+      "type": "object", "additionalProperties": false, "required": ["kind", "ref"],
+      "properties": {
+        "kind": {"$ref": "#/$defs/boundedString96"},
+        "ref": {"$ref": "#/$defs/boundedString4096"},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  }
+}

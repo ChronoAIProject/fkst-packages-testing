@@ -38,6 +38,20 @@ metadata, and the manifest digest. Validators reject workspace paths, floating r
 unsupported majors, unknown entrypoints, and undeclared capabilities. No credentials, cookies,
 worker tokens, bearer tokens, or local paths are part of the schema.
 
+The portable JSON Schema is `schemas/testing-package-manifest.v1.schema.json`, using JSON Schema
+Draft 2020-12. Portable checks cover the closed object shapes, all 14 required fields, bounded string
+and list forms, exact schema/canonicalization/dependency identifiers, exact version/commit/digest
+syntax, supported contract majors and entrypoint names, and path-unsafe `package_id` values. In
+particular, `package_id` may use identifiers such as `QA_RUNNER@V1`, but may not contain any
+U+0000-U+001F control, `/`, `\`, or the literal substring `..`.
+
+Lua validation additionally owns checks that require runtime context rather than one portable
+manifest instance: entrypoint capability membership in `semantic_capabilities`, caller-supplied
+expected identity and entrypoint/major/capability requirements, and optional recomputation of
+`manifest_digest`. Package adoption separately recomputes `package_content_sha256` from the fetched
+package tree. Schema validation alone does not establish those contextual identities or digest
+bindings.
+
 ## Local QA Runtime adoption
 
 Local QA Runtime obtains a manifest from its configured immutable release source, verifies the

@@ -32,7 +32,7 @@ end
 local function assert_delivery_succeeded(label, ok, result_or_err)
   if not ok then
     error(
-      "testkit.saga_conformance: "
+      "testkit.saga_conformance: conformance-input-invalid: "
         .. label
         .. " delivery errored; idempotent no-op not proven: "
         .. tostring(result_or_err)
@@ -42,7 +42,7 @@ local function assert_delivery_succeeded(label, ok, result_or_err)
     and result_or_err.exit_code ~= nil
     and tonumber(result_or_err.exit_code) ~= 0 then
     error(
-      "testkit.saga_conformance: "
+      "testkit.saga_conformance: conformance-input-invalid: "
         .. label
         .. " delivery failed with exit_code="
         .. tostring(result_or_err.exit_code)
@@ -53,7 +53,7 @@ end
 
 local function validate_case(name, case)
   if type(case) ~= "table" then
-    error("testkit.saga_conformance: " .. name .. " requires case")
+    error("testkit.saga_conformance: conformance-input-invalid: " .. name .. " requires case")
   end
 end
 
@@ -63,37 +63,37 @@ end
 
 local function assert_non_empty_table(name, value)
   if type(value) ~= "table" or #value == 0 then
-    error("testkit.saga_conformance: " .. name .. " requires non-empty table")
+    error("testkit.saga_conformance: conformance-input-invalid: " .. name .. " requires non-empty table")
   end
 end
 
 local function validate_post_condition(step, condition)
   if type(condition) ~= "table" then
-    error("testkit.saga_conformance: step " .. tostring(step.id) .. " has malformed post_condition")
+    error("testkit.saga_conformance: conformance-input-invalid: step " .. tostring(step.id) .. " has malformed post_condition")
   end
   if not is_non_empty_string(condition.id) then
-    error("testkit.saga_conformance: step " .. tostring(step.id) .. " post_condition requires id")
+    error("testkit.saga_conformance: conformance-input-invalid: step " .. tostring(step.id) .. " post_condition requires id")
   end
   if not is_non_empty_string(condition.kind) then
-    error("testkit.saga_conformance: post_condition " .. tostring(condition.id) .. " requires kind")
+    error("testkit.saga_conformance: conformance-input-invalid: post_condition " .. tostring(condition.id) .. " requires kind")
   end
 end
 
 local function validate_step(step)
   if type(step) ~= "table" then
-    error("testkit.saga_conformance: saga step is malformed")
+    error("testkit.saga_conformance: conformance-input-invalid: saga step is malformed")
   end
   if not is_non_empty_string(step.id) then
-    error("testkit.saga_conformance: saga step requires id")
+    error("testkit.saga_conformance: conformance-input-invalid: saga step requires id")
   end
   if not is_non_empty_string(step.effect) then
-    error("testkit.saga_conformance: step " .. tostring(step.id) .. " requires effect")
+    error("testkit.saga_conformance: conformance-input-invalid: step " .. tostring(step.id) .. " requires effect")
   end
   if not is_non_empty_string(step.request_queue) then
-    error("testkit.saga_conformance: step " .. tostring(step.id) .. " requires request_queue")
+    error("testkit.saga_conformance: conformance-input-invalid: step " .. tostring(step.id) .. " requires request_queue")
   end
   if type(step.post_conditions) ~= "table" or #step.post_conditions == 0 then
-    error("testkit.saga_conformance: step " .. tostring(step.id) .. " requires non-empty post_conditions")
+    error("testkit.saga_conformance: conformance-input-invalid: step " .. tostring(step.id) .. " requires non-empty post_conditions")
   end
   for _, condition in ipairs(step.post_conditions) do
     validate_post_condition(step, condition)
@@ -102,10 +102,10 @@ end
 
 function C.assert_external_effect_saga(saga_def)
   if type(saga_def) ~= "table" then
-    error("testkit.saga_conformance: external-effect saga requires definition")
+    error("testkit.saga_conformance: conformance-input-invalid: external-effect saga requires definition")
   end
   if not is_non_empty_string(saga_def.id) then
-    error("testkit.saga_conformance: external-effect saga requires id")
+    error("testkit.saga_conformance: conformance-input-invalid: external-effect saga requires id")
   end
   assert_non_empty_table("external-effect saga steps", saga_def.steps)
   for _, step in ipairs(saga_def.steps) do
@@ -143,7 +143,7 @@ local function assert_graphql_add_blocked_by(condition, evidence)
   for _, forbidden in ipairs(condition.forbidden_fields or {}) do
     if command:find(tostring(forbidden), 1, true) ~= nil then
       error(
-        "testkit.saga_conformance: post_condition " .. tostring(condition.id)
+        "testkit.saga_conformance: conformance-input-invalid: post_condition " .. tostring(condition.id)
           .. " forbids GraphQL field " .. tostring(forbidden)
       )
     end
@@ -154,7 +154,7 @@ local function assert_trusted_comment_marker(condition, evidence)
   local body = evidence and evidence.body
   if type(body) ~= "string" or body == "" then
     error(
-      "testkit.saga_conformance: post_condition " .. tostring(condition.id)
+      "testkit.saga_conformance: conformance-input-invalid: post_condition " .. tostring(condition.id)
         .. " requires marker body evidence"
     )
   end
@@ -191,7 +191,7 @@ end
 
 function C.assert_external_effect_post_condition(condition, evidence)
   if type(condition) ~= "table" then
-    error("testkit.saga_conformance: external-effect post_condition requires definition")
+    error("testkit.saga_conformance: conformance-input-invalid: external-effect post_condition requires definition")
   end
   if condition.kind == "github-add-blocked-by-edge" then
     assert_graphql_add_blocked_by(condition, evidence or {})
@@ -201,49 +201,49 @@ function C.assert_external_effect_post_condition(condition, evidence)
     assert_trusted_comment_marker(condition, evidence or {})
     return
   end
-  error("testkit.saga_conformance: unsupported external-effect post_condition kind " .. tostring(condition.kind))
+  error("testkit.saga_conformance: conformance-input-invalid: unsupported external-effect post_condition kind " .. tostring(condition.kind))
 end
 
 function C.assert_progress(_t, case)
   validate_case("assert_progress", case)
   if type(case.first) ~= "function" then
-    error("testkit.saga_conformance: assert_progress requires first")
+    error("testkit.saga_conformance: conformance-input-invalid: assert_progress requires first")
   end
   local classifier = write_classifier(case)
   if classifier == nil then
-    error("testkit.saga_conformance: assert_progress requires is_write_class")
+    error("testkit.saga_conformance: conformance-input-invalid: assert_progress requires is_write_class")
   end
   local before = #fkst.test.command_calls()
   local result = case.first()
   if count_write_calls(before, classifier) + count_raises(result) == 0 then
-    error("testkit.saga_conformance: assert_progress observed no write-class commands")
+    error("testkit.saga_conformance: conformance-input-invalid: assert_progress observed no write-class commands")
   end
 end
 
 function C.assert_idempotent(_t, case)
   validate_case("assert_idempotent", case)
   if type(case.first) ~= "function" then
-    error("testkit.saga_conformance: assert_idempotent requires first")
+    error("testkit.saga_conformance: conformance-input-invalid: assert_idempotent requires first")
   end
   if type(case.second) ~= "function" then
-    error("testkit.saga_conformance: assert_idempotent requires second")
+    error("testkit.saga_conformance: conformance-input-invalid: assert_idempotent requires second")
   end
   local classifier = write_classifier(case)
   if classifier == nil then
-    error("testkit.saga_conformance: assert_idempotent requires is_write_class")
+    error("testkit.saga_conformance: conformance-input-invalid: assert_idempotent requires is_write_class")
   end
   local before_first = #fkst.test.command_calls()
   local first_result = case.first()
   local first_effects = count_write_calls(before_first, classifier) + count_raises(first_result)
   if first_effects == 0 then
-    error("testkit.saga_conformance: assert_idempotent: first delivery made no write-class effect; nothing to prove")
+    error("testkit.saga_conformance: conformance-input-invalid: assert_idempotent: first delivery made no write-class effect; nothing to prove")
   end
   local before_second = #fkst.test.command_calls()
   local ok, second_result = pcall(case.second)
   assert_delivery_succeeded("second", ok, second_result)
   local second_effects = count_write_calls(before_second, classifier) + count_raises(second_result)
   if second_effects ~= 0 then
-    error("testkit.saga_conformance: assert_idempotent observed effects on second delivery")
+    error("testkit.saga_conformance: conformance-input-invalid: assert_idempotent observed effects on second delivery")
   end
 end
 

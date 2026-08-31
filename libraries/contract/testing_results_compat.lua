@@ -2,6 +2,7 @@
 -- Context is closed: validate_v1 needs artifact_root/plan_sha256; canonicalize_v1
 -- also needs repository, run_id, plan_ref, trace_id, dedup_key, sha256_bytes, and
 -- ordered case_metadata entries containing timing plus one evidence descriptor.
+local error_facts = require("contract.error_facts")
 local strings = require("contract.strings")
 local time = require("contract.time")
 local structured = require("contract.structured_execution")
@@ -30,7 +31,9 @@ local legacy_outcomes = {
   error = { execution_error=true },
 }
 
-local function fail(classification, message) error("contract.testing-results-compat: " .. classification .. ": " .. message) end
+local function fail(classification, message)
+  error(error_facts.error_message("contract.testing-results-compat", classification, message))
+end
 local function fields(value, allowed, label)
   if type(value) ~= "table" then fail("malformed-" .. label, label .. " must be a table") end
   for key in pairs(value) do if allowed[key] ~= true then fail("malformed-" .. label, "unsupported field " .. tostring(key)) end end

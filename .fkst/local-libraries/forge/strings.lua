@@ -3,11 +3,30 @@ local contract_strings = require("contract.strings")
 
 local S = {}
 
-function S.strip_bot_login_suffix(login)
+function S.canonical_login(login)
   if login == nil then
     return nil
   end
-  return (tostring(login):gsub("%[bot%]$", ""))
+  local value = contract_strings.trim(login):lower()
+  if value:sub(1, 4) == "app/" then
+    local slug = value:match("^app/([^/]+)$")
+    if slug == nil or slug:sub(-5) == "[bot]" then
+      return nil
+    end
+    value = slug
+  elseif value:find("/", 1, true) ~= nil then
+    return nil
+  else
+    value = value:gsub("%[bot%]$", "")
+  end
+  if value == "" then
+    return nil
+  end
+  return value
+end
+
+function S.is_canonical_login(login)
+  return type(login) == "string" and S.canonical_login(login) == login
 end
 
 function S.split_repo(repo)
@@ -16,6 +35,13 @@ function S.split_repo(repo)
     return nil, nil
   end
   return owner, name
+end
+
+function S.is_bounded_repo(repo, limit)
+  if not contract_strings.is_bounded_string(repo, limit) or S.split_repo(repo) == nil then
+    return false
+  end
+  return repo:find("^[%w._-]+/[%w._-]+$") ~= nil
 end
 
 local function is_repo_segment(value)

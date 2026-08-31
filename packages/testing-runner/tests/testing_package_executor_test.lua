@@ -1,17 +1,27 @@
 local contract = require("contract.testing_package_executor")
+local error_facts = require("contract.error_facts")
 local package_manifest = require("contract.testing_package_manifest")
 local results = require("contract.testing_results")
 local executor = require("testing_package_executor.executor")
 local runtime_executor = require("testing_runtime.testing_package_executor")
-local json = require("testing_runtime.json")
+local host_json = json
+local runtime_json = require("testing_runtime.json")
 local sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
+
+local request_fixtures = require("tests.fixtures.testing_package_executor_request_helpers")
 
 local function copy(value)
   if type(value) ~= "table" then return value end
   local result = {}
   for key, item in pairs(value) do result[key] = copy(item) end
   return result
+end
+
+local function durable_effect_receipt(browser_receipt, completed_at)
+  local receipt = copy(browser_receipt)
+  receipt.schema, receipt.completed_at = contract.schemas.effect_receipt, completed_at
+  contract.validate_effect_receipt(receipt); return receipt
 end
 
 local function manifest_fixture(package_content_sha256)
@@ -103,7 +113,7 @@ local function fixture(options)
 
   local storage, decoded, approved = {}, {}, {}
   for _, field in ipairs(contract.reference_order) do
-    local bytes = json.encode(docs[field])
+    local bytes = runtime_json.encode(docs[field])
     local ref = refs[field]
     storage[ref.ref] = bytes
     decoded[bytes] = copy(docs[field])
@@ -127,42 +137,132 @@ local function fixture(options)
     dedup_key = "dedup-walking-skeleton",
   }
 
-  local calls = { loads = {}, freshness = {}, browser = {}, writes = {}, now = 0 }
-  local clock = { "2026-08-21T00:00:00Z", "2026-08-21T00:00:01Z" }
+  local calls = {
+    loads = {}, package_loads = {}, compatibility = {}, admissions = {},
+    completed_queries = {}, claims = {}, effect_queries = {}, freshness = {}, intents = {}, browser = {}, receipts = {}, writes = {}, completions = {}, now = 0,
+  }
+  local package_content_bytes = options.package_content_bytes or "testing-runner-1.0.0 admitted package bytes"
+  local receipt_store = options.receipt_store or {}
+  local completed_store = options.completed_store or {}
+  local intent_store = options.intent_store or {}
+  local effect_receipt_store = options.effect_receipt_store or {}
+  local canonical_store = options.canonical_store or {}
+  local clock = options.clock or { "2026-08-21T00:00:00Z", "2026-08-21T00:00:01Z" }
   local ports = {
     load_immutable = function(ref)
       table.insert(calls.loads, copy(ref))
       return assert(storage[ref.ref], "unknown immutable ref " .. tostring(ref.ref))
     end,
+    load_package_content = function(identity)
+      table.insert(calls.package_loads, copy(identity))
+      return package_content_bytes
+    end,
     sha256 = sha256,
+    check_runtime_compatibility = function(compatibility)
+      table.insert(calls.compatibility, copy(compatibility))
+      return options.runtime_compatible ~= false
+        and compatibility.runtime_requirements.lua == "5.4.0"
+        and #compatibility.runtime_requirements.platforms == 1
+        and compatibility.runtime_requirements.platforms[1] == "linux-amd64"
+        and compatibility.dependencies.fkst_packages.commit == "abcdef0123456789abcdef0123456789abcdef01"
+        and compatibility.dependencies.fkst_substrate.commit == "fedcba9876543210fedcba9876543210fedcba98"
+    end,
     decode_json = function(bytes)
       return copy(assert(decoded[bytes], "unknown canonical JSON bytes"))
+    end,
+    admit_resolution = function(admission_request)
+      table.insert(calls.admissions, copy(admission_request))
+      local existing = receipt_store[admission_request.admission_key]
+      if existing ~= nil and existing.admission_digest ~= admission_request.admission_digest then
+        return {
+          schema = contract.schemas.admission_conflict,
+          status = "conflict",
+          admission_key = admission_request.admission_key,
+          admitted_digest = existing.admission_digest,
+          attempted_digest = admission_request.admission_digest,
+        }
+      end
+      if existing ~= nil then return copy(existing) end
+      local receipt = {
+        schema = contract.schemas.admission_receipt,
+        status = "admitted",
+        admission_key = admission_request.admission_key,
+        admission_digest = admission_request.admission_digest,
+      }
+      receipt_store[admission_request.admission_key] = copy(receipt)
+      return receipt
+    end,
+    load_completed_execution = function(query)
+      table.insert(calls.completed_queries, copy(query))
+      return copy(completed_store[query.dedup_key .. ":" .. query.admission_digest])
+    end,
+    claim_execution = function(request)
+      table.insert(calls.claims, copy(request))
+      return { schema=contract.schemas.execution_claim_receipt, status="claimed", dedup_key=request.dedup_key,
+        admission_digest=request.admission_digest, claim_id="claim-" .. request.dedup_key }
+    end,
+    load_effect_intent = function(query)
+      table.insert(calls.effect_queries, { kind="intent", query=copy(query) })
+      return copy(intent_store[query.dedup_key .. ":" .. query.admission_digest])
+    end,
+    load_effect_receipt = function(query)
+      table.insert(calls.effect_queries, { kind="receipt", query=copy(query) })
+      return copy(effect_receipt_store[query.dedup_key .. ":" .. query.admission_digest])
     end,
     check_freshness = function(check)
       table.insert(calls.freshness, copy(check))
       return options.freshness ~= false
     end,
+    persist_effect_intent = function(intent)
+      table.insert(calls.intents, copy(intent))
+      intent_store[intent.dedup_key .. ":" .. intent.admission_digest] = copy(intent)
+      return true
+    end,
     browser_read_title = function(effect_request)
       table.insert(calls.browser, copy(effect_request))
-      return {
-        schema = "testing-package-executor.effect-receipt.v1",
+      calls.raw_receipt = {
+        schema = "testing-package-executor.browser-read-title-receipt.v1",
         effect_id = "effect-case-home-title-title",
         status = "succeeded",
+        observed_url = "http://127.0.0.1:4173/",
         observed_title = options.observed_title or "Fixture Home",
-        evidence_refs = {},
+        evidence_refs = { { kind="artifact", ref=".testing/runs/dedup-walking-skeleton/evidence/title.json", sha256=sha256(string.rep("x", 123)) } },
+        evidence_size_bytes = 123,
       }
+      return calls.raw_receipt
+    end,
+    persist_effect_receipt = function(receipt)
+      table.insert(calls.receipts, copy(receipt))
+      local admitted = assert(receipt_store[request.dedup_key], "execution must be admitted before receipt persistence")
+      local key = request.dedup_key .. ":" .. admitted.admission_digest
+      effect_receipt_store[key] = copy(receipt)
+      return true
     end,
     write_canonical = function(write_request)
       table.insert(calls.writes, copy(write_request))
+      local path = ".testing/runs/dedup-walking-skeleton/" .. (write_request.kind == "evidence-manifest" and "evidence-manifest.json" or "case-result-set.json")
+      local existing = canonical_store[path]
+      if existing ~= nil and existing ~= write_request.canonical_bytes then error("canonical artifact write conflicted") end
+      canonical_store[path] = write_request.canonical_bytes
+      if options.writer_ack_loss_once and not options.writer_ack_loss_once.fired then
+        options.writer_ack_loss_once.fired = true
+        error("writer acknowledgement lost")
+      end
       return {
         schema = "testing-package-executor.write-receipt.v1",
         status = "written",
         ref = {
           kind = "artifact",
-          ref = ".testing/runs/dedup-walking-skeleton/case-result.json",
-          sha256 = write_request.canonical_sha256,
+          ref = path,
+          sha256 = options.writer_digest or sha256(write_request.canonical_bytes),
         },
       }
+    end,
+    complete_execution = function(receipt)
+      table.insert(calls.completions, copy(receipt))
+      completed_store[receipt.dedup_key .. ":" .. receipt.admission_digest] = copy(receipt)
+      if options.completion_ack_loss then error("completion acknowledgement lost") end
+      return copy(receipt)
     end,
     now = function()
       calls.now = calls.now + 1
@@ -176,6 +276,11 @@ local function fixture(options)
     request = request,
     ports = ports,
     calls = calls,
+    receipt_store = receipt_store,
+    completed_store = completed_store,
+    intent_store = intent_store,
+    effect_receipt_store = effect_receipt_store,
+    canonical_store = canonical_store,
   }
 end
 
@@ -186,72 +291,276 @@ local function expect_failure(fragment, fn)
 end
 
 local function assert_zero_execution_effects(value)
+  t.eq(value.calls.now, 0)
+  t.eq(#value.calls.completed_queries, 0)
+  t.eq(#value.calls.claims, 0)
   t.eq(#value.calls.freshness, 0)
+  t.eq(#value.calls.intents, 0)
+  t.eq(#value.calls.receipts, 0)
+  t.eq(#value.calls.completions, 0)
   t.eq(#value.calls.browser, 0)
   t.eq(#value.calls.writes, 0)
 end
 
 local function assert_semantics(actual, expected)
-  t.eq(actual.case_result.execution_status, expected.case_result.execution_status)
-  t.eq(actual.case_result.classification, expected.case_result.classification)
-  t.eq(json.encode(actual.case_result.observations), json.encode(expected.case_result.observations))
-  t.eq(json.encode(actual.case_result.assertions), json.encode(expected.case_result.assertions))
+  t.eq(runtime_json.encode(actual), runtime_json.encode(expected))
 end
 
 return {
+  test_shared_request_schema_fixtures_match_runtime_validation = function()
+    for _, name in ipairs(request_fixtures.names) do
+      local shared = request_fixtures.load(name)
+      t.eq(shared.case, name)
+      t.eq(type(shared.portable_valid), "boolean")
+      t.eq(type(shared.runtime_valid), "boolean")
+      t.eq(type(shared.resolver_error), "string")
+      t.eq(type(shared.request), "table")
+
+      local ok, result = pcall(function()
+        return contract.validate_request(shared.request)
+      end)
+      t.eq(ok, shared.runtime_valid)
+      if ok then t.eq(result, shared.request) end
+    end
+  end,
+
+  test_contextual_request_fixtures_are_rejected_only_by_resolver_mapping = function()
+    local profile = request_fixtures.load("contextual-unsupported-execution-profile")
+    local value = fixture()
+    value.request.execution_profile = profile.request.execution_profile
+    contract.validate_request(value.request)
+    local ok, err = pcall(function() runtime_executor.resolve(value.request, value.ports) end)
+    t.eq(ok, false)
+    t.eq(error_facts.error_class_from_message(err), profile.resolver_error)
+
+    local mapping = request_fixtures.load("contextual-unsupported-executor-mapping")
+    value = fixture({
+      change_documents = function(docs)
+        docs.package_manifest_ref.package_id = mapping.request.executor.package_id
+        docs.package_manifest_ref.supported_contracts.majors[1] = mapping.request.executor.contract_major
+        docs.package_manifest_ref.entrypoints[1].name = mapping.request.executor.entrypoint
+        docs.package_manifest_ref.entrypoints[1].contract_major = mapping.request.executor.contract_major
+      end,
+      recompute_manifest_digest = true,
+    })
+    value.request.executor.package_id = mapping.request.executor.package_id
+    value.request.executor.entrypoint = mapping.request.executor.entrypoint
+    value.request.executor.contract_major = mapping.request.executor.contract_major
+    contract.validate_request(value.request)
+    ok, err = pcall(function() runtime_executor.resolve(value.request, value.ports) end)
+    t.eq(ok, false)
+    t.eq(error_facts.error_class_from_message(err), mapping.resolver_error)
+  end,
+
   test_runtime_adapter_resolve_exposes_resolved_invocation = function()
     local value = fixture()
     local resolved = runtime_executor.resolve(value.request, value.ports)
     t.eq(resolved.schema, contract.schemas.resolved_invocation)
+    t.eq(resolved.selected_entrypoint.executor_id, contract.executor_id)
+    t.eq(resolved.admission_receipt.admission_digest, resolved.admission_digest)
     t.eq(#value.calls.loads, 6)
+    t.eq(#value.calls.package_loads, 1)
+    t.eq(#value.calls.compatibility, 1)
+    t.eq(#value.calls.admissions, 1)
   end,
 
-  test_runtime_adapter_executes_the_full_walking_skeleton = function()
-    local value = fixture()
-    local execution = runtime_executor.execute(value.request, value.ports)
 
-    local expected_loads = {
-      value.request.approved_input_refs.package_manifest_ref,
-      value.request.approved_input_refs.source_ref,
-      value.request.approved_input_refs.plan_ref,
-      value.request.approved_input_refs.pql_input_ref,
-      value.request.approved_input_refs.policy_ref,
-      value.request.approved_input_refs.capability_set_ref,
-    }
-    t.eq(json.encode(value.calls.loads), json.encode(expected_loads))
+  test_same_key_replays_receipt_and_different_digest_conflicts = function()
+    local receipt_store = {}
+    local first = fixture({ receipt_store = receipt_store })
+    local admitted = runtime_executor.resolve(first.request, first.ports)
+    local replayed = runtime_executor.resolve(first.request, first.ports)
+    t.eq(runtime_json.encode(replayed.admission_receipt), runtime_json.encode(admitted.admission_receipt))
+    t.eq(#first.calls.admissions, 2)
+
+    local conflict = fixture({
+      receipt_store = receipt_store,
+    completed_store = completed_store,
+      change_documents = function(docs) docs.package_manifest_ref.source_commit = string.rep("9", 40) end,
+      recompute_manifest_digest = true,
+    })
+    local conflict_receipt = runtime_executor.execute(conflict.request, conflict.ports)
+    t.eq(conflict_receipt.schema, contract.schemas.admission_conflict)
+    t.eq(conflict_receipt.status, "conflict")
+    t.eq(conflict_receipt.admitted_digest, admitted.admission_digest)
+    t.eq(conflict_receipt.attempted_digest, conflict.calls.admissions[1].admission_digest)
+    t.eq(#conflict.calls.admissions, 1)
+    assert_zero_execution_effects(conflict)
+  end,
+
+  test_package_content_runtime_and_mapping_authority_fail_before_admission = function()
+    local package_mismatch = fixture({ package_content_bytes = "different package bytes" })
+    expect_failure("package-content-mismatch", function()
+      runtime_executor.execute(package_mismatch.request, package_mismatch.ports)
+    end)
+    t.eq(#package_mismatch.calls.admissions, 0)
+    assert_zero_execution_effects(package_mismatch)
+
+    local incompatible = fixture({ runtime_compatible = false })
+    expect_failure("runtime-incompatible", function()
+      runtime_executor.execute(incompatible.request, incompatible.ports)
+    end)
+    t.eq(#incompatible.calls.admissions, 0)
+    assert_zero_execution_effects(incompatible)
+
+    for _, mutate in ipairs({
+      function(manifest) manifest.runtime_requirements.lua = "5.5.0" end,
+      function(manifest) manifest.runtime_requirements.platforms[1] = "darwin-arm64" end,
+      function(manifest) manifest.dependencies.fkst_packages.commit = string.rep("1", 40) end,
+      function(manifest) manifest.dependencies.fkst_substrate.commit = string.rep("2", 40) end,
+    }) do
+      local incompatible_manifest = fixture({
+        change_documents = function(docs) mutate(docs.package_manifest_ref) end,
+        recompute_manifest_digest = true,
+      })
+      incompatible_manifest.request.executor.manifest_digest = incompatible_manifest.docs.package_manifest_ref.manifest_digest
+      expect_failure("runtime-incompatible", function()
+        runtime_executor.resolve(incompatible_manifest.request, incompatible_manifest.ports)
+      end)
+      t.eq(#incompatible_manifest.calls.admissions, 0)
+    end
+
+    local malformed_package_sha = fixture()
+    local valid_package_sha = malformed_package_sha.ports.sha256
+    malformed_package_sha.ports.sha256 = function(bytes)
+      if bytes == "testing-runner-1.0.0 admitted package bytes" then return "bad" end
+      return valid_package_sha(bytes)
+    end
+    expect_failure("sha256-failed", function()
+      runtime_executor.resolve(malformed_package_sha.request, malformed_package_sha.ports)
+    end)
+    t.eq(#malformed_package_sha.calls.admissions, 0)
+
+    local caller_selected_entrypoint = fixture({
+      change_documents = function(docs)
+        table.insert(docs.package_manifest_ref.entrypoints, {
+          name = "testing-runner.supervise",
+          contract_major = "testing-runner.v1",
+          capabilities = { "browser.read-title.v1" },
+        })
+      end,
+      recompute_manifest_digest = true,
+    })
+    caller_selected_entrypoint.request.executor.entrypoint = "testing-runner.supervise"
+    caller_selected_entrypoint.request.executor.manifest_digest = caller_selected_entrypoint.docs.package_manifest_ref.manifest_digest
+    expect_failure("unsupported-mapping", function()
+      runtime_executor.resolve(caller_selected_entrypoint.request, caller_selected_entrypoint.ports)
+    end)
+    t.eq(#caller_selected_entrypoint.calls.admissions, 0)
+
+    local unsupported_version = fixture({
+      change_documents = function(docs) docs.package_manifest_ref.package_version = "9.9.9" end,
+      recompute_manifest_digest = true,
+    })
+    unsupported_version.request.executor.package_version = "9.9.9"
+    unsupported_version.request.executor.manifest_digest = unsupported_version.docs.package_manifest_ref.manifest_digest
+    expect_failure("unsupported-mapping", function()
+      runtime_executor.resolve(unsupported_version.request, unsupported_version.ports)
+    end)
+    t.eq(#unsupported_version.calls.admissions, 0)
+
+    local duplicate = copy(contract.semantic_mappings[1])
+    table.insert(contract.semantic_mappings, duplicate)
+    local ambiguous = fixture()
+    local ok, err = pcall(runtime_executor.resolve, ambiguous.request, ambiguous.ports)
+    table.remove(contract.semantic_mappings)
+    t.eq(ok, false)
+    t.eq(error_facts.error_class_from_message(err), "mapping-ambiguous")
+    t.eq(#ambiguous.calls.admissions, 0)
+  end,
+
+  test_resolved_invocation_recomputes_admission_before_effects = function()
+    for _, mutate in ipairs({
+      function(resolved) resolved.executor.package_version = "9.9.9" end,
+      function(resolved) resolved.approved_input_refs.plan_ref.sha256 = string.rep("f", 64) end,
+    }) do
+      local value = fixture()
+      local resolved = runtime_executor.resolve(value.request, value.ports)
+      mutate(resolved)
+      expect_failure("admission-mismatch", function() executor.execute(resolved, value.ports) end)
+      assert_zero_execution_effects(value)
+    end
+  end,
+
+  test_resolver_failure_receipts_are_stable_and_effect_free = function()
+    local value = fixture()
+    value.storage[value.request.approved_input_refs.plan_ref.ref] = "tampered"
+    local ok, resolver_error = pcall(runtime_executor.resolve, value.request, value.ports)
+    t.eq(ok, false)
+    local failure = runtime_executor.failure_receipt(value.request, resolver_error)
+    t.eq(failure.schema, contract.schemas.resolver_failure)
+    t.eq(failure.status, "rejected")
+    t.eq(failure.admission_key, value.request.dedup_key)
+    t.eq(failure.code, "digest-mismatch")
+    t.eq(#value.calls.admissions, 0)
+    assert_zero_execution_effects(value)
+
+    for _, request in ipairs({
+      {},
+      { dedup_key = 42 },
+      { dedup_key = {} },
+      { dedup_key = string.rep("x", 181) },
+      { dedup_key = "bad\nkey" },
+    }) do
+      local projected = runtime_executor.failure_receipt(request, "unclassified failure")
+      t.eq(projected.admission_key, "unknown")
+      t.eq(projected.code, "caught-failure")
+    end
+    t.eq(runtime_executor.failure_receipt(nil, "unclassified failure").admission_key, "unknown")
+  end,
+
+  test_runtime_adapter_executes_and_replays_the_full_walking_skeleton = function()
+    local value = fixture()
+    local completed = runtime_executor.execute(value.request, value.ports)
+    local replayed = runtime_executor.execute(value.request, value.ports)
+
+    t.eq(completed.schema, contract.schemas.completed_execution)
+    t.eq(runtime_json.encode(replayed), runtime_json.encode(completed))
+    t.eq(#value.calls.completed_queries, 2)
+    t.eq(#value.calls.claims, 1)
     t.eq(#value.calls.freshness, 1)
-    t.eq(json.encode(value.calls.freshness[1]), json.encode({
-      schema = "testing-package-executor.freshness-check.v1",
-      dedup_key = "dedup-walking-skeleton",
-      effect_id = "effect-case-home-title-title",
-    }))
+    t.eq(#value.calls.intents, 1)
     t.eq(#value.calls.browser, 1)
-    t.eq(json.encode(value.calls.browser[1]), json.encode({
-      schema = "testing-package-executor.browser-read-title.v1",
-      effect_id = "effect-case-home-title-title",
-      url = "http://127.0.0.1:4173/",
-    }))
+    t.eq(#value.calls.receipts, 1)
+    t.is_true(value.calls.receipts[1].evidence_refs ~= value.calls.raw_receipt.evidence_refs)
+    t.eq(#value.calls.writes, 2)
+    t.eq(value.calls.writes[1].kind, "evidence-manifest")
+    t.eq(value.calls.writes[2].kind, "case-result-set")
+    t.eq(#value.calls.completions, 1)
+    t.eq(value.calls.now, 2)
+  end,
+
+  test_completed_replay_rejects_cross_run_artifact_pointers_without_effects = function()
+    local value = fixture()
+    local completed = runtime_executor.execute(value.request, value.ports)
+    local key = completed.dedup_key .. ":" .. completed.admission_digest
+    value.completed_store[key].case_result_set_ref.ref = ".testing/runs/foreign/case-result-set.json"
+    local effects = {
+      claims=#value.calls.claims, freshness=#value.calls.freshness, intents=#value.calls.intents,
+      browser=#value.calls.browser, receipts=#value.calls.receipts, writes=#value.calls.writes,
+      completions=#value.calls.completions, now=value.calls.now,
+    }
+    expect_failure("cross-run-pointer", function() runtime_executor.execute(value.request, value.ports) end)
+    t.eq(#value.calls.claims, effects.claims)
+    t.eq(#value.calls.freshness, effects.freshness)
+    t.eq(#value.calls.intents, effects.intents)
+    t.eq(#value.calls.browser, effects.browser)
+    t.eq(#value.calls.receipts, effects.receipts)
+    t.eq(#value.calls.writes, effects.writes)
+    t.eq(#value.calls.completions, effects.completions)
+    t.eq(value.calls.now, effects.now)
+  end,
+
+  test_writer_receipt_digest_must_match_submitted_canonical_bytes = function()
+    local value = fixture({ writer_digest = string.rep("0", 64) })
+    expect_failure("digest-mismatch", function() runtime_executor.execute(value.request, value.ports) end)
     t.eq(#value.calls.writes, 1)
-    t.eq(sha256(value.calls.writes[1].canonical_bytes), value.calls.writes[1].canonical_sha256)
-    t.eq(results.canonicalize(execution.case_result), value.calls.writes[1].canonical_bytes)
-    t.eq(execution.schema, "testing-package-executor.execution.v1")
-    t.eq(execution.case_result.execution_status, "passed")
-    t.eq(execution.case_result.classification, "deterministic")
-    t.eq(json.encode(execution.case_result.timing), json.encode({
-      started_at = "2026-08-21T00:00:00Z",
-      completed_at = "2026-08-21T00:00:01Z",
-      duration_ms = 1000,
-    }))
-    t.eq(json.encode(execution.case_result_ref), json.encode({
-      kind = "artifact",
-      ref = ".testing/runs/dedup-walking-skeleton/case-result.json",
-      sha256 = value.calls.writes[1].canonical_sha256,
-    }))
+    t.eq(#value.calls.completions, 0)
   end,
 
   test_direct_and_runtime_adapter_execution_have_equal_semantics = function()
     local direct_fixture = fixture()
-    local resolved = executor.resolve(direct_fixture.request, direct_fixture.ports)
+    local resolved = runtime_executor.resolve(direct_fixture.request, direct_fixture.ports)
     local direct = executor.execute(resolved, direct_fixture.ports)
     local adapter_fixture = fixture()
     local adapted = runtime_executor.execute(adapter_fixture.request, adapter_fixture.ports)
@@ -260,13 +569,119 @@ return {
 
   test_unequal_title_produces_canonical_assertion_failure = function()
     local value = fixture({ observed_title = "Unexpected Home" })
-    local execution = runtime_executor.execute(value.request, value.ports)
-    t.eq(execution.case_result.execution_status, "failed")
-    t.eq(execution.case_result.classification, "assertion_failure")
-    t.eq(execution.case_result.observations[1].value, "Unexpected Home")
-    t.eq(execution.case_result.assertions[1].status, "failed")
-    t.eq(execution.case_result.assertions[1].classification, "assertion_failure")
-    t.eq(#value.calls.writes, 1)
+    local completed = runtime_executor.execute(value.request, value.ports)
+    local result_set = host_json.decode(value.calls.writes[2].canonical_bytes)
+    local case = result_set.cases[1]
+    t.eq(completed.status, "completed")
+    t.eq(case.execution_status, "failed")
+    t.eq(case.classification, "assertion_failure")
+    t.eq(case.observations[1].value, "Unexpected Home")
+    t.eq(case.assertions[1].status, "failed")
+    t.eq(case.assertions[1].classification, "assertion_failure")
+    t.eq(#value.calls.writes, 2)
+  end,
+
+  test_intent_without_receipt_terminalizes_as_lost_without_browser_retry = function()
+    local value = fixture()
+    local resolved = runtime_executor.resolve(value.request, value.ports)
+    local key = resolved.dedup_key .. ":" .. resolved.admission_digest
+    value.intent_store[key] = { schema=contract.schemas.effect_intent, dedup_key=resolved.dedup_key,
+      admission_digest=resolved.admission_digest, claim_id="claim-dedup-walking-skeleton",
+      effect_id=contract.effect_id, url=contract.target_url, started_at="2026-08-21T00:00:00Z" }
+    local completed = executor.execute(resolved, value.ports)
+    local manifest = host_json.decode(value.calls.writes[1].canonical_bytes)
+    local case = host_json.decode(value.calls.writes[2].canonical_bytes).cases[1]
+    t.eq(completed.status, "completed")
+    t.eq(#manifest.entries, 0)
+    t.eq(case.execution_status, "lost")
+    t.eq(case.classification, "lost")
+    t.eq(case.non_execution_reason, "execution-lost-between-action-and-assertion")
+    t.eq(case.assertions[1].status, "skipped")
+    t.eq(case.timing.duration_ms, 0)
+    t.eq(#value.calls.freshness, 0); t.eq(#value.calls.browser, 0)
+    t.eq(#value.calls.intents, 0); t.eq(#value.calls.receipts, 0)
+    t.eq(value.calls.now, 0)
+  end,
+
+  test_stored_intent_and_receipt_resume_without_repeating_effect = function()
+    local value = fixture()
+    local resolved = runtime_executor.resolve(value.request, value.ports)
+    local key = resolved.dedup_key .. ":" .. resolved.admission_digest
+    value.intent_store[key] = { schema=contract.schemas.effect_intent, dedup_key=resolved.dedup_key,
+      admission_digest=resolved.admission_digest, claim_id="claim-dedup-walking-skeleton",
+      effect_id=contract.effect_id, url=contract.target_url, started_at="2026-08-21T00:00:00Z" }
+    value.effect_receipt_store[key] = durable_effect_receipt(
+      value.ports.browser_read_title({ schema=contract.schemas.browser_read_title,
+        effect_id=contract.effect_id, url=contract.target_url }),
+      "2026-08-21T00:00:01Z"
+    )
+    value.calls.browser = {}
+    local completed = executor.execute(resolved, value.ports)
+    t.eq(completed.status, "completed")
+    t.eq(#value.calls.freshness, 0); t.eq(#value.calls.browser, 0)
+    t.eq(#value.calls.intents, 0); t.eq(#value.calls.receipts, 0)
+    t.eq(#value.calls.writes, 2); t.eq(#value.calls.completions, 1)
+  end,
+
+  test_receipt_without_intent_and_tampered_state_fail_closed = function()
+    local value = fixture()
+    local resolved = runtime_executor.resolve(value.request, value.ports)
+    local key = resolved.dedup_key .. ":" .. resolved.admission_digest
+    value.effect_receipt_store[key] = durable_effect_receipt(
+      value.ports.browser_read_title({ schema=contract.schemas.browser_read_title,
+        effect_id=contract.effect_id, url=contract.target_url }),
+      "2026-08-21T00:00:01Z"
+    )
+    value.calls.browser = {}
+    expect_failure("effect receipt exists without intent", function() executor.execute(resolved, value.ports) end)
+    t.eq(#value.calls.browser, 0); t.eq(#value.calls.writes, 0); t.eq(value.calls.now, 0)
+
+    value = fixture()
+    resolved = runtime_executor.resolve(value.request, value.ports)
+    key = resolved.dedup_key .. ":" .. resolved.admission_digest
+    value.intent_store[key] = { schema=contract.schemas.effect_intent, dedup_key="foreign",
+      admission_digest=resolved.admission_digest, claim_id="claim-dedup-walking-skeleton",
+      effect_id=contract.effect_id, url=contract.target_url, started_at="2026-08-21T00:00:00Z" }
+    expect_failure("effect intent identity", function() executor.execute(resolved, value.ports) end)
+    t.eq(#value.calls.freshness, 0); t.eq(#value.calls.browser, 0); t.eq(#value.calls.writes, 0)
+
+    value = fixture()
+    resolved = runtime_executor.resolve(value.request, value.ports)
+    key = resolved.dedup_key .. ":" .. resolved.admission_digest
+    value.intent_store[key] = { schema=contract.schemas.effect_intent, dedup_key=resolved.dedup_key,
+      admission_digest=resolved.admission_digest, claim_id="claim-dedup-walking-skeleton",
+      effect_id=contract.effect_id, url=contract.target_url, started_at="2026-08-21T00:00:02Z" }
+    value.effect_receipt_store[key] = durable_effect_receipt(
+      value.ports.browser_read_title({ schema=contract.schemas.browser_read_title,
+        effect_id=contract.effect_id, url=contract.target_url }),
+      "2026-08-21T00:00:01Z"
+    )
+    value.calls.browser = {}
+    expect_failure("effect completion precedes", function() executor.execute(resolved, value.ports) end)
+    t.eq(#value.calls.browser, 0); t.eq(#value.calls.writes, 0); t.eq(value.calls.now, 0)
+  end,
+
+  test_writer_and_completion_acknowledgement_recovery_are_idempotent = function()
+    local shared = { receipts={}, completed={}, intents={}, effects={}, canonical={}, writer_ack={ fired=false } }
+    local first = fixture({ receipt_store=shared.receipts, completed_store=shared.completed, intent_store=shared.intents,
+      effect_receipt_store=shared.effects, canonical_store=shared.canonical, writer_ack_loss_once=shared.writer_ack })
+    expect_failure("writer acknowledgement lost", function() runtime_executor.execute(first.request, first.ports) end)
+    t.eq(#first.calls.browser, 1)
+    local second = fixture({ receipt_store=shared.receipts, completed_store=shared.completed, intent_store=shared.intents,
+      effect_receipt_store=shared.effects, canonical_store=shared.canonical,
+      clock={ "2026-08-22T00:00:00Z", "2026-08-22T00:00:01Z" } })
+    local completed = runtime_executor.execute(second.request, second.ports)
+    t.eq(completed.status, "completed")
+    t.eq(#second.calls.browser, 0); t.eq(#second.calls.intents, 0); t.eq(#second.calls.receipts, 0)
+    t.eq(second.calls.now, 0)
+
+    local completion = fixture({ receipt_store={}, completed_store={}, intent_store={}, effect_receipt_store={}, completion_ack_loss=true })
+    expect_failure("completion acknowledgement lost", function() runtime_executor.execute(completion.request, completion.ports) end)
+    local replay = fixture({ receipt_store=completion.receipt_store, completed_store=completion.completed_store,
+      intent_store=completion.intent_store, effect_receipt_store=completion.effect_receipt_store })
+    local stored = runtime_executor.execute(replay.request, replay.ports)
+    t.eq(stored.status, "completed")
+    t.eq(#replay.calls.claims, 0); t.eq(#replay.calls.browser, 0); t.eq(#replay.calls.writes, 0)
   end,
 
   test_tampered_approved_bytes_fail_before_execution_effects = function()
@@ -275,6 +690,7 @@ return {
       local ref = value.request.approved_input_refs[field].ref
       value.storage[ref] = value.storage[ref] .. " "
       expect_failure("digest-mismatch", function() runtime_executor.execute(value.request, value.ports) end)
+      t.eq(#value.calls.admissions, 0)
       assert_zero_execution_effects(value)
     end
   end,
@@ -317,7 +733,7 @@ return {
     })
     value.request.executor.manifest_digest = value.docs.package_manifest_ref.manifest_digest
     local execution = runtime_executor.execute(value.request, value.ports)
-    t.eq(execution.case_result.execution_status, "passed")
+    t.eq(execution.status, "completed")
   end,
 
   test_capability_set_mismatch_fails_without_execution_effects = function()
@@ -371,22 +787,98 @@ return {
     local sparse = { [1] = contract.capability, [3] = "other" }
     rejects(function() contract.validate_policy({schema=contract.schemas.policy,execution_profile=contract.profile,authorized_entrypoint=contract.entrypoint,allowed_capabilities=sparse}) end)
     rejects(function() contract.validate_policy({schema=contract.schemas.policy,execution_profile=contract.profile,authorized_entrypoint=contract.entrypoint,allowed_capabilities={}}) end)
+    local state_query = { schema=contract.schemas.effect_state_query, dedup_key="dedup-walking-skeleton",
+      admission_digest=string.rep("a",64), effect_id=contract.effect_id }
+    t.eq(contract.validate_effect_state_query(state_query), state_query)
+    state_query.foreign = true; rejects(function() contract.validate_effect_state_query(state_query) end)
+    state_query.foreign = nil; state_query.effect_id = "other"
+    rejects(function() contract.validate_effect_state_query(state_query) end)
+    local intent = { schema=contract.schemas.effect_intent, dedup_key="dedup-walking-skeleton",
+      admission_digest=string.rep("a",64), claim_id="claim-dedup-walking-skeleton",
+      effect_id=contract.effect_id, url=contract.target_url, started_at="not-time" }
+    rejects(function() contract.validate_effect_intent(intent) end)
     local effect = { schema=contract.schemas.browser_read_title, effect_id="other", url=contract.target_url }
     rejects(function() contract.validate_browser_read_title(effect) end)
     effect.effect_id=contract.effect_id; effect.url="http://127.0.0.1:4173/other"; rejects(function() contract.validate_browser_read_title(effect) end)
-    local receipt = { schema=contract.schemas.effect_receipt, effect_id="other", status="succeeded", observed_title="Fixture Home", evidence_refs={} }
+    local browser_receipt = {
+      schema=contract.schemas.browser_read_title_receipt, effect_id="other", status="succeeded",
+      observed_url=contract.target_url, observed_title="Fixture Home",
+      evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=string.rep("a",64)}},
+      evidence_size_bytes=123,
+    }
+    rejects(function() contract.validate_browser_read_title_receipt(browser_receipt) end)
+    browser_receipt.effect_id=contract.effect_id; browser_receipt.status="failed"
+    rejects(function() contract.validate_browser_read_title_receipt(browser_receipt) end)
+    browser_receipt.status="succeeded"; browser_receipt.evidence_size_bytes=1.5
+    rejects(function() contract.validate_browser_read_title_receipt(browser_receipt) end)
+    browser_receipt.evidence_size_bytes=123; browser_receipt.observed_title="\255"
+    rejects(function() contract.validate_browser_read_title_receipt(browser_receipt) end)
+    browser_receipt.observed_title="Fixture Home"
+    local receipt = copy(browser_receipt)
+    receipt.schema=contract.schemas.effect_receipt
+    receipt.completed_at="not-time"
     rejects(function() contract.validate_effect_receipt(receipt) end)
-    receipt.effect_id=contract.effect_id; receipt.status="failed"
-    rejects(function() contract.validate_effect_receipt(receipt) end)
+    receipt.completed_at="2026-08-21T00:00:01Z"
+    t.eq(contract.validate_effect_receipt(receipt), receipt)
+    rejects(function() contract.validate_browser_read_title_receipt(receipt) end)
+    rejects(function() contract.validate_effect_receipt(browser_receipt) end)
     local write = { schema=contract.schemas.write_receipt, status="failed", ref={kind="artifact",ref="x",sha256=string.rep("a",64)} }
     rejects(function() contract.validate_write_receipt(write) end)
     write.status="written"; write.ref.kind="wrong"; rejects(function() contract.validate_write_receipt(write) end)
-    local execution = { schema=contract.schemas.execution, case_result={}, effect_receipt=receipt, case_result_ref={kind="wrong",ref="x",sha256=string.rep("a",64)} }
+    receipt.status="succeeded"
+    local execution = { schema=contract.schemas.execution, case_result={}, effect_receipt=receipt, case_result_ref={kind="artifact",ref="x",sha256=string.rep("a",64)} }
+    t.eq(contract.validate_execution(execution), execution)
+    execution.case_result_ref.kind="wrong"
     rejects(function() contract.validate_execution(execution) end)
+
+    local admission_digest = string.rep("a", 64)
+    local admission_receipt = {
+      schema=contract.schemas.admission_receipt, status="admitted",
+      admission_key="admission-key", admission_digest=admission_digest,
+    }
+    admission_receipt.status="wrong"
+    rejects(function() contract.validate_admission_receipt(admission_receipt, "admission-key", admission_digest) end)
+    admission_receipt.status="admitted"; admission_receipt.admission_key="wrong"
+    rejects(function() contract.validate_admission_receipt(admission_receipt, "admission-key", admission_digest) end)
+    admission_receipt.admission_key="admission-key"; admission_receipt.schema="wrong"
+    rejects(function() contract.validate_admission_receipt(admission_receipt, "admission-key", admission_digest) end)
+
+    local admission_conflict = {
+      schema=contract.schemas.admission_conflict, status="conflict",
+      admission_key="admission-key", admitted_digest=string.rep("b", 64),
+      attempted_digest=admission_digest,
+    }
+    admission_conflict.status="wrong"
+    rejects(function() contract.validate_admission_conflict(admission_conflict, "admission-key", admission_digest) end)
+    admission_conflict.status="conflict"; admission_conflict.admission_key="wrong"
+    rejects(function() contract.validate_admission_conflict(admission_conflict, "admission-key", admission_digest) end)
+    admission_conflict.admission_key="admission-key"; admission_conflict.attempted_digest=string.rep("c", 64)
+    rejects(function() contract.validate_admission_conflict(admission_conflict, "admission-key", admission_digest) end)
+    admission_conflict.attempted_digest=admission_digest; admission_conflict.admitted_digest="bad"
+    rejects(function() contract.validate_admission_conflict(admission_conflict, "admission-key", admission_digest) end)
+    admission_conflict.admitted_digest=admission_digest
+    rejects(function() contract.validate_admission_conflict(admission_conflict, "admission-key", admission_digest) end)
+
+    local resolver_failure = {
+      schema=contract.schemas.resolver_failure, status="wrong",
+      admission_key="admission-key", code="caught-failure",
+    }
+    rejects(function() contract.validate_resolver_failure(resolver_failure) end)
+    resolver_failure.status="rejected"; resolver_failure.schema=contract.schemas.resolver_failure; resolver_failure.code="unknown"
+    rejects(function() contract.validate_resolver_failure(resolver_failure) end)
+
+    local bad_admission_sha = fixture()
+    local valid_sha256 = bad_admission_sha.ports.sha256
+    bad_admission_sha.ports.sha256 = function(bytes)
+      if type(bytes) == "string" and bytes:find(contract.schemas.admission_request, 1, true) then return "bad" end
+      return valid_sha256(bytes)
+    end
+    rejects(function() runtime_executor.resolve(bad_admission_sha.request, bad_admission_sha.ports) end)
+
     local bad = fixture(); bad.ports.sha256 = function() return "bad" end
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.request.execution_profile = "other"
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture({ change_documents=function(docs)
       docs.package_manifest_ref.semantic_capabilities = { "other" }
       docs.package_manifest_ref.entrypoints[1].capabilities = { "other" }
@@ -395,56 +887,114 @@ return {
     bad.docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(bad.docs.package_manifest_ref))
     bad.request.executor.manifest_digest = bad.docs.package_manifest_ref.manifest_digest
     local manifest_ref = bad.request.approved_input_refs.package_manifest_ref
-    bad.storage[manifest_ref.ref] = json.encode(bad.docs.package_manifest_ref)
+    bad.storage[manifest_ref.ref] = runtime_json.encode(bad.docs.package_manifest_ref)
     manifest_ref.sha256 = sha256(bad.storage[manifest_ref.ref])
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.request.executor.package_content_sha256 = string.rep("f", 64)
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.request.executor.manifest_digest = string.rep("f", 64)
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture({ change_documents=function(docs)
       docs.package_manifest_ref.semantic_capabilities = { "other" }
     end })
     bad.docs.package_manifest_ref.manifest_digest = nil
     bad.docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(bad.docs.package_manifest_ref))
     bad.request.executor.manifest_digest = bad.docs.package_manifest_ref.manifest_digest
-    bad.request.approved_input_refs.package_manifest_ref.sha256 = sha256(json.encode(bad.docs.package_manifest_ref))
-    bad.storage[bad.request.approved_input_refs.package_manifest_ref.ref] = json.encode(bad.docs.package_manifest_ref)
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
-    local resolved_check = executor.resolve(value.request, value.ports)
+    bad.request.approved_input_refs.package_manifest_ref.sha256 = sha256(runtime_json.encode(bad.docs.package_manifest_ref))
+    bad.storage[bad.request.approved_input_refs.package_manifest_ref.ref] = runtime_json.encode(bad.docs.package_manifest_ref)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
+    local resolved_check = runtime_executor.resolve(value.request, value.ports)
     resolved_check.executor.package_id = "other"
     rejects(function() contract.validate_resolved_invocation(resolved_check) end)
-    resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
     resolved_check.execution_profile = "other"
     rejects(function() contract.validate_resolved_invocation(resolved_check) end)
-    resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
     resolved_check.selected_entrypoint.name = "other"
     rejects(function() contract.validate_resolved_invocation(resolved_check) end)
-    resolved_check = executor.resolve(value.request, value.ports)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
     resolved_check.selected_entrypoint.contract_major = "other"
     rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
+    resolved_check.selected_entrypoint.executor_id = "other"
+    rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
+    resolved_check.admission_receipt.admission_digest = string.rep("f", 64)
+    rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    for _, field in ipairs({ "admission_digest", "admission_receipt" }) do
+      resolved_check = runtime_executor.resolve(value.request, value.ports)
+      resolved_check[field] = nil
+      rejects(function() contract.validate_resolved_invocation(resolved_check) end)
+    end
+    resolved_check = runtime_executor.resolve(value.request, value.ports)
+    resolved_check.selected_entrypoint.executor_id = nil
+    rejects(function() contract.validate_resolved_invocation(resolved_check) end)
     bad = fixture({ change_documents=function(docs) docs.policy_ref.execution_profile = "other" end })
-    rejects(function() executor.resolve(bad.request, bad.ports) end)
+    rejects(function() runtime_executor.resolve(bad.request, bad.ports) end)
     bad = fixture(); bad.ports.now = function() return "not-time" end
-    local resolved = executor.resolve(bad.request, bad.ports)
+    local resolved = runtime_executor.resolve(bad.request, bad.ports)
     rejects(function() executor.execute(resolved, bad.ports) end)
     bad = fixture()
-    resolved = executor.resolve(bad.request, bad.ports)
-    bad.ports.sha256 = function(bytes) return "bad" end
+    resolved = runtime_executor.resolve(bad.request, bad.ports)
+    local valid_execution_sha256 = bad.ports.sha256
+    bad.ports.sha256 = function(bytes)
+      if type(bytes) == "string" and bytes:find('"canonical_sha256"', 1, true) then return "bad" end
+      return valid_execution_sha256(bytes)
+    end
     rejects(function() executor.execute(resolved, bad.ports) end)
+  end,
+
+  test_resolver_port_and_admission_failures_are_closed = function()
+    local value = fixture()
+    value.ports.load_immutable = function() error("boom") end
+    expect_failure("port-failed", function() runtime_executor.resolve(value.request, value.ports) end)
+    t.eq(#value.calls.admissions, 0)
+
+    for _, invalid in ipairs({
+      function() return nil end,
+      function() return 42 end,
+      function() return "" end,
+    }) do
+      value = fixture()
+      value.ports.load_immutable = invalid
+      expect_failure("immutable-load-failed", function() runtime_executor.resolve(value.request, value.ports) end)
+      t.eq(#value.calls.admissions, 0)
+    end
+
+    value = fixture()
+    value.ports.decode_json = function() return "scalar" end
+    expect_failure("decode-failed", function() runtime_executor.resolve(value.request, value.ports) end)
+    t.eq(#value.calls.admissions, 0)
+
+    for _, invalid in ipairs({ false, "bad" }) do
+      value = fixture()
+      value.ports.admit_resolution = function() return invalid end
+      expect_failure("port-failed", function() runtime_executor.resolve(value.request, value.ports) end)
+      assert_zero_execution_effects(value)
+    end
   end,
 
   test_missing_ports_fail_closed = function()
     local value = fixture()
-    value.ports.decode_json = nil
-    expect_failure("decode_json must be callable", function() runtime_executor.execute(value.request, value.ports) end)
-    t.eq(#value.calls.loads, 0)
+    expect_failure("resolver ports must be a table", function() runtime_executor.resolve(value.request, nil) end)
+    for _, name in ipairs({
+      "load_immutable", "load_package_content", "sha256", "decode_json",
+      "check_runtime_compatibility", "admit_resolution",
+    }) do
+      value = fixture()
+      value.ports[name] = nil
+      expect_failure(name .. " must be callable", function() runtime_executor.execute(value.request, value.ports) end)
+      t.eq(#value.calls.loads, 0)
+      assert_zero_execution_effects(value)
+    end
 
-    value = fixture()
-    local resolved = executor.resolve(value.request, value.ports)
-    value.ports.browser_read_title = nil
-    expect_failure("browser_read_title must be callable", function() executor.execute(resolved, value.ports) end)
-    t.eq(#value.calls.freshness, 0)
-    t.eq(#value.calls.writes, 0)
+    for _, name in ipairs({ "load_effect_intent", "load_effect_receipt", "browser_read_title" }) do
+      value = fixture()
+      local resolved = runtime_executor.resolve(value.request, value.ports)
+      value.ports[name] = nil
+      expect_failure(name .. " must be callable", function() executor.execute(resolved, value.ports) end)
+      t.eq(#value.calls.freshness, 0)
+      t.eq(#value.calls.writes, 0)
+    end
   end,
 }

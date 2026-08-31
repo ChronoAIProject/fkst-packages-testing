@@ -1,0 +1,212 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-package-executor.request.v1.schema.json",
+  "title": "Testing Package Executor Request v1",
+  "description": "Portable validation covers standalone pre-resolution request structure and lexical constraints only. Immutable loading, digest verification, referenced-document validation, identity and policy agreement, and authorized entrypoint selection remain owned by testing_package_executor.resolve.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "executor",
+    "execution_profile",
+    "approved_input_refs",
+    "trace_id",
+    "dedup_key"
+  ],
+  "properties": {
+    "schema": {
+      "const": "testing-package-executor.request.v1"
+    },
+    "executor": {
+      "$ref": "#/$defs/executorIdentity"
+    },
+    "execution_profile": {
+      "$ref": "#/$defs/identityString"
+    },
+    "approved_input_refs": {
+      "$ref": "#/$defs/approvedInputRefs"
+    },
+    "trace_id": {
+      "$ref": "#/$defs/identityString"
+    },
+    "dedup_key": {
+      "$ref": "#/$defs/identityString"
+    }
+  },
+  "$defs": {
+    "identityString": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "x-fkst-maxUtf8Bytes": 180,
+      "format": "fkst-utf8-max-180",
+      "not": {
+        "pattern": "[\\u0000-\\u001F\\u007F]"
+      }
+    },
+    "semanticVersion": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 180,
+      "x-fkst-maxUtf8Bytes": 180,
+      "format": "fkst-utf8-max-180",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
+      "not": {
+        "pattern": "[\\u0000-\\u001F\\u007F]"
+      }
+    },
+    "sha256": {
+      "type": "string",
+      "minLength": 64,
+      "maxLength": 64,
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "immutableRef": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "x-fkst-maxUtf8Bytes": 4096,
+      "format": "fkst-utf8-max-4096",
+      "pattern": "^immutable://[^?#]*$",
+      "not": {
+        "pattern": "[\\u0000-\\u001F\\u007F]"
+      }
+    },
+    "executorIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "package_id",
+        "package_version",
+        "package_content_sha256",
+        "manifest_digest",
+        "entrypoint",
+        "contract_major"
+      ],
+      "properties": {
+        "schema": {
+          "const": "testing-package-executor.identity.v1"
+        },
+        "package_id": {
+          "$ref": "#/$defs/identityString"
+        },
+        "package_version": {
+          "$ref": "#/$defs/semanticVersion"
+        },
+        "package_content_sha256": {
+          "$ref": "#/$defs/sha256"
+        },
+        "manifest_digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "entrypoint": {
+          "$ref": "#/$defs/identityString"
+        },
+        "contract_major": {
+          "$ref": "#/$defs/identityString"
+        }
+      }
+    },
+    "approvedInputRefs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "package_manifest_ref",
+        "source_ref",
+        "plan_ref",
+        "pql_input_ref",
+        "policy_ref",
+        "capability_set_ref"
+      ],
+      "properties": {
+        "package_manifest_ref": {
+          "$ref": "#/$defs/packageManifestRef"
+        },
+        "source_ref": {
+          "$ref": "#/$defs/sourceRef"
+        },
+        "plan_ref": {
+          "$ref": "#/$defs/planRef"
+        },
+        "pql_input_ref": {
+          "$ref": "#/$defs/pqlInputRef"
+        },
+        "policy_ref": {
+          "$ref": "#/$defs/policyRef"
+        },
+        "capability_set_ref": {
+          "$ref": "#/$defs/capabilitySetRef"
+        }
+      }
+    },
+    "packageManifestRef": {
+      "$ref": "#/$defs/reference",
+      "properties": {
+        "kind": {
+          "const": "testing-package-manifest"
+        }
+      }
+    },
+    "sourceRef": {
+      "$ref": "#/$defs/reference",
+      "properties": {
+        "kind": {
+          "const": "testing-package-source"
+        }
+      }
+    },
+    "planRef": {
+      "$ref": "#/$defs/reference",
+      "properties": {
+        "kind": {
+          "const": "testing-package-plan"
+        }
+      }
+    },
+    "pqlInputRef": {
+      "$ref": "#/$defs/reference",
+      "properties": {
+        "kind": {
+          "const": "testing-package-pql-input"
+        }
+      }
+    },
+    "policyRef": {
+      "$ref": "#/$defs/reference",
+      "properties": {
+        "kind": {
+          "const": "testing-package-policy"
+        }
+      }
+    },
+    "capabilitySetRef": {
+      "$ref": "#/$defs/reference",
+      "properties": {
+        "kind": {
+          "const": "testing-package-capability-set"
+        }
+      }
+    },
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "kind",
+        "ref",
+        "sha256"
+      ],
+      "properties": {
+        "kind": {
+          "$ref": "#/$defs/identityString"
+        },
+        "ref": {
+          "$ref": "#/$defs/immutableRef"
+        },
+        "sha256": {
+          "$ref": "#/$defs/sha256"
+        }
+      }
+    }
+  }
+}

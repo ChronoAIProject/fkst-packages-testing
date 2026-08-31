@@ -449,9 +449,8 @@ libraries = ["libraries/*"]
 workspace = "workspace"
 TOML
   copy_repo_libraries "$work" || return 1
-  # Repo-owned library names win over source-scoped forge/devloop; copy missing platform libraries
-  # so composed package tests close the same library graph as host conformance.
-  for dep_name in forge devloop; do
+  # Repo-owned library names win; copy missing platform dependencies for the composed graph.
+  for dep_name in forge devloop testkit_internal workflow_internal; do
     [ -d "$work/libraries/$dep_name" ] && continue
     [ -d "$shared/libraries/$dep_name" ] || {
       echo "error: pinned platform library missing: $dep_name" >&2
@@ -477,7 +476,7 @@ TOML
 # Run an engine subcommand (conformance|supervise) for one package with the correct scope:
 #   top-level composed (in composed-roots) -> CLOSED-WORLD across its declared graph. project-root is
 #     the repo (no package-root folds into it), so the engine enforces every consumed queue has a
-#     producer — a genuinely closed graph, the same shape the launchd supervisor runs;
+#     producer -- a genuinely closed graph, the same shape the launchd supervisor runs;
 #   composed member (a root of another composed package) -> skipped standalone (covered by its parent);
 #   undeclared composed ([event_deps] but no entry) -> hard error (tells the maintainer to declare it);
 #   flat -> SINGLE-ROOT (partial-graph), the repo default for self-contained blocks.
@@ -594,7 +593,7 @@ package_has_tests() {
 run_repository_contract_tests() {
   echo "=== package conformance contract tests ==="
   "$PYTHON_BIN" -B "$ROOT/scripts/conformance_contract_test.py"
-  PYTHONPATH="$ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -B "$ROOT/scripts/testing_package_manifest_test.py"
+  PYTHON="$PYTHON_BIN" "$ROOT/scripts/python_test_deps.sh" test
   echo "=== runner script contract tests ==="
   "$PYTHON_BIN" -B "$ROOT/scripts/run_script_contract_test.py"
   echo "=== engine provenance contract tests ==="
@@ -894,7 +893,6 @@ cmd_supervise() {
   echo "supervise $name (single-root; dry-run until the host write switch + FKST_SKILL_* are pinned)"
   exec "$BIN" supervise --project-root "$pkg" --package-root "$pkg" --framework-bin "$BIN"
 }
-
 run_host_check() {
   local python_shim_dir="$1" hermetic_root rc
   if ! hermetic_root="$(mktemp -d "${TMPDIR:-/tmp}/fkst-host-check.XXXXXX")"; then
@@ -950,7 +948,7 @@ cmd_host() {
     fi
     run_host_check "$python_shim_dir" || return $?
     PATH="$python_shim_dir:$PATH" \
-      env -u FKST_COMPETENCE_BASE_REF -u FKST_LUA_COVERAGE_BASE_REF -u GITHUB_BASE_REF \
+      env -u FKST_COMPETENCE_BASE_REF -u FKST_LUA_COVERAGE_BASE_REF -u FKST_RATCHET_TARGET_REF -u GITHUB_BASE_REF -u GITHUB_EVENT_NAME -u GITHUB_EVENT_PATH -u GITHUB_REF_TYPE \
       "$shared/scripts/run.sh" test github-devloop-workflow
     return
   fi

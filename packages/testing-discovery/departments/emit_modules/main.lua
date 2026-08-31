@@ -1,5 +1,6 @@
 local core = require("core")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "browser-readiness.browser_readiness_result" },
@@ -28,6 +29,6 @@ local function act(event)
   end
 end
 
-local M = saga.department(spec, { accept = is_discovery_result, done = done, act = act, name = "emit_modules" })
+local M = saga.department(spec, { accept = is_discovery_result, done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "testing-discovery.emit_modules" })
 M.pipeline = _G.pipeline
 return M

@@ -37,6 +37,9 @@ function C.parse_commit_check_runs(stdout)
         workflowName = run.workflowName,
         workflow_name = run.workflow_name,
         workflow = run.workflow,
+        output = run.output,
+        details_url = run.details_url,
+        detailsUrl = run.detailsUrl,
       })
     end
   end
@@ -75,13 +78,54 @@ local red_status_states = {
   FAILURE = true,
 }
 
+local function entry_commit_sha(entry)
+  if type(entry) ~= "table" then
+    return nil
+  end
+  local candidates = {
+    entry.headSha,
+    entry.head_sha,
+    entry.sha,
+    entry.oid,
+  }
+  if type(entry.commit) == "table" then
+    table.insert(candidates, entry.commit.oid)
+    table.insert(candidates, entry.commit.sha)
+  end
+  if type(entry.checkSuite) == "table" then
+    table.insert(candidates, entry.checkSuite.headSha)
+    table.insert(candidates, entry.checkSuite.head_sha)
+    if type(entry.checkSuite.commit) == "table" then
+      table.insert(candidates, entry.checkSuite.commit.oid)
+      table.insert(candidates, entry.checkSuite.commit.sha)
+    end
+  end
+  if type(entry.check_suite) == "table" then
+    table.insert(candidates, entry.check_suite.headSha)
+    table.insert(candidates, entry.check_suite.head_sha)
+    if type(entry.check_suite.commit) == "table" then
+      table.insert(candidates, entry.check_suite.commit.oid)
+      table.insert(candidates, entry.check_suite.commit.sha)
+    end
+  end
+  for _, candidate in ipairs(candidates) do
+    if gitref.is_git_sha(candidate) then
+      return tostring(candidate)
+    end
+  end
+  return nil
+end
+
 local required_check_run_names = {
   "test",
 }
 
-local required_check_run_name_set = {}
-for _, name in ipairs(required_check_run_names) do
-  required_check_run_name_set[name] = true
+local function required_name_set(required_names)
+  local required = {}
+  for _, name in ipairs(required_names or {}) do
+    required[tostring(name)] = true
+  end
+  return required
 end
 
 local function check_name(entry)
@@ -113,10 +157,44 @@ function C.pr_rollup_green(pr)
   return true, "rollup-green"
 end
 
-function C.commit_check_runs_green(runs)
+function C.rollup_failure_gate_sha(pr)
+  local entries = type(pr) == "table" and pr.status_check_rollup or nil
+  if type(entries) ~= "table" or #entries == 0 then
+    return nil
+  end
+  local gate_sha = nil
+  for _, entry in ipairs(entries) do
+    local state, conclusion = check_entry_state(entry)
+    local is_failed = false
+    if state == "COMPLETED" then
+      is_failed = not green_check_conclusions[conclusion]
+    elseif conclusion == "" and red_status_states[state] then
+      is_failed = true
+    end
+    if is_failed then
+      local sha = entry_commit_sha(entry)
+      if sha == nil then
+        return nil
+      end
+      if gate_sha == nil then
+        gate_sha = sha
+      elseif gate_sha ~= sha then
+        return nil
+      end
+    end
+  end
+  return gate_sha
+end
+
+function C.commit_check_runs_green(runs, required_names)
   if type(runs) ~= "table" or #runs == 0 then
     return false, "missing-status-rollup"
   end
+  local resolved_required_names = required_check_run_names
+  if type(required_names) == "table" and #required_names > 0 then
+    resolved_required_names = required_names
+  end
+  local resolved_required_name_set = required_name_set(resolved_required_names)
   local seen_required = {}
   local pending_required = {}
   for _, run in ipairs(runs) do
@@ -126,14 +204,14 @@ function C.commit_check_runs_green(runs)
       if not green_check_run_conclusions[conclusion] then
         return false, "rollup-red"
       end
-    elseif required_check_run_name_set[name] then
+    elseif resolved_required_name_set[name] then
       pending_required[name] = true
     end
-    if required_check_run_name_set[name] then
+    if resolved_required_name_set[name] then
       seen_required[name] = true
     end
   end
-  for _, name in ipairs(required_check_run_names) do
+  for _, name in ipairs(resolved_required_names) do
     if pending_required[name] then
       return false, "rollup-pending"
     end
@@ -247,14 +325,6 @@ local green_required_check_conclusions = {
   SKIPPED = true,
 }
 
-local function required_name_set(required_names)
-  local required = {}
-  for _, name in ipairs(required_names or {}) do
-    required[tostring(name)] = true
-  end
-  return required
-end
-
 local function run_matches_head(run, expected)
   local run_head = C.check_run_head_sha(run)
   return run_head == nil or run_head == expected
@@ -295,16 +365,15 @@ local function stable_run_app_slug(run)
   return ""
 end
 
-local function failing_head_runs(runs, head_sha, required_names)
+local function failing_head_runs(runs, head_sha)
   if type(runs) ~= "table" or not gitref.is_git_sha(head_sha) then
     return nil
   end
-  local required = required_names ~= nil and required_name_set(required_names) or nil
   local expected = tostring(head_sha):lower()
   local failing = {}
   for _, run in ipairs(runs) do
     local name = C.check_run_name(run)
-    if (required == nil or required[name]) and run_matches_head(run, expected) then
+    if run_matches_head(run, expected) then
       local state, conclusion = C.check_run_state(run)
       if state == "COMPLETED" and not green_required_check_conclusions[conclusion] then
         table.insert(failing, {
@@ -313,11 +382,80 @@ local function failing_head_runs(runs, head_sha, required_names)
           workflow = stable_run_workflow(run),
           app_slug = stable_run_app_slug(run),
           conclusion = conclusion,
+          output = run.output,
+          details_url = run.details_url or run.detailsUrl,
         })
       end
     end
   end
   return failing
+end
+
+local function compact_one_line(value)
+  local text = tostring(value or "")
+  text = text:gsub("[%c]", " "):gsub("%s+", " ")
+  return strings.trim(text)
+end
+
+local function bounded_text(value, limit)
+  local text = compact_one_line(value)
+  if text == "" then
+    return nil
+  end
+  local max = tonumber(limit)
+  if max ~= nil and max > 0 and #text > max then
+    text = text:sub(1, max)
+    text = text:gsub("%s+$", "")
+  end
+  if text == "" then
+    return nil
+  end
+  return text
+end
+
+local function run_output_excerpt(run)
+  if type(run) ~= "table" or type(run.output) ~= "table" then
+    return nil
+  end
+  local parts = {}
+  for _, key in ipairs({ "title", "summary", "text" }) do
+    local part = compact_one_line(run.output[key])
+    if part ~= "" then
+      table.insert(parts, part)
+    end
+  end
+  return table.concat(parts, " ")
+end
+
+function C.head_ci_failure_summary(runs, head_sha, limit)
+  local failing = failing_head_runs(runs, head_sha)
+  if failing == nil or #failing == 0 then
+    return nil
+  end
+  local parts = {}
+  local has_output = false
+  for _, run in ipairs(failing) do
+    local name = compact_one_line(run.name)
+    if name == "" then
+      name = "unknown"
+    end
+    local conclusion = compact_one_line(run.conclusion)
+    if conclusion == "" then
+      conclusion = "FAILED"
+    end
+    local check = "check=" .. name .. " conclusion=" .. conclusion
+    local output = run_output_excerpt(run)
+    if output ~= nil and output ~= "" then
+      check = check .. " output=" .. output
+      has_output = true
+    end
+    table.insert(parts, check)
+  end
+  if not has_output then
+    return nil
+  end
+  table.sort(parts)
+  return bounded_text("own-ci-red: " .. table.concat(parts, "; "), limit)
 end
 
 function C.required_head_check_run_status(runs, head_sha, required_names)
@@ -335,7 +473,7 @@ function C.required_head_check_run_status(runs, head_sha, required_names)
     if run_matches_head(run, expected) then
       local name = C.check_run_name(run)
       local state, conclusion = C.check_run_state(run)
-      if required[name] ~= nil and state == "COMPLETED" then
+      if state == "COMPLETED" then
         if not green_required_check_conclusions[conclusion] then
           return "red"
         end
@@ -359,8 +497,8 @@ function C.required_head_check_run_status(runs, head_sha, required_names)
   return "green"
 end
 
-function C.required_head_ci_failure_key(runs, head_sha, required_names)
-  local failing = failing_head_runs(runs, head_sha, required_names)
+function C.head_ci_failure_key(runs, head_sha)
+  local failing = failing_head_runs(runs, head_sha)
   if failing == nil or #failing == 0 then
     return nil
   end

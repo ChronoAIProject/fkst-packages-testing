@@ -1,4 +1,5 @@
 local t = fkst.test
+local seam = require("departments.seam.main")
 
 local function fire_raiser_child(body)
   return body
@@ -18,6 +19,10 @@ return {
 ]])
 
 return {
+  test_seam_retry_remains_disabled = function()
+    t.eq(seam.spec.retry, false)
+  end,
+
   test_seam_keepalive_cron_shape = function()
     local raiser = require("raisers.seam_keepalive")
     t.eq(raiser.type, "cron")

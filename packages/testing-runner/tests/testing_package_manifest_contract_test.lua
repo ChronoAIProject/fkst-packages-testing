@@ -1,9 +1,23 @@
 local manifest = require("contract.testing_package_manifest")
 local canonical_json = require("contract.canonical_json")
+local host_json = json
 local t = fkst.test
 local sha256 = require("tests.fixtures.sha256_helpers")
 
 local function digest(char) return string.rep(char, 64) end
+local shared_fixture_root = "packages/testing-runner/tests/fixtures/testing-package-manifest.v1"
+local invalid_shared_fixtures = {
+  "invalid-package-id-u0000", "invalid-package-id-u001f", "invalid-package-id-slash",
+  "invalid-package-id-backslash", "invalid-package-id-dot-dot", "invalid-unknown-top-level-field",
+  "invalid-malformed-digest", "invalid-unsupported-major",
+}
+
+local function shared_fixture(name)
+  local handle = assert(io.open(shared_fixture_root .. "/" .. name .. ".json", "rb"))
+  local body = handle:read("*a")
+  handle:close()
+  return host_json.decode(body)
+end
 
 local function valid()
   return {
@@ -39,6 +53,15 @@ local function without_digest(value)
 end
 
 return {
+  test_shared_schema_fixtures_match_portable_validation = function()
+    local value = shared_fixture("valid")
+    t.eq(value.package_id, "QA_RUNNER@V1")
+    t.eq(manifest.validate(value), value)
+    for _, name in ipairs(invalid_shared_fixtures) do
+      t.raises(function() manifest.validate(shared_fixture(name)) end)
+    end
+  end,
+
   test_accepts_valid_manifest_and_expected_identity = function()
     local value = valid()
     t.eq(manifest.validate(value, {
@@ -67,6 +90,11 @@ return {
     local value = valid(); value.source_commit = "main"
     t.raises(function() manifest.validate(value) end)
     value = valid(); value.dependencies.fkst_packages.commit = "workspace"
+    t.raises(function() manifest.validate(value) end)
+  end,
+
+  test_rejects_workspace_path_package_id = function()
+    local value = valid(); value.package_id = "packages/testing-runner"
     t.raises(function() manifest.validate(value) end)
   end,
 

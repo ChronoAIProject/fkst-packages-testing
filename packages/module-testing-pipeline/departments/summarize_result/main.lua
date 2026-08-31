@@ -1,5 +1,6 @@
 local core = require("core")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "testing-runner.testing_result", "testing_result" },
@@ -27,6 +28,6 @@ local function act(event)
   raise("test-artifacts.testing_result", result)
 end
 
-local M = saga.department(spec, { accept = accept, done = done, act = act, name = "summarize_result" })
+local M = saga.department(spec, { accept = accept, done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "module-testing-pipeline.summarize_result" })
 M.pipeline = _G.pipeline
 return M

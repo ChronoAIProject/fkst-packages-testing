@@ -1,4 +1,5 @@
 local M = {}
+local git = require("forge.git")
 
 local function copy(value)
   if type(value) ~= "table" then
@@ -31,6 +32,9 @@ function M.new(model)
     return { stdout = "", stderr = "", exit_code = 0 }
   end
   require("forge.git.refs").install(handle)
+  function handle.git_worktree_remove_if_present(worktree, timeout)
+    return git.git_worktree_remove_if_present(worktree, timeout, handle.worktree_remove)
+  end
   return handle
 end
 

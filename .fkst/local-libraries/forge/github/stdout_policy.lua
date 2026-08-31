@@ -21,7 +21,7 @@ local valid_kinds = {
 
 function M.content_json(shape)
   if valid_content_shapes[tostring(shape or "")] ~= true then
-    error("forge.github.stdout_policy: unknown content JSON shape")
+    error("forge.github.stdout_policy: content-json-shape-unknown: unknown content JSON shape")
   end
   return { kind = "content_json", shape = shape }
 end
@@ -44,10 +44,10 @@ end
 
 function M.validate(policy)
   if type(policy) ~= "table" or valid_kinds[policy.kind] ~= true then
-    error("forge.github.stdout_policy: missing or unknown stdout policy")
+    error("forge.github.stdout_policy: stdout-policy-invalid: missing or unknown stdout policy")
   end
   if policy.kind == "content_json" and valid_content_shapes[tostring(policy.shape or "")] ~= true then
-    error("forge.github.stdout_policy: unknown content JSON shape")
+    error("forge.github.stdout_policy: content-json-shape-unknown: unknown content JSON shape")
   end
   return policy
 end

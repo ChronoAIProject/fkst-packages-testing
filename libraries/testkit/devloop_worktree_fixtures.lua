@@ -9,9 +9,9 @@ local default_ready_version = "ready/consensus-github-devloop/issue/owner/repo/4
 
 function M.new(deps)
   deps = deps or {}
-  local devloop_base = deps.devloop_base or error("testkit.devloop_worktree_fixtures: deps.devloop_base is required")
-  local base_ids = deps.base_ids or error("testkit.devloop_worktree_fixtures: deps.base_ids is required")
-  local base = deps.base or error("testkit.devloop_worktree_fixtures: deps.base is required")
+  local devloop_base = deps.devloop_base or error("testkit.devloop_worktree_fixtures: fixture-dependency-missing: deps.devloop_base is required")
+  local base_ids = deps.base_ids or error("testkit.devloop_worktree_fixtures: fixture-dependency-missing: deps.base_ids is required")
+  local base = deps.base or error("testkit.devloop_worktree_fixtures: fixture-dependency-missing: deps.base is required")
   local t = base.t
   local enable_substrate_pin_refresh = deps.enable_substrate_pin_refresh == true
   local include_head_ref_push = deps.include_head_ref_push == true
@@ -89,7 +89,7 @@ function M.new(deps)
   local function ensure_dir(path)
     local ok = os.execute("mkdir -p " .. shell_quote(path))
     if ok ~= true and ok ~= 0 then
-      error("github-devloop test: mkdir failed for " .. tostring(path))
+      error("testkit.devloop-worktree-fixtures: mkdir-failed: mkdir failed for " .. tostring(path))
     end
   end
 

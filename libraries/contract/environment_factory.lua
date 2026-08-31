@@ -1,4 +1,5 @@
 -- contract.environment_factory: pointer-only Environment Factory v1 contracts.
+local error_facts = require("contract.error_facts")
 local project_profile = require("contract.project_profile")
 local source_ref = require("contract.source_ref")
 local strings = require("contract.strings")
@@ -26,7 +27,7 @@ local max_sessions = 16
 local max_resources = 64
 
 local function fail(classification, message)
-  error("contract.environment-factory: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.environment-factory", classification, message))
 end
 
 local function bounded(value, limit)

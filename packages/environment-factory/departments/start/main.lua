@@ -1,5 +1,6 @@
 local core = require("core")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "environment_start" },
@@ -29,6 +30,6 @@ local function act(event)
   end
 end
 
-local M = saga.department(spec, { done = done, act = act, name = "start" })
+local M = saga.department(spec, { done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "environment-factory.start" })
 M.pipeline = _G.pipeline
 return M

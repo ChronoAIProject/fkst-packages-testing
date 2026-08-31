@@ -4,12 +4,12 @@ local gh_argv = require("testkit.gh_argv_mock")
 
 function M.new(deps)
   deps = deps or {}
-  local entity_lib = deps.entity_lib or error("testkit.devloop_pr_fixtures: deps.entity_lib is required")
-  local base = deps.base or error("testkit.devloop_pr_fixtures: deps.base is required")
+  local entity_lib = deps.entity_lib or error("testkit.devloop_pr_fixtures: fixture-dependency-missing: deps.entity_lib is required")
+  local base = deps.base or error("testkit.devloop_pr_fixtures: fixture-dependency-missing: deps.base is required")
   local entity_read_mocks = deps.entity_read_mocks
-    or error("testkit.devloop_pr_fixtures: deps.entity_read_mocks is required")
-  local m_builders = deps.m_builders or error("testkit.devloop_pr_fixtures: deps.m_builders is required")
-  local pr_safety = deps.pr_safety or error("testkit.devloop_pr_fixtures: deps.pr_safety is required")
+    or error("testkit.devloop_pr_fixtures: fixture-dependency-missing: deps.entity_read_mocks is required")
+  local m_builders = deps.m_builders or error("testkit.devloop_pr_fixtures: fixture-dependency-missing: deps.m_builders is required")
+  local pr_safety = deps.pr_safety or error("testkit.devloop_pr_fixtures: fixture-dependency-missing: deps.pr_safety is required")
   local github_risk = deps.github_risk
   local include_high_risk_helpers = deps.include_high_risk_helpers == true
   local t = base.t
@@ -85,7 +85,7 @@ function M.new(deps)
 
   local function high_risk_paths_digest()
     if github_risk == nil then
-      error("testkit.devloop_pr_fixtures: deps.github_risk is required for high-risk helpers")
+      error("testkit.devloop_pr_fixtures: fixture-dependency-missing: deps.github_risk is required for high-risk helpers")
     end
     return github_risk.github_paths_digest(high_risk_paths())
   end

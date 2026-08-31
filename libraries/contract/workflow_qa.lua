@@ -1,4 +1,5 @@
 local environment_factory = require("contract.environment_factory")
+local error_facts = require("contract.error_facts")
 local structured_execution = require("contract.structured_execution")
 local testing_design = require("contract.testing_design")
 local strings = require("contract.strings")
@@ -13,7 +14,7 @@ M.schemas = {
 }
 
 local function fail(classification, message)
-  error("contract.workflow-qa: " .. classification .. ": " .. message)
+  error(error_facts.error_message("contract.workflow-qa", classification, message))
 end
 
 local function bounded(value, limit)

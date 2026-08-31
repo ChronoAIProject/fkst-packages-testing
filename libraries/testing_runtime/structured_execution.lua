@@ -48,7 +48,7 @@ local function client(options)
     validate_runtime_config = function(value, context)
       local root = context.artifact_root
       if value.ref == root or value.ref:sub(1, #root + 1) == root .. "/" then
-        error("testing-runtime: structured-execution-runtime-config-inside-run-root")
+        error("testing-runtime: structured-execution-runtime-config-inside-run-root: runtime config must be outside the run root")
       end
     end,
     io_root = function(root) return root .. "/structured-runtime" end,
@@ -68,7 +68,9 @@ end
 
 local function call_cli(name, payload, timeout, options, transport_root)
   local root = request_root(payload) or transport_root
-  if root == nil then error("testing-runtime: structured-execution-run-root-missing") end
+  if root == nil then
+    error("testing-runtime: structured-execution-run-root-missing: request must identify a run root")
+  end
   local identity = payload.case_id or (type(payload.artifact_ref) == "table" and payload.artifact_ref.ref)
     or payload.result_ref or payload.grant_id or payload.operation_id or payload.trace_id or name
   return client(options).call(name, payload, root, identity, timeout)
@@ -78,12 +80,12 @@ function M.production(options)
   return {
     sha256_bytes = function(bytes)
       if type(bytes) ~= "string" or #bytes > max_hash_bytes then
-        error("testing-runtime: structured-execution-sha256-bytes-invalid")
+        error("testing-runtime: structured-execution-sha256-bytes-invalid: bytes must be bounded")
       end
       local result = call_cli("sha256-bytes", { bytes = bytes }, 15, options, hash_transport_root)
       if type(result) ~= "table" or type(result.sha256) ~= "string"
         or result.sha256:match("^[0-9a-f]+$") == nil or #result.sha256 ~= 64 then
-        error("testing-runtime: structured-execution-sha256-bytes-result-invalid")
+        error("testing-runtime: structured-execution-sha256-bytes-result-invalid: runtime returned an invalid digest")
       end
       return result.sha256
     end,

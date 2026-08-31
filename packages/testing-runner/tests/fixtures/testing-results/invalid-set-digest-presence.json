@@ -1,0 +1,62 @@
+{
+  "schema": "testing-case-result-set.v2",
+  "set_id": "set-1",
+  "run_id": "run-1",
+  "plan_ref": {
+    "kind": "plan",
+    "ref": "plans/1"
+  },
+  "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "cases": [
+    {
+      "schema": "testing-case-result.v2",
+      "case_id": "case-passed",
+      "repository": {
+        "id": "repo",
+        "source_ref": {
+          "kind": "git",
+          "ref": "repo@commit"
+        },
+        "source_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+      },
+      "reviewed_case_id": "reviewed-case-passed",
+      "plan_ref": {
+        "kind": "plan",
+        "ref": "plans/1"
+      },
+      "plan_sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "execution_mode": "cli",
+      "execution_status": "passed",
+      "classification": "deterministic",
+      "observations": [],
+      "assertions": [
+        {
+          "schema": "testing-assertion-result.v1",
+          "assertion_id": "assert-1",
+          "type": "document-ready",
+          "required": true,
+          "status": "passed",
+          "classification": "deterministic",
+          "observation_ids": [],
+          "evidence_refs": []
+        }
+      ],
+      "evidence_refs": [],
+      "timing": {
+        "started_at": "2026-08-25T00:00:00Z",
+        "completed_at": "2026-08-25T00:00:01Z",
+        "duration_ms": 1000
+      },
+      "trace_id": "trace-1",
+      "dedup_key": "dedup-1"
+    }
+  ],
+  "evidence_manifest_ref": {
+    "kind": "artifact",
+    "ref": ".testing/runs/run-1/evidence-manifest.json",
+    "sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+  },
+  "evidence_manifest_sha256": "e39a40b13dad006c690ed7bb8729b6b589dcecb3fa9fa74303faf165a5be6303",
+  "trace_id": "trace-1",
+  "dedup_key": "dedup-1"
+}

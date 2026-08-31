@@ -2,6 +2,7 @@ local M = {}
 
 local ai_generation = require("module_ai_generation")
 local ai_design_loop = require("module_ai_design_loop")
+local testing_design = require("contract.testing_design")
 
 M.feature_inventory_schema = "testing-runner.feature-inventory.v1"
 M.test_plan_schema = "testing-runner.module-test-plan.v1"
@@ -160,6 +161,11 @@ end
 
 function M.build(inventory, ui_loop, artifact_root, opts)
   opts = opts or {}
+  local testing_design_context
+  if opts.testing_design_context ~= nil then
+    testing_design.validate_context_reference(opts.testing_design_context)
+    testing_design_context = testing_design.copy_context_reference(opts.testing_design_context)
+  end
   local mutation_policy = (ui_loop or {}).mutation_policy or "read-only"
   local inventory_path = artifact_root .. "/module-inventory.json"
   local feature_inventory_path = artifact_root .. "/feature-inventory.json"
@@ -262,6 +268,7 @@ function M.build(inventory, ui_loop, artifact_root, opts)
     ai_test_design_loop = ai_review_closure,
     limitations = inventory.limitations,
   }
+  if testing_design_context ~= nil then test_plan.testing_design_context = testing_design_context end
 
   return {
     feature_inventory_path = feature_inventory_path,

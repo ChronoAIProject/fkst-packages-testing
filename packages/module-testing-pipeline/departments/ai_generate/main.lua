@@ -1,10 +1,11 @@
 local core = require("core")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "ai_generation_request" },
   produces = {
-    "consensus.proposal",
+    "ai_consensus_request",
     "testing_result",
   },
   stall_window = "30m",
@@ -16,10 +17,10 @@ local function done(_event)
 end
 
 local function act(event)
-  local action = core.generate_ai_cases(event.payload or {})
+  local action = core.generate_ai_cases(event.payload or {}, event.test_ports)
   if action.kind == "generation-proposal" then
     log.info("module-testing-pipeline dept=ai_generate tag=AI_GENERATED")
-    raise("consensus.proposal", action.proposal)
+    raise("ai_consensus_request", action.proposal)
     return
   end
   if action.kind == "blocked-result" then
@@ -28,6 +29,6 @@ local function act(event)
   end
 end
 
-local M = saga.department(spec, { done = done, act = act, name = "ai_generate" })
+local M = saga.department(spec, { done = done, act = act, wrap = workflow_logging.wrap_pipeline_failure, name = "module-testing-pipeline.ai_generate" })
 M.pipeline = _G.pipeline
 return M

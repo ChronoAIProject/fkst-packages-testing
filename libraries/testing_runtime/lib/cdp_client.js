@@ -59,7 +59,7 @@ function httpJson(url, method = 'GET') {
       response.on('data', (chunk) => { body += chunk; });
       response.on('end', () => {
         if (response.statusCode < 200 || response.statusCode >= 300) {
-          reject(new Error(`CDP HTTP ${method} ${url} returned ${response.statusCode}`));
+          reject(new Error(`CDP HTTP ${method} request returned ${response.statusCode}`));
           return;
         }
         try {
@@ -69,8 +69,8 @@ function httpJson(url, method = 'GET') {
         }
       });
     });
-    request.on('error', reject);
-    request.on('timeout', () => request.destroy(new Error(`CDP HTTP timeout for ${url}`)));
+    request.on('error', () => reject(new Error('CDP HTTP request failed')));
+    request.on('timeout', () => request.destroy());
     request.end();
   });
 }

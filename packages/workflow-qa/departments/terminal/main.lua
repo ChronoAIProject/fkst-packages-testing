@@ -1,5 +1,6 @@
 local contract = require("contract.workflow_qa")
 local saga = require("workflow.saga")
+local workflow_logging = require("workflow.logging")
 
 local spec = {
   consumes = { "workflow_qa_terminal_request" },
@@ -23,5 +24,5 @@ return saga.department(spec, {
   accept = accept,
   done = function() return false end,
   act = act,
-  name = "terminal",
+  wrap = workflow_logging.wrap_pipeline_failure, name = "workflow-qa.terminal",
 })
