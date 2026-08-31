@@ -56,6 +56,7 @@ class CaseResult:
     portable_valid: bool
     errors: tuple[ValidationError, ...]
     expected_validator: str | None
+    validation_errors: Callable[[object], tuple[ValidationError, ...]]
 
 
 def _mapping(path: Path) -> dict[str, object]:
@@ -194,7 +195,13 @@ def run_schema_fixture_suite(
         validator = validators.get(case.schema_path)
         if validator is None:
             raise AssertionError(f"case schema is not registered: {case.schema_path}")
-        errors = tuple(validator.iter_errors(instance))
+
+        def validation_errors(
+            value: object, validator=validator
+        ) -> tuple[ValidationError, ...]:
+            return tuple(validator.iter_errors(value))
+
+        errors = validation_errors(instance)
         if case.portable_valid and errors:
             raise AssertionError(
                 f"expected valid fixture {case.name}: {[error.message for error in errors]}"
@@ -217,6 +224,7 @@ def run_schema_fixture_suite(
             portable_valid=case.portable_valid,
             errors=errors,
             expected_validator=case.expected_validator,
+            validation_errors=validation_errors,
         )
         results.append(result)
         if assert_case is not None:

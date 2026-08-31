@@ -291,6 +291,7 @@ def test_runner() -> None:
         )
         assert tuple(result.name for result in results) == ("first", "second")
         assert callbacks == [("schema", "main.json"), ("case", "first"), ("case", "second")]
+        assert results[0].validation_errors({"value": 0})
 
         declared = run_schema_fixture_suite(
             SchemaSuiteSpec(

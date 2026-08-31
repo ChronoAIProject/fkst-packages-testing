@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import hashlib
 import json
-import re
 import subprocess
 import sys
 import tempfile
@@ -74,16 +73,17 @@ def assert_shared_schema(path: Path, schema: dict[str, object]) -> None:
     assert path == SCHEMA
     assert set(schema["properties"]) == set(schema["required"])
     assert len(schema["required"]) == 14
-    control_pattern = schema["properties"]["package_id"]["allOf"][0]["not"]["pattern"]
-    for codepoint in range(0x20):
-        assert re.search(control_pattern, f"QA{chr(codepoint)}RUNNER@V1"), (
-            f"schema accepted package_id control U+{codepoint:04X}"
-        )
 
 
 def assert_shared_case(result: CaseResult) -> None:
     if result.name == "valid":
         assert result.fixture["package_id"] == "QA_RUNNER@V1"
+        for codepoint in range(0x20):
+            mutated = dict(result.instance)
+            mutated["package_id"] = f"QA{chr(codepoint)}RUNNER@V1"
+            assert result.validation_errors(mutated), (
+                f"schema accepted package_id control U+{codepoint:04X}"
+            )
 
 
 def validate_shared_schema_fixtures() -> None:
