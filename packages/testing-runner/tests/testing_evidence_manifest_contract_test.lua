@@ -1,5 +1,6 @@
 local manifest = require("contract.testing_evidence_manifest")
 local host_json = json
+local conformance = require("tests.fixtures.conformance_runner_helpers")
 local t = fkst.test
 
 local fixture_root = "packages/testing-runner/tests/fixtures/testing-evidence-manifest.v1"
@@ -25,12 +26,7 @@ local invalid_fixtures = {
   "invalid-unsupported-sensitivity",
 }
 
-local function fixture(name)
-  local handle = assert(io.open(fixture_root .. "/" .. name .. ".json", "rb"))
-  local body = handle:read("*a")
-  handle:close()
-  return host_json.decode(body)
-end
+local function fixture(name) return conformance.fixture(fixture_root, name) end
 
 return {
   test_shared_schema_fixtures_match_portable_validation = function()

@@ -1,6 +1,7 @@
 local manifest = require("contract.testing_package_manifest")
 local canonical_json = require("contract.canonical_json")
 local host_json = json
+local conformance = require("tests.fixtures.conformance_runner_helpers")
 local t = fkst.test
 local sha256 = require("tests.fixtures.sha256_helpers")
 
@@ -12,12 +13,7 @@ local invalid_shared_fixtures = {
   "invalid-malformed-digest", "invalid-unsupported-major",
 }
 
-local function shared_fixture(name)
-  local handle = assert(io.open(shared_fixture_root .. "/" .. name .. ".json", "rb"))
-  local body = handle:read("*a")
-  handle:close()
-  return host_json.decode(body)
-end
+local function shared_fixture(name) return conformance.fixture(shared_fixture_root, name) end
 
 local function valid()
   return {

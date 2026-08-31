@@ -28,15 +28,13 @@ case "$1" in
     env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS" \
       "$PYTHON_BIN" -S -B "$ROOT/scripts/python_test_deps.py" verify
     env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
-      "$PYTHON_BIN" -S -B "$ROOT/scripts/testing_package_manifest_test.py"
-    env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
-      "$PYTHON_BIN" -S -B "$ROOT/scripts/testing_evidence_manifest_schema_test.py"
-    env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
-      "$PYTHON_BIN" -S -B "$ROOT/scripts/testing_results_schema_test.py"
-    env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
-      "$PYTHON_BIN" -S -B "$ROOT/scripts/testing_browser_action_schema_test.py"
-    env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
-      "$PYTHON_BIN" -S -B "$ROOT/scripts/testing_package_executor_request_schema_test.py"
+      "$PYTHON_BIN" -S -B "$ROOT/scripts/schema_test_suite.py" \
+      "$ROOT/scripts/testing_package_manifest_test.py" \
+      "$ROOT/scripts/testing_evidence_manifest_schema_test.py" \
+      "$ROOT/scripts/testing_results_schema_test.py" \
+      "$ROOT/scripts/testing_browser_action_schema_test.py" \
+      "$ROOT/scripts/testing_package_executor_request_schema_test.py" \
+      "$ROOT/scripts/testing_runner_invocation_schema_test.py"
     ;;
   *)
     echo "usage: scripts/python_test_deps.sh <provision|test>" >&2

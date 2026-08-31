@@ -43,6 +43,13 @@ SHARED_SCHEMA_FIXTURE_ROOTS = (
         "fixtures",
         "testing-package-executor.request.v1",
     ),
+    (
+        "packages",
+        "testing-runner",
+        "tests",
+        "fixtures",
+        "testing-runner-invocation.v1",
+    ),
 )
 
 
