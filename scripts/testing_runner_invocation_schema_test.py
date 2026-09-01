@@ -8,9 +8,11 @@ from pathlib import Path
 from schema_fixture_runner import CaseResult, IndexedFixtureSource, SchemaSuiteSpec, run_schema_fixture_suite
 
 ROOT = Path(__file__).resolve().parents[1]
+CONTRACT = ROOT / "contracts/testing-runner-invocation.v1.md"
 SCHEMA = ROOT / "schemas/testing-runner-invocation.v1.schema.json"
 DEPENDENCY = ROOT / "schemas/testing-package-executor.request.v1.schema.json"
 FIXTURES = ROOT / "packages/testing-runner/tests/fixtures/testing-runner-invocation.v1"
+LUA_TEST = ROOT / "packages/testing-runner/tests/testing_runner_invocation_contract_test.lua"
 RUNTIME_OUTCOMES = FIXTURES / "runtime-outcomes.json"
 WRAPPER_FIELDS = frozenset({"case", "portable_valid", "lua_valid", "lua_error", "request"})
 REQUIRED_ROOT_FIELDS = (
@@ -26,6 +28,11 @@ RUNTIME_REASONS = (
     "deadline-expired", "cancelled", "current-claim-unavailable",
     "current-claim-superseded", "replay-conflict",
 )
+NEUTRAL_FORBIDDEN_CASES = (
+    "forbidden-worker-authority",
+    "forbidden-credential-material",
+)
+HOST_SPECIFIC_TERMS = ("ta" + "los", "ny" + "x")
 
 
 def fixture_source(schema_path: Path = SCHEMA) -> IndexedFixtureSource:
@@ -80,6 +87,35 @@ def assert_runtime_outcomes(results: tuple[CaseResult, ...]) -> None:
         assert fixture["lua_error"] == ""
 
 
+def assert_portable_vocabulary(results: tuple[CaseResult, ...]) -> None:
+    by_name = {result.name: result.fixture for result in results}
+    names = tuple(result.name for result in results)
+    first_neutral_case = names.index(NEUTRAL_FORBIDDEN_CASES[0])
+    assert names[first_neutral_case:first_neutral_case + 2] == NEUTRAL_FORBIDDEN_CASES
+    for name in NEUTRAL_FORBIDDEN_CASES:
+        fixture = by_name[name]
+        assert fixture["portable_valid"] is False
+        assert fixture["lua_valid"] is False
+        assert fixture["lua_error"] == "malformed-invocation"
+
+    worker_authority = by_name["forbidden-worker-authority"]["request"]
+    assert {"lease_token", "worker_id", "generation", "fence_token"} <= set(worker_authority)
+    credential_material = by_name["forbidden-credential-material"]["request"]
+    assert {
+        "credential_broker_id", "credential", "bearer_token", "secret",
+    } <= set(credential_material)
+
+    artifacts = (CONTRACT, Path(__file__), LUA_TEST, *sorted(FIXTURES.rglob("*")))
+    for path in artifacts:
+        if not path.is_file():
+            continue
+        relative_path = path.relative_to(ROOT).as_posix().casefold()
+        contents = path.read_text(encoding="utf-8").casefold()
+        for term in HOST_SPECIFIC_TERMS:
+            assert term not in relative_path, f"host-specific fixture path: {relative_path}"
+            assert term not in contents, f"host-specific portable vocabulary: {relative_path}"
+
+
 def assert_preflight_failure(spec: SchemaSuiteSpec) -> None:
     callback_calls = 0
 
@@ -127,6 +163,7 @@ def main() -> int:
         assert_case=assert_case,
     )
     assert_runtime_outcomes(results)
+    assert_portable_vocabulary(results)
     assert_offline_preflight()
     print("testing-runner-invocation-schema: PASS")
     return 0

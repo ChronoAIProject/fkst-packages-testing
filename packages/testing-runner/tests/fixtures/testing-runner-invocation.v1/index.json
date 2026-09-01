@@ -554,12 +554,12 @@
       "file": "valid-deadline-max.json"
     },
     {
-      "name": "forbidden-talos-authority",
-      "file": "forbidden-talos-authority.json"
+      "name": "forbidden-worker-authority",
+      "file": "forbidden-worker-authority.json"
     },
     {
-      "name": "forbidden-nyx-secrets",
-      "file": "forbidden-nyx-secrets.json"
+      "name": "forbidden-credential-material",
+      "file": "forbidden-credential-material.json"
     },
     {
       "name": "forbidden-pool-machine-selection",
