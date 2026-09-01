@@ -1,0 +1,1 @@
+{"case":"valid-non-execution-execution-lost-between-action-and-assertion","portable_valid":true,"reason":{"schema":"testing-result-reason.v1","kind":"non-execution","code":"execution-lost-between-action-and-assertion"}}

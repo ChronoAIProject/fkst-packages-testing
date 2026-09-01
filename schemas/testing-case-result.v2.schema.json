@@ -36,7 +36,7 @@
     },
     "timing": {"$ref": "#/$defs/timing"},
     "error": {"$ref": "#/$defs/error"},
-    "non_execution_reason": {"$ref": "#/$defs/boundedString96"},
+    "non_execution_reason": {"$ref": "testing-result-reason.v1.schema.json#/$defs/nonExecutionCode"},
     "trace_id": {"$ref": "#/$defs/boundedString180"},
     "dedup_key": {"$ref": "#/$defs/boundedString180"}
   },
@@ -164,7 +164,7 @@
     "error": {
       "type": "object", "additionalProperties": false, "required": ["code", "message"],
       "properties": {
-        "code": {"$ref": "#/$defs/boundedString96"},
+        "code": {"$ref": "testing-result-reason.v1.schema.json#/$defs/errorCode"},
         "message": {"$ref": "#/$defs/boundedString512"}
       }
     },

@@ -307,9 +307,7 @@ return {
       t.eq(ai_calls, 0)
       local case_result = canonical_case(request, writes)
       t.eq(case_result.execution_status, "blocked")
-      local reason = signal == "target_changed" and "browser-target-changed"
-        or "browser-" .. signal:gsub("_", "-") .. "-detected"
-      t.eq(case_result.non_execution_reason, reason)
+      t.eq(case_result.non_execution_reason, "unsafe-browser-observation")
     end
   end,
   test_target_binding_and_grant_digest_mismatches_fail_before_observation = function()
@@ -381,7 +379,7 @@ return {
       controller.run(request, runtime)
       local case_result = canonical_case(request, writes)
       t.eq(case_result.execution_status, "error")
-      t.eq(case_result.error.code, "browser-step-rejected")
+      t.eq(case_result.error.code, "browser-step-failed")
     end
     do
       local request, artifacts, grant = fixture()
@@ -721,7 +719,7 @@ return {
         writes = writes, claim = { status = "in-progress", claim_id = "claim-browser" },
       })
       t.eq(controller.run(request, runtime).status, "blocked")
-      t.eq(canonical_case(request, recovered).error.code, "browser-step-rejected")
+      t.eq(canonical_case(request, recovered).error.code, "browser-step-failed")
     end
     do
       local request, artifacts, grant = fixture()
@@ -954,7 +952,7 @@ return {
       })
       local result = controller.run(request, runtime)
       t.eq(result.status, "blocked")
-      t.eq(result.classification, "browser-popup-detected")
+      t.eq(result.classification, "unsafe-browser-observation")
     end
   end,
   test_default_runtime_and_ai_adapters_complete_one_browser_turn = function()

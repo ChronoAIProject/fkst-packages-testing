@@ -1,0 +1,1 @@
+{"case":"invalid-cross-kind","portable_valid":false,"reason":{"schema":"testing-result-reason.v1","kind":"error","code":"case-not-selected"}}

@@ -1,0 +1,202 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "invalid-cross-kind",
+      "file": "invalid-cross-kind.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-missing-field",
+      "file": "invalid-missing-field.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unknown-code",
+      "file": "invalid-unknown-code.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unknown-field",
+      "file": "invalid-unknown-field.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-wrong-type",
+      "file": "invalid-wrong-type.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": false
+    },
+    {
+      "name": "valid-error-browser-action-invalid",
+      "file": "valid-error-browser-action-invalid.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-error-browser-controller-interrupted",
+      "file": "valid-error-browser-controller-interrupted.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-error-browser-observation-failed",
+      "file": "valid-error-browser-observation-failed.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-error-browser-step-failed",
+      "file": "valid-error-browser-step-failed.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-error-callback-verification-failed",
+      "file": "valid-error-callback-verification-failed.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-error-environment-session-issue",
+      "file": "valid-error-environment-session-issue.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-error-harness-tooling-issue",
+      "file": "valid-error-harness-tooling-issue.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-error-invalid-browser-completion",
+      "file": "valid-error-invalid-browser-completion.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-error-provider-timeout",
+      "file": "valid-error-provider-timeout.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-error",
+      "file": "valid-error.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-browser-step-budget-exhausted",
+      "file": "valid-non-execution-browser-step-budget-exhausted.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-browser-time-budget-exhausted",
+      "file": "valid-non-execution-browser-time-budget-exhausted.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-case-not-selected",
+      "file": "valid-non-execution-case-not-selected.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-data-fixture-gap",
+      "file": "valid-non-execution-data-fixture-gap.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-execution-lost-between-action-and-assertion",
+      "file": "valid-non-execution-execution-lost-between-action-and-assertion.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-not-executed-risk",
+      "file": "valid-non-execution-not-executed-risk.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-platform-not-applicable",
+      "file": "valid-non-execution-platform-not-applicable.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-policy-deferred",
+      "file": "valid-non-execution-policy-deferred.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-precondition-unavailable",
+      "file": "valid-non-execution-precondition-unavailable.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-repeated-ai-action",
+      "file": "valid-non-execution-repeated-ai-action.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-runner-disconnected",
+      "file": "valid-non-execution-runner-disconnected.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution-unsafe-browser-observation",
+      "file": "valid-non-execution-unsafe-browser-observation.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-non-execution",
+      "file": "valid-non-execution.json",
+      "schema": "testing-result-reason.v1",
+      "instance_field": "reason",
+      "portable_valid": true
+    }
+  ],
+  "support_files": []
+}

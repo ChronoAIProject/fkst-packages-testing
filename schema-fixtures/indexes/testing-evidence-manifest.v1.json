@@ -1,0 +1,153 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "invalid-empty-entries",
+      "file": "invalid-empty-entries.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-hyphen-time-separators",
+      "file": "invalid-hyphen-time-separators.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-impossible-date",
+      "file": "invalid-impossible-date.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-malformed-artifact-ref",
+      "file": "invalid-malformed-artifact-ref.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-malformed-digest",
+      "file": "invalid-malformed-digest.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-malformed-timestamp",
+      "file": "invalid-malformed-timestamp.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-missing-required-field",
+      "file": "invalid-missing-required-field.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-multibyte-over-byte-limit",
+      "file": "invalid-multibyte-over-byte-limit.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-overlong-evidence-id",
+      "file": "invalid-overlong-evidence-id.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-overlong-reference-kind",
+      "file": "invalid-overlong-reference-kind.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-role-media-mismatch",
+      "file": "invalid-role-media-mismatch.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-size-bytes-fractional",
+      "file": "invalid-size-bytes-fractional.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-size-bytes-negative",
+      "file": "invalid-size-bytes-negative.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-size-bytes-over-max",
+      "file": "invalid-size-bytes-over-max.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-too-many-entries",
+      "file": "invalid-too-many-entries.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unknown-field",
+      "file": "invalid-unknown-field.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unsupported-policy-status",
+      "file": "invalid-unsupported-policy-status.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unsupported-role",
+      "file": "invalid-unsupported-role.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unsupported-sensitivity",
+      "file": "invalid-unsupported-sensitivity.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "valid-year-zero",
+      "file": "valid-year-zero.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid",
+      "file": "valid.json",
+      "schema": "testing-evidence-manifest.v1",
+      "instance_field": null,
+      "portable_valid": true
+    }
+  ],
+  "support_files": []
+}

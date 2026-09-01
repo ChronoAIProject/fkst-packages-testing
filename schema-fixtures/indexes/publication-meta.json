@@ -1,0 +1,41 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "invalid-unknown-field",
+      "file": "invalid-unknown-field.json",
+      "schema": "testing-schema-fixtures.v1",
+      "instance_field": "instance",
+      "portable_valid": false
+    },
+    {
+      "name": "valid-catalog",
+      "file": "valid-catalog.json",
+      "schema": "testing-schema-catalog.v1",
+      "instance_field": "instance",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-fixture-set",
+      "file": "valid-fixture-set.json",
+      "schema": "testing-schema-fixture-set.v1",
+      "instance_field": "instance",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-fixtures",
+      "file": "valid-fixtures.json",
+      "schema": "testing-schema-fixtures.v1",
+      "instance_field": "instance",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-release",
+      "file": "valid-release.json",
+      "schema": "testing-package-schema-release.v1",
+      "instance_field": "instance",
+      "portable_valid": true
+    }
+  ],
+  "support_files": []
+}

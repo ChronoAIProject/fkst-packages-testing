@@ -883,7 +883,7 @@ def test_results_and_evidence() -> None:
         assert schema["$id"].endswith(name)
         assert schema["x-fkst-canonicalization"] == "fkst-testing-results-canonical-json.v1"
     registry = __import__("referencing").Registry()
-    for name, schema in {**schemas, "testing-evidence-manifest.v1.schema.json": support.load_json(SCHEMA_ROOT / "testing-evidence-manifest.v1.schema.json")}.items():
+    for name, schema in {**schemas, "testing-evidence-manifest.v1.schema.json": support.load_json(SCHEMA_ROOT / "testing-evidence-manifest.v1.schema.json"), "testing-result-reason.v1.schema.json": support.load_json(SCHEMA_ROOT / "testing-result-reason.v1.schema.json")}.items():
         registry = registry.with_resource(schema["$id"], __import__("referencing").Resource.from_contents(schema))
     mapping = {"testing-observation.v1": RESULTS_SCHEMAS[0], "testing-assertion-result.v1": RESULTS_SCHEMAS[1], "testing-case-result.v2": RESULTS_SCHEMAS[2], "testing-case-result-set.v2": RESULTS_SCHEMAS[3]}
     for name in RESULTS_VALID:

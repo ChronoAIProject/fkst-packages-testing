@@ -21,11 +21,13 @@ local terminal_outcomes = {
   deterministic_completion_failed = { execution_status = "failed", classification = "assertion_failure" },
   time_budget_exhausted = { execution_status = "blocked", classification = "blocked", reason = "browser-time-budget-exhausted" },
   step_budget_exhausted = { execution_status = "blocked", classification = "blocked", reason = "browser-step-budget-exhausted" },
-  unsafe_observation = { execution_status = "blocked", classification = "blocked" },
-  callback_detection_failed = { execution_status = "error", classification = "execution_error" },
-  action_invalid = { execution_status = "error", classification = "execution_error" },
-  browser_step_failed = { execution_status = "error", classification = "execution_error" },
-  controller_interrupted = { execution_status = "error", classification = "execution_error" },
+  unsafe_observation = { execution_status = "blocked", classification = "blocked", reason = "unsafe-browser-observation" },
+  callback_detection_failed = { execution_status = "error", classification = "execution_error", reason = "callback-verification-failed" },
+  invalid_completion = { execution_status = "error", classification = "execution_error", reason = "invalid-browser-completion" },
+  action_invalid = { execution_status = "error", classification = "execution_error", reason = "browser-action-invalid" },
+  browser_step_failed = { execution_status = "error", classification = "execution_error", reason = "browser-step-failed" },
+  observation_failed = { execution_status = "error", classification = "execution_error", reason = "browser-observation-failed" },
+  controller_interrupted = { execution_status = "error", classification = "execution_error", reason = "browser-controller-interrupted" },
   assertion_lost = { execution_status = "lost", classification = "lost", reason = "execution-lost-between-action-and-assertion" },
   repeated_action = { execution_status = "blocked", classification = "blocked", reason = "repeated-ai-action" },
 }
@@ -209,7 +211,7 @@ local function normalize_outcome(outcome)
   if normalized == nil then error("testing-runner: ai-browser-control: unknown terminal outcome") end
   local message = tostring(outcome.message or outcome.reason or outcome.kind)
     :gsub("[%z\1-\31\127]", " "):sub(1, 512)
-  local reason = normalized.reason or outcome.reason
+  local reason = normalized.reason
   local requires_reason = normalized.execution_status == "blocked"
     or normalized.execution_status == "lost" or normalized.execution_status == "skipped"
   return {
@@ -727,7 +729,7 @@ local function run_inner(request, ports)
     end
     if not recovered then
     local observed, observation, runtime_paths = pcall(observe, context, turn)
-    if not observed then return terminal({ kind = #steps > 0 and "assertion_lost" or "controller_interrupted", reason = #steps > 0 and nil or "browser-observation-failed", message = observation }) end
+    if not observed then return terminal({ kind = #steps > 0 and "assertion_lost" or "observation_failed", message = observation }) end
     local valid_observation, observation_error = pcall(browser_contract.validate_observation, observation)
     if not valid_observation then return terminal({ kind = "unsafe_observation", reason = "unsafe-browser-observation", message = observation_error }) end
     table.insert(raw_observations, {
@@ -742,7 +744,7 @@ local function run_inner(request, ports)
       local verified, verified_completion = pcall(ports.verify_completion, request)
       if not verified then return terminal({ kind = #steps > 0 and "assertion_lost" or "callback_detection_failed", reason = #steps > 0 and nil or "callback-verification-failed", message = verified_completion }) end
       local valid_completion, completion_error = pcall(browser_contract.validate_completion, verified_completion)
-      if not valid_completion then return terminal({ kind = #steps > 0 and "assertion_lost" or "callback_detection_failed", reason = #steps > 0 and nil or "invalid-browser-completion", message = completion_error }) end
+      if not valid_completion then return terminal({ kind = #steps > 0 and "assertion_lost" or "invalid_completion", message = completion_error }) end
       completion = verified_completion
       return terminal({ kind = required_completion_passed(plan.cases[1], completion)
         and "passed" or "deterministic_completion_failed", reason = "browser-completion-asserted" })

@@ -1,0 +1,49 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-package-schema-release.v1.schema.json",
+  "title": "Testing Package Schema Release v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "canonicalization", "package_manifest", "schema_catalog", "producer", "release_sha256"],
+  "properties": {
+    "schema": {"const": "testing-package-schema-release.v1"},
+    "canonicalization": {"const": "fkst-testing-package-schema-release-canonical-json.v1"},
+    "package_manifest": {"$ref": "#/$defs/packageManifestReference"},
+    "schema_catalog": {"$ref": "#/$defs/schemaCatalogReference"},
+    "producer": {"$ref": "#/$defs/producer"},
+    "release_sha256": {"$ref": "testing-package-manifest.v1.schema.json#/$defs/exactSha256"}
+  },
+  "$defs": {
+    "reference": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "ref", "sha256"],
+      "properties": {
+        "kind": {"type": "string"},
+        "ref": {"type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^immutable://"},
+        "sha256": {"$ref": "testing-package-manifest.v1.schema.json#/$defs/exactSha256"}
+      }
+    },
+    "packageManifestReference": {
+      "allOf": [
+        {"$ref": "#/$defs/reference"},
+        {"properties": {"kind": {"const": "testing-package-manifest"}}}
+      ]
+    },
+    "schemaCatalogReference": {
+      "allOf": [
+        {"$ref": "#/$defs/reference"},
+        {"properties": {"kind": {"const": "testing-schema-catalog"}}}
+      ]
+    },
+    "producer": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {"const": "fkst-packages-testing"},
+        "version": {"$ref": "testing-package-manifest.v1.schema.json#/$defs/exactSemver"}
+      }
+    }
+  }
+}

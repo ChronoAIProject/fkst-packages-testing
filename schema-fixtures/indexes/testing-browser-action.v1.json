@@ -1,0 +1,272 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "contextual-unapproved-secret-ref",
+      "file": "contextual-unapproved-secret-ref.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": true
+    },
+    {
+      "name": "contextual-unauthorized-action",
+      "file": "contextual-unauthorized-action.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": true
+    },
+    {
+      "name": "invalid-click-advisory-status",
+      "file": "invalid-click-advisory-status.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-click-secret-ref",
+      "file": "invalid-click-secret-ref.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-finish-advisory-status",
+      "file": "invalid-finish-advisory-status.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-finish-handle",
+      "file": "invalid-finish-handle.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-finish-secret-ref",
+      "file": "invalid-finish-secret-ref.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-forbidden-payload-fields",
+      "file": "invalid-forbidden-payload-fields.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-handle-control-character",
+      "file": "invalid-handle-control-character.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-handle-del",
+      "file": "invalid-handle-del.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-handle-empty",
+      "file": "invalid-handle-empty.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-handle-multibyte-over-byte-limit",
+      "file": "invalid-handle-multibyte-over-byte-limit.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-handle-over-byte-limit",
+      "file": "invalid-handle-over-byte-limit.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-missing-kind-field",
+      "file": "invalid-missing-kind-field.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-missing-kind",
+      "file": "invalid-missing-kind.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-missing-schema",
+      "file": "invalid-missing-schema.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-missing-turn",
+      "file": "invalid-missing-turn.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-press-tab-advisory-status",
+      "file": "invalid-press-tab-advisory-status.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-press-tab-handle",
+      "file": "invalid-press-tab-handle.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-press-tab-secret-ref",
+      "file": "invalid-press-tab-secret-ref.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-secret-ref-malformed",
+      "file": "invalid-secret-ref-malformed.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-secret-ref-over-byte-limit",
+      "file": "invalid-secret-ref-over-byte-limit.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-submit-advisory-status",
+      "file": "invalid-submit-advisory-status.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-submit-secret-ref",
+      "file": "invalid-submit-secret-ref.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-turn-fractional",
+      "file": "invalid-turn-fractional.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-turn-nine",
+      "file": "invalid-turn-nine.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-turn-zero",
+      "file": "invalid-turn-zero.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-type-advisory-status",
+      "file": "invalid-type-advisory-status.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-type-missing-handle",
+      "file": "invalid-type-missing-handle.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-type-missing-secret-ref",
+      "file": "invalid-type-missing-secret-ref.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unknown-field",
+      "file": "invalid-unknown-field.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unknown-kind",
+      "file": "invalid-unknown-kind.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": false
+    },
+    {
+      "name": "valid-click",
+      "file": "valid-click.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-finish-blocked",
+      "file": "valid-finish-blocked.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-finish-success",
+      "file": "valid-finish-success.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-press-tab",
+      "file": "valid-press-tab.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-submit",
+      "file": "valid-submit.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-type",
+      "file": "valid-type.json",
+      "schema": "testing-runner.ai-browser-control.action.v1",
+      "instance_field": "action",
+      "portable_valid": true
+    }
+  ],
+  "support_files": []
+}

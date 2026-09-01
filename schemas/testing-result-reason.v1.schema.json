@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-result-reason.v1.schema.json",
+  "title": "Testing Result Reason v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "kind", "code"],
+  "properties": {
+    "schema": {"const": "testing-result-reason.v1"},
+    "kind": {"enum": ["error", "non-execution"]},
+    "code": {
+      "anyOf": [
+        {"$ref": "#/$defs/errorCode"},
+        {"$ref": "#/$defs/nonExecutionCode"}
+      ]
+    }
+  },
+  "oneOf": [
+    {
+      "properties": {
+        "kind": {"const": "error"},
+        "code": {"$ref": "#/$defs/errorCode"}
+      }
+    },
+    {
+      "properties": {
+        "kind": {"const": "non-execution"},
+        "code": {"$ref": "#/$defs/nonExecutionCode"}
+      }
+    }
+  ],
+  "$defs": {
+    "errorCode": {
+      "enum": [
+        "browser-action-invalid",
+        "browser-controller-interrupted",
+        "browser-observation-failed",
+        "browser-step-failed",
+        "callback-verification-failed",
+        "environment-session-issue",
+        "harness-tooling-issue",
+        "invalid-browser-completion",
+        "provider-timeout"
+      ]
+    },
+    "nonExecutionCode": {
+      "enum": [
+        "browser-step-budget-exhausted",
+        "browser-time-budget-exhausted",
+        "case-not-selected",
+        "data-fixture-gap",
+        "execution-lost-between-action-and-assertion",
+        "not-executed-risk",
+        "platform-not-applicable",
+        "policy-deferred",
+        "precondition-unavailable",
+        "repeated-ai-action",
+        "runner-disconnected",
+        "unsafe-browser-observation"
+      ]
+    }
+  }
+}
