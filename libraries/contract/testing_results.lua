@@ -17,6 +17,21 @@ R.execution_modes = { cli = true, http = true, browser = true }
 R.execution_statuses = { passed = true, failed = true, skipped = true, error = true, blocked = true, lost = true }
 R.assertion_statuses = { passed = true, failed = true, skipped = true }
 R.classifications = { deterministic = true, assertion_failure = true, not_applicable = true, skipped = true, execution_error = true, blocked = true, lost = true }
+R.error_codes = {
+  ["browser-action-invalid"] = true, ["browser-controller-interrupted"] = true,
+  ["browser-observation-failed"] = true, ["browser-step-failed"] = true,
+  ["callback-verification-failed"] = true, ["environment-session-issue"] = true,
+  ["harness-tooling-issue"] = true, ["invalid-browser-completion"] = true,
+  ["provider-timeout"] = true,
+}
+R.non_execution_codes = {
+  ["browser-step-budget-exhausted"] = true, ["browser-time-budget-exhausted"] = true,
+  ["case-not-selected"] = true, ["data-fixture-gap"] = true,
+  ["execution-lost-between-action-and-assertion"] = true, ["not-executed-risk"] = true,
+  ["platform-not-applicable"] = true, ["policy-deferred"] = true,
+  ["precondition-unavailable"] = true, ["repeated-ai-action"] = true,
+  ["runner-disconnected"] = true, ["unsafe-browser-observation"] = true,
+}
 
 local assertion_outcomes = {
   passed = { deterministic = true },
@@ -163,8 +178,15 @@ local function validate_case(value, expected_plan, assertion_authority)
   list(value.assertions, "assertions", 32, false); local assertion_ids = {}; for _, item in ipairs(value.assertions) do validate_assertion(item, observation_ids); if assertion_ids[item.assertion_id] then fail("duplicate-assertion", item.assertion_id) end; assertion_ids[item.assertion_id] = true end
   validate_authoritative_assertions(value, assertion_authority, assertion_ids)
   evidence(value.evidence_refs, "evidence_refs"); timing(value.timing)
-  if value.error ~= nil then fields(value.error, { code=true, message=true }, "error"); bounded(value.error.code, "error.code", 96); bounded(value.error.message, "error.message") end
-  if value.non_execution_reason ~= nil then bounded(value.non_execution_reason, "non_execution_reason", 96) end
+  if value.error ~= nil then
+    fields(value.error, { code=true, message=true }, "error"); bounded(value.error.code, "error.code", 96)
+    if R.error_codes[value.error.code] ~= true then fail("malformed-field", "error.code is not recognized") end
+    bounded(value.error.message, "error.message")
+  end
+  if value.non_execution_reason ~= nil then
+    bounded(value.non_execution_reason, "non_execution_reason", 96)
+    if R.non_execution_codes[value.non_execution_reason] ~= true then fail("malformed-field", "non_execution_reason is not recognized") end
+  end
   bounded(value.trace_id, "trace_id", 180); bounded(value.dedup_key, "dedup_key", 180)
   validate_case_outcome(value)
   return value

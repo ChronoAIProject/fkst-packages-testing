@@ -1,0 +1,103 @@
+{
+  "schema": "testing-schema-fixtures.v1",
+  "fixture_sets": [
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-assertion-result.v1.schema.json",
+      "schema_path": "schemas/testing-assertion-result.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-results",
+      "index_path": "schema-fixtures/indexes/testing-results.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-case-result-set.v2.schema.json",
+      "schema_path": "schemas/testing-case-result-set.v2.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-results",
+      "index_path": "schema-fixtures/indexes/testing-results.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-case-result.v2.schema.json",
+      "schema_path": "schemas/testing-case-result.v2.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-results",
+      "index_path": "schema-fixtures/indexes/testing-results.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-evidence-manifest.v1.schema.json",
+      "schema_path": "schemas/testing-evidence-manifest.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-evidence-manifest.v1",
+      "index_path": "schema-fixtures/indexes/testing-evidence-manifest.v1.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-observation.v1.schema.json",
+      "schema_path": "schemas/testing-observation.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-results",
+      "index_path": "schema-fixtures/indexes/testing-results.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-package-executor.request.v1.schema.json",
+      "schema_path": "schemas/testing-package-executor.request.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-package-executor.request.v1",
+      "index_path": "schema-fixtures/indexes/testing-package-executor.request.v1.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-package-manifest.v1.schema.json",
+      "schema_path": "schemas/testing-package-manifest.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-package-manifest.v1",
+      "index_path": "schema-fixtures/indexes/testing-package-manifest.v1.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-package-schema-release.v1.schema.json",
+      "schema_path": "schemas/testing-package-schema-release.v1.schema.json",
+      "fixture_root": "schema-fixtures/publication-meta",
+      "index_path": "schema-fixtures/indexes/publication-meta.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-result-reason.v1.schema.json",
+      "schema_path": "schemas/testing-result-reason.v1.schema.json",
+      "fixture_root": "schema-fixtures/testing-result-reason.v1",
+      "index_path": "schema-fixtures/indexes/testing-result-reason.v1.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-runner-invocation.v1.schema.json",
+      "schema_path": "schemas/testing-runner-invocation.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-runner-invocation.v1",
+      "index_path": "schema-fixtures/indexes/testing-runner-invocation.v1.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-runner.ai-browser-control.action.v1.schema.json",
+      "schema_path": "schemas/testing-runner.ai-browser-control.action.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-browser-action.v1",
+      "index_path": "schema-fixtures/indexes/testing-browser-action.v1.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-schema-catalog.v1.schema.json",
+      "schema_path": "schemas/testing-schema-catalog.v1.schema.json",
+      "fixture_root": "schema-fixtures/publication-meta",
+      "index_path": "schema-fixtures/indexes/publication-meta.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-schema-fixture-set.v1.schema.json",
+      "schema_path": "schemas/testing-schema-fixture-set.v1.schema.json",
+      "fixture_root": "schema-fixtures/publication-meta",
+      "index_path": "schema-fixtures/indexes/publication-meta.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-schema-fixtures.v1.schema.json",
+      "schema_path": "schemas/testing-schema-fixtures.v1.schema.json",
+      "fixture_root": "schema-fixtures/publication-meta",
+      "index_path": "schema-fixtures/indexes/publication-meta.json",
+      "classification_path": null
+    }
+  ]
+}

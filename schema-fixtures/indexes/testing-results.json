@@ -1,0 +1,197 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "invalid-assertion-truth-table",
+      "file": "invalid-assertion-truth-table.json",
+      "schema": "testing-assertion-result.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-case-error-rule",
+      "file": "invalid-case-error-rule.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-case-outcome",
+      "file": "invalid-case-outcome.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-case-reason-rule",
+      "file": "invalid-case-reason-rule.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-duration-negative",
+      "file": "invalid-duration-negative.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-duration-over-max",
+      "file": "invalid-duration-over-max.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-hyphen-time-separators",
+      "file": "invalid-hyphen-time-separators.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-impossible-date",
+      "file": "invalid-impossible-date.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-malformed-digest",
+      "file": "invalid-malformed-digest.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-missing-required-field",
+      "file": "invalid-missing-required-field.json",
+      "schema": "testing-assertion-result.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-multibyte-over-byte-limit",
+      "file": "invalid-multibyte-over-byte-limit.json",
+      "schema": "testing-observation.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-nested-multibyte-over-byte-limit",
+      "file": "invalid-nested-multibyte-over-byte-limit.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-overlong-reference-kind",
+      "file": "invalid-overlong-reference-kind.json",
+      "schema": "testing-observation.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-required-assertion",
+      "file": "invalid-required-assertion.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-set-digest-presence",
+      "file": "invalid-set-digest-presence.json",
+      "schema": "testing-case-result-set.v2",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unknown-field",
+      "file": "invalid-unknown-field.json",
+      "schema": "testing-observation.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "valid-assertion",
+      "file": "valid-assertion.json",
+      "schema": "testing-assertion-result.v1",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-case-blocked",
+      "file": "valid-case-blocked.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-case-error",
+      "file": "valid-case-error.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-case-failed",
+      "file": "valid-case-failed.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-case-lost",
+      "file": "valid-case-lost.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-case-not-applicable",
+      "file": "valid-case-not-applicable.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-case-passed",
+      "file": "valid-case-passed.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-case-skipped",
+      "file": "valid-case-skipped.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-case-year-zero",
+      "file": "valid-case-year-zero.json",
+      "schema": "testing-case-result.v2",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-observation",
+      "file": "valid-observation.json",
+      "schema": "testing-observation.v1",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-result-set",
+      "file": "valid-result-set.json",
+      "schema": "testing-case-result-set.v2",
+      "instance_field": null,
+      "portable_valid": true
+    }
+  ],
+  "support_files": [
+    "valid-result-set-evidence-manifest.json"
+  ]
+}

@@ -1,0 +1,69 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "invalid-malformed-digest",
+      "file": "invalid-malformed-digest.json",
+      "schema": "testing-package-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-package-id-backslash",
+      "file": "invalid-package-id-backslash.json",
+      "schema": "testing-package-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-package-id-dot-dot",
+      "file": "invalid-package-id-dot-dot.json",
+      "schema": "testing-package-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-package-id-slash",
+      "file": "invalid-package-id-slash.json",
+      "schema": "testing-package-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-package-id-u0000",
+      "file": "invalid-package-id-u0000.json",
+      "schema": "testing-package-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-package-id-u001f",
+      "file": "invalid-package-id-u001f.json",
+      "schema": "testing-package-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unknown-top-level-field",
+      "file": "invalid-unknown-top-level-field.json",
+      "schema": "testing-package-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unsupported-major",
+      "file": "invalid-unsupported-major.json",
+      "schema": "testing-package-manifest.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "valid",
+      "file": "valid.json",
+      "schema": "testing-package-manifest.v1",
+      "instance_field": null,
+      "portable_valid": true
+    }
+  ],
+  "support_files": []
+}

@@ -1,0 +1,1 @@
+{"case":"valid-non-execution-precondition-unavailable","portable_valid":true,"reason":{"schema":"testing-result-reason.v1","kind":"non-execution","code":"precondition-unavailable"}}

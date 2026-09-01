@@ -14,7 +14,10 @@ SCHEMAS = {
     "testing-case-result.v2": SCHEMA_ROOT / "testing-case-result.v2.schema.json",
     "testing-case-result-set.v2": SCHEMA_ROOT / "testing-case-result-set.v2.schema.json",
 }
-DEPENDENCY = SCHEMA_ROOT / "testing-evidence-manifest.v1.schema.json"
+DEPENDENCIES = (
+    SCHEMA_ROOT / "testing-evidence-manifest.v1.schema.json",
+    SCHEMA_ROOT / "testing-result-reason.v1.schema.json",
+)
 VALID_CASES = {
     "valid-observation": "testing-observation.v1",
     "valid-assertion": "testing-assertion-result.v1",
@@ -64,7 +67,7 @@ def main() -> int:
     run_schema_fixture_suite(
         SchemaSuiteSpec(
             schemas=tuple(SCHEMAS.values()),
-            dependencies=(DEPENDENCY,),
+            dependencies=DEPENDENCIES,
             fixtures=DeclaredFixtureSource(
                 FIXTURES,
                 cases,

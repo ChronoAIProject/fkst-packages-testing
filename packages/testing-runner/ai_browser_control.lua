@@ -21,11 +21,11 @@ local terminal_outcomes = {
   deterministic_completion_failed = { execution_status = "failed", classification = "assertion_failure" },
   time_budget_exhausted = { execution_status = "blocked", classification = "blocked", reason = "browser-time-budget-exhausted" },
   step_budget_exhausted = { execution_status = "blocked", classification = "blocked", reason = "browser-step-budget-exhausted" },
-  unsafe_observation = { execution_status = "blocked", classification = "blocked" },
-  callback_detection_failed = { execution_status = "error", classification = "execution_error" },
-  action_invalid = { execution_status = "error", classification = "execution_error" },
-  browser_step_failed = { execution_status = "error", classification = "execution_error" },
-  controller_interrupted = { execution_status = "error", classification = "execution_error" },
+  unsafe_observation = { execution_status = "blocked", classification = "blocked", reason = "unsafe-browser-observation" },
+  callback_detection_failed = { execution_status = "error", classification = "execution_error", reason = "callback-verification-failed" },
+  action_invalid = { execution_status = "error", classification = "execution_error", reason = "browser-action-invalid" },
+  browser_step_failed = { execution_status = "error", classification = "execution_error", reason = "browser-step-failed" },
+  controller_interrupted = { execution_status = "error", classification = "execution_error", reason = "browser-controller-interrupted" },
   assertion_lost = { execution_status = "lost", classification = "lost", reason = "execution-lost-between-action-and-assertion" },
   repeated_action = { execution_status = "blocked", classification = "blocked", reason = "repeated-ai-action" },
 }
@@ -209,7 +209,7 @@ local function normalize_outcome(outcome)
   if normalized == nil then error("testing-runner: ai-browser-control: unknown terminal outcome") end
   local message = tostring(outcome.message or outcome.reason or outcome.kind)
     :gsub("[%z\1-\31\127]", " "):sub(1, 512)
-  local reason = normalized.reason or outcome.reason
+  local reason = normalized.reason
   local requires_reason = normalized.execution_status == "blocked"
     or normalized.execution_status == "lost" or normalized.execution_status == "skipped"
   return {

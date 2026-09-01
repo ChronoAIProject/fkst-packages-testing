@@ -1,0 +1,335 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "contextual-unsupported-execution-profile",
+      "file": "contextual-unsupported-execution-profile.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "contextual-unsupported-executor-mapping",
+      "file": "contextual-unsupported-executor-mapping.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "invalid-approved-refs-extra",
+      "file": "invalid-approved-refs-extra.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-approved-refs-missing-policy",
+      "file": "invalid-approved-refs-missing-policy.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-capability-set-kind",
+      "file": "invalid-capability-set-kind.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-dedup-key-over-byte-limit",
+      "file": "invalid-dedup-key-over-byte-limit.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-digest-non-hex",
+      "file": "invalid-digest-non-hex.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-digest-short",
+      "file": "invalid-digest-short.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-digest-uppercase",
+      "file": "invalid-digest-uppercase.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-execution-profile-empty",
+      "file": "invalid-execution-profile-empty.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-executor-extra-field",
+      "file": "invalid-executor-extra-field.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-executor-missing-package-id",
+      "file": "invalid-executor-missing-package-id.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-forbidden-browser-fields",
+      "file": "invalid-forbidden-browser-fields.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-forbidden-execution-fields",
+      "file": "invalid-forbidden-execution-fields.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-forbidden-path-loader-fields",
+      "file": "invalid-forbidden-path-loader-fields.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-forbidden-resolved-entrypoint",
+      "file": "invalid-forbidden-resolved-entrypoint.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-forbidden-secret-fields",
+      "file": "invalid-forbidden-secret-fields.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-forbidden-talos-fields",
+      "file": "invalid-forbidden-talos-fields.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-identity-contract-major-control",
+      "file": "invalid-identity-contract-major-control.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-identity-entrypoint-empty",
+      "file": "invalid-identity-entrypoint-empty.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-identity-package-id-del",
+      "file": "invalid-identity-package-id-del.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-identity-package-id-multibyte-over-byte-limit",
+      "file": "invalid-identity-package-id-multibyte-over-byte-limit.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-identity-package-id-non-string",
+      "file": "invalid-identity-package-id-non-string.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-identity-package-id-over-byte-limit",
+      "file": "invalid-identity-package-id-over-byte-limit.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-identity-schema",
+      "file": "invalid-identity-schema.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-package-manifest-kind",
+      "file": "invalid-package-manifest-kind.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-plan-kind",
+      "file": "invalid-plan-kind.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-policy-kind",
+      "file": "invalid-policy-kind.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-pql-input-kind",
+      "file": "invalid-pql-input-kind.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-ref-control",
+      "file": "invalid-ref-control.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-ref-del",
+      "file": "invalid-ref-del.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-ref-empty",
+      "file": "invalid-ref-empty.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-ref-fragment",
+      "file": "invalid-ref-fragment.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-ref-multibyte-over-byte-limit",
+      "file": "invalid-ref-multibyte-over-byte-limit.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-ref-mutable",
+      "file": "invalid-ref-mutable.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-ref-over-byte-limit",
+      "file": "invalid-ref-over-byte-limit.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-ref-query",
+      "file": "invalid-ref-query.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-reference-extra-field",
+      "file": "invalid-reference-extra-field.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-reference-missing-sha256",
+      "file": "invalid-reference-missing-sha256.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-request-schema",
+      "file": "invalid-request-schema.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-semver-prefixed",
+      "file": "invalid-semver-prefixed.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-semver-two-components",
+      "file": "invalid-semver-two-components.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-source-kind",
+      "file": "invalid-source-kind.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-top-level-missing-dedup-key",
+      "file": "invalid-top-level-missing-dedup-key.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-top-level-unknown",
+      "file": "invalid-top-level-unknown.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-trace-id-del",
+      "file": "invalid-trace-id-del.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "valid-complete",
+      "file": "valid-complete.json",
+      "schema": "testing-package-executor.request.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    }
+  ],
+  "support_files": []
+}

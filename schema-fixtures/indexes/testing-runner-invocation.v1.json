@@ -1,0 +1,1157 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "alias-attempt-id",
+      "file": "alias-attempt-id.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "alias-capability-set-ref",
+      "file": "alias-capability-set-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "alias-plan-ref",
+      "file": "alias-plan-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "alias-pql-input-ref",
+      "file": "alias-pql-input-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "alias-schema-set-ref",
+      "file": "alias-schema-set-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "canonical-digest-63-characters",
+      "file": "canonical-digest-63-characters.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "canonical-digest-65-characters",
+      "file": "canonical-digest-65-characters.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "canonical-digest-mismatch",
+      "file": "canonical-digest-mismatch.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "canonical-digest-non-hexadecimal",
+      "file": "canonical-digest-non-hexadecimal.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "canonical-digest-non-string",
+      "file": "canonical-digest-non-string.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "canonical-digest-uppercase",
+      "file": "canonical-digest-uppercase.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "capabilities-65-items",
+      "file": "capabilities-65-items.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "capabilities-duplicate",
+      "file": "capabilities-duplicate.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "capabilities-empty",
+      "file": "capabilities-empty.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "capability-item-control",
+      "file": "capability-item-control.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "capability-item-empty",
+      "file": "capability-item-empty.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "capability-item-over-byte-limit",
+      "file": "capability-item-over-byte-limit.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "deadline-above-max",
+      "file": "deadline-above-max.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "deadline-fractional",
+      "file": "deadline-fractional.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "deadline-string",
+      "file": "deadline-string.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "deadline-zero",
+      "file": "deadline-zero.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "decode-only-session-input-schema",
+      "file": "decode-only-session-input-schema.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "extra-source-ref-field",
+      "file": "extra-source-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-browser-state",
+      "file": "forbidden-browser-state.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-caller-entrypoint",
+      "file": "forbidden-caller-entrypoint.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-cdp-profile",
+      "file": "forbidden-cdp-profile.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-credential-material",
+      "file": "forbidden-credential-material.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-host-absolute-path",
+      "file": "forbidden-host-absolute-path.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-inline-artifact-body",
+      "file": "forbidden-inline-artifact-body.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-model-inference",
+      "file": "forbidden-model-inference.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-plugin-import",
+      "file": "forbidden-plugin-import.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-pool-machine-selection",
+      "file": "forbidden-pool-machine-selection.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-shell-execution",
+      "file": "forbidden-shell-execution.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "forbidden-worker-authority",
+      "file": "forbidden-worker-authority.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-nested-ascii-181-bytes",
+      "file": "identity-nested-ascii-181-bytes.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-nested-del",
+      "file": "identity-nested-del.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-nested-empty",
+      "file": "identity-nested-empty.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-nested-multibyte-over-180-bytes",
+      "file": "identity-nested-multibyte-over-180-bytes.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-nested-non-string",
+      "file": "identity-nested-non-string.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-nested-nul",
+      "file": "identity-nested-nul.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-nested-unit-separator",
+      "file": "identity-nested-unit-separator.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-root-ascii-181-bytes",
+      "file": "identity-root-ascii-181-bytes.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-root-del",
+      "file": "identity-root-del.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-root-empty",
+      "file": "identity-root-empty.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-root-multibyte-over-180-bytes",
+      "file": "identity-root-multibyte-over-180-bytes.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-root-non-string",
+      "file": "identity-root-non-string.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-root-nul",
+      "file": "identity-root-nul.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "identity-root-unit-separator",
+      "file": "identity-root-unit-separator.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "malformed-semver-nonnumeric",
+      "file": "malformed-semver-nonnumeric.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "malformed-semver-one-component",
+      "file": "malformed-semver-one-component.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "malformed-semver-prefixed",
+      "file": "malformed-semver-prefixed.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "malformed-semver-prerelease",
+      "file": "malformed-semver-prerelease.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "malformed-semver-two-component",
+      "file": "malformed-semver-two-component.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-approved-input-approved-test-case-set-ref",
+      "file": "missing-approved-input-approved-test-case-set-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-approved-input-capability-port-set-ref",
+      "file": "missing-approved-input-capability-port-set-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-approved-input-package-manifest-ref",
+      "file": "missing-approved-input-package-manifest-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-approved-input-package-release-ref",
+      "file": "missing-approved-input-package-release-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-approved-input-policy-ref",
+      "file": "missing-approved-input-policy-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-approved-input-pql-input-set-ref",
+      "file": "missing-approved-input-pql-input-set-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-approved-input-schema-catalog-ref",
+      "file": "missing-approved-input-schema-catalog-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-approved-input-source-ref",
+      "file": "missing-approved-input-source-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-approved-input-structured-plan-ref",
+      "file": "missing-approved-input-structured-plan-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-budgets-step-budget",
+      "file": "missing-budgets-step-budget.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-budgets-time-budget-seconds",
+      "file": "missing-budgets-time-budget-seconds.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-executor-contract-major",
+      "file": "missing-executor-contract-major.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-executor-entrypoint",
+      "file": "missing-executor-entrypoint.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-executor-manifest-digest",
+      "file": "missing-executor-manifest-digest.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-executor-package-content-sha256",
+      "file": "missing-executor-package-content-sha256.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-executor-package-id",
+      "file": "missing-executor-package-id.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-executor-package-version",
+      "file": "missing-executor-package-version.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-executor-schema",
+      "file": "missing-executor-schema.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-producer-name",
+      "file": "missing-producer-name.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-producer-version",
+      "file": "missing-producer-version.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-resolved-executor-capability-digest",
+      "file": "missing-resolved-executor-capability-digest.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-resolved-executor-executor-id",
+      "file": "missing-resolved-executor-executor-id.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-resolved-executor-version",
+      "file": "missing-resolved-executor-version.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-approved-input-refs",
+      "file": "missing-root-approved-input-refs.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-attempt-ref",
+      "file": "missing-root-attempt-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-budgets",
+      "file": "missing-root-budgets.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-canonical-request-sha256",
+      "file": "missing-root-canonical-request-sha256.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-canonicalization",
+      "file": "missing-root-canonicalization.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-deadline-epoch-seconds",
+      "file": "missing-root-deadline-epoch-seconds.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-dedup-key",
+      "file": "missing-root-dedup-key.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-execution-profile",
+      "file": "missing-root-execution-profile.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-executor",
+      "file": "missing-root-executor.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-invocation-id",
+      "file": "missing-root-invocation-id.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-producer",
+      "file": "missing-root-producer.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-qa-run-ref",
+      "file": "missing-root-qa-run-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-requested-capabilities",
+      "file": "missing-root-requested-capabilities.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-resolved-executor",
+      "file": "missing-root-resolved-executor.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-schema",
+      "file": "missing-root-schema.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-root-trace-id",
+      "file": "missing-root-trace-id.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-source-ref-kind",
+      "file": "missing-source-ref-kind.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-source-ref-ref",
+      "file": "missing-source-ref-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "missing-source-ref-sha256",
+      "file": "missing-source-ref-sha256.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "runtime-cancelled",
+      "file": "runtime-cancelled.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-capability-mismatch",
+      "file": "runtime-capability-mismatch.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-current-claim-superseded",
+      "file": "runtime-current-claim-superseded.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-current-claim-unavailable",
+      "file": "runtime-current-claim-unavailable.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-deadline-expired",
+      "file": "runtime-deadline-expired.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-lineage-mismatch",
+      "file": "runtime-lineage-mismatch.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-lineage-rebuilt",
+      "file": "runtime-lineage-rebuilt.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-lineage-substituted",
+      "file": "runtime-lineage-substituted.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-mapping-ambiguous",
+      "file": "runtime-mapping-ambiguous.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-mapping-missing",
+      "file": "runtime-mapping-missing.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-policy-mismatch",
+      "file": "runtime-policy-mismatch.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-replay-conflict",
+      "file": "runtime-replay-conflict.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-stale-plan",
+      "file": "runtime-stale-plan.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-unsupported-execution-profile",
+      "file": "runtime-unsupported-execution-profile.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "runtime-unsupported-mapping",
+      "file": "runtime-unsupported-mapping.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "source-ref-ascii-4097-bytes",
+      "file": "source-ref-ascii-4097-bytes.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "source-ref-del",
+      "file": "source-ref-del.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "source-ref-empty",
+      "file": "source-ref-empty.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "source-ref-fragment",
+      "file": "source-ref-fragment.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "source-ref-malformed-digest",
+      "file": "source-ref-malformed-digest.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "source-ref-multibyte-over-4096-bytes",
+      "file": "source-ref-multibyte-over-4096-bytes.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "source-ref-mutable",
+      "file": "source-ref-mutable.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "source-ref-nul",
+      "file": "source-ref-nul.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "source-ref-query",
+      "file": "source-ref-query.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "step-budget-above-max",
+      "file": "step-budget-above-max.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "step-budget-fractional",
+      "file": "step-budget-fractional.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "step-budget-string",
+      "file": "step-budget-string.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "step-budget-zero",
+      "file": "step-budget-zero.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "time-budget-above-max",
+      "file": "time-budget-above-max.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "time-budget-fractional",
+      "file": "time-budget-fractional.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "time-budget-string",
+      "file": "time-budget-string.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "time-budget-zero",
+      "file": "time-budget-zero.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-approved-input-refs-field",
+      "file": "unknown-approved-input-refs-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-approved-test-case-set-ref-field",
+      "file": "unknown-approved-test-case-set-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-budgets-field",
+      "file": "unknown-budgets-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-capability-port-set-ref-field",
+      "file": "unknown-capability-port-set-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-executor-field",
+      "file": "unknown-executor-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-package-manifest-ref-field",
+      "file": "unknown-package-manifest-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-package-release-ref-field",
+      "file": "unknown-package-release-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-policy-ref-field",
+      "file": "unknown-policy-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-pql-input-set-ref-field",
+      "file": "unknown-pql-input-set-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-producer-field",
+      "file": "unknown-producer-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-resolved-executor-field",
+      "file": "unknown-resolved-executor-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-root-field",
+      "file": "unknown-root-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-schema-catalog-ref-field",
+      "file": "unknown-schema-catalog-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-source-ref-field",
+      "file": "unknown-source-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unknown-structured-plan-ref-field",
+      "file": "unknown-structured-plan-ref-field.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "unsupported-contract-major",
+      "file": "unsupported-contract-major.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "valid-canonical-envelope",
+      "file": "valid-canonical-envelope.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-capabilities-ordered",
+      "file": "valid-capabilities-ordered.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-capabilities-reordered",
+      "file": "valid-capabilities-reordered.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-deadline-1",
+      "file": "valid-deadline-1.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-deadline-max",
+      "file": "valid-deadline-max.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-step-budget-8",
+      "file": "valid-step-budget-8.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-time-budget-1",
+      "file": "valid-time-budget-1.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "valid-time-budget-600",
+      "file": "valid-time-budget-600.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": true
+    },
+    {
+      "name": "wrong-canonicalization",
+      "file": "wrong-canonicalization.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-contract-major",
+      "file": "wrong-contract-major.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-executor-identity-schema",
+      "file": "wrong-executor-identity-schema.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-kind-approved-test-case-set-ref",
+      "file": "wrong-kind-approved-test-case-set-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-kind-capability-port-set-ref",
+      "file": "wrong-kind-capability-port-set-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-kind-package-manifest-ref",
+      "file": "wrong-kind-package-manifest-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-kind-package-release-ref",
+      "file": "wrong-kind-package-release-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-kind-policy-ref",
+      "file": "wrong-kind-policy-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-kind-pql-input-set-ref",
+      "file": "wrong-kind-pql-input-set-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-kind-schema-catalog-ref",
+      "file": "wrong-kind-schema-catalog-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-kind-source-ref",
+      "file": "wrong-kind-source-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-kind-structured-plan-ref",
+      "file": "wrong-kind-structured-plan-ref.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    },
+    {
+      "name": "wrong-schema",
+      "file": "wrong-schema.json",
+      "schema": "testing-runner-invocation.v1",
+      "instance_field": "request",
+      "portable_valid": false
+    }
+  ],
+  "support_files": [
+    "index.json",
+    "runtime-outcomes.json"
+  ]
+}

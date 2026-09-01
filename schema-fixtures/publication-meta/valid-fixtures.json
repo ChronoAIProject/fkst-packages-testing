@@ -1,0 +1,1 @@
+{"case":"valid-fixtures","portable_valid":true,"instance":{"schema":"testing-schema-fixtures.v1","fixture_sets":[{"schema_id":"https://example.test/schema.v1.schema.json","schema_path":"schemas/schema.v1.schema.json","fixture_root":"fixtures/schema.v1","index_path":"fixtures/schema.v1/index.json","classification_path":null}]}}

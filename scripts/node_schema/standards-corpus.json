@@ -1,0 +1,1974 @@
+{
+  "schema": "testing-json-schema-corpus-selection.v1",
+  "commit": "3c25e5f709192aadf67cf7f2eb19771a57131fec",
+  "selected": [
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/additionalProperties.json",
+      "group_indices": [
+        2,
+        3,
+        4,
+        5,
+        6
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/allOf.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/anyOf.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/boolean_schema.json",
+      "group_indices": [
+        0,
+        1
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/const.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/contains.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        5,
+        6
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/defs.json",
+      "group_indices": [
+        0
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_indices": [
+        17
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/enum.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/if-then-else.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        7,
+        8,
+        9,
+        10,
+        11
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/infinite-loop-detection.json",
+      "group_indices": [
+        0
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/items.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        4,
+        9
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/maxContains.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/maxItems.json",
+      "group_indices": [
+        0,
+        1
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/maxLength.json",
+      "group_indices": [
+        0,
+        1
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/maximum.json",
+      "group_indices": [
+        0,
+        1
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/minContains.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/minItems.json",
+      "group_indices": [
+        0,
+        1
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/minLength.json",
+      "group_indices": [
+        0,
+        1
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/minimum.json",
+      "group_indices": [
+        0,
+        1
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/not.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/oneOf.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/pattern.json",
+      "group_indices": [
+        0,
+        1,
+        2
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/properties.json",
+      "group_indices": [
+        0,
+        2,
+        3,
+        4,
+        5
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_indices": [
+        0,
+        1,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        14,
+        15,
+        16,
+        17,
+        26,
+        28,
+        29,
+        30,
+        31,
+        32,
+        35
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/refRemote.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10,
+        11,
+        12,
+        13,
+        14
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/required.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/type.json",
+      "group_indices": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7,
+        8,
+        9,
+        10
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/uniqueItems.json",
+      "group_indices": [
+        0,
+        3
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/vocabulary.json",
+      "group_indices": [
+        0,
+        1
+      ]
+    }
+  ],
+  "excluded": [
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/additionalProperties.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/additionalProperties.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/additionalProperties.json",
+      "group_index": 7,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "propertyNames"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/additionalProperties.json",
+      "group_index": 8,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentSchemas"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/allOf.json",
+      "group_index": 11,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/anchor.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/anchor.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/anchor.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/anchor.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/const.json",
+      "group_index": 15,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/const.json",
+      "group_index": 16,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/contains.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/content.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "contentMediaType"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/content.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "contentEncoding"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/content.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "contentEncoding",
+        "contentMediaType"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/content.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "contentEncoding",
+        "contentMediaType",
+        "contentSchema"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/default.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "default"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/default.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "default"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/default.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "default"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dependentRequired.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentRequired"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dependentRequired.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentRequired"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dependentRequired.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentRequired"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dependentRequired.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentRequired"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dependentSchemas.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentSchemas"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dependentSchemas.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentSchemas"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dependentSchemas.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentSchemas"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dependentSchemas.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentSchemas"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$dynamicAnchor"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 5,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 6,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor",
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 7,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor",
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 8,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor",
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 9,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 10,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 11,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 12,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 13,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$dynamicAnchor",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 14,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$dynamicAnchor"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 15,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$dynamicAnchor"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 16,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$dynamicAnchor"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 18,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 19,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/dynamicRef.json",
+      "group_index": 20,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/exclusiveMaximum.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "exclusiveMaximum"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/exclusiveMinimum.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "exclusiveMinimum"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 5,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 6,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 7,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 8,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 9,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 10,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 11,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 12,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 13,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 14,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 15,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 16,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 17,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/format.json",
+      "group_index": 18,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "format"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/if-then-else.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "exclusiveMaximum"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/if-then-else.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "exclusiveMaximum",
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/if-then-else.json",
+      "group_index": 5,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "exclusiveMaximum",
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/if-then-else.json",
+      "group_index": 6,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "exclusiveMaximum",
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/items.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/items.json",
+      "group_index": 5,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/items.json",
+      "group_index": 6,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/items.json",
+      "group_index": 7,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/items.json",
+      "group_index": 8,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/maxProperties.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "maxProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/maxProperties.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "maxProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/maxProperties.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "maxProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/minProperties.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "minProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/minProperties.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "minProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/multipleOf.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/multipleOf.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/multipleOf.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/multipleOf.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/multipleOf.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "multipleOf"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/not.json",
+      "group_index": 8,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/patternProperties.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/patternProperties.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/patternProperties.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/patternProperties.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/patternProperties.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/patternProperties.json",
+      "group_index": 5,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/prefixItems.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/prefixItems.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/prefixItems.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/prefixItems.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/properties.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/propertyNames.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "propertyNames"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/propertyNames.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "propertyNames"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/propertyNames.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "propertyNames"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/propertyNames.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "propertyNames"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/propertyNames.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "propertyNames"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/propertyNames.json",
+      "group_index": 5,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "propertyNames"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 13,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 18,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 19,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor",
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 20,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 21,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 22,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 23,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 24,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 25,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 27,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$anchor"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 33,
+      "reason": "schema resource URI scheme is outside the repository profile",
+      "keywords": [
+        "$id:file"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/ref.json",
+      "group_index": 34,
+      "reason": "schema resource URI scheme is outside the repository profile",
+      "keywords": [
+        "$id:file"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 5,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 6,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 7,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 8,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 9,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 10,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 11,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 12,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 13,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 14,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 15,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 16,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 17,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 18,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef",
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 19,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 20,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 21,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 22,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "multipleOf",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 23,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 24,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 25,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 26,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 27,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedItems.json",
+      "group_index": 28,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems",
+        "unevaluatedItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 0,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 3,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 5,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 6,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 7,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 8,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 9,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 10,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 11,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 12,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 13,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 14,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 15,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 16,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 17,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentSchemas",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 18,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 19,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 20,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 21,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "$comment",
+        "$dynamicAnchor",
+        "$dynamicRef",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 22,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 23,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 24,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 25,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 26,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 27,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 28,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 29,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 30,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 31,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 32,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 33,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 34,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 35,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 36,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 37,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 38,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "propertyNames",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 39,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 40,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "dependentSchemas",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 41,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 42,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "patternProperties",
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/unevaluatedProperties.json",
+      "group_index": 43,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "unevaluatedProperties"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/uniqueItems.json",
+      "group_index": 1,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/uniqueItems.json",
+      "group_index": 2,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/uniqueItems.json",
+      "group_index": 4,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    },
+    {
+      "path": "json-schema-test-suite/tests/draft2020-12/uniqueItems.json",
+      "group_index": 5,
+      "reason": "schema group uses behavior outside the repository profile",
+      "keywords": [
+        "prefixItems"
+      ]
+    }
+  ]
+}
