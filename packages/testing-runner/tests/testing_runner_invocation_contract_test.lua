@@ -95,10 +95,12 @@ return {
     t.eq(#index.cases, 164)
     t.eq(index.cases[1].name, "valid-canonical-envelope")
 
+    local fixtures_by_name = {}
     for _, entry in ipairs(index.cases) do
       t.eq(key_count(entry), 2)
       t.eq(entry.file, entry.name .. ".json")
       local fixture = conformance.fixture(root, entry.name)
+      fixtures_by_name[entry.name] = fixture
       t.eq(key_count(fixture), 5)
       t.eq(fixture.case, entry.name)
       t.eq(type(fixture.portable_valid), "boolean")
@@ -124,6 +126,14 @@ return {
       end
       t.eq(fixture.request == request, true)
       t.eq(deep_equal(request, before), true)
+    end
+
+    for _, name in ipairs({ "forbidden-worker-authority", "forbidden-credential-material" }) do
+      local fixture = fixtures_by_name[name]
+      t.eq(fixture ~= nil, true)
+      t.eq(fixture.portable_valid, false)
+      t.eq(fixture.lua_valid, false)
+      t.eq(fixture.lua_error, "malformed-invocation")
     end
 
     local canonical = conformance.fixture(root, "valid-canonical-envelope").request

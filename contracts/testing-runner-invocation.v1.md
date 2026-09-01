@@ -139,7 +139,7 @@ The digest is not a digest of the pretty-printed fixture file or of referenced a
 
 There are no aliases. In particular, reject `attempt_id`, `plan_ref`, `pql_input_ref`, `schema_set_ref`, and `capability_set_ref`. The decode-only schema name `ai-testing-session-input.v1` is not accepted by this canonical validator. Do not infer renamed properties, upgrade unsupported versions, normalize semantic versions, lowercase digests, reorder capabilities, or accept caller-defined root entrypoints.
 
-Closed objects also forbid authority and execution material, including Talos lease, worker, generation, or fence tokens; NyxID, credentials, bearer tokens, or secrets; pool or machine selection; host absolute paths; shell, argv, environment dumps, or executable paths; plugins or dynamic imports; CDP endpoints or Chrome profiles; cookies, headers, or browser storage; prompts, model fields, or ModelInference configuration; caller-selected free-form entrypoints; and inline artifact bodies.
+Closed objects also forbid authority and execution material, including worker lease, worker, generation, or fence authority; credential-broker, credential, bearer-token, or secret material; pool or machine selection; host absolute paths; shell, argv, environment dumps, or executable paths; plugins or dynamic imports; CDP endpoints or Chrome profiles; cookies, headers, or browser storage; prompts, model fields, or ModelInference configuration; caller-selected free-form entrypoints; and inline artifact bodies.
 
 ## Authority ownership
 
