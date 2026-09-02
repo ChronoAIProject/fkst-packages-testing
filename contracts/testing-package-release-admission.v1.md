@@ -46,7 +46,9 @@ The request has this closed shape:
 
 The adapter MUST execute the supplied case against the real consumer boundary. Operations named `restart-runtime` MUST cross the consumer's production restart/recovery seam. Faults and authority outcomes MAY be injected through product test ports, but the final decision and persisted observation MUST come from the production consumer adapter.
 
-The adapter MUST emit exactly the case's `expected_observation`. Unknown fields fail conformance. The runner compares parsed JSON values, so object member order and insignificant whitespace are not observable.
+The request's `case` contains exactly `name`, `invariant`, and `trials`. The corpus `expected_observation` remains runner-private and MUST NOT be exposed to the adapter.
+
+The adapter MUST emit an observation matching the runner-private `expected_observation`. Unknown fields fail conformance. The runner compares parsed JSON values, so object member order and insignificant whitespace are not observable.
 
 The runner bounds each adapter process by a timeout and a maximum stdout size. A timeout, non-zero exit, malformed JSON, oversized output, or mismatched observation fails conformance.
 

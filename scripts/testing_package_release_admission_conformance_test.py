@@ -24,11 +24,27 @@ def write_adapter(path: Path, mode: str) -> None:
                 "request=json.load(sys.stdin)",
                 f"mode={mode!r}",
                 "if request.get('schema') != 'testing-package-release-admission-conformance-request.v1': raise SystemExit(41)",
-                "observation=request['case']['expected_observation']",
-                "if mode == 'mismatch': observation=dict(observation); observation['case']='wrong'",
-                "if mode == 'malformed': sys.stdout.write('{')",
+                "case=request['case']",
+                "if set(case) != {'name','invariant','trials'}: raise SystemExit(42)",
+                "if mode == 'oracle-echo': json.dump(case['expected_observation'],sys.stdout)",
+                "elif mode == 'malformed': sys.stdout.write('{')",
                 "elif mode == 'oversized': sys.stdout.write('x'*(1024*1024+1))",
-                "else: json.dump(observation,sys.stdout,separators=(',',':'))",
+                "else:",
+                " releases={release['id']:release for release in request['releases']}",
+                " trials=[]",
+                " for trial in case['trials']:",
+                "  admitted=set(); steps=[]",
+                "  for operation in trial['operations']:",
+                "   release=releases[operation['release']]",
+                "   transition=operation.get('transition')",
+                "   code={'update':'accepted-update','rollback':'accepted-rollback'}.get(transition,'accepted')",
+                "   cache=0 if transition == 'rollback' and release['id'] in admitted else 1",
+                "   admitted.add(release['id'])",
+                "   steps.append({'id':operation['id'],'status':'admitted','code':code,'active_release':release['id'],'release_sequence':release['release_sequence'],'mutations':{'journal':1,'cache':cache,'workspace':0,'process':0,'browser':0,'evidence':0}})",
+                "  trials.append({'name':trial['name'],'steps':steps})",
+                " observation={'schema':'testing-package-release-admission-conformance-observation.v1','case':case['name'],'trials':trials}",
+                " if mode == 'mismatch': observation['case']='wrong'",
+                " json.dump(observation,sys.stdout,separators=(',',':'))",
                 "sys.stdout.write('\\n')",
             )
         ),
@@ -56,14 +72,18 @@ def main() -> int:
     prior = next(release for release in corpus["releases"] if release["id"] == "prior-admitted")
     older = next(release for release in corpus["releases"] if release["id"] == "older-unapproved")
     assert older["release_sequence"] < prior["release_sequence"] < baseline["release_sequence"] < update["release_sequence"]
+    explicit_update = next(case for case in corpus["cases"] if case["name"] == "explicit-update")
+    request = json.loads(conformance.adapter_request(corpus, explicit_update))
+    assert set(request["case"]) == {"name", "invariant", "trials"}
+    assert "expected_observation" not in request["case"]
 
     with tempfile.TemporaryDirectory() as temporary:
         root = Path(temporary)
         passing = root / "passing-adapter"
         write_adapter(passing, "pass")
-        result = run(passing)
+        result = run(passing, "--case", "explicit-update")
         assert result.returncode == 0, result.stderr
-        assert f"PASS {len(conformance.REQUIRED_CASES)} case(s)" in result.stdout
+        assert "PASS explicit-update" in result.stdout and "PASS 1 case(s)" in result.stdout
 
         selected = run(passing, "--case", "approved-rollback")
         assert selected.returncode == 0, selected.stderr
@@ -71,6 +91,11 @@ def main() -> int:
 
         unknown = run(passing, "--case", "not-a-case")
         assert unknown.returncode != 0 and "unknown selected cases" in unknown.stderr
+
+        oracle_echo = root / "oracle-echo-adapter"
+        write_adapter(oracle_echo, "oracle-echo")
+        exposed = run(oracle_echo, "--case", "explicit-update")
+        assert exposed.returncode != 0 and "adapter exited" in exposed.stderr
 
         mismatching = root / "mismatching-adapter"
         write_adapter(mismatching, "mismatch")

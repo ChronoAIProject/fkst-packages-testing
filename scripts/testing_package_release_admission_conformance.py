@@ -240,7 +240,7 @@ def adapter_request(corpus: dict[str, Any], case: dict[str, Any]) -> bytes:
         "protocol": PROTOCOL,
         "compatibility": corpus["compatibility"],
         "releases": corpus["releases"],
-        "case": case,
+        "case": {field: case[field] for field in ("name", "invariant", "trials")},
     }
     return (json.dumps(request, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
 
