@@ -62,10 +62,10 @@ def main() -> int:
         assert verify(ENVELOPE).returncode == 0
 
         committed_envelope = json.loads(ENVELOPE.read_text(encoding="utf-8"))
-        assert base64.b64decode(committed_envelope["payload"], validate=True) == RELEASE.read_bytes()
+        assert base64.b64decode(committed_envelope["payload"], validate=True) == generator.statement_bytes(RELEASE.read_bytes())
 
         payload = base64.b64decode(envelope["payload"], validate=True)
-        assert payload == RELEASE.read_bytes()
+        assert payload == generator.statement_bytes(RELEASE.read_bytes())
         payload_mutation = root / "payload-mutated.json"
         mutated_envelope(envelope, payload_mutation, lambda value: value.__setitem__("payload", base64.b64encode(payload[:-1] + bytes([payload[-1] ^ 1])).decode("ascii")))
         assert verify(payload_mutation, first_key).returncode != 0

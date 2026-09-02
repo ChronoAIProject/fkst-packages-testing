@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import base64
 import binascii
+import hashlib
 import json
 import os
 import tempfile
@@ -18,7 +19,12 @@ ROOT = Path(__file__).resolve().parents[1]
 RELEASE_PATH = ROOT / "schema-release" / "testing-package-schema-release.v1.json"
 ENVELOPE_PATH = ROOT / "schema-release" / "testing-package-schema-release.v1.dsse.json"
 AUTHORIZATION_PATH = ROOT / "schema-release" / "testing-package-schema-release.v1.key.json"
-PAYLOAD_TYPE = "application/vnd.fkst.testing-package-schema-release.v1+json"
+PAYLOAD_TYPE = "application/vnd.in-toto+json"
+STATEMENT_TYPE = "https://in-toto.io/Statement/v1"
+PREDICATE_TYPE = (
+    "https://chronoaiproject.github.io/fkst-packages-testing/attestations/"
+    "testing-package-schema-release/v1"
+)
 SUBJECT_NAME = "schema-release/testing-package-schema-release.v1.json"
 KEY_ID = "fkst-packages-testing-schema-release-v1-2026-09-02"
 SEED_ENVIRONMENT_VARIABLE = "FKST_TESTING_SCHEMA_RELEASE_SIGNING_SEED"
@@ -68,6 +74,21 @@ def signing_seed(seed_file: Path | None) -> bytes:
     return decode_base64(value, "signing seed", 32)
 
 
+def statement_bytes(release_bytes: bytes) -> bytes:
+    statement = {
+        "_type": STATEMENT_TYPE,
+        "predicate": {},
+        "predicateType": PREDICATE_TYPE,
+        "subject": [
+            {
+                "digest": {"sha256": hashlib.sha256(release_bytes).hexdigest()},
+                "name": SUBJECT_NAME,
+            }
+        ],
+    }
+    return compact_json(statement)
+
+
 def pae(payload: bytes) -> bytes:
     payload_type = PAYLOAD_TYPE.encode("utf-8")
     return b"DSSEv1 " + str(len(payload_type)).encode("ascii") + b" " + payload_type + b" " + str(len(payload)).encode("ascii") + b" " + payload
@@ -79,7 +100,7 @@ def build(release_bytes: bytes, seed: bytes) -> tuple[bytes, bytes]:
         encoding=serialization.Encoding.Raw,
         format=serialization.PublicFormat.Raw,
     )
-    payload = release_bytes
+    payload = statement_bytes(release_bytes)
     signature = private_key.sign(pae(payload))
     envelope = {
         "payloadType": PAYLOAD_TYPE,
@@ -95,6 +116,7 @@ def build(release_bytes: bytes, seed: bytes) -> tuple[bytes, bytes]:
         "algorithm": "ed25519",
         "authorization": {
             "payloadType": PAYLOAD_TYPE,
+            "predicateType": PREDICATE_TYPE,
             "subject": SUBJECT_NAME,
         },
         "keyid": KEY_ID,
