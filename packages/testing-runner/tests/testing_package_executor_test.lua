@@ -315,7 +315,7 @@ return {
     value = fixture({
       change_documents = function(docs)
         docs.package_manifest_ref.package_id = mapping.request.executor.package_id
-        docs.package_release_ref.release_id = mapping.request.executor.package_id .. "-" .. mapping.request.executor.package_version
+        docs.package_release_ref.release_id = mapping.request.executor.package_id .. "-" .. docs.package_manifest_ref.package_version
         docs.package_manifest_ref.supported_contracts.majors[1] = mapping.request.executor.contract_major
         docs.package_manifest_ref.entrypoints[1].name = mapping.request.executor.entrypoint
         docs.package_manifest_ref.entrypoints[1].contract_major = mapping.request.executor.contract_major
