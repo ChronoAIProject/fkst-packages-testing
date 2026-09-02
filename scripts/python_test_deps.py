@@ -20,8 +20,11 @@ LOCK = ROOT / "scripts" / "python-test-requirements.lock"
 STAMP = ".fkst-python-test-deps.json"
 EXPECTED = {
     "attrs": "26.1.0",
+    "cffi": "2.0.0",
+    "cryptography": "45.0.7",
     "jsonschema": "4.26.0",
     "jsonschema-specifications": "2025.9.1",
+    "pycparser": "2.22",
     "referencing": "0.37.0",
     "rfc3986-validator": "0.1.1",
     "rpds-py": "2026.6.3",
@@ -29,9 +32,12 @@ EXPECTED = {
 }
 IMPORTS = (
     "attrs",
+    "cffi",
+    "cryptography",
     "rfc3986_validator",
     "jsonschema",
     "jsonschema_specifications",
+    "pycparser",
     "referencing",
     "rpds",
     "typing_extensions",
