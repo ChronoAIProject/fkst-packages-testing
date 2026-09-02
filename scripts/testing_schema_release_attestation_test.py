@@ -59,6 +59,7 @@ def main() -> int:
         assert list(envelope) == ["payload", "payloadType", "signatures"]
         assert len(envelope["signatures"]) == 1
         assert list(envelope["signatures"][0]) == ["keyid", "sig"]
+        assert verify(first, first_key).returncode == 0
         assert verify(ENVELOPE).returncode == 0
 
         committed_envelope = json.loads(ENVELOPE.read_text(encoding="utf-8"))
