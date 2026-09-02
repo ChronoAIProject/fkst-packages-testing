@@ -116,8 +116,6 @@ local function fixture(options)
   options = options or {}
   local docs = documents()
   if options.change_documents then options.change_documents(docs) end
-  docs.package_release_ref.release_id = docs.package_manifest_ref.package_id
-    .. "-" .. docs.package_manifest_ref.package_version
   if options.recompute_manifest_digest then
     docs.package_manifest_ref.manifest_digest = nil
     docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(docs.package_manifest_ref))
@@ -303,7 +301,6 @@ local function fixture(options)
     canonical_store = canonical_store,
   }
 end
-
 return {
   test_contextual_request_fixtures_are_rejected_only_by_resolver_mapping = function()
     local profile = request_fixtures.load("contextual-unsupported-execution-profile")
@@ -318,6 +315,7 @@ return {
     value = fixture({
       change_documents = function(docs)
         docs.package_manifest_ref.package_id = mapping.request.executor.package_id
+        docs.package_release_ref.release_id = mapping.request.executor.package_id .. "-" .. mapping.request.executor.package_version
         docs.package_manifest_ref.supported_contracts.majors[1] = mapping.request.executor.contract_major
         docs.package_manifest_ref.entrypoints[1].name = mapping.request.executor.entrypoint
         docs.package_manifest_ref.entrypoints[1].contract_major = mapping.request.executor.contract_major
@@ -344,7 +342,6 @@ return {
     t.eq(#value.calls.compatibility, 1)
     t.eq(#value.calls.admissions, 1)
   end,
-
 
   test_same_key_replays_receipt_and_different_digest_conflicts = function()
     local receipt_store = {}
@@ -376,6 +373,11 @@ return {
     end)
     t.eq(#package_mismatch.calls.admissions, 0)
     assert_zero_execution_effects(package_mismatch)
+    for _, mutate in ipairs({ function(release) release.extra=true end, function(release) release.release_id="other" end }) do
+      local invalid_release=fixture({change_documents=function(docs) mutate(docs.package_release_ref) end})
+      expect_failure("identity-mismatch",function() runtime_executor.resolve(invalid_release.request,invalid_release.ports) end)
+      t.eq(#invalid_release.calls.admissions,0)
+    end
 
     local incompatible = fixture({ runtime_compatible = false })
     expect_failure("runtime-incompatible", function()
@@ -429,10 +431,9 @@ return {
     end)
     t.eq(#caller_selected_entrypoint.calls.admissions, 0)
 
-    local unsupported_version = fixture({
-      change_documents = function(docs) docs.package_manifest_ref.package_version = "9.9.9" end,
-      recompute_manifest_digest = true,
-    })
+    local unsupported_version=fixture({change_documents=function(docs)
+      docs.package_manifest_ref.package_version="9.9.9"; docs.package_release_ref.release_id="testing-runner-9.9.9"
+    end,recompute_manifest_digest=true})
     unsupported_version.request.executor.package_version = "9.9.9"
     unsupported_version.request.executor.manifest_digest = unsupported_version.docs.package_manifest_ref.manifest_digest
     expect_failure("unsupported-mapping", function()
@@ -678,6 +679,9 @@ return {
     local stored = runtime_executor.execute(replay.request, replay.ports)
     t.eq(stored.classification, "passed")
     t.eq(#replay.calls.claims, 0); t.eq(#replay.calls.browser, 0); t.eq(#replay.calls.writes, 1)
+    local authority_path=".testing/runs/dedup-walking-skeleton/result-authority-receipt.json"
+    replay.canonical_store[authority_path]=replay.canonical_store[authority_path] .. " "
+    expect_failure("artifact-content-mismatch",function() runtime_executor.execute(replay.request,replay.ports) end)
   end,
 
   test_tampered_approved_bytes_fail_before_execution_effects = function()
