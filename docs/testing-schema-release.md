@@ -47,6 +47,8 @@ Each fixture-set identity hashes canonical JSON with only `fixture_set_sha256` o
 
 `schema-release/testing-schema-catalog.v1.sha256` has a different domain: it is the SHA-256 of the exact persisted catalog bytes, including the `catalog_sha256` field and the final LF. The unsigned release binds that exact persisted-byte digest. The package-manifest reference similarly binds the exact bytes of `schema-release/testing-package-manifest.v1.json` supplied to the release generator.
 
+The catalog publishes `testing-assertion-reducer-identity.v1` and `testing-result-authority-receipt.v1`; `contracts/testing-result-authority.v1.md` defines their authority separation and digest domains.
+
 ## Offline conformance
 
 The Node validator imports only `scripts/node_schema/vendor/`, removes HTTP, HTTPS, and file retrieval plugins after local resource registration, and fails unresolved references. Its dependency lock records exact versions and package integrities. The official JSON Schema Test Suite is pinned by commit in `scripts/node_schema/standards-corpus.json`; selected test groups run directly against vendored Hyperjump, while exclusions are machine-readable and limited to behavior outside the repository profile.

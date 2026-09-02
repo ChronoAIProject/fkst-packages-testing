@@ -1,6 +1,7 @@
 local contract = require("contract.testing_package_executor")
 local evidence = require("contract.testing_evidence_manifest")
 local error_facts = require("contract.error_facts")
+local result_authority = require("contract.testing_result_authority")
 local results = require("contract.testing_results")
 local time = require("contract.time")
 
@@ -85,12 +86,12 @@ local function case_base(resolved)
 end
 
 local function observed_case_result(resolved, receipt, started_at, completed_at)
-  local matched = receipt.observed_title == resolved.plan.assertion.expected
-  local classification = matched and "deterministic" or "assertion_failure"
+  local reduction = result_authority.reduce({ outcome="observed", expected=resolved.plan.assertion.expected,
+    observed_title=receipt.observed_title })
   local evidence_ref = { kind = "evidence", ref = contract.evidence_id }
   local value = case_base(resolved)
-  value.execution_status = matched and "passed" or "failed"
-  value.classification = classification
+  value.execution_status = reduction.execution_status
+  value.classification = reduction.classification
   value.observations = { {
     schema = results.schemas.observation, observation_id = contract.observation_id, kind = "browser-title",
     subject = contract.target_url, value = receipt.observed_title,
@@ -98,7 +99,7 @@ local function observed_case_result(resolved, receipt, started_at, completed_at)
   } }
   value.assertions = { {
     schema = results.schemas.assertion_result, assertion_id = contract.assertion_id, type = "title-equals",
-    required = true, status = matched and "passed" or "failed", classification = classification,
+    required = true, status = reduction.assertion_status, classification = reduction.assertion_classification,
     observation_ids = { contract.observation_id }, evidence_refs = { evidence_ref },
   } }
   value.evidence_refs = { evidence_ref }
@@ -109,14 +110,16 @@ local function observed_case_result(resolved, receipt, started_at, completed_at)
 end
 
 local function lost_case_result(resolved, occurred_at)
+  local reduction = result_authority.reduce({ outcome="lost" })
   local value = case_base(resolved)
-  value.execution_status = "lost"
-  value.classification = "lost"
+  value.execution_status = reduction.execution_status
+  value.classification = reduction.classification
   value.non_execution_reason = "execution-lost-between-action-and-assertion"
   value.observations = {}
   value.assertions = { {
     schema = results.schemas.assertion_result, assertion_id = contract.assertion_id, type = "title-equals",
-    required = true, status = "skipped", classification = "skipped", observation_ids = {}, evidence_refs = {},
+    required = true, status = reduction.assertion_status, classification = reduction.assertion_classification,
+    observation_ids = {}, evidence_refs = {},
   } }
   value.evidence_refs = {}
   value.timing = { started_at = occurred_at, completed_at = occurred_at, duration_ms = 0 }
@@ -167,6 +170,68 @@ local function write_artifact(resolved, ports, kind, value, manifest)
   return request, receipt
 end
 
+local function reducer_input(resolved, result_set)
+  local case = result_set.cases[1]
+  if case.execution_status == "lost" then return { outcome="lost" } end
+  if #case.observations ~= 1 then fail("semantic-input-mismatch", "observed result must contain one observation") end
+  return { outcome="observed", expected=resolved.plan.assertion.expected, observed_title=case.observations[1].value }
+end
+
+local function receipt_bindings(resolved, result_set, manifest, result_bytes, manifest_bytes, completed)
+  return {
+    reducer_input=reducer_input(resolved, result_set), case_result_set=result_set, case_result_set_bytes=result_bytes,
+    evidence_manifest=manifest, evidence_manifest_bytes=manifest_bytes, completed_execution=completed,
+    receipt_id=resolved.dedup_key, run_id=resolved.dedup_key, invocation_id=resolved.trace_id,
+    admitted_release_ref=copy_reference(resolved.approved_input_refs.package_release_ref),
+    admission_digest=resolved.admission_digest, package_id=resolved.executor.package_id,
+    package_version=resolved.executor.package_version, package_content_sha256=resolved.executor.package_content_sha256,
+    manifest_digest=resolved.executor.manifest_digest, executor_id=resolved.selected_entrypoint.executor_id,
+    structured_plan_ref=copy_reference(resolved.approved_input_refs.plan_ref),
+    case_result_set_ref=copy_reference(completed.case_result_set_ref),
+    evidence_manifest_ref=copy_reference(completed.evidence_manifest_ref),
+  }
+end
+
+local function write_authority_receipt(resolved, ports, bindings)
+  local value = result_authority.create_receipt(bindings, ports.sha256)
+  local bytes = result_authority.canonicalize(value, ports.sha256)
+  local request = { schema=contract.schemas.canonical_write, kind="result-authority-receipt",
+    dedup_key=resolved.dedup_key, canonical_sha256=sha256(ports, bytes, "result-authority-receipt"), canonical_bytes=bytes }
+  contract.validate_canonical_write(request)
+  local receipt = call_port(ports, "write_canonical", request)
+  contract.validate_write_receipt(receipt)
+  local expected = ".testing/runs/" .. resolved.dedup_key .. "/result-authority-receipt.json"
+  if receipt.ref.ref ~= expected then fail("cross-run-pointer", "writer returned the wrong authority receipt path") end
+  if receipt.ref.sha256 ~= request.canonical_sha256 then fail("digest-mismatch", "authority receipt digest does not match canonical bytes") end
+  return value
+end
+
+local function load_bound_artifact(ports, reference_value, field)
+  local bytes = call_port(ports, "load_canonical_artifact", reference_value)
+  if type(bytes) ~= "string" or sha256(ports, bytes, field) ~= reference_value.sha256 then
+    fail("artifact-digest-mismatch", field .. " bytes do not match the completed execution")
+  end
+  local value = call_port(ports, "decode_json", bytes)
+  if type(value) ~= "table" then fail("decode-failed", field .. " did not decode to an object") end
+  return value, bytes
+end
+
+local function replay_authority(resolved, ports, completed, query)
+  local manifest, manifest_bytes = load_bound_artifact(ports, completed.evidence_manifest_ref, "evidence_manifest")
+  local result_set, result_bytes = load_bound_artifact(ports, completed.case_result_set_ref, "case_result_set")
+  local bindings = receipt_bindings(resolved, result_set, manifest, result_bytes, manifest_bytes, completed)
+  local bytes = call_port(ports, "load_result_authority_receipt", query)
+  if bytes == nil then return write_authority_receipt(resolved, ports, bindings) end
+  if type(bytes) ~= "string" then fail("receipt-load-failed", "result authority receipt must load as exact bytes") end
+  local value = call_port(ports, "decode_json", bytes)
+  if type(value) ~= "table" then fail("decode-failed", "result authority receipt did not decode to an object") end
+  result_authority.validate_receipt(value, bindings, ports.sha256)
+  if result_authority.canonicalize(value, ports.sha256) ~= bytes then
+    fail("artifact-content-mismatch", "result authority receipt bytes are not canonical")
+  end
+  return value
+end
+
 local function validate_completed(value, resolved)
   contract.validate_completed_execution(value, resolved.dedup_key, resolved.admission_digest)
   local root = ".testing/runs/" .. resolved.dedup_key
@@ -179,7 +244,7 @@ end
 
 local function persist_terminal(resolved, ports, claim_id, case, receipt, completed_at)
   local manifest = evidence_manifest(resolved, receipt, completed_at, ports)
-  local _, manifest_receipt = write_artifact(resolved, ports, "evidence-manifest", manifest)
+  local manifest_request, manifest_receipt = write_artifact(resolved, ports, "evidence-manifest", manifest)
   local result_set = {
     schema = results.schemas.case_result_set, set_id = resolved.dedup_key, run_id = resolved.dedup_key,
     plan_ref = copy_reference(resolved.approved_input_refs.plan_ref), plan_sha256 = resolved.approved_input_refs.plan_ref.sha256,
@@ -199,19 +264,23 @@ local function persist_terminal(resolved, ports, claim_id, case, receipt, comple
   if type(stored) ~= "table" then fail("completion-failed", "completion did not return a receipt") end
   validate_completed(stored, resolved)
   if not equal(stored, terminal) then fail("completion-mismatch", "completion receipt changed") end
-  return stored
+  return write_authority_receipt(resolved, ports, receipt_bindings(resolved, result_set, manifest,
+    result_request.canonical_bytes, manifest_request.canonical_bytes, stored))
 end
 
 function M.execute(resolved, ports)
-  callable_ports(ports, { "load_completed_execution", "claim_execution", "load_effect_intent", "load_effect_receipt",
-    "check_freshness", "persist_effect_intent", "browser_read_title", "persist_effect_receipt", "write_canonical",
-    "complete_execution", "now", "sha256" }, "execute")
+  callable_ports(ports, { "load_completed_execution", "load_result_authority_receipt", "load_canonical_artifact",
+    "claim_execution", "load_effect_intent", "load_effect_receipt", "check_freshness", "persist_effect_intent",
+    "browser_read_title", "persist_effect_receipt", "write_canonical", "complete_execution", "decode_json", "now", "sha256" }, "execute")
   contract.validate_resolved_invocation(resolved, ports.sha256)
 
   local query = { schema = contract.schemas.completed_execution_query, dedup_key = resolved.dedup_key, admission_digest = resolved.admission_digest }
   contract.validate_completed_execution_query(query)
   local completed = call_port(ports, "load_completed_execution", query)
-  if completed ~= nil then return validate_completed(completed, resolved) end
+  if completed ~= nil then
+    validate_completed(completed, resolved)
+    return replay_authority(resolved, ports, completed, query)
+  end
 
   local claim_request = { schema = contract.schemas.execution_claim_request, dedup_key = resolved.dedup_key, admission_digest = resolved.admission_digest }
   contract.validate_execution_claim_request(claim_request)

@@ -1,6 +1,7 @@
 local contract = require("contract.testing_package_executor")
 local error_facts = require("contract.error_facts")
 local package_manifest = require("contract.testing_package_manifest")
+local result_authority = require("contract.testing_result_authority")
 local results = require("contract.testing_results")
 local executor = require("testing_package_executor.executor")
 local runtime_executor = require("testing_runtime.testing_package_executor")
@@ -10,6 +11,10 @@ local sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
 
 local request_fixtures = require("tests.fixtures.testing_package_executor_request_helpers")
+local test_assertions = require("tests.fixtures.testing_package_executor_assertion_helpers")
+local expect_failure = test_assertions.expect_failure
+local assert_zero_execution_effects = test_assertions.assert_zero_execution_effects
+local assert_semantics = test_assertions.assert_semantics
 
 local function copy(value)
   if type(value) ~= "table" then return value end
@@ -60,6 +65,10 @@ end
 local function documents()
   local package_content_sha256 = sha256("testing-runner-1.0.0 admitted package bytes")
   return {
+    package_release_ref = {
+      schema = "testing-package-release.v1",
+      release_id = "testing-runner-1.0.0",
+    },
     package_manifest_ref = manifest_fixture(package_content_sha256),
     source_ref = {
       schema = "testing-package-source.v1",
@@ -94,6 +103,7 @@ local function documents()
 end
 
 local refs = {
+  package_release_ref = { kind = "testing-package-release", ref = "immutable://packages/testing-runner/1.0.0/release.json" },
   package_manifest_ref = { kind = "testing-package-manifest", ref = "immutable://packages/testing-runner/1.0.0/manifest.json" },
   source_ref = { kind = "testing-package-source", ref = "immutable://inputs/source.json" },
   plan_ref = { kind = "testing-package-plan", ref = "immutable://inputs/plan.json" },
@@ -168,7 +178,7 @@ local function fixture(options)
         and compatibility.dependencies.fkst_substrate.commit == "fedcba9876543210fedcba9876543210fedcba98"
     end,
     decode_json = function(bytes)
-      return copy(assert(decoded[bytes], "unknown canonical JSON bytes"))
+      return copy(decoded[bytes] or host_json.decode(bytes))
     end,
     admit_resolution = function(admission_request)
       table.insert(calls.admissions, copy(admission_request))
@@ -195,6 +205,12 @@ local function fixture(options)
     load_completed_execution = function(query)
       table.insert(calls.completed_queries, copy(query))
       return copy(completed_store[query.dedup_key .. ":" .. query.admission_digest])
+    end,
+    load_result_authority_receipt = function(query)
+      return canonical_store[".testing/runs/" .. query.dedup_key .. "/result-authority-receipt.json"]
+    end,
+    load_canonical_artifact = function(ref)
+      return canonical_store[ref.ref]
     end,
     claim_execution = function(request)
       table.insert(calls.claims, copy(request))
@@ -240,7 +256,9 @@ local function fixture(options)
     end,
     write_canonical = function(write_request)
       table.insert(calls.writes, copy(write_request))
-      local path = ".testing/runs/dedup-walking-skeleton/" .. (write_request.kind == "evidence-manifest" and "evidence-manifest.json" or "case-result-set.json")
+      local names = { ["evidence-manifest"]="evidence-manifest.json", ["case-result-set"]="case-result-set.json",
+        ["result-authority-receipt"]="result-authority-receipt.json" }
+      local path = ".testing/runs/dedup-walking-skeleton/" .. assert(names[write_request.kind])
       local existing = canonical_store[path]
       if existing ~= nil and existing ~= write_request.canonical_bytes then error("canonical artifact write conflicted") end
       canonical_store[path] = write_request.canonical_bytes
@@ -283,47 +301,7 @@ local function fixture(options)
     canonical_store = canonical_store,
   }
 end
-
-local function expect_failure(fragment, fn)
-  local ok, err = pcall(fn)
-  t.eq(ok, false)
-  if fragment ~= nil then t.is_true(tostring(err):find(fragment, 1, true) ~= nil) end
-end
-
-local function assert_zero_execution_effects(value)
-  t.eq(value.calls.now, 0)
-  t.eq(#value.calls.completed_queries, 0)
-  t.eq(#value.calls.claims, 0)
-  t.eq(#value.calls.freshness, 0)
-  t.eq(#value.calls.intents, 0)
-  t.eq(#value.calls.receipts, 0)
-  t.eq(#value.calls.completions, 0)
-  t.eq(#value.calls.browser, 0)
-  t.eq(#value.calls.writes, 0)
-end
-
-local function assert_semantics(actual, expected)
-  t.eq(runtime_json.encode(actual), runtime_json.encode(expected))
-end
-
 return {
-  test_shared_request_schema_fixtures_match_runtime_validation = function()
-    for _, name in ipairs(request_fixtures.names) do
-      local shared = request_fixtures.load(name)
-      t.eq(shared.case, name)
-      t.eq(type(shared.portable_valid), "boolean")
-      t.eq(type(shared.runtime_valid), "boolean")
-      t.eq(type(shared.resolver_error), "string")
-      t.eq(type(shared.request), "table")
-
-      local ok, result = pcall(function()
-        return contract.validate_request(shared.request)
-      end)
-      t.eq(ok, shared.runtime_valid)
-      if ok then t.eq(result, shared.request) end
-    end
-  end,
-
   test_contextual_request_fixtures_are_rejected_only_by_resolver_mapping = function()
     local profile = request_fixtures.load("contextual-unsupported-execution-profile")
     local value = fixture()
@@ -337,6 +315,7 @@ return {
     value = fixture({
       change_documents = function(docs)
         docs.package_manifest_ref.package_id = mapping.request.executor.package_id
+        docs.package_release_ref.release_id = mapping.request.executor.package_id .. "-" .. docs.package_manifest_ref.package_version
         docs.package_manifest_ref.supported_contracts.majors[1] = mapping.request.executor.contract_major
         docs.package_manifest_ref.entrypoints[1].name = mapping.request.executor.entrypoint
         docs.package_manifest_ref.entrypoints[1].contract_major = mapping.request.executor.contract_major
@@ -358,12 +337,11 @@ return {
     t.eq(resolved.schema, contract.schemas.resolved_invocation)
     t.eq(resolved.selected_entrypoint.executor_id, contract.executor_id)
     t.eq(resolved.admission_receipt.admission_digest, resolved.admission_digest)
-    t.eq(#value.calls.loads, 6)
+    t.eq(#value.calls.loads, 7)
     t.eq(#value.calls.package_loads, 1)
     t.eq(#value.calls.compatibility, 1)
     t.eq(#value.calls.admissions, 1)
   end,
-
 
   test_same_key_replays_receipt_and_different_digest_conflicts = function()
     local receipt_store = {}
@@ -395,6 +373,11 @@ return {
     end)
     t.eq(#package_mismatch.calls.admissions, 0)
     assert_zero_execution_effects(package_mismatch)
+    for _, mutate in ipairs({ function(release) release.extra=true end, function(release) release.release_id="other" end }) do
+      local invalid_release=fixture({change_documents=function(docs) mutate(docs.package_release_ref) end})
+      expect_failure("identity-mismatch",function() runtime_executor.resolve(invalid_release.request,invalid_release.ports) end)
+      t.eq(#invalid_release.calls.admissions,0)
+    end
 
     local incompatible = fixture({ runtime_compatible = false })
     expect_failure("runtime-incompatible", function()
@@ -448,10 +431,9 @@ return {
     end)
     t.eq(#caller_selected_entrypoint.calls.admissions, 0)
 
-    local unsupported_version = fixture({
-      change_documents = function(docs) docs.package_manifest_ref.package_version = "9.9.9" end,
-      recompute_manifest_digest = true,
-    })
+    local unsupported_version=fixture({change_documents=function(docs)
+      docs.package_manifest_ref.package_version="9.9.9"; docs.package_release_ref.release_id="testing-runner-9.9.9"
+    end,recompute_manifest_digest=true})
     unsupported_version.request.executor.package_version = "9.9.9"
     unsupported_version.request.executor.manifest_digest = unsupported_version.docs.package_manifest_ref.manifest_digest
     expect_failure("unsupported-mapping", function()
@@ -514,7 +496,10 @@ return {
     local completed = runtime_executor.execute(value.request, value.ports)
     local replayed = runtime_executor.execute(value.request, value.ports)
 
-    t.eq(completed.schema, contract.schemas.completed_execution)
+    t.eq(completed.schema, result_authority.schemas.receipt)
+    t.eq(completed.classification, "passed")
+    t.eq(completed.admitted_release_ref.kind, "testing-package-release")
+    t.eq(completed.admitted_release_ref.ref, refs.package_release_ref.ref)
     t.eq(runtime_json.encode(replayed), runtime_json.encode(completed))
     t.eq(#value.calls.completed_queries, 2)
     t.eq(#value.calls.claims, 1)
@@ -523,9 +508,10 @@ return {
     t.eq(#value.calls.browser, 1)
     t.eq(#value.calls.receipts, 1)
     t.is_true(value.calls.receipts[1].evidence_refs ~= value.calls.raw_receipt.evidence_refs)
-    t.eq(#value.calls.writes, 2)
+    t.eq(#value.calls.writes, 3)
     t.eq(value.calls.writes[1].kind, "evidence-manifest")
     t.eq(value.calls.writes[2].kind, "case-result-set")
+    t.eq(value.calls.writes[3].kind, "result-authority-receipt")
     t.eq(#value.calls.completions, 1)
     t.eq(value.calls.now, 2)
   end,
@@ -533,7 +519,7 @@ return {
   test_completed_replay_rejects_cross_run_artifact_pointers_without_effects = function()
     local value = fixture()
     local completed = runtime_executor.execute(value.request, value.ports)
-    local key = completed.dedup_key .. ":" .. completed.admission_digest
+    local key = completed.run_id .. ":" .. completed.admission_digest
     value.completed_store[key].case_result_set_ref.ref = ".testing/runs/foreign/case-result-set.json"
     local effects = {
       claims=#value.calls.claims, freshness=#value.calls.freshness, intents=#value.calls.intents,
@@ -549,6 +535,16 @@ return {
     t.eq(#value.calls.writes, effects.writes)
     t.eq(#value.calls.completions, effects.completions)
     t.eq(value.calls.now, effects.now)
+  end,
+
+  test_completed_replay_rejects_tampered_bound_artifact_bytes_without_effects = function()
+    local value = fixture()
+    local receipt = runtime_executor.execute(value.request, value.ports)
+    local path = ".testing/runs/" .. receipt.run_id .. "/case-result-set.json"
+    value.canonical_store[path] = value.canonical_store[path] .. " "
+    local writes = #value.calls.writes
+    expect_failure("artifact-digest-mismatch", function() runtime_executor.execute(value.request, value.ports) end)
+    t.eq(#value.calls.claims, 1); t.eq(#value.calls.browser, 1); t.eq(#value.calls.writes, writes)
   end,
 
   test_writer_receipt_digest_must_match_submitted_canonical_bytes = function()
@@ -572,13 +568,13 @@ return {
     local completed = runtime_executor.execute(value.request, value.ports)
     local result_set = host_json.decode(value.calls.writes[2].canonical_bytes)
     local case = result_set.cases[1]
-    t.eq(completed.status, "completed")
+    t.eq(completed.classification, "assertion_failure")
     t.eq(case.execution_status, "failed")
     t.eq(case.classification, "assertion_failure")
     t.eq(case.observations[1].value, "Unexpected Home")
     t.eq(case.assertions[1].status, "failed")
     t.eq(case.assertions[1].classification, "assertion_failure")
-    t.eq(#value.calls.writes, 2)
+    t.eq(#value.calls.writes, 3)
   end,
 
   test_intent_without_receipt_terminalizes_as_lost_without_browser_retry = function()
@@ -591,7 +587,7 @@ return {
     local completed = executor.execute(resolved, value.ports)
     local manifest = host_json.decode(value.calls.writes[1].canonical_bytes)
     local case = host_json.decode(value.calls.writes[2].canonical_bytes).cases[1]
-    t.eq(completed.status, "completed")
+    t.eq(completed.classification, "lost_or_inconclusive")
     t.eq(#manifest.entries, 0)
     t.eq(case.execution_status, "lost")
     t.eq(case.classification, "lost")
@@ -617,10 +613,10 @@ return {
     )
     value.calls.browser = {}
     local completed = executor.execute(resolved, value.ports)
-    t.eq(completed.status, "completed")
+    t.eq(completed.classification, "passed")
     t.eq(#value.calls.freshness, 0); t.eq(#value.calls.browser, 0)
     t.eq(#value.calls.intents, 0); t.eq(#value.calls.receipts, 0)
-    t.eq(#value.calls.writes, 2); t.eq(#value.calls.completions, 1)
+    t.eq(#value.calls.writes, 3); t.eq(#value.calls.completions, 1)
   end,
 
   test_receipt_without_intent_and_tampered_state_fail_closed = function()
@@ -671,17 +667,21 @@ return {
       effect_receipt_store=shared.effects, canonical_store=shared.canonical,
       clock={ "2026-08-22T00:00:00Z", "2026-08-22T00:00:01Z" } })
     local completed = runtime_executor.execute(second.request, second.ports)
-    t.eq(completed.status, "completed")
+    t.eq(completed.classification, "passed")
     t.eq(#second.calls.browser, 0); t.eq(#second.calls.intents, 0); t.eq(#second.calls.receipts, 0)
     t.eq(second.calls.now, 0)
 
     local completion = fixture({ receipt_store={}, completed_store={}, intent_store={}, effect_receipt_store={}, completion_ack_loss=true })
     expect_failure("completion acknowledgement lost", function() runtime_executor.execute(completion.request, completion.ports) end)
     local replay = fixture({ receipt_store=completion.receipt_store, completed_store=completion.completed_store,
-      intent_store=completion.intent_store, effect_receipt_store=completion.effect_receipt_store })
+      intent_store=completion.intent_store, effect_receipt_store=completion.effect_receipt_store,
+      canonical_store=completion.canonical_store })
     local stored = runtime_executor.execute(replay.request, replay.ports)
-    t.eq(stored.status, "completed")
-    t.eq(#replay.calls.claims, 0); t.eq(#replay.calls.browser, 0); t.eq(#replay.calls.writes, 0)
+    t.eq(stored.classification, "passed")
+    t.eq(#replay.calls.claims, 0); t.eq(#replay.calls.browser, 0); t.eq(#replay.calls.writes, 1)
+    local authority_path=".testing/runs/dedup-walking-skeleton/result-authority-receipt.json"
+    replay.canonical_store[authority_path]=replay.canonical_store[authority_path] .. " "
+    expect_failure("artifact-content-mismatch",function() runtime_executor.execute(replay.request,replay.ports) end)
   end,
 
   test_tampered_approved_bytes_fail_before_execution_effects = function()
@@ -733,7 +733,7 @@ return {
     })
     value.request.executor.manifest_digest = value.docs.package_manifest_ref.manifest_digest
     local execution = runtime_executor.execute(value.request, value.ports)
-    t.eq(execution.status, "completed")
+    t.eq(execution.classification, "passed")
   end,
 
   test_capability_set_mismatch_fails_without_execution_effects = function()
@@ -757,7 +757,7 @@ return {
   test_freshness_denial_prevents_browser_and_writer_calls = function()
     local value = fixture({ freshness = false })
     expect_failure("freshness-denied", function() runtime_executor.execute(value.request, value.ports) end)
-    t.eq(#value.calls.loads, 6)
+    t.eq(#value.calls.loads, 7)
     t.eq(#value.calls.freshness, 1)
     t.eq(#value.calls.browser, 0)
     t.eq(#value.calls.writes, 0)

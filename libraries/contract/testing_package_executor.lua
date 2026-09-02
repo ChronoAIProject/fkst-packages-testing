@@ -47,6 +47,7 @@ M.observation_id = "observation-home-title"
 M.evidence_id = "evidence-case-home-title-title"
 
 M.reference_order = {
+  "package_release_ref",
   "package_manifest_ref",
   "source_ref",
   "plan_ref",
@@ -56,6 +57,7 @@ M.reference_order = {
 }
 
 M.reference_kinds = {
+  package_release_ref = "testing-package-release",
   package_manifest_ref = "testing-package-manifest",
   source_ref = "testing-package-source",
   plan_ref = "testing-package-plan",
@@ -208,6 +210,7 @@ end
 
 local function validate_refs(value)
   fields(value, {
+    package_release_ref = true,
     package_manifest_ref = true,
     source_ref = true,
     plan_ref = true,
@@ -500,10 +503,21 @@ function M.validate_canonical_write(value)
   fields(value, { schema = true, kind = true, dedup_key = true, canonical_sha256 = true, canonical_bytes = true }, "canonical-write")
   if value.schema ~= M.schemas.canonical_write then fail("unknown-schema", "canonical write schema") end
   local kind = identity_string(required(value.kind, "write.kind"), "write.kind")
-  if kind ~= "evidence-manifest" and kind ~= "case-result-set" then fail("unsupported-write", "write kind") end
+  if kind ~= "evidence-manifest" and kind ~= "case-result-set" and kind ~= "result-authority-receipt" then
+    fail("unsupported-write", "write kind")
+  end
   identity_string(required(value.dedup_key, "write.dedup_key"), "write.dedup_key")
   digest(required(value.canonical_sha256, "write.canonical_sha256"), "write.canonical_sha256")
-  bounded(required(value.canonical_bytes, "write.canonical_bytes"), "write.canonical_bytes", 65536)
+  local bytes = required(value.canonical_bytes, "write.canonical_bytes")
+  if kind == "result-authority-receipt" then
+    local body = type(bytes) == "string" and bytes:sub(1, -2) or nil
+    if type(bytes) ~= "string" or bytes == "" or #bytes > 65536 or bytes:sub(-1) ~= "\n"
+        or not canonical_json.is_valid_utf8(bytes) or body:find("[%z\1-\31\127]") ~= nil then
+      fail("malformed-field", "write.canonical_bytes must be canonical JSON with one trailing LF")
+    end
+  else
+    bounded(bytes, "write.canonical_bytes", 65536)
+  end
   return value
 end
 

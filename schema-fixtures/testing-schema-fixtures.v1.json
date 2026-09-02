@@ -2,6 +2,13 @@
   "schema": "testing-schema-fixtures.v1",
   "fixture_sets": [
     {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-assertion-reducer-identity.v1.schema.json",
+      "schema_path": "schemas/testing-assertion-reducer-identity.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-assertion-reducer-identity.v1",
+      "index_path": "schema-fixtures/indexes/testing-assertion-reducer-identity.v1.json",
+      "classification_path": null
+    },
+    {
       "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-assertion-result.v1.schema.json",
       "schema_path": "schemas/testing-assertion-result.v1.schema.json",
       "fixture_root": "packages/testing-runner/tests/fixtures/testing-results",
@@ -55,6 +62,13 @@
       "schema_path": "schemas/testing-package-schema-release.v1.schema.json",
       "fixture_root": "schema-fixtures/publication-meta",
       "index_path": "schema-fixtures/indexes/publication-meta.json",
+      "classification_path": null
+    },
+    {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-result-authority-receipt.v1.schema.json",
+      "schema_path": "schemas/testing-result-authority-receipt.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-result-authority-receipt.v1",
+      "index_path": "schema-fixtures/indexes/testing-result-authority-receipt.v1.json",
       "classification_path": null
     },
     {

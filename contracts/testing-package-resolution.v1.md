@@ -33,7 +33,7 @@ source, recomputes `package_content_sha256`, and checks the verified manifest's 
 source identity, and dependency locks through the Runtime-owned compatibility port. It then
 canonicalizes `testing-package-executor.admission-request.v1` and computes its SHA-256 digest. The
 canonical object binds the admission key to the complete verified executor identity, execution
-profile, all six immutable reference digests, and the selected `executor_id` / semantic entrypoint /
+profile, all seven immutable reference digests, and the selected `executor_id` / semantic entrypoint /
 contract-major / capability tuple.
 
 The injected `admit_resolution` port is the atomic Runtime-owned receipt-store seam:

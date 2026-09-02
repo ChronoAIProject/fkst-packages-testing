@@ -1,0 +1,1 @@
+{"schema":"testing-assertion-reducer-identity.v1","reducer_id":"testing.assertion-reducer.browser-title-equals","reducer_version":"1.0.0","reducer_sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","policy_profile":"browser-title-equals.v1","supported_result_contract_majors":["testing-case-result-set.v1"]}

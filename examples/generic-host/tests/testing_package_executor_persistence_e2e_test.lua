@@ -1,6 +1,7 @@
 local package_manifest = require("contract.testing_package_manifest")
 local testing_package_executor = require("contract.testing_package_executor")
 local testing_evidence_manifest = require("contract.testing_evidence_manifest")
+local testing_result_authority = require("contract.testing_result_authority")
 local testing_results = require("contract.testing_results")
 local runtime_executor = require("testing_runtime.testing_package_executor")
 local runtime_json = require("testing_runtime.json")
@@ -32,6 +33,7 @@ local function fixture()
   }
   manifest.manifest_digest = support.sha256_bytes(package_manifest.canonicalize(manifest))
   local docs = {
+    package_release_ref={schema="testing-package-release.v1",release_id="testing-runner-1.0.0"},
     package_manifest_ref=manifest,
     source_ref={schema="testing-package-source.v1",source_id="fixture-home",target_url="http://127.0.0.1:4173/"},
     plan_ref={schema="testing-package-plan.v1",case_id="case-home-title",assertion={assertion_id="assert-home-title",expected="Fixture Home",required=true,type="title-equals"}},
@@ -40,6 +42,7 @@ local function fixture()
     capability_set_ref={schema="testing-package-capability-set.v1",capabilities={"browser.read-title.v1"}},
   }
   local refs = {
+    package_release_ref={kind="testing-package-release",ref="immutable://packages/testing-runner/1.0.0/release.json"},
     package_manifest_ref={kind="testing-package-manifest",ref="immutable://packages/testing-runner/1.0.0/manifest.json"},
     source_ref={kind="testing-package-source",ref="immutable://inputs/source.json"}, plan_ref={kind="testing-package-plan",ref="immutable://inputs/plan.json"},
     pql_input_ref={kind="testing-package-pql-input",ref="immutable://inputs/pql.json"}, policy_ref={kind="testing-package-policy",ref="immutable://inputs/policy.json"},
@@ -56,7 +59,7 @@ local function fixture()
     resolver_ports={
       load_immutable=function(ref) return assert(storage[ref.ref]) end,
       load_package_content=function() return package_bytes end,
-      decode_json=function(bytes) return copy(assert(decoded[bytes])) end,
+      decode_json=function(bytes) return copy(decoded[bytes] or json.decode(bytes)) end,
       check_runtime_compatibility=function() return true end,
       admit_resolution=function(request) return {schema="testing-package-executor.admission-receipt.v1",status="admitted",admission_key=request.admission_key,admission_digest=request.admission_digest} end,
     },
@@ -120,13 +123,15 @@ return {
       local result_set = assert(host.store:load(first.case_result_set_ref.ref))
       t.eq(manifest.digest, first.evidence_manifest_ref.sha256)
       t.eq(result_set.digest, first.case_result_set_ref.sha256)
-      t.eq(manifest.value.canonical_sha256, first.evidence_manifest_sha256)
+      t.eq(manifest.value.canonical_sha256, first.evidence_manifest_content_sha256)
       testing_results.validate_case_result_set(result_set.value, nil, manifest.value, support.sha256_bytes)
       testing_evidence_manifest.validate(manifest.value, result_set.value, support.sha256_bytes)
       local replay = runtime_executor.execute(fixture.request, host)
+      t.eq(first.schema, testing_result_authority.schemas.receipt)
+      t.eq(first.classification, "passed")
       t.is_true(support.equal(replay, first))
       t.eq(host.counters.claims, 1); t.eq(host.counters.freshness, 1); t.eq(host.counters.browser, 1)
-      t.eq(host.counters.intents, 1); t.eq(host.counters.receipts, 1); t.eq(host.counters.writes, 2)
+      t.eq(host.counters.intents, 1); t.eq(host.counters.receipts, 1); t.eq(host.counters.writes, 3)
       t.eq(host.counters.completions, 1); t.eq(host.counters.clock, 2)
       reset_run()
     end)
@@ -217,9 +222,9 @@ return {
       browser_read_title=function() error("completed replay must not call Browser") end,
     }), completion_value)
     local replay = runtime_executor.execute(completion_value.request, completion_restarted)
-    t.eq(replay.status, "completed")
+    t.eq(replay.classification, "passed")
     t.eq(completion_restarted.counters.claims, 0); t.eq(completion_restarted.counters.browser, 0)
-    t.eq(completion_restarted.counters.writes, 0); t.eq(completion_restarted.counters.completions, 0)
+    t.eq(completion_restarted.counters.writes, 1); t.eq(completion_restarted.counters.completions, 0)
     reset_run()
   end,
 }

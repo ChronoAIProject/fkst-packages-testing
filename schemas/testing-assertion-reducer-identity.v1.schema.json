@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-assertion-reducer-identity.v1.schema.json",
+  "title": "Testing AssertionReducer Identity v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "reducer_id", "reducer_version", "reducer_sha256", "policy_profile", "supported_result_contract_majors"],
+  "properties": {
+    "schema": {"const": "testing-assertion-reducer-identity.v1"},
+    "reducer_id": {"const": "testing.assertion-reducer.browser-title-equals"},
+    "reducer_version": {"const": "1.0.0"},
+    "reducer_sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "policy_profile": {"const": "browser-title-equals.v1"},
+    "supported_result_contract_majors": {"type": "array", "minItems": 1, "maxItems": 1, "items": {"const": "testing-case-result-set.v2"}}
+  }
+}

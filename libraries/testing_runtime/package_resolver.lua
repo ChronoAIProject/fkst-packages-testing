@@ -64,6 +64,19 @@ local function load_document(request, ports, field, validator)
   return decoded
 end
 
+local function validate_package_release(value, request)
+  if type(value) ~= "table" then fail("decode-failed", "package_release_ref did not decode to an object") end
+  for key in pairs(value) do
+    if key ~= "schema" and key ~= "release_id" then
+      fail("identity-mismatch", "package release contains unsupported field " .. tostring(key))
+    end
+  end
+  if value.schema ~= "testing-package-release.v1"
+    or value.release_id ~= request.executor.package_id .. "-" .. request.executor.package_version then
+    fail("identity-mismatch", "package release does not match executor identity")
+  end
+end
+
 local function verify_package_content(request, ports, manifest)
   local bytes = call_port(ports, "load_package_content", copy_identity(request.executor))
   if type(bytes) ~= "string" or bytes == "" then fail("immutable-load-failed", "package content did not return exact bytes") end
@@ -149,6 +162,9 @@ function M.resolve(request, ports)
   })
 
   local documents = {}
+  documents.package_release_ref = load_document(request, ports, "package_release_ref", function(value)
+    validate_package_release(value, request)
+  end)
   documents.package_manifest_ref = load_document(request, ports, "package_manifest_ref", function(value)
     package_manifest.validate(value, {
       package_id = request.executor.package_id,
