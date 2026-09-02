@@ -59,7 +59,7 @@ local function fixture()
     resolver_ports={
       load_immutable=function(ref) return assert(storage[ref.ref]) end,
       load_package_content=function() return package_bytes end,
-      decode_json=function(bytes) return copy(assert(decoded[bytes])) end,
+      decode_json=function(bytes) return copy(decoded[bytes] or json.decode(bytes)) end,
       check_runtime_compatibility=function() return true end,
       admit_resolution=function(request) return {schema="testing-package-executor.admission-receipt.v1",status="admitted",admission_key=request.admission_key,admission_digest=request.admission_digest} end,
     },
