@@ -1,0 +1,33 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-result-authority-receipt.v1.schema.json",
+  "title": "Testing ResultAuthorityReceipt v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "canonicalization", "receipt_id", "run_id", "invocation_id", "admitted_release_ref", "admission_digest", "package_id", "package_version", "package_content_sha256", "manifest_digest", "executor_id", "structured_plan_ref", "reducer", "case_result_set_ref", "case_result_set_content_sha256", "evidence_manifest_ref", "evidence_manifest_content_sha256", "completed_execution_sha256", "classification", "receipt_sha256"],
+  "properties": {
+    "schema": {"const": "testing-result-authority-receipt.v1"},
+    "canonicalization": {"const": "fkst-testing-result-authority-canonical-json.v1"},
+    "receipt_id": {"$ref": "#/$defs/identity"}, "run_id": {"$ref": "#/$defs/identity"}, "invocation_id": {"$ref": "#/$defs/identity"},
+    "admitted_release_ref": {"$ref": "#/$defs/reference"}, "admission_digest": {"$ref": "#/$defs/digest"},
+    "package_id": {"$ref": "#/$defs/identity"}, "package_version": {"$ref": "#/$defs/identity"},
+    "package_content_sha256": {"$ref": "#/$defs/digest"}, "manifest_digest": {"$ref": "#/$defs/digest"},
+    "executor_id": {"$ref": "#/$defs/identity"}, "structured_plan_ref": {"$ref": "#/$defs/reference"},
+    "reducer": {"$ref": "testing-assertion-reducer-identity.v1.schema.json"},
+    "case_result_set_ref": {"$ref": "#/$defs/reference"}, "case_result_set_content_sha256": {"$ref": "#/$defs/digest"},
+    "evidence_manifest_ref": {"$ref": "#/$defs/reference"}, "evidence_manifest_content_sha256": {"$ref": "#/$defs/digest"},
+    "completed_execution_sha256": {"$ref": "#/$defs/digest"},
+    "classification": {"enum": ["passed", "assertion_failure", "cancelled", "infrastructure_failure", "lost_or_inconclusive"]},
+    "receipt_sha256": {"$ref": "#/$defs/digest"}
+  },
+  "$defs": {
+    "digest": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "identity": {"type": "string", "minLength": 1, "maxLength": 180, "x-fkst-maxUtf8Bytes": 180},
+    "reference": {"type": "object", "additionalProperties": false, "required": ["kind", "ref", "sha256"], "properties": {
+      "kind": {"type": "string", "minLength": 1, "maxLength": 96, "x-fkst-maxUtf8Bytes": 96},
+      "ref": {"type": "string", "minLength": 1, "maxLength": 4096, "x-fkst-maxUtf8Bytes": 4096},
+      "sha256": {"$ref": "#/$defs/digest"}
+    }}
+  },
+  "x-fkst-canonicalization": "fkst-testing-result-authority-canonical-json.v1"
+}

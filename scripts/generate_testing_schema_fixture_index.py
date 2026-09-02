@@ -49,6 +49,7 @@ def cases_for(root: Path, schema_name: str, instance_field: str | None) -> tuple
 
 def build() -> dict[Path, object]:
     configurations = {
+        "testing-assertion-reducer-identity.v1": (RUNNER_FIXTURES / "testing-assertion-reducer-identity.v1", None),
         "testing-package-manifest.v1": (RUNNER_FIXTURES / "testing-package-manifest.v1", None),
         "testing-evidence-manifest.v1": (RUNNER_FIXTURES / "testing-evidence-manifest.v1", None),
         "testing-observation.v1": (RUNNER_FIXTURES / "testing-results", None),
@@ -59,6 +60,7 @@ def build() -> dict[Path, object]:
         "testing-package-executor.request.v1": (RUNNER_FIXTURES / "testing-package-executor.request.v1", "request"),
         "testing-runner-invocation.v1": (RUNNER_FIXTURES / "testing-runner-invocation.v1", "request"),
         "testing-result-reason.v1": (ROOT / "schema-fixtures" / "testing-result-reason.v1", "reason"),
+        "testing-result-authority-receipt.v1": (RUNNER_FIXTURES / "testing-result-authority-receipt.v1", None),
         "testing-schema-fixtures.v1": (ROOT / "schema-fixtures" / "publication-meta", "instance"),
         "testing-schema-fixture-set.v1": (ROOT / "schema-fixtures" / "publication-meta", "instance"),
         "testing-schema-catalog.v1": (ROOT / "schema-fixtures" / "publication-meta", "instance"),

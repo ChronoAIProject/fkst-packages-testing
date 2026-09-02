@@ -1,6 +1,7 @@
 local contract = require("contract.testing_package_executor")
 local evidence = require("contract.testing_evidence_manifest")
 local error_facts = require("contract.error_facts")
+local result_authority = require("contract.testing_result_authority")
 local results = require("contract.testing_results")
 local time = require("contract.time")
 
@@ -85,12 +86,12 @@ local function case_base(resolved)
 end
 
 local function observed_case_result(resolved, receipt, started_at, completed_at)
-  local matched = receipt.observed_title == resolved.plan.assertion.expected
-  local classification = matched and "deterministic" or "assertion_failure"
+  local reduction = result_authority.reduce({ outcome="observed", expected=resolved.plan.assertion.expected,
+    observed_title=receipt.observed_title })
   local evidence_ref = { kind = "evidence", ref = contract.evidence_id }
   local value = case_base(resolved)
-  value.execution_status = matched and "passed" or "failed"
-  value.classification = classification
+  value.execution_status = reduction.execution_status
+  value.classification = reduction.classification
   value.observations = { {
     schema = results.schemas.observation, observation_id = contract.observation_id, kind = "browser-title",
     subject = contract.target_url, value = receipt.observed_title,
@@ -98,7 +99,7 @@ local function observed_case_result(resolved, receipt, started_at, completed_at)
   } }
   value.assertions = { {
     schema = results.schemas.assertion_result, assertion_id = contract.assertion_id, type = "title-equals",
-    required = true, status = matched and "passed" or "failed", classification = classification,
+    required = true, status = reduction.assertion_status, classification = reduction.assertion_classification,
     observation_ids = { contract.observation_id }, evidence_refs = { evidence_ref },
   } }
   value.evidence_refs = { evidence_ref }
@@ -109,14 +110,16 @@ local function observed_case_result(resolved, receipt, started_at, completed_at)
 end
 
 local function lost_case_result(resolved, occurred_at)
+  local reduction = result_authority.reduce({ outcome="lost" })
   local value = case_base(resolved)
-  value.execution_status = "lost"
-  value.classification = "lost"
+  value.execution_status = reduction.execution_status
+  value.classification = reduction.classification
   value.non_execution_reason = "execution-lost-between-action-and-assertion"
   value.observations = {}
   value.assertions = { {
     schema = results.schemas.assertion_result, assertion_id = contract.assertion_id, type = "title-equals",
-    required = true, status = "skipped", classification = "skipped", observation_ids = {}, evidence_refs = {},
+    required = true, status = reduction.assertion_status, classification = reduction.assertion_classification,
+    observation_ids = {}, evidence_refs = {},
   } }
   value.evidence_refs = {}
   value.timing = { started_at = occurred_at, completed_at = occurred_at, duration_ms = 0 }

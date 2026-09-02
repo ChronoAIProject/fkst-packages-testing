@@ -1,0 +1,27 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "invalid-unknown-reducer",
+      "file": "invalid-unknown-reducer.json",
+      "schema": "testing-assertion-reducer-identity.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-wrong-major",
+      "file": "invalid-wrong-major.json",
+      "schema": "testing-assertion-reducer-identity.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "valid",
+      "file": "valid.json",
+      "schema": "testing-assertion-reducer-identity.v1",
+      "instance_field": null,
+      "portable_valid": true
+    }
+  ],
+  "support_files": []
+}

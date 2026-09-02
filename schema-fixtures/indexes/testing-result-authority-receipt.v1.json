@@ -1,0 +1,55 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "invalid-digest",
+      "file": "invalid-digest.json",
+      "schema": "testing-result-authority-receipt.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "invalid-unknown-field",
+      "file": "invalid-unknown-field.json",
+      "schema": "testing-result-authority-receipt.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "valid-assertion-failure",
+      "file": "valid-assertion-failure.json",
+      "schema": "testing-result-authority-receipt.v1",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-cancelled",
+      "file": "valid-cancelled.json",
+      "schema": "testing-result-authority-receipt.v1",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-infrastructure-failure",
+      "file": "valid-infrastructure-failure.json",
+      "schema": "testing-result-authority-receipt.v1",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-lost-or-inconclusive",
+      "file": "valid-lost-or-inconclusive.json",
+      "schema": "testing-result-authority-receipt.v1",
+      "instance_field": null,
+      "portable_valid": true
+    },
+    {
+      "name": "valid-passed",
+      "file": "valid-passed.json",
+      "schema": "testing-result-authority-receipt.v1",
+      "instance_field": null,
+      "portable_valid": true
+    }
+  ],
+  "support_files": []
+}
