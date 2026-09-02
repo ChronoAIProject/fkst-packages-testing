@@ -2,7 +2,7 @@
 
 The testing schema release descriptor remains an unsigned, reproducible identity object. This repository contract additionally includes the detached DSSE signature envelope and committed verification-key authorization record required by #772. Runtime admission remains outside this repository contract.
 
-Repository maintainers with merge authority over the canonical `dev` branch authorize the committed `(keyid, Ed25519 public key)` pair solely for the `application/vnd.in-toto+json` testing schema release attestation profile. Successful cryptographic verification proves integrity and possession of that authorized key; it does not grant Runtime execution or admission authority.
+Repository maintainers with merge authority over the canonical `dev` branch authorize the committed `(keyid, Ed25519 public key)` pair solely for the `application/vnd.fkst.testing-package-schema-release.v1+json` testing schema release profile. Successful cryptographic verification proves integrity and possession of that authorized key; it does not grant Runtime execution or admission authority.
 
 ## Source inventory
 

@@ -1,13 +1,11 @@
 #!/usr/bin/env node
-import { createHash, createPublicKey, verify } from "node:crypto";
+import { createPublicKey, verify } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const PAYLOAD_TYPE = "application/vnd.in-toto+json";
-const STATEMENT_TYPE = "https://in-toto.io/Statement/v1";
-const PREDICATE_TYPE = "https://chronoaiproject.github.io/fkst-packages-testing/attestations/testing-package-schema-release/v1";
+const PAYLOAD_TYPE = "application/vnd.fkst.testing-package-schema-release.v1+json";
 const SUBJECT_NAME = "schema-release/testing-package-schema-release.v1.json";
 const KEY_ID = "fkst-packages-testing-schema-release-v1-2026-09-02";
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
@@ -49,16 +47,6 @@ function pae(payload) {
   ]);
 }
 
-function expectedStatement(releaseBytes) {
-  const digest = createHash("sha256").update(releaseBytes).digest("hex");
-  return Buffer.from(JSON.stringify({
-    _type: STATEMENT_TYPE,
-    predicate: {},
-    predicateType: PREDICATE_TYPE,
-    subject: [{ digest: { sha256: digest }, name: SUBJECT_NAME }],
-  }), "utf8");
-}
-
 async function main() {
   const argumentsByName = new Map();
   for (let index = 2; index < process.argv.length; index += 2) {
@@ -90,16 +78,15 @@ async function main() {
   if (authorization.schema !== "testing-package-schema-release-key-authorization.v1" || authorization.algorithm !== "ed25519") fail("authorization profile is unsupported");
   if (authorization.keyid !== KEY_ID || signatureEntry.keyid !== authorization.keyid) fail("keyid does not match the committed authorization");
   const scope = object(authorization.authorization, "authorization.authorization");
-  if (Object.keys(scope).sort().join("\0") !== ["payloadType", "predicateType", "subject"].join("\0") ||
-      scope.payloadType !== PAYLOAD_TYPE || scope.predicateType !== PREDICATE_TYPE || scope.subject !== SUBJECT_NAME) {
+  if (Object.keys(scope).sort().join("\0") !== ["payloadType", "subject"].join("\0") ||
+      scope.payloadType !== PAYLOAD_TYPE || scope.subject !== SUBJECT_NAME) {
     fail("authorization scope does not match the release profile");
   }
   const publicKey = decodeBase64(authorization.publicKey, "publicKey", 32);
   const key = createPublicKey({ key: Buffer.concat([SPKI_PREFIX, publicKey]), format: "der", type: "spki" });
   if (!verify(null, pae(payload), key, signature)) fail("Ed25519 signature verification failed");
 
-  parseJson(payload, "statement payload");
-  if (!payload.equals(expectedStatement(releaseBytes))) fail("statement payload does not match the release digest profile");
+  if (!payload.equals(releaseBytes)) fail("payload does not match the release bytes");
   console.log("testing-schema-release-attestation: VERIFIED");
 }
 
