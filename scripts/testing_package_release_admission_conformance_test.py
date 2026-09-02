@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 import subprocess
 import sys
@@ -20,13 +21,23 @@ def write_adapter(path: Path, mode: str) -> None:
         "\n".join(
             (
                 f"#!{sys.executable}",
-                "import json,sys",
+                "import json,os,sys",
+                "from pathlib import Path",
                 "request=json.load(sys.stdin)",
                 f"mode={mode!r}",
                 "if request.get('schema') != 'testing-package-release-admission-conformance-request.v1': raise SystemExit(41)",
                 "case=request['case']",
                 "if set(case) != {'name','invariant','trials'}: raise SystemExit(42)",
                 "if mode == 'oracle-echo': json.dump(case['expected_observation'],sys.stdout)",
+                "elif mode == 'corpus-read':",
+                " candidates=[Path.cwd()/'conformance/testing-package-release-admission.v1.json',Path(__file__).with_name('oracle.json')]",
+                " if os.environ.get('FKST_TEST_ORACLE_PATH'): candidates.append(Path(os.environ['FKST_TEST_ORACLE_PATH']))",
+                " for candidate in candidates:",
+                "  if candidate.is_file():",
+                "   corpus=json.loads(candidate.read_text(encoding='utf-8'))",
+                "   expected=next(item['expected_observation'] for item in corpus['cases'] if item['name']==case['name'])",
+                "   json.dump(expected,sys.stdout,separators=(',',':')); sys.stdout.write('\\n'); raise SystemExit(0)",
+                " raise SystemExit(43)",
                 "elif mode == 'malformed': sys.stdout.write('{')",
                 "elif mode == 'oversized': sys.stdout.write('x'*(1024*1024+1))",
                 "else:",
@@ -53,10 +64,11 @@ def write_adapter(path: Path, mode: str) -> None:
     path.chmod(path.stat().st_mode | stat.S_IXUSR)
 
 
-def run(adapter: Path, *arguments: str) -> subprocess.CompletedProcess[str]:
+def run(adapter: Path, *arguments: str, environment: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, str(RUNNER), "--adapter", str(adapter), *arguments],
         cwd=ROOT,
+        env=environment,
         text=True,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
@@ -96,6 +108,15 @@ def main() -> int:
         write_adapter(oracle_echo, "oracle-echo")
         exposed = run(oracle_echo, "--case", "explicit-update")
         assert exposed.returncode != 0 and "adapter exited" in exposed.stderr
+
+        corpus_reader = root / "corpus-reader-adapter"
+        write_adapter(corpus_reader, "corpus-read")
+        oracle_copy = root / "oracle.json"
+        oracle_copy.write_bytes(conformance.DEFAULT_CORPUS.read_bytes())
+        environment = os.environ.copy()
+        environment["FKST_TEST_ORACLE_PATH"] = str(oracle_copy)
+        isolated = run(corpus_reader, "--case", "explicit-update", environment=environment)
+        assert isolated.returncode != 0 and "adapter exited 43" in isolated.stderr
 
         mismatching = root / "mismatching-adapter"
         write_adapter(mismatching, "mismatch")

@@ -48,6 +48,8 @@ The adapter MUST execute the supplied case against the real consumer boundary. O
 
 The request's `case` contains exactly `name`, `invariant`, and `trials`. The corpus `expected_observation` remains runner-private and MUST NOT be exposed to the adapter.
 
+The runner copies the adapter executable into a fresh temporary directory for each case, runs it from that directory, and supplies only a minimal allowlisted process environment. The repository working directory, the adapter's original sibling files, inherited environment paths, and runner-private corpus location are not adapter inputs.
+
 The adapter MUST emit an observation matching the runner-private `expected_observation`. Unknown fields fail conformance. The runner compares parsed JSON values, so object member order and insignificant whitespace are not observable.
 
 The runner bounds each adapter process by a timeout and a maximum stdout size. A timeout, non-zero exit, malformed JSON, oversized output, or mismatched observation fails conformance.

@@ -5,8 +5,10 @@ import argparse
 import json
 import os
 import selectors
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -245,54 +247,78 @@ def adapter_request(corpus: dict[str, Any], case: dict[str, Any]) -> bytes:
     return (json.dumps(request, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
 
 
-def run_adapter(adapter: list[str], request: bytes, timeout_seconds: float, case_name: str) -> tuple[int, bytes, bytes]:
-    try:
-        process = subprocess.Popen(
-            adapter,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.PIPE,
-            env=os.environ.copy(),
-        )
-    except OSError as error:
-        raise ConformanceError(f"{case_name}: adapter could not start: {error}") from error
-    assert process.stdin is not None and process.stdout is not None and process.stderr is not None
-    try:
-        process.stdin.write(request)
-        process.stdin.close()
-    except BrokenPipeError:
-        pass
+def isolated_adapter(adapter: list[str], directory: Path) -> list[str]:
+    source = Path(adapter[0]).resolve()
+    if not source.is_file():
+        raise ConformanceError(f"adapter executable is not a file: {adapter[0]}")
+    staged = directory / "adapter"
+    shutil.copy2(source, staged)
+    staged.chmod(staged.stat().st_mode | 0o100)
+    return [str(staged), *adapter[1:]]
 
-    selector = selectors.DefaultSelector()
-    selector.register(process.stdout, selectors.EVENT_READ, "stdout")
-    selector.register(process.stderr, selectors.EVENT_READ, "stderr")
-    output = {"stdout": bytearray(), "stderr": bytearray()}
-    limits = {"stdout": MAX_ADAPTER_STDOUT_BYTES, "stderr": MAX_ADAPTER_STDERR_BYTES}
-    deadline = time.monotonic() + timeout_seconds
-    try:
-        while selector.get_map():
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
-                process.kill()
-                process.wait()
-                raise ConformanceError(f"{case_name}: adapter timed out after {timeout_seconds:g} seconds")
-            for key, _ in selector.select(remaining):
-                chunk = os.read(key.fileobj.fileno(), 65536)
-                if not chunk:
-                    selector.unregister(key.fileobj)
-                    continue
-                stream = key.data
-                output[stream].extend(chunk)
-                if len(output[stream]) > limits[stream]:
+
+def adapter_environment(directory: Path) -> dict[str, str]:
+    return {
+        "HOME": str(directory),
+        "LANG": "C",
+        "LC_ALL": "C",
+        "PATH": os.defpath,
+        "PYTHONNOUSERSITE": "1",
+        "TMPDIR": str(directory),
+    }
+
+
+def run_adapter(adapter: list[str], request: bytes, timeout_seconds: float, case_name: str) -> tuple[int, bytes, bytes]:
+    with tempfile.TemporaryDirectory(prefix="fkst-release-adapter-") as temporary:
+        directory = Path(temporary)
+        try:
+            process = subprocess.Popen(
+                isolated_adapter(adapter, directory),
+                cwd=directory,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                env=adapter_environment(directory),
+            )
+        except OSError as error:
+            raise ConformanceError(f"{case_name}: adapter could not start: {error}") from error
+        assert process.stdin is not None and process.stdout is not None and process.stderr is not None
+        try:
+            process.stdin.write(request)
+            process.stdin.close()
+        except BrokenPipeError:
+            pass
+
+        selector = selectors.DefaultSelector()
+        selector.register(process.stdout, selectors.EVENT_READ, "stdout")
+        selector.register(process.stderr, selectors.EVENT_READ, "stderr")
+        output = {"stdout": bytearray(), "stderr": bytearray()}
+        limits = {"stdout": MAX_ADAPTER_STDOUT_BYTES, "stderr": MAX_ADAPTER_STDERR_BYTES}
+        deadline = time.monotonic() + timeout_seconds
+        try:
+            while selector.get_map():
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
                     process.kill()
                     process.wait()
-                    raise ConformanceError(f"{case_name}: adapter {stream} exceeds the bounded output size")
-        return process.wait(), bytes(output["stdout"]), bytes(output["stderr"])
-    finally:
-        selector.close()
-        if process.poll() is None:
-            process.kill()
-            process.wait()
+                    raise ConformanceError(f"{case_name}: adapter timed out after {timeout_seconds:g} seconds")
+                for key, _ in selector.select(remaining):
+                    chunk = os.read(key.fileobj.fileno(), 65536)
+                    if not chunk:
+                        selector.unregister(key.fileobj)
+                        continue
+                    stream = key.data
+                    output[stream].extend(chunk)
+                    if len(output[stream]) > limits[stream]:
+                        process.kill()
+                        process.wait()
+                        raise ConformanceError(f"{case_name}: adapter {stream} exceeds the bounded output size")
+            return process.wait(), bytes(output["stdout"]), bytes(output["stderr"])
+        finally:
+            selector.close()
+            if process.poll() is None:
+                process.kill()
+                process.wait()
 
 
 def run_case(adapter: list[str], corpus: dict[str, Any], case: dict[str, Any], timeout_seconds: float) -> None:
