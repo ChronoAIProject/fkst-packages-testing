@@ -11,7 +11,7 @@ local sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
 
 local request_fixtures = require("tests.fixtures.testing_package_executor_request_helpers")
-local test_assertions = require("tests.fixtures.testing_package_executor_assertions")
+local test_assertions = require("tests.fixtures.testing_package_executor_assertion_helpers")
 local expect_failure = test_assertions.expect_failure
 local assert_zero_execution_effects = test_assertions.assert_zero_execution_effects
 local assert_semantics = test_assertions.assert_semantics
