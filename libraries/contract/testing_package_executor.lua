@@ -210,6 +210,7 @@ end
 
 local function validate_refs(value)
   fields(value, {
+    package_release_ref = true,
     package_manifest_ref = true,
     source_ref = true,
     plan_ref = true,
