@@ -1,4 +1,5 @@
 local authority = require("contract.testing_result_authority")
+local evidence = require("contract.testing_evidence_manifest")
 local results = require("contract.testing_results")
 local sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
@@ -37,16 +38,34 @@ local function result_set(case)
 end
 
 local function bindings(set)
+  local manifest = {
+    schema=evidence.schema,manifest_id="run-1",canonicalization=evidence.canonicalization,canonical_sha256=string.rep("0",64),
+    repository={id="repo",source_ref={kind="git",ref="repo@commit"},source_sha256=digest},
+    run_id="run-1",plan_ref={kind="plan",ref="plan-1"},plan_sha256=digest,entries={},
+  }
+  local manifest_context = { allow_empty_entries=true }
+  manifest.canonical_sha256 = evidence.sha256(manifest, sha256, manifest_context)
+  local manifest_bytes = evidence.serialize(manifest, manifest_context)
+  local manifest_artifact_sha256 = sha256(manifest_bytes)
+  set.evidence_manifest_ref.sha256 = manifest_artifact_sha256
+  set.evidence_manifest_sha256 = manifest.canonical_sha256
+  set.evidence_manifest_artifact_sha256 = manifest_artifact_sha256
+  local result_bytes = results.canonicalize(set, manifest, sha256, manifest_context)
   return {
-    reducer_input={outcome="observed",expected="Expected",observed_title="Expected"},case_result_set=set,
+    reducer_input={outcome="observed",expected="Expected",observed_title="Expected"},
+    case_result_set=set,case_result_set_bytes=result_bytes,evidence_manifest=manifest,evidence_manifest_bytes=manifest_bytes,
+    completed_execution={schema="testing-package-executor.completed-execution.v1",status="completed",dedup_key="run-1",
+      case_result_set_ref={kind="artifact",ref="result.json",sha256=sha256(result_bytes)},
+      case_result_set_sha256=sha256(result_bytes),
+      evidence_manifest_ref={kind="artifact",ref="evidence.json",sha256=manifest_artifact_sha256},
+      evidence_manifest_sha256=manifest.canonical_sha256},
     receipt_id="authority-run-1",run_id="run-1",invocation_id="invocation-1",
     admitted_release_ref={kind="testing-package-release",ref="immutable://release/1",sha256=digest},
     admission_digest=digest,package_id="testing-runner",package_version="1.0.0",package_content_sha256=digest,
     manifest_digest=digest,executor_id="testing-package-executor.browser-title.v1",
     structured_plan_ref={kind="testing-structured-plan",ref="immutable://plan/1",sha256=digest},
-    case_result_set_ref={kind="artifact",ref="result.json",sha256=digest},case_result_set_content_sha256=digest,
-    evidence_manifest_ref={kind="artifact",ref="evidence.json",sha256=digest},evidence_manifest_content_sha256=digest,
-    completed_execution_sha256=digest,
+    case_result_set_ref={kind="artifact",ref="result.json",sha256=sha256(result_bytes)},
+    evidence_manifest_ref={kind="artifact",ref="evidence.json",sha256=manifest_artifact_sha256},
   }
 end
 

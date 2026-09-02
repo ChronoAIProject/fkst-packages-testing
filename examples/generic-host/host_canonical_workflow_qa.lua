@@ -716,6 +716,7 @@ function Context:_ai_browser_runtime()
     load_artifact = function(path) return context.store:load(path) end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
     artifact_digest = function(path) return context.store:digest(path) end,
+    decode_json = json_codec.decode,
     now = function() return "2026-08-20T00:30:00Z" end,
     verify_grant = function(request)
       return {
@@ -1675,7 +1676,12 @@ function M.testing_package_executor_ports(options)
   local function intent_path(dedup_key) return ".testing/runs/" .. dedup_key .. "/execution/effect-intent.json" end
   local function receipt_path(dedup_key) return ".testing/runs/" .. dedup_key .. "/execution/effect-receipt.json" end
   local function artifact_path(dedup_key, kind)
-    return ".testing/runs/" .. dedup_key .. "/" .. (kind == "evidence-manifest" and "evidence-manifest.json" or "case-result-set.json")
+    local names = {
+      ["evidence-manifest"]="evidence-manifest.json",
+      ["case-result-set"]="case-result-set.json",
+      ["result-authority-receipt"]="result-authority-receipt.json",
+    }
+    return ".testing/runs/" .. dedup_key .. "/" .. assert(names[kind], "unsupported canonical artifact kind")
   end
   local function load_completed(query)
     local stored = store:load(completed_path(query.dedup_key))
@@ -1699,6 +1705,14 @@ function M.testing_package_executor_ports(options)
     store = store,
     counters = counters,
     load_completed_execution = load_completed,
+    load_result_authority_receipt = function(query)
+      local stored = store:load(artifact_path(query.dedup_key, "result-authority-receipt"))
+      return stored == nil and nil or stored.raw
+    end,
+    load_canonical_artifact = function(ref)
+      local stored = store:load(ref.ref)
+      return stored == nil and nil or stored.raw
+    end,
     claim_execution = function(request)
       counters.claims = counters.claims + 1
       return { schema=testing_package_executor_contract.schemas.execution_claim_receipt, status="claimed",

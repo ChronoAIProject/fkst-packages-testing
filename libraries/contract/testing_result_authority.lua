@@ -1,5 +1,6 @@
 local canonical_json = require("contract.canonical_json")
 local error_facts = require("contract.error_facts")
+local evidence = require("contract.testing_evidence_manifest")
 local results = require("contract.testing_results")
 
 local M = {}
@@ -64,6 +65,20 @@ local function equal(left, right, seen)
   return true
 end
 
+local function exact_bytes(actual, expected, field)
+  if type(actual) ~= "string" or actual ~= expected then
+    fail("artifact-content-mismatch", field .. " bytes do not match canonical content")
+  end
+  return actual
+end
+
+local function artifact_digest(reference_value, bytes, field, sha256_fn)
+  reference(reference_value, field)
+  local computed = sha256(sha256_fn, bytes, field .. ".computed_sha256")
+  if reference_value.sha256 ~= computed then fail("artifact-digest-mismatch", field .. " digest mismatch") end
+  return computed
+end
+
 local function reducer_descriptor()
   return {
     schema = M.schemas.reducer,
@@ -118,9 +133,9 @@ function M.reduce(input)
     assertion_status=outcome[4], assertion_classification=outcome[5] }
 end
 
-function M.validate_reduction(input, result_set)
+function M.validate_reduction(input, result_set, evidence_manifest, sha256_fn, validation_context)
   local reduction = M.reduce(input)
-  results.validate_case_result_set(result_set)
+  results.validate_case_result_set(result_set, nil, evidence_manifest, sha256_fn, validation_context)
   if #result_set.cases ~= 1 or #result_set.cases[1].assertions ~= 1 then
     fail("semantic-output-mismatch", "reducer requires one case and one assertion")
   end
@@ -172,17 +187,35 @@ local function validate_receipt_shape(value, sha256_fn)
 end
 
 function M.create_receipt(bindings, sha256_fn)
-  local reduction = M.validate_reduction(bindings.reducer_input, bindings.case_result_set)
+  local manifest_context = #bindings.evidence_manifest.entries == 0 and { allow_empty_entries=true } or nil
+  local reduction = M.validate_reduction(bindings.reducer_input, bindings.case_result_set,
+    bindings.evidence_manifest, sha256_fn, manifest_context)
+  evidence.validate(bindings.evidence_manifest, bindings.case_result_set, sha256_fn, manifest_context)
+  local evidence_bytes = exact_bytes(bindings.evidence_manifest_bytes,
+    evidence.serialize(bindings.evidence_manifest, manifest_context), "evidence_manifest")
+  local result_bytes = exact_bytes(bindings.case_result_set_bytes,
+    results.canonicalize(bindings.case_result_set, bindings.evidence_manifest, sha256_fn, manifest_context), "case_result_set")
+  local result_sha256 = artifact_digest(bindings.case_result_set_ref, result_bytes, "case_result_set_ref", sha256_fn)
+  artifact_digest(bindings.evidence_manifest_ref, evidence_bytes, "evidence_manifest_ref", sha256_fn)
+  local completed = bindings.completed_execution
+  if type(completed) ~= "table" or not equal(completed.case_result_set_ref, bindings.case_result_set_ref)
+      or completed.case_result_set_sha256 ~= result_sha256
+      or not equal(completed.evidence_manifest_ref, bindings.evidence_manifest_ref)
+      or completed.evidence_manifest_sha256 ~= bindings.evidence_manifest.canonical_sha256 then
+    fail("completion-mismatch", "completed execution does not bind the exact result and evidence artifacts")
+  end
+  local completed_execution_sha256 = sha256(sha256_fn, canonical_json.encode(bindings.completed_execution),
+    "completed_execution_sha256")
   local value = {
     schema=M.schemas.receipt, canonicalization=M.canonicalization, receipt_id=bindings.receipt_id,
     run_id=bindings.run_id, invocation_id=bindings.invocation_id, admitted_release_ref=bindings.admitted_release_ref,
     admission_digest=bindings.admission_digest, package_id=bindings.package_id, package_version=bindings.package_version,
     package_content_sha256=bindings.package_content_sha256, manifest_digest=bindings.manifest_digest,
     executor_id=bindings.executor_id, structured_plan_ref=bindings.structured_plan_ref, reducer=M.identity(sha256_fn),
-    case_result_set_ref=bindings.case_result_set_ref, case_result_set_content_sha256=bindings.case_result_set_content_sha256,
+    case_result_set_ref=bindings.case_result_set_ref, case_result_set_content_sha256=result_sha256,
     evidence_manifest_ref=bindings.evidence_manifest_ref,
-    evidence_manifest_content_sha256=bindings.evidence_manifest_content_sha256,
-    completed_execution_sha256=bindings.completed_execution_sha256, classification=reduction.receipt_classification,
+    evidence_manifest_content_sha256=bindings.evidence_manifest.canonical_sha256,
+    completed_execution_sha256=completed_execution_sha256, classification=reduction.receipt_classification,
     receipt_sha256=string.rep("0", 64),
   }
   value.receipt_sha256 = sha256(sha256_fn, canonical_json.encode(value), "receipt_sha256")

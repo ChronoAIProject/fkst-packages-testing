@@ -14,6 +14,8 @@ local function execution_ports(host_ports)
   if type(host_ports) ~= "table" then return host_ports end
   return {
     load_completed_execution = host_ports.load_completed_execution,
+    load_result_authority_receipt = host_ports.load_result_authority_receipt,
+    load_canonical_artifact = host_ports.load_canonical_artifact,
     claim_execution = host_ports.claim_execution,
     load_effect_intent = host_ports.load_effect_intent,
     load_effect_receipt = host_ports.load_effect_receipt,
@@ -23,6 +25,7 @@ local function execution_ports(host_ports)
     persist_effect_receipt = host_ports.persist_effect_receipt,
     write_canonical = host_ports.write_canonical,
     complete_execution = host_ports.complete_execution,
+    decode_json = host_ports.decode_json,
     now = host_ports.now,
     sha256 = host_ports.sha256,
   }
