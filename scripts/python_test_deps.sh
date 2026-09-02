@@ -35,7 +35,8 @@ case "$1" in
       "$ROOT/scripts/testing_browser_action_schema_test.py" \
       "$ROOT/scripts/testing_package_executor_request_schema_test.py" \
       "$ROOT/scripts/testing_runner_invocation_schema_test.py" \
-      "$ROOT/scripts/testing_schema_publication_test.py"
+      "$ROOT/scripts/testing_schema_publication_test.py" \
+      "$ROOT/scripts/testing_schema_release_attestation_test.py"
     env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
       "$PYTHON_BIN" -S -B "$ROOT/scripts/schema_fixture_runner_test.py"
     if command -v node >/dev/null 2>&1; then
