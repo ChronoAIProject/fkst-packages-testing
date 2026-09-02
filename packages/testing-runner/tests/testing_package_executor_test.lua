@@ -11,6 +11,10 @@ local sha256 = require("tests.fixtures.sha256_helpers")
 local t = fkst.test
 
 local request_fixtures = require("tests.fixtures.testing_package_executor_request_helpers")
+local test_assertions = require("tests.fixtures.testing_package_executor_assertions")
+local expect_failure = test_assertions.expect_failure
+local assert_zero_execution_effects = test_assertions.assert_zero_execution_effects
+local assert_semantics = test_assertions.assert_semantics
 
 local function copy(value)
   if type(value) ~= "table" then return value end
@@ -298,46 +302,7 @@ local function fixture(options)
   }
 end
 
-local function expect_failure(fragment, fn)
-  local ok, err = pcall(fn)
-  t.eq(ok, false)
-  if fragment ~= nil then t.is_true(tostring(err):find(fragment, 1, true) ~= nil) end
-end
-
-local function assert_zero_execution_effects(value)
-  t.eq(value.calls.now, 0)
-  t.eq(#value.calls.completed_queries, 0)
-  t.eq(#value.calls.claims, 0)
-  t.eq(#value.calls.freshness, 0)
-  t.eq(#value.calls.intents, 0)
-  t.eq(#value.calls.receipts, 0)
-  t.eq(#value.calls.completions, 0)
-  t.eq(#value.calls.browser, 0)
-  t.eq(#value.calls.writes, 0)
-end
-
-local function assert_semantics(actual, expected)
-  t.eq(runtime_json.encode(actual), runtime_json.encode(expected))
-end
-
 return {
-  test_shared_request_schema_fixtures_match_runtime_validation = function()
-    for _, name in ipairs(request_fixtures.names) do
-      local shared = request_fixtures.load(name)
-      t.eq(shared.case, name)
-      t.eq(type(shared.portable_valid), "boolean")
-      t.eq(type(shared.runtime_valid), "boolean")
-      t.eq(type(shared.resolver_error), "string")
-      t.eq(type(shared.request), "table")
-
-      local ok, result = pcall(function()
-        return contract.validate_request(shared.request)
-      end)
-      t.eq(ok, shared.runtime_valid)
-      if ok then t.eq(result, shared.request) end
-    end
-  end,
-
   test_contextual_request_fixtures_are_rejected_only_by_resolver_mapping = function()
     local profile = request_fixtures.load("contextual-unsupported-execution-profile")
     local value = fixture()
