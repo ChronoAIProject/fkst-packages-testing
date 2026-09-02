@@ -593,6 +593,8 @@ package_has_tests() {
 run_repository_contract_tests() {
   echo "=== package conformance contract tests ==="
   "$PYTHON_BIN" -B "$ROOT/scripts/conformance_contract_test.py"
+  echo "=== testing package release admission conformance tests ==="
+  PYTHONPATH="$ROOT/scripts${PYTHONPATH:+:$PYTHONPATH}" "$PYTHON_BIN" -B "$ROOT/scripts/testing_package_release_admission_conformance_test.py"
   PYTHON="$PYTHON_BIN" "$ROOT/scripts/python_test_deps.sh" test
   echo "=== runner script contract tests ==="
   "$PYTHON_BIN" -B "$ROOT/scripts/run_script_contract_test.py"
