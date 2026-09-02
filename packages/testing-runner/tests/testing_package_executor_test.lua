@@ -116,6 +116,8 @@ local function fixture(options)
   options = options or {}
   local docs = documents()
   if options.change_documents then options.change_documents(docs) end
+  docs.package_release_ref.release_id = docs.package_manifest_ref.package_id
+    .. "-" .. docs.package_manifest_ref.package_version
   if options.recompute_manifest_digest then
     docs.package_manifest_ref.manifest_digest = nil
     docs.package_manifest_ref.manifest_digest = sha256(package_manifest.canonicalize(docs.package_manifest_ref))
