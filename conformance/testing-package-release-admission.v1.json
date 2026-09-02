@@ -1,0 +1,298 @@
+{
+  "schema": "testing-package-release-admission-conformance.v1",
+  "protocol": "stdin-stdout-json.v1",
+  "compatibility": {
+    "contract_major": "testing-runner.v1",
+    "canonicalization_profile": "fkst-testing-package-manifest-canonical-json.v1",
+    "execution_profile": "browser-deterministic.v1",
+    "capabilities": ["browser.read-title.v1"],
+    "platform": "linux-amd64",
+    "executor": {
+      "executor_id": "testing-package-executor.browser-title.v1",
+      "entrypoint": "testing-runner.run"
+    }
+  },
+  "releases": [
+    {
+      "id": "prior-admitted",
+      "immutable_ref": "immutable://testing-packages/testing-runner/1.0.0/release.json@sha256:1010101010101010101010101010101010101010101010101010101010101010",
+      "release_sequence": 10,
+      "package_version": "1.0.0",
+      "package_content_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+      "manifest_digest": "1212121212121212121212121212121212121212121212121212121212121212",
+      "catalog_digest": "1313131313131313131313131313131313131313131313131313131313131313",
+      "schema_set_digest": "1414141414141414141414141414141414141414141414141414141414141414",
+      "dependency_lock_digest": "1515151515151515151515151515151515151515151515151515151515151515"
+    },
+    {
+      "id": "baseline",
+      "immutable_ref": "immutable://testing-packages/testing-runner/2.0.0/release.json@sha256:2020202020202020202020202020202020202020202020202020202020202020",
+      "release_sequence": 20,
+      "package_version": "2.0.0",
+      "package_content_sha256": "2121212121212121212121212121212121212121212121212121212121212121",
+      "manifest_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+      "catalog_digest": "2323232323232323232323232323232323232323232323232323232323232323",
+      "schema_set_digest": "2424242424242424242424242424242424242424242424242424242424242424",
+      "dependency_lock_digest": "2525252525252525252525252525252525252525252525252525252525252525"
+    },
+    {
+      "id": "update",
+      "immutable_ref": "immutable://testing-packages/testing-runner/3.0.0/release.json@sha256:3030303030303030303030303030303030303030303030303030303030303030",
+      "release_sequence": 30,
+      "package_version": "3.0.0",
+      "package_content_sha256": "3131313131313131313131313131313131313131313131313131313131313131",
+      "manifest_digest": "3232323232323232323232323232323232323232323232323232323232323232",
+      "catalog_digest": "3333333333333333333333333333333333333333333333333333333333333333",
+      "schema_set_digest": "3434343434343434343434343434343434343434343434343434343434343434",
+      "dependency_lock_digest": "3535353535353535353535353535353535353535353535353535353535353535"
+    },
+    {
+      "id": "older-unapproved",
+      "immutable_ref": "immutable://testing-packages/testing-runner/0.5.0/release.json@sha256:0505050505050505050505050505050505050505050505050505050505050505",
+      "release_sequence": 5,
+      "package_version": "0.5.0",
+      "package_content_sha256": "5151515151515151515151515151515151515151515151515151515151515151",
+      "manifest_digest": "5252525252525252525252525252525252525252525252525252525252525252",
+      "catalog_digest": "5353535353535353535353535353535353535353535353535353535353535353",
+      "schema_set_digest": "5454545454545454545454545454545454545454545454545454545454545454",
+      "dependency_lock_digest": "5555555555555555555555555555555555555555555555555555555555555555"
+    }
+  ],
+  "cases": [
+    {
+      "name": "immutable-fetch-admit-cache-replay",
+      "invariant": "verify-before-adopt-and-durable-replay",
+      "trials": [{
+        "name": "baseline",
+        "operations": [
+          {"id": "admit-initial", "kind": "admit", "release": "baseline", "admission_key": "qa-run-680"},
+          {"id": "admit-replay", "kind": "admit", "release": "baseline", "admission_key": "qa-run-680"}
+        ]
+      }],
+      "expected_observation": {
+        "schema": "testing-package-release-admission-conformance-observation.v1",
+        "case": "immutable-fetch-admit-cache-replay",
+        "trials": [{
+          "name": "baseline",
+          "steps": [
+            {
+              "id": "admit-initial", "status": "admitted", "code": "accepted",
+              "cache_state": "published-content-addressed",
+              "mutations": {"journal": 1, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0},
+              "receipt": {
+                "admission_key": "qa-run-680",
+                "admission_digest": "6060606060606060606060606060606060606060606060606060606060606060",
+                "release_ref": "immutable://testing-packages/testing-runner/2.0.0/release.json@sha256:2020202020202020202020202020202020202020202020202020202020202020",
+                "release_sequence": 20,
+                "package_content_sha256": "2121212121212121212121212121212121212121212121212121212121212121",
+                "manifest_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+                "catalog_digest": "2323232323232323232323232323232323232323232323232323232323232323",
+                "schema_set_digest": "2424242424242424242424242424242424242424242424242424242424242424",
+                "dependency_lock_digest": "2525252525252525252525252525252525252525252525252525252525252525",
+                "executor_id": "testing-package-executor.browser-title.v1",
+                "entrypoint": "testing-runner.run",
+                "contract_major": "testing-runner.v1",
+                "policy_digest": "6161616161616161616161616161616161616161616161616161616161616161",
+                "capability_set_digest": "6262626262626262626262626262626262626262626262626262626262626262",
+                "current_claim_digest": "6363636363636363636363636363636363636363636363636363636363636363",
+                "canonical_request_sha256": "6464646464646464646464646464646464646464646464646464646464646464"
+              }
+            },
+            {
+              "id": "admit-replay", "status": "replayed", "code": "accepted",
+              "receipt_replayed_from": "admit-initial",
+              "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}
+            }
+          ]
+        }]
+      }
+    },
+    {
+      "name": "exact-byte-binding-rejections",
+      "invariant": "all-release-bytes-are-independently-bound",
+      "trials": [
+        {"name": "package-content", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "package-content-digest-mismatch"}]},
+        {"name": "manifest", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "manifest-digest-mismatch"}]},
+        {"name": "catalog", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "catalog-digest-mismatch"}]},
+        {"name": "schema-set", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "schema-set-digest-mismatch"}]},
+        {"name": "dependency-lock", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "dependency-lock-digest-mismatch"}]}
+      ],
+      "expected_observation": {
+        "schema": "testing-package-release-admission-conformance-observation.v1", "case": "exact-byte-binding-rejections",
+        "trials": [
+          {"name": "package-content", "steps": [{"id": "reject", "status": "rejected", "code": "package-content-digest-mismatch", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+          {"name": "manifest", "steps": [{"id": "reject", "status": "rejected", "code": "manifest-digest-mismatch", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+          {"name": "catalog", "steps": [{"id": "reject", "status": "rejected", "code": "catalog-digest-mismatch", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+          {"name": "schema-set", "steps": [{"id": "reject", "status": "rejected", "code": "schema-set-digest-mismatch", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+          {"name": "dependency-lock", "steps": [{"id": "reject", "status": "rejected", "code": "dependency-lock-digest-mismatch", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]}
+        ]
+      }
+    },
+    {
+      "name": "release-authority-rejections",
+      "invariant": "authenticated-release-authority-precedes-mutation",
+      "trials": [
+        {"name": "invalid-signature", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "invalid-release-authority"}]},
+        {"name": "authority-unavailable", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "release-authority-unavailable"}]}
+      ],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "release-authority-rejections", "trials": [
+        {"name": "invalid-signature", "steps": [{"id": "reject", "status": "rejected", "code": "invalid-release-authority", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "authority-unavailable", "steps": [{"id": "reject", "status": "rejected", "code": "release-authority-unavailable", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]}
+      ]}
+    },
+    {
+      "name": "compatibility-rejections",
+      "invariant": "closed-compatibility-matrix-precedes-admission",
+      "trials": [
+        {"name": "contract-major", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "unsupported-contract-major"}]},
+        {"name": "canonicalization", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "unsupported-canonicalization-profile"}]},
+        {"name": "execution-profile", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "unsupported-execution-profile"}]},
+        {"name": "capability", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "unsupported-capability"}]},
+        {"name": "platform", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "unsupported-platform"}]}
+      ],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "compatibility-rejections", "trials": [
+        {"name": "contract-major", "steps": [{"id": "reject", "status": "rejected", "code": "unsupported-contract-major", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "canonicalization", "steps": [{"id": "reject", "status": "rejected", "code": "unsupported-canonicalization-profile", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "execution-profile", "steps": [{"id": "reject", "status": "rejected", "code": "unsupported-execution-profile", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "capability", "steps": [{"id": "reject", "status": "rejected", "code": "unsupported-capability", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "platform", "steps": [{"id": "reject", "status": "rejected", "code": "unsupported-platform", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]}
+      ]}
+    },
+    {
+      "name": "entrypoint-mapping-rejections",
+      "invariant": "exactly-one-semantic-entrypoint",
+      "trials": [
+        {"name": "unknown", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "unknown-entrypoint"}]},
+        {"name": "duplicate", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "duplicate-entrypoint"}]},
+        {"name": "ambiguous", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "ambiguous-entrypoint"}]}
+      ],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "entrypoint-mapping-rejections", "trials": [
+        {"name": "unknown", "steps": [{"id": "reject", "status": "rejected", "code": "unknown-entrypoint", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "duplicate", "steps": [{"id": "reject", "status": "rejected", "code": "duplicate-entrypoint", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "ambiguous", "steps": [{"id": "reject", "status": "rejected", "code": "ambiguous-entrypoint", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]}
+      ]}
+    },
+    {
+      "name": "mutable-identity-rejections",
+      "invariant": "only-immutable-prepublished-content-is-fetchable",
+      "trials": [
+        {"name": "floating-ref", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "floating-release-ref"}]},
+        {"name": "workspace", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "workspace-release-ref"}]},
+        {"name": "dynamic-import", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "dynamic-import"}]},
+        {"name": "plugin", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "plugin-resolution"}]},
+        {"name": "runtime-install", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "runtime-package-install"}]}
+      ],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "mutable-identity-rejections", "trials": [
+        {"name": "floating-ref", "steps": [{"id": "reject", "status": "rejected", "code": "mutable-release-identity", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "workspace", "steps": [{"id": "reject", "status": "rejected", "code": "mutable-release-identity", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "dynamic-import", "steps": [{"id": "reject", "status": "rejected", "code": "runtime-resolution-forbidden", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "plugin", "steps": [{"id": "reject", "status": "rejected", "code": "runtime-resolution-forbidden", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "runtime-install", "steps": [{"id": "reject", "status": "rejected", "code": "runtime-resolution-forbidden", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]}
+      ]}
+    },
+    {
+      "name": "same-key-different-digest-conflict",
+      "invariant": "admission-key-is-a-durable-single-assignment",
+      "trials": [{"name": "conflict", "operations": [
+        {"id": "admit", "kind": "admit", "release": "baseline", "admission_key": "qa-run-conflict"},
+        {"id": "conflict", "kind": "admit", "release": "update", "admission_key": "qa-run-conflict"}
+      ]}],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "same-key-different-digest-conflict", "trials": [{"name": "conflict", "steps": [
+        {"id": "admit", "status": "admitted", "code": "accepted", "mutations": {"journal": 1, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+        {"id": "conflict", "status": "conflict", "code": "admission-key-conflict", "admitted_release": "baseline", "attempted_release": "update", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}
+      ]}]}
+    },
+    {
+      "name": "cache-and-resolver-fail-closed",
+      "invariant": "cache-and-resolution-truth-cannot-be-aliased",
+      "trials": [
+        {"name": "cache-corruption", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "cache-corruption"}]},
+        {"name": "cache-alias", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "cache-alias"}]},
+        {"name": "resolver-outage", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "resolver-unavailable"}]}
+      ],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "cache-and-resolver-fail-closed", "trials": [
+        {"name": "cache-corruption", "steps": [{"id": "reject", "status": "rejected", "code": "cache-corruption", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "cache-alias", "steps": [{"id": "reject", "status": "rejected", "code": "cache-alias", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "resolver-outage", "steps": [{"id": "reject", "status": "rejected", "code": "resolver-unavailable", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]}
+      ]}
+    },
+    {
+      "name": "explicit-update",
+      "invariant": "updates-are-authorized-content-addressed-transitions",
+      "trials": [{"name": "update", "operations": [
+        {"id": "baseline", "kind": "admit", "release": "baseline", "admission_key": "qa-run-update-1"},
+        {"id": "update", "kind": "admit", "release": "update", "admission_key": "qa-run-update-2", "transition": "update"}
+      ]}],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "explicit-update", "trials": [{"name": "update", "steps": [
+        {"id": "baseline", "status": "admitted", "code": "accepted", "active_release": "baseline", "release_sequence": 20, "mutations": {"journal": 1, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+        {"id": "update", "status": "admitted", "code": "accepted-update", "active_release": "update", "release_sequence": 30, "mutations": {"journal": 1, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}
+      ]}]}
+    },
+    {
+      "name": "approved-rollback",
+      "invariant": "rollback-target-must-be-prior-admitted-and-authority-approved",
+      "trials": [{"name": "rollback", "operations": [
+        {"id": "prior", "kind": "admit", "release": "prior-admitted", "admission_key": "qa-run-rollback-1"},
+        {"id": "baseline", "kind": "admit", "release": "baseline", "admission_key": "qa-run-rollback-2", "transition": "update"},
+        {"id": "rollback", "kind": "admit", "release": "prior-admitted", "admission_key": "qa-run-rollback-3", "transition": "rollback", "authority_decision": "approved"}
+      ]}],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "approved-rollback", "trials": [{"name": "rollback", "steps": [
+        {"id": "prior", "status": "admitted", "code": "accepted", "active_release": "prior-admitted", "release_sequence": 10, "mutations": {"journal": 1, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+        {"id": "baseline", "status": "admitted", "code": "accepted-update", "active_release": "baseline", "release_sequence": 20, "mutations": {"journal": 1, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+        {"id": "rollback", "status": "admitted", "code": "accepted-rollback", "active_release": "prior-admitted", "release_sequence": 10, "mutations": {"journal": 1, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}
+      ]}]}
+    },
+    {
+      "name": "anti-rollback-rejection",
+      "invariant": "older-unapproved-release-cannot-displace-trusted-state",
+      "trials": [{"name": "unapproved", "operations": [
+        {"id": "baseline", "kind": "admit", "release": "baseline", "admission_key": "qa-run-anti-rollback-1"},
+        {"id": "reject", "kind": "admit", "release": "older-unapproved", "admission_key": "qa-run-anti-rollback-2", "transition": "rollback", "authority_decision": "denied"}
+      ]}],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "anti-rollback-rejection", "trials": [{"name": "unapproved", "steps": [
+        {"id": "baseline", "status": "admitted", "code": "accepted", "active_release": "baseline", "release_sequence": 20, "mutations": {"journal": 1, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+        {"id": "reject", "status": "rejected", "code": "anti-rollback", "active_release": "baseline", "release_sequence": 20, "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}
+      ]}]}
+    },
+    {
+      "name": "restart-recovery",
+      "invariant": "restart-preserves-or-recovers-the-last-certain-decision",
+      "trials": [
+        {"name": "after-fetch", "operations": [{"id": "crash", "kind": "admit", "release": "baseline", "crash_after": "fetch"}, {"id": "restart", "kind": "restart-runtime"}, {"id": "retry", "kind": "admit", "release": "baseline", "admission_key": "qa-run-restart-fetch"}]},
+        {"name": "after-verification", "operations": [{"id": "crash", "kind": "admit", "release": "baseline", "crash_after": "verification"}, {"id": "restart", "kind": "restart-runtime"}, {"id": "retry", "kind": "admit", "release": "baseline", "admission_key": "qa-run-restart-verify"}]},
+        {"name": "after-atomic-admission", "operations": [{"id": "crash", "kind": "admit", "release": "baseline", "admission_key": "qa-run-restart-admitted", "crash_after": "atomic-admission"}, {"id": "restart", "kind": "restart-runtime"}, {"id": "retry", "kind": "admit", "release": "baseline", "admission_key": "qa-run-restart-admitted"}]}
+      ],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "restart-recovery", "trials": [
+        {"name": "after-fetch", "steps": [
+          {"id": "crash", "status": "interrupted", "code": "crash-after-fetch", "cache_state": "quarantined-staging", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+          {"id": "restart", "status": "recovered", "code": "staging-discarded", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+          {"id": "retry", "status": "admitted", "code": "accepted", "mutations": {"journal": 1, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}
+        ]},
+        {"name": "after-verification", "steps": [
+          {"id": "crash", "status": "interrupted", "code": "crash-after-verification", "cache_state": "verified-quarantined-staging", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+          {"id": "restart", "status": "recovered", "code": "verified-staging-recovered", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+          {"id": "retry", "status": "admitted", "code": "accepted", "mutations": {"journal": 1, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}
+        ]},
+        {"name": "after-atomic-admission", "steps": [
+          {"id": "crash", "status": "interrupted", "code": "crash-after-atomic-admission", "mutations": {"journal": 1, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+          {"id": "restart", "status": "recovered", "code": "admission-retained-cache-published", "mutations": {"journal": 0, "cache": 1, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}},
+          {"id": "retry", "status": "replayed", "code": "accepted", "receipt_recovered": true, "uncertain_effect_rerun": false, "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}
+        ]}
+      ]}
+    },
+    {
+      "name": "claim-deadline-policy-rejections",
+      "invariant": "current-authority-and-bounds-precede-effects",
+      "trials": [
+        {"name": "stale-claim", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "stale-claim"}]},
+        {"name": "expired-deadline", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "expired-deadline"}]},
+        {"name": "policy-denial", "operations": [{"id": "reject", "kind": "admit", "release": "baseline", "fault": "policy-denial"}]}
+      ],
+      "expected_observation": {"schema": "testing-package-release-admission-conformance-observation.v1", "case": "claim-deadline-policy-rejections", "trials": [
+        {"name": "stale-claim", "steps": [{"id": "reject", "status": "rejected", "code": "stale-claim", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "expired-deadline", "steps": [{"id": "reject", "status": "rejected", "code": "expired-deadline", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]},
+        {"name": "policy-denial", "steps": [{"id": "reject", "status": "rejected", "code": "policy-denial", "mutations": {"journal": 0, "cache": 0, "workspace": 0, "process": 0, "browser": 0, "evidence": 0}}]}
+      ]}
+    }
+  ]
+}
