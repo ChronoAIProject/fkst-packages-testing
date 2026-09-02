@@ -182,7 +182,7 @@ local function receipt_bindings(resolved, result_set, manifest, result_bytes, ma
     reducer_input=reducer_input(resolved, result_set), case_result_set=result_set, case_result_set_bytes=result_bytes,
     evidence_manifest=manifest, evidence_manifest_bytes=manifest_bytes, completed_execution=completed,
     receipt_id=resolved.dedup_key, run_id=resolved.dedup_key, invocation_id=resolved.trace_id,
-    admitted_release_ref=copy_reference(resolved.approved_input_refs.package_manifest_ref),
+    admitted_release_ref=copy_reference(resolved.approved_input_refs.package_release_ref),
     admission_digest=resolved.admission_digest, package_id=resolved.executor.package_id,
     package_version=resolved.executor.package_version, package_content_sha256=resolved.executor.package_content_sha256,
     manifest_digest=resolved.executor.manifest_digest, executor_id=resolved.selected_entrypoint.executor_id,

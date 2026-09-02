@@ -33,6 +33,7 @@ local function fixture()
   }
   manifest.manifest_digest = support.sha256_bytes(package_manifest.canonicalize(manifest))
   local docs = {
+    package_release_ref={schema="testing-package-release.v1",release_id="testing-runner-1.0.0"},
     package_manifest_ref=manifest,
     source_ref={schema="testing-package-source.v1",source_id="fixture-home",target_url="http://127.0.0.1:4173/"},
     plan_ref={schema="testing-package-plan.v1",case_id="case-home-title",assertion={assertion_id="assert-home-title",expected="Fixture Home",required=true,type="title-equals"}},
@@ -41,6 +42,7 @@ local function fixture()
     capability_set_ref={schema="testing-package-capability-set.v1",capabilities={"browser.read-title.v1"}},
   }
   local refs = {
+    package_release_ref={kind="testing-package-release",ref="immutable://packages/testing-runner/1.0.0/release.json"},
     package_manifest_ref={kind="testing-package-manifest",ref="immutable://packages/testing-runner/1.0.0/manifest.json"},
     source_ref={kind="testing-package-source",ref="immutable://inputs/source.json"}, plan_ref={kind="testing-package-plan",ref="immutable://inputs/plan.json"},
     pql_input_ref={kind="testing-package-pql-input",ref="immutable://inputs/pql.json"}, policy_ref={kind="testing-package-policy",ref="immutable://inputs/policy.json"},

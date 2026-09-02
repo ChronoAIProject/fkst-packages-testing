@@ -112,6 +112,7 @@
       "type": "object",
       "additionalProperties": false,
       "required": [
+        "package_release_ref",
         "package_manifest_ref",
         "source_ref",
         "plan_ref",
@@ -120,6 +121,9 @@
         "capability_set_ref"
       ],
       "properties": {
+        "package_release_ref": {
+          "$ref": "#/$defs/packageReleaseRef"
+        },
         "package_manifest_ref": {
           "$ref": "#/$defs/packageManifestRef"
         },
@@ -137,6 +141,14 @@
         },
         "capability_set_ref": {
           "$ref": "#/$defs/capabilitySetRef"
+        }
+      }
+    },
+    "packageReleaseRef": {
+      "$ref": "#/$defs/reference",
+      "properties": {
+        "kind": {
+          "const": "testing-package-release"
         }
       }
     },

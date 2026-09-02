@@ -47,6 +47,7 @@ M.observation_id = "observation-home-title"
 M.evidence_id = "evidence-case-home-title-title"
 
 M.reference_order = {
+  "package_release_ref",
   "package_manifest_ref",
   "source_ref",
   "plan_ref",
@@ -56,6 +57,7 @@ M.reference_order = {
 }
 
 M.reference_kinds = {
+  package_release_ref = "testing-package-release",
   package_manifest_ref = "testing-package-manifest",
   source_ref = "testing-package-source",
   plan_ref = "testing-package-plan",

@@ -61,6 +61,10 @@ end
 local function documents()
   local package_content_sha256 = sha256("testing-runner-1.0.0 admitted package bytes")
   return {
+    package_release_ref = {
+      schema = "testing-package-release.v1",
+      release_id = "testing-runner-1.0.0",
+    },
     package_manifest_ref = manifest_fixture(package_content_sha256),
     source_ref = {
       schema = "testing-package-source.v1",
@@ -95,6 +99,7 @@ local function documents()
 end
 
 local refs = {
+  package_release_ref = { kind = "testing-package-release", ref = "immutable://packages/testing-runner/1.0.0/release.json" },
   package_manifest_ref = { kind = "testing-package-manifest", ref = "immutable://packages/testing-runner/1.0.0/manifest.json" },
   source_ref = { kind = "testing-package-source", ref = "immutable://inputs/source.json" },
   plan_ref = { kind = "testing-package-plan", ref = "immutable://inputs/plan.json" },
@@ -525,6 +530,8 @@ return {
 
     t.eq(completed.schema, result_authority.schemas.receipt)
     t.eq(completed.classification, "passed")
+    t.eq(completed.admitted_release_ref.kind, "testing-package-release")
+    t.eq(completed.admitted_release_ref.ref, refs.package_release_ref.ref)
     t.eq(runtime_json.encode(replayed), runtime_json.encode(completed))
     t.eq(#value.calls.completed_queries, 2)
     t.eq(#value.calls.claims, 1)
