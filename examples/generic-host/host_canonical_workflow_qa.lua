@@ -1707,11 +1707,13 @@ function M.testing_package_executor_ports(options)
     load_completed_execution = load_completed,
     load_result_authority_receipt = function(query)
       local stored = store:load(artifact_path(query.dedup_key, "result-authority-receipt"))
-      return stored == nil and nil or stored.raw
+      if stored == nil then return nil end
+      return stored.raw
     end,
     load_canonical_artifact = function(ref)
       local stored = store:load(ref.ref)
-      return stored == nil and nil or stored.raw
+      if stored == nil then return nil end
+      return stored.raw
     end,
     claim_execution = function(request)
       counters.claims = counters.claims + 1
