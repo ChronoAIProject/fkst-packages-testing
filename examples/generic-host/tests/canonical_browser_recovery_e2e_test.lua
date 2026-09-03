@@ -34,6 +34,13 @@ local function assert_terminal(context, expected_status)
   t.eq(cleanup.status, "complete")
   t.eq(#cleanup.remaining_resources, 0)
   t.is_true(context.aggregate_publication_count > 0)
+  local aggregate = artifact(context, context.request.publication.aggregate_report_ref).value
+  t.eq(aggregate.case_result_set_ref, result_path)
+  t.eq(aggregate.evidence_manifest_ref, manifest_path)
+  if expected_status == "lost" then
+    t.eq(context.store:load(context.artifact_root .. "/case-results.json"), nil)
+    t.eq(aggregate.artifact_links.case_results, nil)
+  end
   t.eq(context.terminal_records, 1)
 end
 

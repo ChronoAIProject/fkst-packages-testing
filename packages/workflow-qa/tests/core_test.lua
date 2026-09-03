@@ -251,6 +251,27 @@ local tests = {
     t.eq(final.evidence_manifest_artifact_sha256, digest("5"))
   end,
 
+  test_canonical_only_browser_result_uses_canonical_execution_checkpoint = function()
+    local request = fixture()
+    local ports, state, put = runtime(request)
+    drive_to_grant(request, ports, state, put, "agentic-browser")
+    local execution = execution_result(request, 0)
+    execution.job = "ai-browser-control"
+    execution.native_summary.case_results_path = nil
+    core.handle_execution_result(execution, request, ports)
+    local summary = artifact_summary(request, 0, put, true)
+    summary.job = "ai-browser-control"
+    summary.native_summary.case_results_path = nil
+    local result_ref = summary.native_summary.case_result_set_path
+
+    local checkpoint = core.handle_artifact_summary(summary, request, ports)
+
+    t.eq(checkpoint[1].queue, "test-publication.qa_checkpoint_request")
+    t.eq(checkpoint[1].payload.artifact_ref, result_ref)
+    t.eq(checkpoint[1].payload.artifact_sha256, digest("4"))
+    release_checkpoint(request, ports, state, "environment-factory.environment_finalize")
+  end,
+
   test_historical_artifact_summary_omits_canonical_defect_fields = function()
     local request = fixture()
     local ports, state, put = runtime(request)

@@ -1,0 +1,119 @@
+{
+  "version": 1,
+  "updated_at": "2026-09-03",
+  "authority_classes": [
+    "canonical-reader",
+    "one-way-legacy-projection-reader",
+    "explicitly-out-of-scope"
+  ],
+  "consumers": [
+    {
+      "path": "libraries/testing_package_executor/executor.lua",
+      "contracts": ["testing-case-result-set.v2", "testing-evidence-manifest.v1", "testing-result-authority-receipt.v1"],
+      "authority_class": "canonical-reader",
+      "purpose": "Persists, reloads, and verifies canonical executor results, manifests, and authority receipts."
+    },
+    {
+      "path": "libraries/testing_runtime/bin/fkst-structured-execution-runtime.js",
+      "contracts": ["testing-case-result-set.v2", "testing-evidence-manifest.v1"],
+      "authority_class": "canonical-reader",
+      "purpose": "Validates canonical artifact shape at the runtime persistence boundary."
+    },
+    {
+      "path": "examples/generic-host/bin/structured-execution-artifacts.js",
+      "contracts": ["testing-case-result-set.v2", "testing-evidence-manifest.v1"],
+      "authority_class": "canonical-reader",
+      "purpose": "Validates canonical artifacts in the Generic Host persistence adapter."
+    },
+    {
+      "path": "examples/generic-host/host_canonical_workflow_qa.lua",
+      "contracts": ["testing-case-result-set.v2", "testing-evidence-manifest.v1"],
+      "authority_class": "canonical-reader",
+      "purpose": "Validates canonical result and evidence bindings before host workflow publication."
+    },
+    {
+      "path": "packages/test-publication/canonical_results.lua",
+      "contracts": ["testing-case-result-set.v2", "testing-evidence-manifest.v1"],
+      "authority_class": "canonical-reader",
+      "purpose": "Builds the shared publication view from public canonical validators."
+    },
+    {
+      "path": "packages/test-publication/qa_publication.lua",
+      "contracts": ["testing-case-result-set.v2", "testing-evidence-manifest.v1"],
+      "authority_class": "canonical-reader",
+      "purpose": "Consumes the shared canonical publication view without route-specific reinterpretation."
+    },
+    {
+      "path": "packages/test-publication/qa_publication.lua",
+      "contracts": ["testing-structured-case-results.v1"],
+      "authority_class": "one-way-legacy-projection-reader",
+      "purpose": "Validates legacy-only input or verifies an exact canonical-to-v1 projection."
+    },
+    {
+      "path": "packages/test-publication/defect_publication.lua",
+      "contracts": ["testing-case-result-set.v2", "testing-evidence-manifest.v1"],
+      "authority_class": "canonical-reader",
+      "purpose": "Consumes the shared canonical publication view without route-specific reinterpretation."
+    },
+    {
+      "path": "packages/test-publication/defect_publication.lua",
+      "contracts": ["testing-structured-case-results.v1"],
+      "authority_class": "one-way-legacy-projection-reader",
+      "purpose": "Validates legacy-only input or verifies an exact canonical-to-v1 projection."
+    },
+    {
+      "path": "examples/generic-host/bin/generic-host-runtime.js",
+      "contracts": ["testing-structured-case-results.v1"],
+      "authority_class": "one-way-legacy-projection-reader",
+      "purpose": "Loads the bounded compatibility artifact for legacy host workflow surfaces."
+    },
+    {
+      "path": "packages/testing-runner/ai_browser_control.lua",
+      "contracts": ["testing-case-result-set.v2", "testing-evidence-manifest.v1"],
+      "authority_class": "canonical-reader",
+      "purpose": "Revalidates persisted canonical Browser artifacts during replay."
+    },
+    {
+      "path": "packages/testing-runner/structured_execution.lua",
+      "contracts": ["testing-case-result-set.v2", "testing-evidence-manifest.v1", "testing-structured-case-results.v1"],
+      "authority_class": "explicitly-out-of-scope",
+      "purpose": "Canonical CLI and HTTP producer plus one-way compatibility writer, not a downstream semantic consumer."
+    },
+    {
+      "path": "packages/testing-runner/ai_browser_control.lua",
+      "contracts": ["testing-structured-case-results.v1"],
+      "authority_class": "explicitly-out-of-scope",
+      "purpose": "Canonical Browser producer that omits v1 because its unchanged kind vocabulary is CLI and HTTP only."
+    },
+    {
+      "path": "libraries/contract/testing_results.lua",
+      "contracts": ["testing-case-result-set.v2"],
+      "authority_class": "explicitly-out-of-scope",
+      "purpose": "Public canonical contract owner."
+    },
+    {
+      "path": "libraries/contract/testing_evidence_manifest.lua",
+      "contracts": ["testing-evidence-manifest.v1"],
+      "authority_class": "explicitly-out-of-scope",
+      "purpose": "Public canonical evidence contract owner."
+    },
+    {
+      "path": "libraries/contract/testing_results_compat.lua",
+      "contracts": ["testing-structured-case-results.v1"],
+      "authority_class": "explicitly-out-of-scope",
+      "purpose": "Public compatibility adapter owner; reverse canonicalization remains migration-only."
+    },
+    {
+      "path": "libraries/contract/testing_result_authority.lua",
+      "contracts": ["testing-result-authority-receipt.v1"],
+      "authority_class": "explicitly-out-of-scope",
+      "purpose": "Public Browser-capable result authority and reducer contract owner."
+    }
+  ],
+  "excluded_reference_classes": [
+    "tests and fixtures",
+    "JSON schemas and schema release material",
+    "documentation",
+    "repository test orchestration scripts"
+  ]
+}

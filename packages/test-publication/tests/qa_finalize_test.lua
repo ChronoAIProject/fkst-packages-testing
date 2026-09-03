@@ -201,7 +201,11 @@ local function terminal_summary(value, status, terminal_counts)
 end
 
 local function result_artifact_root(value)
-  return value.case_results_ref:match("^(.*)/case%-results%.json$")
+  local canonical = type(value.case_result_set_ref) == "string"
+    and value.case_result_set_ref:match("^(.*)/case%-result%-set%.json$") or nil
+  if canonical ~= nil then return canonical end
+  return type(value.case_results_ref) == "string"
+    and value.case_results_ref:match("^(.*)/case%-results%.json$") or nil
 end
 
 local function legacy_results(value)
@@ -468,6 +472,36 @@ return {
     t.is_true(ports.hash_calls() > 0)
   end,
 
+  test_canonical_lost_finalization_does_not_require_legacy_projection = function()
+    local value = canonical_request()
+    value.case_results_ref = nil
+    value.case_results_sha256 = nil
+    local ports = runtime(function(artifacts)
+      local summary = artifacts[value.terminal_summary_ref].value
+      summary.status = "blocked"
+      summary.case_results_ref = nil
+      summary.counts = { planned=2,executed=2,passed=0,failed=0,skipped=0,error=2,blocked=0 }
+      local result_set = artifacts[value.case_result_set_ref].value
+      for _, case_result in ipairs(result_set.cases) do
+        case_result.execution_status = "lost"
+        case_result.classification = "lost"
+        case_result.non_execution_reason = "runner-disconnected"
+        case_result.error = nil
+        for _, assertion in ipairs(case_result.assertions) do
+          assertion.status = "skipped"
+          assertion.classification = "skipped"
+        end
+      end
+    end, value)
+
+    local prepared = qa_publication.prepare_final_report(value, ports)
+    t.eq(prepared.report.status, "blocked")
+    t.eq(prepared.report.counts.error, 2)
+    t.eq(prepared.report.artifact_links.case_results, nil)
+    t.is_true(prepared.report.artifact_links.case_result_set ~= nil)
+    t.is_true(prepared.report.artifact_links.evidence_manifest ~= nil)
+  end,
+
   test_canonical_finalization_accepts_execution_subroot_artifacts = function()
     local value = canonical_request()
     local execution_root = value.artifact_root .. "/execution"
@@ -549,38 +583,59 @@ return {
     end)
   end,
 
-  test_canonical_browser_alias_disagreement_rejects_before_output = function()
+  test_canonical_browser_legacy_projection_rejects_before_output = function()
     local value = canonical_request()
     local ports = runtime(function(artifacts)
       local plan_value = artifacts[value.test_plan_ref].value
       plan_value.execution_mode = "agentic-browser"
       plan_value.cases = { {
         case_id = "health", kind = "browser", goal = "Authenticate the existing user.",
-        success_conditions = { "Callback observed" },
-        completion_assertions = { {
-          assertion_id = "assertion-1", type = "browser-callback-observed",
-          required = true, completion_field = "callback_observed",
-        } },
+        success_conditions = { "All deterministic login signals are verified." },
+        completion_assertions = {
+          { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+          { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+          { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+          { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+        },
       } }
       local result_set = artifacts[value.case_result_set_ref].value
       result_set.cases = { result_set.cases[1] }
-      result_set.cases[1].execution_mode = "browser"
-      result_set.cases[1].assertions[1].type = "browser-callback-observed"
+      local case_result = result_set.cases[1]
+      case_result.execution_mode = "browser"
+      local assertion_template = structured_contract.copy(case_result.assertions[1])
+      case_result.assertions = {}
+      for index, authority in ipairs(plan_value.cases[1].completion_assertions) do
+        local assertion = structured_contract.copy(assertion_template)
+        assertion.assertion_id = authority.assertion_id
+        assertion.type = authority.type
+        case_result.assertions[index] = assertion
+      end
       local manifest = artifacts[value.evidence_manifest_ref].value
       manifest.entries = { manifest.entries[1] }
       manifest.canonical_sha256 = manifest_contract.sha256(manifest, portable_sha256, {
         artifact_root = result_artifact_root(value),
       })
       result_set.evidence_manifest_sha256 = manifest.canonical_sha256
-      local legacy = structured_contract.copy(result_set)
-      legacy.set_id = "foreign-browser-alias"
-      artifacts[value.case_results_ref].value = legacy
+      artifacts[value.case_results_ref].value = {
+        schema = results_compat.schema,
+        plan_sha256 = value.test_plan_sha256,
+        cases = { {
+          case_id = "health", kind = "browser", status = "passed", classification = "passed",
+          assertions = {
+            { type = "browser-callback-observed", passed = true },
+            { type = "browser-process-exit-zero", passed = true },
+            { type = "browser-whoami-succeeded", passed = true },
+            { type = "browser-status-authenticated", passed = true },
+          },
+          evidence_ref = value.artifact_root .. "/evidence/health-other.json",
+        } },
+      }
       local terminal = artifacts[value.terminal_summary_ref].value
       terminal.counts = { planned=1,executed=1,passed=1,failed=0,skipped=0,error=0,blocked=0 }
     end, value)
     local ok, failure = pcall(qa_publication.prepare_final_report, value, ports)
     t.eq(ok, false)
-    if tostring(failure):find("canonical browser result alias differs", 1, true) == nil then error(tostring(failure)) end
+    if tostring(failure):find("unsupported-projection", 1, true) == nil then error(tostring(failure)) end
     t.eq(ports.publish_calls(), 0)
     t.eq(ports.report_writes(), 0)
   end,
@@ -643,6 +698,16 @@ return {
     local unsafe_pointer = request()
     unsafe_pointer.terminal_summary_ref = ".testing/runs/foreign/terminal-summary.json"
     t.raises(function() qa_publication.prepare_final_report(unsafe_pointer, runtime()) end)
+
+    for _, mutate in ipairs({
+      function(value) value.case_results_ref = ".testing/runs/foreign/case-results.json" end,
+      function(value) value.case_results_ref = nil; value.case_results_sha256 = nil end,
+      function(value) value["test_" .. "plan_ref"] = nil; value.test_plan_sha256 = nil end,
+    }) do
+      local value = request()
+      mutate(value)
+      t.raises(function() qa_publication.prepare_final_report(value, runtime()) end)
+    end
 
     local digest_mismatch = runtime(function(artifacts, value)
       artifacts[value.terminal_summary_ref].digest = string.rep("0", 64)

@@ -631,9 +631,9 @@ local function publication_from_summary(state, summary)
     source_ref = { kind = "workflow-qa", ref = state.request.run_id },
     test_plan_path = publication_plan(state),
     execution_path = native.execution_path,
-    case_results_path = native.case_results_path,
     publication_dry_run = true,
   }
+  if native.case_results_path ~= nil then publication.case_results_path = native.case_results_path end
   if (state.execution_job == "structured-execution" or state.execution_job == "ai-browser-control") and native.case_result_set_path ~= nil then
     publication.case_result_set_path = native.case_result_set_path; publication.case_result_set_artifact_sha256 = native.case_result_set_artifact_sha256
     publication.evidence_manifest_path = native.evidence_manifest_path; publication.evidence_manifest_artifact_sha256 = native.evidence_manifest_artifact_sha256
@@ -677,13 +677,12 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
   if state.phase ~= "artifact-summary-pending" then return copy(state.pending_actions or {}) end
   local canonical = canonical_paths(state, payload)
   local summary = payload.native_summary
-  if type(summary) ~= "table" or type(summary.case_results_path) ~= "string"
-    or payload.status == "blocked" then
+  if type(summary) ~= "table" or (summary.case_results_path == nil and canonical == nil) then
     state.execution_summary = copy(payload)
     state.counts = { planned = 0, executed = 0, passed = 0, failed = 0, skipped = 0, error = 0, blocked = 1 }
     return begin_cleanup(state, state.interruption_requested or "blocked", ports)
   end
-  local case_results_sha256 = digest(ports, summary.case_results_path)
+  local case_results_sha256 = summary.case_results_path and digest(ports, summary.case_results_path) or nil
   local plan_sha256 = canonical and digest(ports, canonical.plan_ref) or nil
   local result_sha256 = canonical and digest(ports, canonical.result_ref) or nil
   local manifest_sha256 = canonical and digest(ports, canonical.manifest_ref) or nil
@@ -692,13 +691,11 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     error("workflow-qa: foreign-artifact-summary: canonical artifact digest differs")
   end
   state.execution_summary = copy(payload)
-  state.artifacts.case_results_ref = summary.case_results_path; state.digests[summary.case_results_path] = case_results_sha256
+  if summary.case_results_path ~= nil then state.artifacts.case_results_ref = summary.case_results_path; state.digests[summary.case_results_path] = case_results_sha256 end
   if canonical ~= nil then
     state.artifacts.canonical_plan_ref = canonical.plan_ref; state.digests[canonical.plan_ref] = plan_sha256
-    state.artifacts.case_result_set_ref = canonical.result_ref
-    state.artifacts.evidence_manifest_ref = canonical.manifest_ref
-    state.digests[canonical.result_ref] = result_sha256
-    state.digests[canonical.manifest_ref] = manifest_sha256
+    state.artifacts.case_result_set_ref = canonical.result_ref; state.artifacts.evidence_manifest_ref = canonical.manifest_ref
+    state.digests[canonical.result_ref] = result_sha256; state.digests[canonical.manifest_ref] = manifest_sha256
   end
   local counts = {
     planned = summary.case_count or 0,
@@ -710,6 +707,7 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     blocked = 0,
   }
   state.counts = counts
+  if payload.status == "blocked" then return begin_cleanup(state, state.interruption_requested or "blocked", ports, counts) end
   local next_phase, next_actions
   local next_status = state.interruption_requested or payload.status
   if state.interruption_requested ~= nil or counts.failed == 0 then
@@ -725,21 +723,22 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     run_id = request.run_id,
     plan_ref = publication_plan(state),
     plan_sha256 = select(2, publication_plan(state)),
-    case_results_ref = summary.case_results_path,
-    case_results_sha256 = state.digests[summary.case_results_path],
     issue_drafts_ref = request.publication.issue_drafts_ref,
     ledger_ref = request.publication.defect_ledger_ref,
     receipt_ref = request.publication.defect_receipt_ref,
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
+  if summary.case_results_path ~= nil then
+    prepare.case_results_ref = summary.case_results_path; prepare.case_results_sha256 = state.digests[summary.case_results_path]
+  end
   add_canonical_quartet(state, prepare)
   if next_phase == nil then
     next_phase = "defects-pending"
     next_actions = { action("test-publication.defect_preparation_request", prepare) }
   end
   return gate_checkpoint(state, "execution-batch", payload.status,
-    summary.case_results_path, counts, next_phase, next_actions, ports)
+    canonical and canonical.result_ref or summary.case_results_path, counts, next_phase, next_actions, ports)
 end
 
 function M.handle_defect_terminal(payload, request, supplied_ports)
@@ -822,13 +821,12 @@ prepare_finalization = function(state, ports)
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
-  if request.publication.channel ~= nil then
-    final.channel = request.publication.channel
-  end
-  if state.artifacts.structured_plan_ref ~= nil and state.artifacts.case_results_ref ~= nil then
+  if request.publication.channel ~= nil then final.channel = request.publication.channel end
+  if state.artifacts.structured_plan_ref ~= nil and (state.artifacts.case_results_ref ~= nil or state.artifacts.case_result_set_ref ~= nil) then
     final.test_plan_ref, final.test_plan_sha256 = publication_plan(state)
-    final.case_results_ref = state.artifacts.case_results_ref
-    final.case_results_sha256 = state.digests[state.artifacts.case_results_ref]
+    if state.artifacts.case_results_ref ~= nil then
+      final.case_results_ref = state.artifacts.case_results_ref; final.case_results_sha256 = state.digests[state.artifacts.case_results_ref]
+    end
   end
   add_canonical_quartet(state, final)
   if state.defect_terminal and state.defect_terminal.receipt_ref then

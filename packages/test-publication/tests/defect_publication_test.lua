@@ -293,7 +293,39 @@ return {
     t.eq(#publication.issue_requests, 1)
   end,
 
-  test_canonical_browser_alias_mismatch_rejects_before_outputs = function()
+  test_canonical_lost_results_publish_without_legacy_projection = function()
+    local value = canonical_request()
+    value.case_results_ref = nil
+    value.case_results_sha256 = nil
+    value.publication.case_results_path = nil
+    local preparation = preparation_request(value)
+    local ports = runtime({
+      canonical = true,
+      mutate = function(artifacts)
+        artifacts[value.issue_drafts_ref] = nil
+        local result_set = artifacts[value.case_result_set_ref].value
+        for _, case_result in ipairs(result_set.cases) do
+          case_result.execution_status = "lost"
+          case_result.classification = "lost"
+          case_result.non_execution_reason = "runner-disconnected"
+          case_result.error = nil
+          for _, assertion in ipairs(case_result.assertions) do
+            assertion.status = "skipped"
+            assertion.classification = "skipped"
+          end
+        end
+      end,
+    })
+
+    local prepared = defect_publication.prepare_defects(preparation, ports)
+    t.eq(prepared.defect_request.case_results_ref, nil)
+    t.eq(prepared.defect_request.case_results_sha256, nil)
+    t.eq(#ports.writes[value.issue_drafts_ref].cases, 0)
+    local publication = defect_publication.prepare(prepared.defect_request, ports)
+    t.eq(#publication.issue_requests, 0)
+  end,
+
+  test_canonical_browser_legacy_projection_rejects_before_outputs = function()
     local value = canonical_request()
     value.publication.job = "ai-browser-control"
     value.publication.execution_path = value.publication.artifact_root .. "/browser-agent-execution.json"
@@ -328,13 +360,25 @@ return {
         artifact_root=value.publication.artifact_root,
       })
       result_set.evidence_manifest_sha256 = manifest.canonical_sha256
-      local alias = structured_contract.copy(result_set)
-      alias.set_id = "foreign-browser-alias"
-      artifacts[value.case_results_ref].value = alias
+      artifacts[value.case_results_ref].value = {
+        schema = results_compat.schema,
+        plan_sha256 = value.plan_sha256,
+        cases = { {
+          case_id = "version", kind = "browser", status = "failed",
+          classification = "product-defect",
+          assertions = {
+            { type = "browser-callback-observed", passed = false },
+            { type = "browser-process-exit-zero", passed = false },
+            { type = "browser-whoami-succeeded", passed = false },
+            { type = "browser-status-authenticated", passed = false },
+          },
+          evidence_ref = value.publication.artifact_root .. "/evidence/version-other.json",
+        } },
+      }
     end })
     local ok, failure = pcall(defect_publication.prepare, value, ports)
     t.eq(ok, false)
-    if tostring(failure):find("canonical browser result alias differs", 1, true) == nil then
+    if tostring(failure):find("unsupported-projection", 1, true) == nil then
       error(tostring(failure))
     end
     t.eq(ports.write_count(), 0); t.eq(ports.save_count(), 0)
@@ -436,6 +480,13 @@ return {
       local value = preparation_request()
       value.schema = "other"
       t.raises(function() defect_publication.prepare_defects(value, runtime()) end)
+    end
+    do
+      local value = preparation_request()
+      value.case_results_ref = nil
+      value.case_results_sha256 = nil
+      value.publication.case_results_path = nil
+      t.raises(function() defect_publication.validate_preparation_request(value) end)
     end
     do
       local ports = runtime({ mutate = function(artifacts)
@@ -636,6 +687,12 @@ return {
     local binding = request()
     binding.receipt_ref = ".testing/runs/other/receipt.json"
     t.raises(function() defect_publication.prepare(binding, runtime()) end)
+
+    local missing_results = request()
+    missing_results.case_results_ref = nil
+    missing_results.case_results_sha256 = nil
+    missing_results.publication.case_results_path = nil
+    t.raises(function() defect_publication.validate_request(missing_results) end)
 
     local missing_artifact = runtime({ mutate = function(artifacts)
       artifacts[request().case_results_ref] = nil

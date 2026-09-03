@@ -120,8 +120,7 @@ return {
         t.eq(assertion.status, "passed")
         t.eq(assertion.classification, "deterministic")
       end
-      t.eq(artifact(context, compatibility_path).value.schema, "testing-case-result-set.v2")
-      t.is_true(support.equal(artifact(context, compatibility_path).value, result_set))
+      t.eq(context.store:load(compatibility_path), nil)
 
       local cleanup = artifact(context, context.terminal.cleanup_receipt_ref).value
       t.eq(cleanup.schema, "environment-factory.cleanup-receipt.v1")
@@ -136,11 +135,12 @@ return {
       t.eq(aggregate.counts.passed, 1)
       t.eq(aggregate.counts.failed, 0)
       t.eq(aggregate.residual_risks, 0)
+      t.eq(aggregate.artifact_links.case_results, nil)
       t.eq(aggregate.cleanup_receipt_ref, context.terminal.cleanup_receipt_ref)
       t.eq(context.terminal_records, 1)
 
       assert_public_artifacts_are_sanitized(context, {
-        plan_path, receipt_path, result_set_path, compatibility_path, manifest_path, metadata_path,
+        plan_path, receipt_path, result_set_path, manifest_path, metadata_path,
         context.request.publication.aggregate_report_ref, context.request.publication.terminal_summary_ref,
       })
 

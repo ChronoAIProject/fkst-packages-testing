@@ -136,10 +136,40 @@ return {
     t.eq(projected.cases[4].classification,"harness-tooling-issue")
   end,
 
+  test_projection_support_is_explicit_and_does_not_expand_v1 = function()
+    local _, ctx, canonical = bundle()
+    t.eq(compat.projection_supported(canonical.result_set), true)
+    canonical.result_set.cases[1].execution_status = "lost"
+    canonical.result_set.cases[1].classification = "lost"
+    canonical.result_set.cases[1].non_execution_reason = "runner-disconnected"
+    canonical.result_set.cases[1].assertions[1].status = "skipped"
+    canonical.result_set.cases[1].assertions[1].classification = "skipped"
+    t.eq(compat.projection_supported(canonical.result_set), false)
+    t.raises(function()
+      compat.project_v1(canonical.result_set, canonical.evidence_manifest, ctx)
+    end)
+    local _, browser_ctx, browser_canonical = bundle()
+    local completion_assertions = browser_ctx.plan.cases[1].assertions
+    for index, assertion in ipairs(completion_assertions) do
+      assertion.assertion_id = "assertion-" .. index
+      assertion.required = true
+    end
+    browser_ctx.plan.cases[1].kind = "browser"
+    browser_ctx.plan.cases[1].completion_assertions = completion_assertions
+    browser_ctx.plan.cases[1].assertions = nil
+    browser_canonical.result_set.cases[1].execution_mode = "browser"
+    t.eq(compat.projection_supported(browser_canonical.result_set), false)
+    t.raises(function()
+      compat.project_v1(browser_canonical.result_set, browser_canonical.evidence_manifest, browser_ctx)
+    end)
+    t.eq(compat.projection_supported({}), false)
+  end,
+
   test_v1_rejects_bad_status_plan_order_assertions_and_duplicates = function()
     local value, ctx = legacy_fixture(), context()
     t.eq(compat.validate_v1(value, ctx), value)
     local bad=copy(value); bad.cases[1].classification="product-defect"; t.raises(function() compat.validate_v1(bad, ctx) end)
+    bad=copy(value); bad.cases[1].kind="browser"; t.raises(function() compat.validate_v1(bad, ctx) end)
     bad=copy(value); bad.cases[1].assertions={}; t.raises(function() compat.validate_v1(bad, ctx) end)
     bad=copy(value); table.insert(bad.cases[1].assertions, {type="optional-note",passed=false}); local no_plan=copy(ctx); no_plan.plan=nil
     t.raises(function() compat.validate_v1(bad, no_plan) end); t.raises(function() compat.canonicalize_v1(bad, no_plan) end)

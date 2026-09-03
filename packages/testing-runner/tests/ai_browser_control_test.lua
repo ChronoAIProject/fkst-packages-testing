@@ -223,7 +223,7 @@ local function canonical_case(request, writes)
     "testing-evidence-manifest.v1")
   return result_set.cases[1]
 end
-return {
+local cases = {
   test_deterministic_completion_overrides_advisory_ai_and_passes = function()
     local request, artifacts, grant = fixture()
     local runtime, writes = ports(request, artifacts, grant, { callback_turn = 1 })
@@ -247,7 +247,8 @@ return {
       request.artifact_root .. "/evidence-manifest.json"))
     t.eq(result_set.evidence_manifest_artifact_sha256, result_set.evidence_manifest_ref.sha256)
     t.is_true(result_set.evidence_manifest_sha256 ~= result_set.evidence_manifest_artifact_sha256)
-    t.is_true(structured.equal(result_set, writes[request.artifact_root .. "/case-results.json"]))
+    t.eq(writes[request.artifact_root .. "/case-results.json"], nil)
+    t.eq(result.case_results_path, nil)
     t.eq(manifest.entries[1].sha256, runtime.artifact_digest(
       request.artifact_root .. "/browser-agent-execution.json"))
     local encoded = json_codec.encode(writes)
@@ -395,11 +396,13 @@ return {
       local runtime, writes = ports(request, artifacts, grant, {
         act = function() error("process interrupted after dispatch") end,
       })
-      controller.run(request, runtime)
+      local result = controller.run(request, runtime)
       local case_result = canonical_case(request, writes)
       t.eq(case_result.execution_status, "lost")
       t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
       t.eq(case_result.assertions[1].status, "skipped")
+      t.eq(writes[request.artifact_root .. "/case-results.json"], nil)
+      t.eq(result.case_results_path, nil)
     end
   end,
   test_optional_screenshot_and_runner_output_evidence_require_exact_metadata = function()
@@ -432,7 +435,6 @@ return {
       "/evidence/browser-observation-1.json",
       "/evidence-manifest.json",
       "/case-result-set.json",
-      "/case-results.json",
     }) do
       local request, artifacts, grant = fixture()
       local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
@@ -516,6 +518,7 @@ return {
       local case_result = canonical_case(request, writes)
       t.eq(case_result.execution_status, "lost")
       t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
+      t.eq(writes[request.artifact_root .. "/case-results.json"], nil)
     end
   end,
   test_invalid_completion_before_and_after_an_action_is_fail_closed = function()
@@ -618,24 +621,16 @@ return {
       t.eq(controller.run(request, runtime).status, "passed")
       return request, artifacts, grant, writes
     end
-    for _, failure in ipairs({ "compatibility", "replay" }) do
+    for _, failure in ipairs({ "replay" }) do
       local request, artifacts, grant, writes = successful_writes()
       local runtime = ports(request, artifacts, grant, {
         writes = writes, claim = { status = "in-progress", claim_id = "claim-browser" },
       })
-      if failure == "compatibility" then
-        local write = runtime.write_artifact
-        runtime.write_artifact = function(path, value)
-          if path == request.artifact_root .. "/case-results.json" then return false end
-          return write(path, value)
-        end
-      else
-        runtime.complete_replay = function() return false end
-        local write = runtime.write_artifact
-        runtime.write_artifact = function(path, value)
-          if path == request.artifact_root .. "/metadata.json" then return true end
-          return write(path, value)
-        end
+      runtime.complete_replay = function() return false end
+      local write = runtime.write_artifact
+      runtime.write_artifact = function(path, value)
+        if path == request.artifact_root .. "/metadata.json" then return true end
+        return write(path, value)
       end
       local replay_failure = controller.run(request, runtime)
       t.eq(replay_failure.status, "blocked")
@@ -874,6 +869,9 @@ return {
     t.eq(copied.schema, summary.schema)
     t.eq(copied.execution_path, summary.execution_path)
     t.eq(copied.turn_count, 1)
+    local canonical_only = structured.copy(summary)
+    canonical_only.case_results_path = nil
+    t.eq(testing_contract.copy_native_summary(canonical_only).case_results_path, nil)
     local mutations = {
       function(value) value.extra = true end,
       function(value) value.mode = "structured-api-cli" end,
@@ -986,3 +984,10 @@ return {
     t.eq(result.turn_count, 1)
   end,
 }
+local coverage_cases = require("tests.ai_browser_control_coverage_helpers").build({
+  browser=browser,controller=controller,fixture=fixture,json_codec=json_codec,
+  observation=observation,ports=ports,sha256=sha256,structured=structured,t=t,
+})
+cases.test_compatibility_projection_replays_without_effects_and_fails_closed_on_write =
+  coverage_cases.compatibility_projection_replays_without_effects_and_fails_closed_on_write
+return cases

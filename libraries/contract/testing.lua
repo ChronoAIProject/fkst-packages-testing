@@ -416,7 +416,8 @@ local function copy_browser_control(value)
     or not strings.is_artifact_root(value.artifact_root)
     or value.test_plan_path ~= value.artifact_root .. "/test-plan.json"
     or value.execution_path ~= value.artifact_root .. "/browser-agent-execution.json"
-    or value.case_results_path ~= value.artifact_root .. "/case-results.json"
+    or (value.case_results_path ~= nil
+      and value.case_results_path ~= value.artifact_root .. "/case-results.json")
     or value.case_result_set_path ~= value.artifact_root .. "/case-result-set.json"
     or not sha256(value.case_result_set_artifact_sha256)
     or value.evidence_manifest_path ~= value.artifact_root .. "/evidence-manifest.json"

@@ -94,18 +94,23 @@ function create(options) {
       || resultRef !== `${executionRoot}/execution.json`
       || value.execution_path !== resultRef
       || value.test_plan_path !== `${executionRoot}/test-plan.json`
-      || value.case_results_path !== `${executionRoot}/case-results.json`) {
+      || (value.case_results_path !== undefined
+        && value.case_results_path !== `${executionRoot}/case-results.json`)) {
+      fail('structured execution result binding is invalid');
+    }
+    const group = canonicalArtifactGroup(value, executionRoot);
+    if (value.case_results_path === undefined && !group) {
       fail('structured execution result binding is invalid');
     }
     const testPlan = artifactRead(projectRoot, value.test_plan_path);
-    const caseResults = artifactRead(projectRoot, value.case_results_path);
+    const caseResults = value.case_results_path === undefined
+      ? undefined : artifactRead(projectRoot, value.case_results_path);
     if (!testPlan || testPlan.digest !== value.plan_sha256
-      || !caseResults || !caseResults.value
-      || caseResults.value.plan_sha256 !== value.plan_sha256
-      || !Array.isArray(caseResults.value.cases)) {
+      || (value.case_results_path !== undefined && (!caseResults || !caseResults.value
+        || caseResults.value.plan_sha256 !== value.plan_sha256
+        || !Array.isArray(caseResults.value.cases)))) {
       fail('structured execution referenced artifacts are unavailable');
     }
-    const group = canonicalArtifactGroup(value, executionRoot);
     if (!group) return { execution, testPlan, caseResults };
 
     const caseResultSet = artifactRead(projectRoot, group.caseResultSetPath);

@@ -265,11 +265,21 @@ local function bind_optional_context(result_set, context)
   end
 end
 
+function C.projection_supported(result_set)
+  if type(result_set) ~= "table" or type(result_set.cases) ~= "table" then return false end
+  for _, case in ipairs(result_set.cases) do
+    if type(case) ~= "table" or legacy_outcomes[case.execution_status] == nil
+      or (case.execution_mode ~= "cli" and case.execution_mode ~= "http") then return false end
+  end
+  return true
+end
+
 function C.project_v1(result_set, manifest, context)
   validate_context(context, "project", type(result_set) == "table" and type(result_set.cases) == "table" and #result_set.cases or nil)
   local root_context = {artifact_root=context.artifact_root}
   local authorities = results.plan_assertion_authorities(context.plan, context.plan_ref, context.plan_sha256)
   results.validate_case_result_set(result_set, authorities, manifest, context.sha256_bytes, root_context); bind_optional_context(result_set, context)
+  if not C.projection_supported(result_set) then fail("unsupported-projection", "canonical results cannot project to v1") end
   local entries = {}; for _, entry in ipairs(manifest.entries) do entries[entry.evidence_id] = entry end
   local cases = {}
   for _, case in ipairs(result_set.cases) do

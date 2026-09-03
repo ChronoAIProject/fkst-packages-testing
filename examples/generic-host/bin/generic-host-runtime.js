@@ -1461,9 +1461,10 @@ function dispatch(name, payload, projectRoot) {
         artifact_root: config.request.structured_execution.artifact_root,
         case_count: value.case_count, passed_count: value.passed_count, failed_count: value.failed_count,
         skipped_count: value.skipped_count, error_count: value.error_count,
-        test_plan_path: value.test_plan_path, case_results_path: value.case_results_path,
+        test_plan_path: value.test_plan_path,
         execution_path: value.execution_path, replayed: true,
       };
+      if (artifacts.caseResults) result.case_results_path = value.case_results_path;
       if (artifacts.caseResultSet) {
         result.case_result_set_path = value.case_result_set_path;
         result.case_result_set_artifact_sha256 = value.case_result_set_artifact_sha256;
@@ -1509,10 +1510,12 @@ function dispatch(name, payload, projectRoot) {
       const canonicalChanged = Boolean(verified.caseResultSet) !== Boolean(artifacts.caseResultSet)
         || (artifacts.caseResultSet && (verified.caseResultSet.digest !== artifacts.caseResultSet.digest
           || verified.evidenceManifest.digest !== artifacts.evidenceManifest.digest));
+      const compatibilityChanged = Boolean(verified.caseResults) !== Boolean(artifacts.caseResults)
+        || (artifacts.caseResults && verified.caseResults.digest !== artifacts.caseResults.digest);
       if (verified.execution.digest !== artifacts.execution.digest
         || verified.testPlan.digest !== artifacts.testPlan.digest
-        || verified.caseResults.digest !== artifacts.caseResults.digest
-        || canonicalChanged || completed.value.result_sha256 !== artifacts.execution.digest) {
+        || compatibilityChanged || canonicalChanged
+        || completed.value.result_sha256 !== artifacts.execution.digest) {
         fail('completed replay result artifact is unavailable or changed');
       }
       const config = loadConfig(projectRoot, runId);
@@ -1526,10 +1529,12 @@ function dispatch(name, payload, projectRoot) {
           result_ref: payload.result_ref, result_sha256: artifacts.execution.digest,
           test_plan_ref: artifacts.execution.value.test_plan_path,
           test_plan_sha256: artifacts.testPlan.digest,
-          case_results_ref: artifacts.execution.value.case_results_path,
-          case_results_sha256: artifacts.caseResults.digest,
           replay_status: completed.value.status,
         };
+        if (artifacts.caseResults) {
+          barrier.case_results_ref = artifacts.execution.value.case_results_path;
+          barrier.case_results_sha256 = artifacts.caseResults.digest;
+        }
         if (artifacts.caseResultSet) {
           barrier.case_result_set_ref = artifacts.execution.value.case_result_set_path;
           barrier.case_result_set_artifact_sha256 = artifacts.caseResultSet.digest;
