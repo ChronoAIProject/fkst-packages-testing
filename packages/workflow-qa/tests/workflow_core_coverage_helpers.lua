@@ -53,6 +53,35 @@ function M.build(deps)
       drive_to_grant(request, ports, state, put)
       core.handle_execution_result(execution_result(request, 0), request, ports)
       local summary = artifact_summary(request, 0, put)
+      summary.native_summary.case_results_path = nil
+      local actions = core.handle_artifact_summary(summary, request, ports)
+      t.eq(actions[1].queue, "environment-factory.environment_finalize")
+      t.eq(state().phase, "cleanup-pending")
+      t.eq(state().terminal_status, "blocked")
+      t.eq(state().execution_summary.status, "passed")
+      t.eq(state().counts.blocked, 1)
+      t.eq(state().artifacts.case_results_ref, nil)
+      t.eq(state().artifacts.case_result_set_ref, nil)
+    end
+    do
+      local request = fixture()
+      local ports, state, put = runtime(request)
+      drive_to_grant(request, ports, state, put)
+      core.handle_execution_result(execution_result(request, 0), request, ports)
+      local summary = artifact_summary(request, 0, put, true)
+      core.handle_artifact_summary(summary, request, ports)
+      release_checkpoint(request, ports, state, "environment-factory.environment_finalize")
+      state().artifacts.evidence_manifest_ref = nil
+      expect_failure("canonical-state-incomplete", function()
+        core.handle_cleanup_result(finalized(request, put), request, ports)
+      end)
+    end
+    do
+      local request = fixture()
+      local ports, state, put = runtime(request)
+      drive_to_grant(request, ports, state, put)
+      core.handle_execution_result(execution_result(request, 0), request, ports)
+      local summary = artifact_summary(request, 0, put)
       summary.status = "blocked"
       state().environment_result = nil
       expect_failure("cleanup-unavailable", function() core.handle_artifact_summary(summary, request, ports) end)

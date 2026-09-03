@@ -694,10 +694,8 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
   if summary.case_results_path ~= nil then state.artifacts.case_results_ref = summary.case_results_path; state.digests[summary.case_results_path] = case_results_sha256 end
   if canonical ~= nil then
     state.artifacts.canonical_plan_ref = canonical.plan_ref; state.digests[canonical.plan_ref] = plan_sha256
-    state.artifacts.case_result_set_ref = canonical.result_ref
-    state.artifacts.evidence_manifest_ref = canonical.manifest_ref
-    state.digests[canonical.result_ref] = result_sha256
-    state.digests[canonical.manifest_ref] = manifest_sha256
+    state.artifacts.case_result_set_ref = canonical.result_ref; state.artifacts.evidence_manifest_ref = canonical.manifest_ref
+    state.digests[canonical.result_ref] = result_sha256; state.digests[canonical.manifest_ref] = manifest_sha256
   end
   local counts = {
     planned = summary.case_count or 0,

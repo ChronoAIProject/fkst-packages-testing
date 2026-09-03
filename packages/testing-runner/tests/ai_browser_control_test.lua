@@ -223,7 +223,7 @@ local function canonical_case(request, writes)
     "testing-evidence-manifest.v1")
   return result_set.cases[1]
 end
-return {
+local cases = {
   test_deterministic_completion_overrides_advisory_ai_and_passes = function()
     local request, artifacts, grant = fixture()
     local runtime, writes = ports(request, artifacts, grant, { callback_turn = 1 })
@@ -984,3 +984,10 @@ return {
     t.eq(result.turn_count, 1)
   end,
 }
+local coverage_cases = require("tests.ai_browser_control_coverage_helpers").build({
+  browser=browser,controller=controller,fixture=fixture,json_codec=json_codec,
+  observation=observation,ports=ports,sha256=sha256,structured=structured,t=t,
+})
+cases.test_compatibility_projection_replays_without_effects_and_fails_closed_on_write =
+  coverage_cases.compatibility_projection_replays_without_effects_and_fails_closed_on_write
+return cases

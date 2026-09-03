@@ -482,6 +482,13 @@ return {
       t.raises(function() defect_publication.prepare_defects(value, runtime()) end)
     end
     do
+      local value = preparation_request()
+      value.case_results_ref = nil
+      value.case_results_sha256 = nil
+      value.publication.case_results_path = nil
+      t.raises(function() defect_publication.validate_preparation_request(value) end)
+    end
+    do
       local ports = runtime({ mutate = function(artifacts)
         artifacts[request().case_results_ref].value.cases[1].assertions[1].passed = "false"
       end })
@@ -680,6 +687,12 @@ return {
     local binding = request()
     binding.receipt_ref = ".testing/runs/other/receipt.json"
     t.raises(function() defect_publication.prepare(binding, runtime()) end)
+
+    local missing_results = request()
+    missing_results.case_results_ref = nil
+    missing_results.case_results_sha256 = nil
+    missing_results.publication.case_results_path = nil
+    t.raises(function() defect_publication.validate_request(missing_results) end)
 
     local missing_artifact = runtime({ mutate = function(artifacts)
       artifacts[request().case_results_ref] = nil

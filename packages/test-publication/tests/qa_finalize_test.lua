@@ -699,6 +699,16 @@ return {
     unsafe_pointer.terminal_summary_ref = ".testing/runs/foreign/terminal-summary.json"
     t.raises(function() qa_publication.prepare_final_report(unsafe_pointer, runtime()) end)
 
+    for _, mutate in ipairs({
+      function(value) value.case_results_ref = ".testing/runs/foreign/case-results.json" end,
+      function(value) value.case_results_ref = nil; value.case_results_sha256 = nil end,
+      function(value) value["test_" .. "plan_ref"] = nil; value.test_plan_sha256 = nil end,
+    }) do
+      local value = request()
+      mutate(value)
+      t.raises(function() qa_publication.prepare_final_report(value, runtime()) end)
+    end
+
     local digest_mismatch = runtime(function(artifacts, value)
       artifacts[value.terminal_summary_ref].digest = string.rep("0", 64)
     end)

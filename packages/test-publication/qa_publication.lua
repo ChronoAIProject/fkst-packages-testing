@@ -384,9 +384,8 @@ local function canonical_identity(request)
 end
 
 local function canonical_artifact_root(request)
-  if type(request.case_result_set_ref) == "string" then return request.case_result_set_ref:match("^(.*)/case%-result%-set%.json$") end
-  if type(request.case_results_ref) == "string" then return request.case_results_ref:match("^(.*)/case%-results%.json$") end
-  return nil
+  local ref = request.case_result_set_ref
+  return type(ref) == "string" and ref:match("^(.*)/case%-result%-set%.json$") or nil
 end
 
 local function validate_finalize_request(request)
@@ -465,8 +464,7 @@ local function validate_finalize_request(request)
       or request.evidence_manifest_ref ~= canonical_root .. "/evidence-manifest.json" then
       error("test-publication: qa: canonical result pointers must use exact execution paths")
     end
-    if not strings.is_sha256(request.case_result_set_artifact_sha256)
-      or not strings.is_sha256(request.evidence_manifest_artifact_sha256) then
+    if not strings.is_sha256(request.case_result_set_artifact_sha256) or not strings.is_sha256(request.evidence_manifest_artifact_sha256) then
       error("test-publication: qa: invalid canonical artifact digest")
     end
   end
