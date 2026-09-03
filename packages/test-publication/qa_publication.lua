@@ -384,12 +384,8 @@ local function canonical_identity(request)
 end
 
 local function canonical_artifact_root(request)
-  if type(request.case_result_set_ref) == "string" then
-    return request.case_result_set_ref:match("^(.*)/case%-result%-set%.json$")
-  end
-  if type(request.case_results_ref) == "string" then
-    return request.case_results_ref:match("^(.*)/case%-results%.json$")
-  end
+  if type(request.case_result_set_ref) == "string" then return request.case_result_set_ref:match("^(.*)/case%-result%-set%.json$") end
+  if type(request.case_results_ref) == "string" then return request.case_results_ref:match("^(.*)/case%-results%.json$") end
   return nil
 end
 
@@ -433,31 +429,22 @@ local function validate_finalize_request(request)
     error("test-publication: qa: malformed browser readiness pointer")
   end
   local has_plan = request.test_plan_ref ~= nil or request.test_plan_sha256 ~= nil
-  if has_plan ~= (request.test_plan_ref ~= nil and request.test_plan_sha256 ~= nil) then
-    error("test-publication: qa: full finalization requires a bound plan")
-  end
+  if has_plan ~= (request.test_plan_ref ~= nil and request.test_plan_sha256 ~= nil) then error("test-publication: qa: full finalization requires a bound plan") end
   local has_legacy = request.case_results_ref ~= nil or request.case_results_sha256 ~= nil
-  if has_legacy ~= (request.case_results_ref ~= nil and request.case_results_sha256 ~= nil) then
-    error("test-publication: qa: legacy case results pointer and digest must be paired")
-  end
+  if has_legacy ~= (request.case_results_ref ~= nil and request.case_results_sha256 ~= nil) then error("test-publication: qa: legacy case results pointer and digest must be paired") end
   if has_plan then
-    for _, field in ipairs({ "test_plan_ref" }) do
-      if not safe_pointer(request[field]) or request[field]:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/" then
-        error("test-publication: qa: unsafe finalize pointer " .. field)
-      end
+    if not safe_pointer(request.test_plan_ref)
+      or request.test_plan_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/" then
+      error("test-publication: qa: unsafe finalize pointer test_plan_ref")
     end
-    for _, field in ipairs({ "test_plan_sha256" }) do
-      if not strings.is_sha256(request[field]) then error("test-publication: qa: invalid finalize digest " .. field) end
-    end
+    if not strings.is_sha256(request.test_plan_sha256) then error("test-publication: qa: invalid finalize digest test_plan_sha256") end
   end
   if has_legacy then
     if not safe_pointer(request.case_results_ref)
       or request.case_results_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/" then
       error("test-publication: qa: unsafe finalize pointer case_results_ref")
     end
-    if not strings.is_sha256(request.case_results_sha256) then
-      error("test-publication: qa: invalid finalize digest case_results_sha256")
-    end
+    if not strings.is_sha256(request.case_results_sha256) then error("test-publication: qa: invalid finalize digest case_results_sha256") end
   end
   local canonical_count = 0
   for _, field in ipairs(canonical_quartet_fields) do
@@ -471,9 +458,7 @@ local function validate_finalize_request(request)
   if full and (not has_plan or (not has_legacy and not has_canonical)) then
     error("test-publication: qa: full finalization requires a bound plan and results")
   end
-  if full and not has_readiness then
-    error("test-publication: qa: full finalization requires post-design browser readiness")
-  end
+  if full and not has_readiness then error("test-publication: qa: full finalization requires post-design browser readiness") end
   if has_canonical then
     local canonical_root = canonical_artifact_root(request)
     if canonical_root == nil or request.case_result_set_ref ~= canonical_root .. "/case-result-set.json"

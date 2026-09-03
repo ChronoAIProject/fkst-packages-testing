@@ -691,10 +691,7 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     error("workflow-qa: foreign-artifact-summary: canonical artifact digest differs")
   end
   state.execution_summary = copy(payload)
-  if summary.case_results_path ~= nil then
-    state.artifacts.case_results_ref = summary.case_results_path
-    state.digests[summary.case_results_path] = case_results_sha256
-  end
+  if summary.case_results_path ~= nil then state.artifacts.case_results_ref = summary.case_results_path; state.digests[summary.case_results_path] = case_results_sha256 end
   if canonical ~= nil then
     state.artifacts.canonical_plan_ref = canonical.plan_ref; state.digests[canonical.plan_ref] = plan_sha256
     state.artifacts.case_result_set_ref = canonical.result_ref
@@ -712,9 +709,7 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     blocked = 0,
   }
   state.counts = counts
-  if payload.status == "blocked" then
-    return begin_cleanup(state, state.interruption_requested or "blocked", ports, counts)
-  end
+  if payload.status == "blocked" then return begin_cleanup(state, state.interruption_requested or "blocked", ports, counts) end
   local next_phase, next_actions
   local next_status = state.interruption_requested or payload.status
   if state.interruption_requested ~= nil or counts.failed == 0 then
@@ -737,8 +732,7 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     dedup_key = request.dedup_key,
   }
   if summary.case_results_path ~= nil then
-    prepare.case_results_ref = summary.case_results_path
-    prepare.case_results_sha256 = state.digests[summary.case_results_path]
+    prepare.case_results_ref = summary.case_results_path; prepare.case_results_sha256 = state.digests[summary.case_results_path]
   end
   add_canonical_quartet(state, prepare)
   if next_phase == nil then
@@ -829,15 +823,11 @@ prepare_finalization = function(state, ports)
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
-  if request.publication.channel ~= nil then
-    final.channel = request.publication.channel
-  end
-  if state.artifacts.structured_plan_ref ~= nil
-    and (state.artifacts.case_results_ref ~= nil or state.artifacts.case_result_set_ref ~= nil) then
+  if request.publication.channel ~= nil then final.channel = request.publication.channel end
+  if state.artifacts.structured_plan_ref ~= nil and (state.artifacts.case_results_ref ~= nil or state.artifacts.case_result_set_ref ~= nil) then
     final.test_plan_ref, final.test_plan_sha256 = publication_plan(state)
     if state.artifacts.case_results_ref ~= nil then
-      final.case_results_ref = state.artifacts.case_results_ref
-      final.case_results_sha256 = state.digests[state.artifacts.case_results_ref]
+      final.case_results_ref = state.artifacts.case_results_ref; final.case_results_sha256 = state.digests[state.artifacts.case_results_ref]
     end
   end
   add_canonical_quartet(state, final)

@@ -378,7 +378,7 @@ return {
     end })
     local ok, failure = pcall(defect_publication.prepare, value, ports)
     t.eq(ok, false)
-    if tostring(failure):find("unsupported-kind", 1, true) == nil then
+    if tostring(failure):find("unsupported-projection", 1, true) == nil then
       error(tostring(failure))
     end
     t.eq(ports.write_count(), 0); t.eq(ports.save_count(), 0)

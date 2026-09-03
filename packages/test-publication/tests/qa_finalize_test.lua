@@ -635,7 +635,7 @@ return {
     end, value)
     local ok, failure = pcall(qa_publication.prepare_final_report, value, ports)
     t.eq(ok, false)
-    if tostring(failure):find("unsupported-kind", 1, true) == nil then error(tostring(failure)) end
+    if tostring(failure):find("unsupported-projection", 1, true) == nil then error(tostring(failure)) end
     t.eq(ports.publish_calls(), 0)
     t.eq(ports.report_writes(), 0)
   end,
