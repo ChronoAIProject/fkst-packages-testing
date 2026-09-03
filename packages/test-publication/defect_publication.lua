@@ -162,7 +162,8 @@ function M.validate_request(request)
     or publication.metadata_path ~= publication.artifact_root .. "/metadata.json"
     or publication.test_plan_path ~= publication.artifact_root .. "/test-plan.json"
     or publication.execution_path ~= publication.artifact_root .. execution_path
-    or publication.case_results_path ~= publication.artifact_root .. "/case-results.json"
+    or (publication.case_results_path ~= nil
+      and publication.case_results_path ~= publication.artifact_root .. "/case-results.json")
     or not bounded(publication.trace_id, 180) or not bounded(publication.dedup_key, 180)
     or not bounded(publication.source_ref.kind, 80) or not bounded(publication.source_ref.ref, 200)
     or (publication.stage_report_path ~= nil and not under_root(publication.stage_report_path, publication.artifact_root))
@@ -170,17 +171,23 @@ function M.validate_request(request)
     or (publication.publication_dry_run ~= nil and publication.publication_dry_run ~= true) then
     error("test-publication: defect: malformed structured publication request")
   end
-  if request.case_results_ref ~= publication.case_results_path
+  local has_legacy = request.case_results_ref ~= nil or request.case_results_sha256 ~= nil
+  if has_legacy ~= (request.case_results_ref ~= nil and request.case_results_sha256 ~= nil)
+    or request.case_results_ref ~= publication.case_results_path
     or not under_root(request.issue_drafts_ref, publication.artifact_root)
     or not under_root(request.ledger_ref, publication.artifact_root)
     or not under_root(request.receipt_ref, publication.artifact_root)
     or (publication.issue_drafts_path ~= nil and request.issue_drafts_ref ~= publication.issue_drafts_path)
-    or not digest(request.plan_sha256) or not digest(request.case_results_sha256)
+    or not digest(request.plan_sha256)
+    or (request.case_results_sha256 ~= nil and not digest(request.case_results_sha256))
     or not digest(request.issue_drafts_sha256) or request.trace_id ~= publication.trace_id
     or not bounded(request.dedup_key, 180) then
     error("test-publication: defect: request binding is invalid")
   end
-  validate_canonical_binding(request, publication)
+  local has_canonical = validate_canonical_binding(request, publication)
+  if not has_legacy and not has_canonical then
+    error("test-publication: defect: canonical or legacy case results are required")
+  end
   return request
 end
 
@@ -235,7 +242,8 @@ local function validate_preparation_request(request)
     or type(request.repository.commit_sha) ~= "string" or #request.repository.commit_sha ~= 40
     or request.repository.commit_sha:match("^[0-9a-f]+$") == nil
     or not bounded(request.run_id, 180) or not digest(request.plan_sha256)
-    or not digest(request.case_results_sha256) or not bounded(request.trace_id, 180)
+    or (request.case_results_sha256 ~= nil and not digest(request.case_results_sha256))
+    or not bounded(request.trace_id, 180)
     or not bounded(request.dedup_key, 180) then
     error("test-publication: defect: malformed preparation identity")
   end
@@ -259,13 +267,18 @@ local function validate_preparation_request(request)
     or publication.source_ref.kind ~= "workflow-qa" or publication.source_ref.ref ~= request.run_id
     or publication.publication_dry_run ~= true
     or not under_root(request.plan_ref, publication.artifact_root)
-    or not under_root(request.case_results_ref, publication.artifact_root)
+    or (request.case_results_ref ~= nil and not under_root(request.case_results_ref, publication.artifact_root))
     or not under_root(request.issue_drafts_ref, publication.artifact_root)
     or not under_root(request.ledger_ref, publication.artifact_root)
     or not under_root(request.receipt_ref, publication.artifact_root) then
     error("test-publication: defect: malformed preparation binding")
   end
-  validate_canonical_binding(request, publication)
+  local has_canonical = validate_canonical_binding(request, publication)
+  local has_legacy = request.case_results_ref ~= nil or request.case_results_sha256 ~= nil
+  if has_legacy ~= (request.case_results_ref ~= nil and request.case_results_sha256 ~= nil)
+    or (not has_legacy and not has_canonical) then
+    error("test-publication: defect: canonical or legacy case results are required")
+  end
   return request
 end
 
@@ -331,15 +344,17 @@ local function validated_result_view(request, ports, plan, plan_ref)
     evidence_manifest_artifact_sha256=request.evidence_manifest_artifact_sha256,
     sha256_bytes=hash,
   })
-  local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
-  local projected = results_compat.project_v1(result_set, manifest, {
-    artifact_root = root, plan_sha256 = request.plan_sha256, plan = plan,
-    repository = repository, run_id = run_id, plan_ref = canonical_plan_ref,
-    trace_id = request.trace_id, dedup_key = request.dedup_key, sha256_bytes = hash,
-  })
-  results_compat.validate_v1(legacy, v1_context)
-  if not equal(projected, legacy) then
-    error("test-publication: defect: canonical and legacy case results differ")
+  if request.case_results_ref ~= nil then
+    local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+    local projected = results_compat.project_v1(result_set, manifest, {
+      artifact_root = root, plan_sha256 = request.plan_sha256, plan = plan,
+      repository = repository, run_id = run_id, plan_ref = canonical_plan_ref,
+      trace_id = request.trace_id, dedup_key = request.dedup_key, sha256_bytes = hash,
+    })
+    results_compat.validate_v1(legacy, v1_context)
+    if not equal(projected, legacy) then
+      error("test-publication: defect: canonical and legacy case results differ")
+    end
   end
   return direct
 end
@@ -405,8 +420,6 @@ function M.prepare_defects(request, ports)
     publication = publication,
     repository = copy(request.repository),
     plan_sha256 = request.plan_sha256,
-    case_results_ref = request.case_results_ref,
-    case_results_sha256 = request.case_results_sha256,
     issue_drafts_ref = request.issue_drafts_ref,
     issue_drafts_sha256 = existing.digest,
     ledger_ref = request.ledger_ref,
@@ -414,6 +427,10 @@ function M.prepare_defects(request, ports)
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
+  if request.case_results_ref ~= nil then
+    defect_request.case_results_ref = request.case_results_ref
+    defect_request.case_results_sha256 = request.case_results_sha256
+  end
   for _, field in ipairs(canonical_quartet_fields) do
     if request[field] ~= nil then defect_request[field] = request[field] end
   end

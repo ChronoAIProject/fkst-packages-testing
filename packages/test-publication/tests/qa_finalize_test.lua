@@ -201,7 +201,9 @@ local function terminal_summary(value, status, terminal_counts)
 end
 
 local function result_artifact_root(value)
-  return value.case_results_ref:match("^(.*)/case%-results%.json$")
+  local ref = value.case_result_set_ref or value.case_results_ref
+  return ref:match("^(.*)/case%-result%-set%.json$")
+    or ref:match("^(.*)/case%-results%.json$")
 end
 
 local function legacy_results(value)
@@ -466,6 +468,36 @@ return {
     t.is_true(prepared.report.artifact_links.case_result_set ~= nil)
     t.is_true(prepared.report.artifact_links.evidence_manifest ~= nil)
     t.is_true(ports.hash_calls() > 0)
+  end,
+
+  test_canonical_lost_finalization_does_not_require_legacy_projection = function()
+    local value = canonical_request()
+    value.case_results_ref = nil
+    value.case_results_sha256 = nil
+    local ports = runtime(function(artifacts)
+      local summary = artifacts[value.terminal_summary_ref].value
+      summary.status = "blocked"
+      summary.case_results_ref = nil
+      summary.counts = { planned=2,executed=2,passed=0,failed=0,skipped=0,error=2,blocked=0 }
+      local result_set = artifacts[value.case_result_set_ref].value
+      for _, case_result in ipairs(result_set.cases) do
+        case_result.execution_status = "lost"
+        case_result.classification = "lost"
+        case_result.non_execution_reason = "runner-disconnected"
+        case_result.error = nil
+        for _, assertion in ipairs(case_result.assertions) do
+          assertion.status = "skipped"
+          assertion.classification = "skipped"
+        end
+      end
+    end, value)
+
+    local prepared = qa_publication.prepare_final_report(value, ports)
+    t.eq(prepared.report.status, "blocked")
+    t.eq(prepared.report.counts.error, 2)
+    t.eq(prepared.report.artifact_links.case_results, nil)
+    t.is_true(prepared.report.artifact_links.case_result_set ~= nil)
+    t.is_true(prepared.report.artifact_links.evidence_manifest ~= nil)
   end,
 
   test_canonical_finalization_accepts_execution_subroot_artifacts = function()

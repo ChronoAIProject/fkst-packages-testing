@@ -384,8 +384,13 @@ local function canonical_identity(request)
 end
 
 local function canonical_artifact_root(request)
-  if type(request.case_results_ref) ~= "string" then return nil end
-  return request.case_results_ref:match("^(.*)/case%-results%.json$")
+  if type(request.case_result_set_ref) == "string" then
+    return request.case_result_set_ref:match("^(.*)/case%-result%-set%.json$")
+  end
+  if type(request.case_results_ref) == "string" then
+    return request.case_results_ref:match("^(.*)/case%-results%.json$")
+  end
+  return nil
 end
 
 local function validate_finalize_request(request)
@@ -427,24 +432,32 @@ local function validate_finalize_request(request)
     or not strings.is_sha256(request.browser_readiness_sha256)) then
     error("test-publication: qa: malformed browser readiness pointer")
   end
-  local full = request.test_plan_ref ~= nil or request.test_plan_sha256 ~= nil
-    or request.case_results_ref ~= nil or request.case_results_sha256 ~= nil
-  if full ~= (request.test_plan_ref ~= nil and request.test_plan_sha256 ~= nil
-    and request.case_results_ref ~= nil and request.case_results_sha256 ~= nil) then
-    error("test-publication: qa: full finalization requires bound plan and case results")
+  local has_plan = request.test_plan_ref ~= nil or request.test_plan_sha256 ~= nil
+  if has_plan ~= (request.test_plan_ref ~= nil and request.test_plan_sha256 ~= nil) then
+    error("test-publication: qa: full finalization requires a bound plan")
   end
-  if full then
-    for _, field in ipairs({ "test_plan_ref", "case_results_ref" }) do
+  local has_legacy = request.case_results_ref ~= nil or request.case_results_sha256 ~= nil
+  if has_legacy ~= (request.case_results_ref ~= nil and request.case_results_sha256 ~= nil) then
+    error("test-publication: qa: legacy case results pointer and digest must be paired")
+  end
+  if has_plan then
+    for _, field in ipairs({ "test_plan_ref" }) do
       if not safe_pointer(request[field]) or request[field]:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/" then
         error("test-publication: qa: unsafe finalize pointer " .. field)
       end
     end
-    for _, field in ipairs({ "test_plan_sha256", "case_results_sha256" }) do
+    for _, field in ipairs({ "test_plan_sha256" }) do
       if not strings.is_sha256(request[field]) then error("test-publication: qa: invalid finalize digest " .. field) end
     end
   end
-  if full and not has_readiness then
-    error("test-publication: qa: full finalization requires post-design browser readiness")
+  if has_legacy then
+    if not safe_pointer(request.case_results_ref)
+      or request.case_results_ref:sub(1, #request.artifact_root + 1) ~= request.artifact_root .. "/" then
+      error("test-publication: qa: unsafe finalize pointer case_results_ref")
+    end
+    if not strings.is_sha256(request.case_results_sha256) then
+      error("test-publication: qa: invalid finalize digest case_results_sha256")
+    end
   end
   local canonical_count = 0
   for _, field in ipairs(canonical_quartet_fields) do
@@ -454,8 +467,14 @@ local function validate_finalize_request(request)
   if has_canonical and canonical_count ~= #canonical_quartet_fields then
     error("test-publication: qa: canonical result quartet must be complete")
   end
+  local full = has_plan or has_legacy or has_canonical
+  if full and (not has_plan or (not has_legacy and not has_canonical)) then
+    error("test-publication: qa: full finalization requires a bound plan and results")
+  end
+  if full and not has_readiness then
+    error("test-publication: qa: full finalization requires post-design browser readiness")
+  end
   if has_canonical then
-    if not full then error("test-publication: qa: canonical results require full finalization") end
     local canonical_root = canonical_artifact_root(request)
     if canonical_root == nil or request.case_result_set_ref ~= canonical_root .. "/case-result-set.json"
       or request.evidence_manifest_ref ~= canonical_root .. "/evidence-manifest.json" then
@@ -662,16 +681,18 @@ local function validated_result_view(request, ports, plan, repository, has_canon
     evidence_manifest_artifact_sha256=request.evidence_manifest_artifact_sha256,
     sha256_bytes=hash,
   })
-  local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
-  local projected = results_compat.project_v1(result_set, manifest, {
-    artifact_root = canonical_root, plan_sha256 = request.test_plan_sha256, plan = plan,
-    repository = canonical_repository_identity, run_id = request.run_id,
-    plan_ref = plan_ref, trace_id = request.trace_id, dedup_key = request.dedup_key,
-    sha256_bytes = hash,
-  })
-  results_compat.validate_v1(legacy, v1_context)
-  if not structured_contract.equal(projected, legacy) then
-    error("test-publication: qa: canonical and legacy case results differ")
+  if request.case_results_ref ~= nil then
+    local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
+    local projected = results_compat.project_v1(result_set, manifest, {
+      artifact_root = canonical_root, plan_sha256 = request.test_plan_sha256, plan = plan,
+      repository = canonical_repository_identity, run_id = request.run_id,
+      plan_ref = plan_ref, trace_id = request.trace_id, dedup_key = request.dedup_key,
+      sha256_bytes = hash,
+    })
+    results_compat.validate_v1(legacy, v1_context)
+    if not structured_contract.equal(projected, legacy) then
+      error("test-publication: qa: canonical and legacy case results differ")
+    end
   end
   return direct
 end
@@ -810,10 +831,12 @@ function M.prepare_final_report(request, ports)
   if full then
     local plan_publication = publish_source(request, ports, request.test_plan_ref,
       request.test_plan_sha256, "aggregate-source-plan")
-    local results_publication = publish_source(request, ports, request.case_results_ref,
-      request.case_results_sha256, "aggregate-source-results")
     links.test_plan = publication_location(plan_publication, channel)
-    links.case_results = publication_location(results_publication, channel)
+    if request.case_results_ref ~= nil then
+      local results_publication = publish_source(request, ports, request.case_results_ref,
+        request.case_results_sha256, "aggregate-source-results")
+      links.case_results = publication_location(results_publication, channel)
+    end
   end
   if has_canonical then
     local result_set_publication = publish_source(request, ports, request.case_result_set_ref,

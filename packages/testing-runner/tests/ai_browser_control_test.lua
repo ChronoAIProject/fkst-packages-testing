@@ -402,12 +402,13 @@ return {
       local runtime, writes = ports(request, artifacts, grant, {
         act = function() error("process interrupted after dispatch") end,
       })
-      controller.run(request, runtime)
+      local result = controller.run(request, runtime)
       local case_result = canonical_case(request, writes)
       t.eq(case_result.execution_status, "lost")
       t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
       t.eq(case_result.assertions[1].status, "skipped")
       t.eq(writes[request.artifact_root .. "/case-results.json"], nil)
+      t.eq(result.case_results_path, nil)
     end
   end,
   test_optional_screenshot_and_runner_output_evidence_require_exact_metadata = function()
@@ -883,6 +884,9 @@ return {
     t.eq(copied.schema, summary.schema)
     t.eq(copied.execution_path, summary.execution_path)
     t.eq(copied.turn_count, 1)
+    local canonical_only = structured.copy(summary)
+    canonical_only.case_results_path = nil
+    t.eq(testing_contract.copy_native_summary(canonical_only).case_results_path, nil)
     local mutations = {
       function(value) value.extra = true end,
       function(value) value.mode = "structured-api-cli" end,

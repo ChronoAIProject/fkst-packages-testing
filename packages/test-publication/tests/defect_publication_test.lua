@@ -293,6 +293,38 @@ return {
     t.eq(#publication.issue_requests, 1)
   end,
 
+  test_canonical_lost_results_publish_without_legacy_projection = function()
+    local value = canonical_request()
+    value.case_results_ref = nil
+    value.case_results_sha256 = nil
+    value.publication.case_results_path = nil
+    local preparation = preparation_request(value)
+    local ports = runtime({
+      canonical = true,
+      mutate = function(artifacts)
+        artifacts[value.issue_drafts_ref] = nil
+        local result_set = artifacts[value.case_result_set_ref].value
+        for _, case_result in ipairs(result_set.cases) do
+          case_result.execution_status = "lost"
+          case_result.classification = "lost"
+          case_result.non_execution_reason = "runner-disconnected"
+          case_result.error = nil
+          for _, assertion in ipairs(case_result.assertions) do
+            assertion.status = "skipped"
+            assertion.classification = "skipped"
+          end
+        end
+      end,
+    })
+
+    local prepared = defect_publication.prepare_defects(preparation, ports)
+    t.eq(prepared.defect_request.case_results_ref, nil)
+    t.eq(prepared.defect_request.case_results_sha256, nil)
+    t.eq(#ports.writes[value.issue_drafts_ref].cases, 0)
+    local publication = defect_publication.prepare(prepared.defect_request, ports)
+    t.eq(#publication.issue_requests, 0)
+  end,
+
   test_canonical_browser_projection_mismatch_rejects_before_outputs = function()
     local value = canonical_request()
     value.publication.job = "ai-browser-control"

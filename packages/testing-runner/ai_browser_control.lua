@@ -125,7 +125,6 @@ local function summary(request, outcome, replayed, artifacts)
     artifact_root = request.artifact_root,
     test_plan_path = request.artifact_root .. "/test-plan.json",
     execution_path = request.artifact_root .. "/browser-agent-execution.json",
-    case_results_path = request.artifact_root .. "/case-results.json",
     case_count = 1,
     passed_count = passed,
     failed_count = failed,
@@ -134,6 +133,9 @@ local function summary(request, outcome, replayed, artifacts)
     turn_count = outcome.turn_count or 0,
     replayed = replayed == true,
   }
+  if outcome.projection_supported == true then
+    value.case_results_path = request.artifact_root .. "/case-results.json"
+  end
   for key, item in pairs(artifacts or {}) do value[key] = item end
   return value
 end
@@ -398,6 +400,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
       status = persisted_case.execution_status,
       classification = persisted_case.classification,
       turn_count = #persisted_receipt.value.steps,
+      projection_supported = projected ~= nil,
     }, false, {
       case_result_set_path = results_path,
       case_result_set_artifact_sha256 = persisted_result.digest,
@@ -579,6 +582,7 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     status = normalized.execution_status,
     classification = normalized.public_classification,
     turn_count = #steps,
+    projection_supported = projected ~= nil,
   }, false, {
     case_result_set_path = results_path,
     case_result_set_artifact_sha256 = result_set_artifact_sha256,
