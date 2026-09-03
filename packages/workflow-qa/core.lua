@@ -740,7 +740,7 @@ function M.handle_artifact_summary(payload, request, supplied_ports)
     next_actions = { action("test-publication.defect_preparation_request", prepare) }
   end
   return gate_checkpoint(state, "execution-batch", payload.status,
-    summary.case_results_path, counts, next_phase, next_actions, ports)
+    canonical and canonical.result_ref or summary.case_results_path, counts, next_phase, next_actions, ports)
 end
 
 function M.handle_defect_terminal(payload, request, supplied_ports)
