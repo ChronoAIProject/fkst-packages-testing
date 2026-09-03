@@ -325,7 +325,7 @@ return {
     t.eq(#publication.issue_requests, 0)
   end,
 
-  test_canonical_browser_projection_mismatch_rejects_before_outputs = function()
+  test_canonical_browser_legacy_projection_rejects_before_outputs = function()
     local value = canonical_request()
     value.publication.job = "ai-browser-control"
     value.publication.execution_path = value.publication.artifact_root .. "/browser-agent-execution.json"
@@ -378,7 +378,7 @@ return {
     end })
     local ok, failure = pcall(defect_publication.prepare, value, ports)
     t.eq(ok, false)
-    if tostring(failure):find("canonical and legacy case results differ", 1, true) == nil then
+    if tostring(failure):find("unsupported-kind", 1, true) == nil then
       error(tostring(failure))
     end
     t.eq(ports.write_count(), 0); t.eq(ports.save_count(), 0)

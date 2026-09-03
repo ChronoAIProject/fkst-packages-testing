@@ -148,6 +148,20 @@ return {
     t.raises(function()
       compat.project_v1(canonical.result_set, canonical.evidence_manifest, ctx)
     end)
+    local _, browser_ctx, browser_canonical = bundle()
+    local completion_assertions = browser_ctx.plan.cases[1].assertions
+    for index, assertion in ipairs(completion_assertions) do
+      assertion.assertion_id = "assertion-" .. index
+      assertion.required = true
+    end
+    browser_ctx.plan.cases[1].kind = "browser"
+    browser_ctx.plan.cases[1].completion_assertions = completion_assertions
+    browser_ctx.plan.cases[1].assertions = nil
+    browser_canonical.result_set.cases[1].execution_mode = "browser"
+    t.eq(compat.projection_supported(browser_canonical.result_set), false)
+    t.raises(function()
+      compat.project_v1(browser_canonical.result_set, browser_canonical.evidence_manifest, browser_ctx)
+    end)
     t.eq(compat.projection_supported({}), false)
   end,
 
@@ -155,6 +169,7 @@ return {
     local value, ctx = legacy_fixture(), context()
     t.eq(compat.validate_v1(value, ctx), value)
     local bad=copy(value); bad.cases[1].classification="product-defect"; t.raises(function() compat.validate_v1(bad, ctx) end)
+    bad=copy(value); bad.cases[1].kind="browser"; t.raises(function() compat.validate_v1(bad, ctx) end)
     bad=copy(value); bad.cases[1].assertions={}; t.raises(function() compat.validate_v1(bad, ctx) end)
     bad=copy(value); table.insert(bad.cases[1].assertions, {type="optional-note",passed=false}); local no_plan=copy(ctx); no_plan.plan=nil
     t.raises(function() compat.validate_v1(bad, no_plan) end); t.raises(function() compat.canonicalize_v1(bad, no_plan) end)

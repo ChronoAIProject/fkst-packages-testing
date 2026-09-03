@@ -10,8 +10,10 @@ legacy projection, and publication owns provider policy only.
 `contract.testing_results_compat.project_v1`; they may not treat v1 as competing canonical authority.
 `explicitly-out-of-scope` entries identify contract owners and producers so source references are not
 mistaken for downstream consumers. Browser `blocked` and `lost` outcomes remain canonical-only because
-v1 has no truthful status mapping. Publication consumers accept that canonical artifact group without
-requiring `case-results.json`, and validate the legacy projection only when its pointer is supplied.
+v1 has no truthful status mapping, and all other Browser outcomes remain canonical-only because the
+unchanged v1 kind vocabulary is limited to CLI and HTTP cases. Publication consumers accept that
+canonical artifact group without requiring `case-results.json`, and validate the legacy projection only
+when its pointer is supplied.
 
 `libraries/testing_runtime/qa_publication.lua` is an artifact transport adapter and has no result
 semantics; publication validation remains in `packages/test-publication/canonical_results.lua`,

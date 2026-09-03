@@ -583,7 +583,7 @@ return {
     end)
   end,
 
-  test_canonical_browser_projection_disagreement_rejects_before_output = function()
+  test_canonical_browser_legacy_projection_rejects_before_output = function()
     local value = canonical_request()
     local ports = runtime(function(artifacts)
       local plan_value = artifacts[value.test_plan_ref].value
@@ -635,7 +635,7 @@ return {
     end, value)
     local ok, failure = pcall(qa_publication.prepare_final_report, value, ports)
     t.eq(ok, false)
-    if tostring(failure):find("canonical and legacy case results differ", 1, true) == nil then error(tostring(failure)) end
+    if tostring(failure):find("unsupported-kind", 1, true) == nil then error(tostring(failure)) end
     t.eq(ports.publish_calls(), 0)
     t.eq(ports.report_writes(), 0)
   end,

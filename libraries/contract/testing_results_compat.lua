@@ -154,12 +154,11 @@ local function validate_plan_order(value, plan)
   if #plan.cases ~= #value.cases then fail("foreign-plan", "v1 case count does not match the plan") end
   for index, case in ipairs(value.cases) do
     local planned = plan.cases[index]
-    local planned_assertions = planned.kind == "browser" and planned.completion_assertions or planned.assertions
     if case.case_id ~= planned.case_id or case.kind ~= planned.kind then fail("foreign-plan", "v1 case order or kind does not match the plan") end
     if #case.assertions ~= 0 or (case.status ~= "skipped" and case.status ~= "error") then
-      if #case.assertions ~= #planned_assertions then fail("foreign-plan", "v1 assertion count does not match the plan") end
+      if #case.assertions ~= #planned.assertions then fail("foreign-plan", "v1 assertion count does not match the plan") end
       for assertion_index, assertion in ipairs(case.assertions) do
-        if assertion.type ~= planned_assertions[assertion_index].type then fail("foreign-plan", "v1 assertion order or type does not match the plan") end
+        if assertion.type ~= planned.assertions[assertion_index].type then fail("foreign-plan", "v1 assertion order or type does not match the plan") end
       end
     end
   end
@@ -174,7 +173,7 @@ function C.validate_v1(value, context)
   for _, case in ipairs(value.cases) do
     fields(case, {case_id=true,kind=true,status=true,classification=true,assertions=true,evidence_ref=true}, "v1-case")
     identifier(case.case_id, "case_id"); if seen[case.case_id] then fail("duplicate-case", case.case_id) end; seen[case.case_id] = true
-    if case.kind ~= "cli" and case.kind ~= "http" and case.kind ~= "browser" then fail("unsupported-kind", tostring(case.kind)) end
+    if case.kind ~= "cli" and case.kind ~= "http" then fail("unsupported-kind", tostring(case.kind)) end
     bounded(case.status, "status", 32); bounded(case.classification, "classification", 64)
     if not status_pairs[case.status] or not status_pairs[case.status][case.classification] then fail("contradictory-status", "v1 status and classification disagree") end
     list(case.assertions, "assertions", 32, false); local passed, failed = 0, 0
@@ -269,7 +268,8 @@ end
 function C.projection_supported(result_set)
   if type(result_set) ~= "table" or type(result_set.cases) ~= "table" then return false end
   for _, case in ipairs(result_set.cases) do
-    if type(case) ~= "table" or legacy_outcomes[case.execution_status] == nil then return false end
+    if type(case) ~= "table" or legacy_outcomes[case.execution_status] == nil
+      or (case.execution_mode ~= "cli" and case.execution_mode ~= "http") then return false end
   end
   return true
 end
@@ -279,6 +279,7 @@ function C.project_v1(result_set, manifest, context)
   local root_context = {artifact_root=context.artifact_root}
   local authorities = results.plan_assertion_authorities(context.plan, context.plan_ref, context.plan_sha256)
   results.validate_case_result_set(result_set, authorities, manifest, context.sha256_bytes, root_context); bind_optional_context(result_set, context)
+  if not C.projection_supported(result_set) then fail("unsupported-projection", "canonical results cannot project to v1") end
   local entries = {}; for _, entry in ipairs(manifest.entries) do entries[entry.evidence_id] = entry end
   local cases = {}
   for _, case in ipairs(result_set.cases) do

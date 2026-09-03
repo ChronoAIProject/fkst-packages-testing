@@ -247,14 +247,8 @@ return {
       request.artifact_root .. "/evidence-manifest.json"))
     t.eq(result_set.evidence_manifest_artifact_sha256, result_set.evidence_manifest_ref.sha256)
     t.is_true(result_set.evidence_manifest_sha256 ~= result_set.evidence_manifest_artifact_sha256)
-    local compatibility = writes[request.artifact_root .. "/case-results.json"]
-    t.eq(compatibility.schema, "testing-structured-case-results.v1")
-    t.eq(compatibility.plan_sha256, request.reviewed_plan_sha256)
-    t.eq(compatibility.cases[1].case_id, case_result.case_id)
-    t.eq(compatibility.cases[1].kind, "browser")
-    t.eq(compatibility.cases[1].status, "passed")
-    t.eq(compatibility.cases[1].classification, "passed")
-    t.eq(#compatibility.cases[1].assertions, 4)
+    t.eq(writes[request.artifact_root .. "/case-results.json"], nil)
+    t.eq(result.case_results_path, nil)
     t.eq(manifest.entries[1].sha256, runtime.artifact_digest(
       request.artifact_root .. "/browser-agent-execution.json"))
     local encoded = json_codec.encode(writes)
@@ -441,7 +435,6 @@ return {
       "/evidence/browser-observation-1.json",
       "/evidence-manifest.json",
       "/case-result-set.json",
-      "/case-results.json",
     }) do
       local request, artifacts, grant = fixture()
       local runtime = ports(request, artifacts, grant, { callback_turn = 1 })
@@ -628,24 +621,16 @@ return {
       t.eq(controller.run(request, runtime).status, "passed")
       return request, artifacts, grant, writes
     end
-    for _, failure in ipairs({ "compatibility", "replay" }) do
+    for _, failure in ipairs({ "replay" }) do
       local request, artifacts, grant, writes = successful_writes()
       local runtime = ports(request, artifacts, grant, {
         writes = writes, claim = { status = "in-progress", claim_id = "claim-browser" },
       })
-      if failure == "compatibility" then
-        local write = runtime.write_artifact
-        runtime.write_artifact = function(path, value)
-          if path == request.artifact_root .. "/case-results.json" then return false end
-          return write(path, value)
-        end
-      else
-        runtime.complete_replay = function() return false end
-        local write = runtime.write_artifact
-        runtime.write_artifact = function(path, value)
-          if path == request.artifact_root .. "/metadata.json" then return true end
-          return write(path, value)
-        end
+      runtime.complete_replay = function() return false end
+      local write = runtime.write_artifact
+      runtime.write_artifact = function(path, value)
+        if path == request.artifact_root .. "/metadata.json" then return true end
+        return write(path, value)
       end
       local replay_failure = controller.run(request, runtime)
       t.eq(replay_failure.status, "blocked")

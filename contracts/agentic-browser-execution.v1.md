@@ -88,10 +88,9 @@ The runner evaluates only that reviewed authority; it never infers assertion ide
 AI `finish=success` cannot satisfy or override these checks.
 
 The runner writes bounded `test-plan.json`, canonical `case-result-set.json`, canonical
-`evidence-manifest.json`, `browser-agent-execution.json`, and `metadata.json` artifacts. For canonical
-statuses representable by `testing-structured-case-results.v1`, it also writes `case-results.json`
-only through `contract.testing_results_compat.project_v1`. Canonical `blocked` and `lost` outcomes do
-not fabricate a legacy artifact because v1 has no truthful mapping for those statuses.
+`evidence-manifest.json`, `browser-agent-execution.json`, and `metadata.json` artifacts. Browser
+outcomes do not fabricate `case-results.json` because the unchanged
+`testing-structured-case-results.v1` kind vocabulary is limited to CLI and HTTP cases.
 Step receipts contain sanitized before/after observations and typed actions only. Raw model prompts,
 responses, and transcripts are not persisted.
 Canonical evidence includes the browser receipt and per-observation sanitized JSON. When the browser

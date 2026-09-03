@@ -83,7 +83,7 @@
       "path": "packages/testing-runner/ai_browser_control.lua",
       "contracts": ["testing-structured-case-results.v1"],
       "authority_class": "explicitly-out-of-scope",
-      "purpose": "One-way Browser compatibility writer for representable v1 statuses, not a legacy authority."
+      "purpose": "Canonical Browser producer that omits v1 because its unchanged kind vocabulary is CLI and HTTP only."
     },
     {
       "path": "libraries/contract/testing_results.lua",
