@@ -154,11 +154,12 @@ local function validate_plan_order(value, plan)
   if #plan.cases ~= #value.cases then fail("foreign-plan", "v1 case count does not match the plan") end
   for index, case in ipairs(value.cases) do
     local planned = plan.cases[index]
+    local planned_assertions = planned.kind == "browser" and planned.completion_assertions or planned.assertions
     if case.case_id ~= planned.case_id or case.kind ~= planned.kind then fail("foreign-plan", "v1 case order or kind does not match the plan") end
     if #case.assertions ~= 0 or (case.status ~= "skipped" and case.status ~= "error") then
-      if #case.assertions ~= #planned.assertions then fail("foreign-plan", "v1 assertion count does not match the plan") end
+      if #case.assertions ~= #planned_assertions then fail("foreign-plan", "v1 assertion count does not match the plan") end
       for assertion_index, assertion in ipairs(case.assertions) do
-        if assertion.type ~= planned.assertions[assertion_index].type then fail("foreign-plan", "v1 assertion order or type does not match the plan") end
+        if assertion.type ~= planned_assertions[assertion_index].type then fail("foreign-plan", "v1 assertion order or type does not match the plan") end
       end
     end
   end
@@ -173,7 +174,7 @@ function C.validate_v1(value, context)
   for _, case in ipairs(value.cases) do
     fields(case, {case_id=true,kind=true,status=true,classification=true,assertions=true,evidence_ref=true}, "v1-case")
     identifier(case.case_id, "case_id"); if seen[case.case_id] then fail("duplicate-case", case.case_id) end; seen[case.case_id] = true
-    if case.kind ~= "cli" and case.kind ~= "http" then fail("unsupported-kind", tostring(case.kind)) end
+    if case.kind ~= "cli" and case.kind ~= "http" and case.kind ~= "browser" then fail("unsupported-kind", tostring(case.kind)) end
     bounded(case.status, "status", 32); bounded(case.classification, "classification", 64)
     if not status_pairs[case.status] or not status_pairs[case.status][case.classification] then fail("contradictory-status", "v1 status and classification disagree") end
     list(case.assertions, "assertions", 32, false); local passed, failed = 0, 0

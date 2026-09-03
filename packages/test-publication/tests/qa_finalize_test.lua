@@ -201,9 +201,11 @@ local function terminal_summary(value, status, terminal_counts)
 end
 
 local function result_artifact_root(value)
-  local ref = value.case_result_set_ref or value.case_results_ref
-  return ref:match("^(.*)/case%-result%-set%.json$")
-    or ref:match("^(.*)/case%-results%.json$")
+  local canonical = type(value.case_result_set_ref) == "string"
+    and value.case_result_set_ref:match("^(.*)/case%-result%-set%.json$") or nil
+  if canonical ~= nil then return canonical end
+  return type(value.case_results_ref) == "string"
+    and value.case_results_ref:match("^(.*)/case%-results%.json$") or nil
 end
 
 local function legacy_results(value)
@@ -588,16 +590,26 @@ return {
       plan_value.execution_mode = "agentic-browser"
       plan_value.cases = { {
         case_id = "health", kind = "browser", goal = "Authenticate the existing user.",
-        success_conditions = { "Callback observed" },
-        completion_assertions = { {
-          assertion_id = "assertion-1", type = "browser-callback-observed",
-          required = true, completion_field = "callback_observed",
-        } },
+        success_conditions = { "All deterministic login signals are verified." },
+        completion_assertions = {
+          { assertion_id = "callback-observed", type = "browser-callback-observed", required = true, completion_field = "callback_observed" },
+          { assertion_id = "process-exit-zero", type = "browser-process-exit-zero", required = true, completion_field = "process_exit_zero" },
+          { assertion_id = "whoami-succeeded", type = "browser-whoami-succeeded", required = true, completion_field = "whoami_succeeded" },
+          { assertion_id = "status-authenticated", type = "browser-status-authenticated", required = true, completion_field = "status_authenticated" },
+        },
       } }
       local result_set = artifacts[value.case_result_set_ref].value
       result_set.cases = { result_set.cases[1] }
-      result_set.cases[1].execution_mode = "browser"
-      result_set.cases[1].assertions[1].type = "browser-callback-observed"
+      local case_result = result_set.cases[1]
+      case_result.execution_mode = "browser"
+      local assertion_template = structured_contract.copy(case_result.assertions[1])
+      case_result.assertions = {}
+      for index, authority in ipairs(plan_value.cases[1].completion_assertions) do
+        local assertion = structured_contract.copy(assertion_template)
+        assertion.assertion_id = authority.assertion_id
+        assertion.type = authority.type
+        case_result.assertions[index] = assertion
+      end
       local manifest = artifacts[value.evidence_manifest_ref].value
       manifest.entries = { manifest.entries[1] }
       manifest.canonical_sha256 = manifest_contract.sha256(manifest, portable_sha256, {
@@ -609,7 +621,12 @@ return {
         plan_sha256 = value.test_plan_sha256,
         cases = { {
           case_id = "health", kind = "browser", status = "passed", classification = "passed",
-          assertions = { { type = "browser-callback-observed", passed = true } },
+          assertions = {
+            { type = "browser-callback-observed", passed = true },
+            { type = "browser-process-exit-zero", passed = true },
+            { type = "browser-whoami-succeeded", passed = true },
+            { type = "browser-status-authenticated", passed = true },
+          },
           evidence_ref = value.artifact_root .. "/evidence/health-other.json",
         } },
       }
