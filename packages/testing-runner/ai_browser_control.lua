@@ -4,6 +4,7 @@ local structured_contract = require("contract.structured_execution")
 local testing_contract = require("contract.testing")
 local evidence_contract = require("contract.testing_evidence_manifest")
 local results_contract = require("contract.testing_results")
+local results_compat = require("contract.testing_results_compat")
 local browser_ai = require("testing_ai.browser_control")
 local browser_runtime = require("testing_runtime.browser_control")
 local json_codec = require("testing_runtime.json")
@@ -143,6 +144,22 @@ end
 
 local function evidence_ref(evidence_id)
   return { kind = "evidence", ref = evidence_id }
+end
+
+local function compatibility_projection(request, plan, result_set, manifest, repository, ports)
+  if not results_compat.projection_supported(result_set) then return nil end
+  local run_id = request.artifact_root:match("^%.testing/runs/([^/]+)")
+  return results_compat.project_v1(result_set, manifest, {
+    artifact_root = request.artifact_root,
+    plan_sha256 = request.reviewed_plan_sha256,
+    plan = plan,
+    repository = repository,
+    run_id = run_id,
+    plan_ref = { kind = "artifact", ref = request.artifact_root .. "/test-plan.json" },
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+    sha256_bytes = ports.sha256,
+  })
 end
 
 local function failpoint(ports, name, value)
@@ -371,7 +388,9 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
     results_contract.validate_case_result_set(
       persisted_result.value, { authority }, persisted_manifest.value, ports.sha256)
     evidence_contract.validate(persisted_manifest.value, persisted_result.value, ports.sha256)
-    if ports.write_artifact(compatibility_path, persisted_result.value) ~= true then
+    local projected = compatibility_projection(request, plan, persisted_result.value,
+      persisted_manifest.value, persisted_result.value.cases[1].repository, ports)
+    if projected ~= nil and ports.write_artifact(compatibility_path, projected) ~= true then
       error("testing-runner: ai-browser-control: compatibility result artifact write failed")
     end
     local persisted_case = persisted_result.value.cases[1]
@@ -548,7 +567,8 @@ local function write_terminal(request, environment, plan, grant_artifact, steps,
   end
   failpoint(ports, "after-case-result-set-write", { path = results_path })
   failpoint(ports, "before-compatibility-result-write", { path = compatibility_path })
-  if ports.write_artifact(compatibility_path, result_set) ~= true then
+  local projected = compatibility_projection(request, plan, result_set, manifest, repository, ports)
+  if projected ~= nil and ports.write_artifact(compatibility_path, projected) ~= true then
     error("testing-runner: ai-browser-control: compatibility result artifact write failed")
   end
   local result_set_artifact_sha256 = ports.artifact_digest(results_path)

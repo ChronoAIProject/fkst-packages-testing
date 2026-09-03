@@ -332,20 +332,14 @@ local function validated_result_view(request, ports, plan, plan_ref)
     sha256_bytes=hash,
   })
   local legacy = load_bound(ports, request.case_results_ref, request.case_results_sha256, "case results")
-  if plan.execution_mode == "agentic-browser" then
-    if not equal(result_set, legacy) then
-      error("test-publication: defect: canonical browser result alias differs")
-    end
-  else
-    local projected = results_compat.project_v1(result_set, manifest, {
-      artifact_root = root, plan_sha256 = request.plan_sha256, plan = plan,
-      repository = repository, run_id = run_id, plan_ref = canonical_plan_ref,
-      trace_id = request.trace_id, dedup_key = request.dedup_key, sha256_bytes = hash,
-    })
-    results_compat.validate_v1(legacy, v1_context)
-    if not equal(projected, legacy) then
-      error("test-publication: defect: canonical and legacy case results differ")
-    end
+  local projected = results_compat.project_v1(result_set, manifest, {
+    artifact_root = root, plan_sha256 = request.plan_sha256, plan = plan,
+    repository = repository, run_id = run_id, plan_ref = canonical_plan_ref,
+    trace_id = request.trace_id, dedup_key = request.dedup_key, sha256_bytes = hash,
+  })
+  results_compat.validate_v1(legacy, v1_context)
+  if not equal(projected, legacy) then
+    error("test-publication: defect: canonical and legacy case results differ")
   end
   return direct
 end

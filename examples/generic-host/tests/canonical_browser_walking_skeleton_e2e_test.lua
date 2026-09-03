@@ -120,8 +120,14 @@ return {
         t.eq(assertion.status, "passed")
         t.eq(assertion.classification, "deterministic")
       end
-      t.eq(artifact(context, compatibility_path).value.schema, "testing-case-result-set.v2")
-      t.is_true(support.equal(artifact(context, compatibility_path).value, result_set))
+      local compatibility = artifact(context, compatibility_path).value
+      t.eq(compatibility.schema, "testing-structured-case-results.v1")
+      t.eq(compatibility.plan_sha256, result_set.plan_sha256)
+      t.eq(compatibility.cases[1].case_id, result_set.cases[1].case_id)
+      t.eq(compatibility.cases[1].kind, "browser")
+      t.eq(compatibility.cases[1].status, "passed")
+      t.eq(compatibility.cases[1].classification, "passed")
+      t.eq(#compatibility.cases[1].assertions, #result_set.cases[1].assertions)
 
       local cleanup = artifact(context, context.terminal.cleanup_receipt_ref).value
       t.eq(cleanup.schema, "environment-factory.cleanup-receipt.v1")

@@ -87,7 +87,13 @@ The runner evaluates only that reviewed authority; it never infers assertion ide
 
 AI `finish=success` cannot satisfy or override these checks.
 
-The runner writes bounded `test-plan.json`, `case-results.json`, `browser-agent-execution.json`, and `metadata.json` artifacts. Step receipts contain sanitized before/after observations and typed actions only. Raw model prompts, responses, and transcripts are not persisted.
+The runner writes bounded `test-plan.json`, canonical `case-result-set.json`, canonical
+`evidence-manifest.json`, `browser-agent-execution.json`, and `metadata.json` artifacts. For canonical
+statuses representable by `testing-structured-case-results.v1`, it also writes `case-results.json`
+only through `contract.testing_results_compat.project_v1`. Canonical `blocked` and `lost` outcomes do
+not fabricate a legacy artifact because v1 has no truthful mapping for those statuses.
+Step receipts contain sanitized before/after observations and typed actions only. Raw model prompts,
+responses, and transcripts are not persisted.
 Canonical evidence includes the browser receipt and per-observation sanitized JSON. When the browser
 runtime exposes a run-scoped screenshot or runner-output pointer, it must also provide exact digest
 and byte metadata; the controller emits the corresponding manifest entry or fails closed.

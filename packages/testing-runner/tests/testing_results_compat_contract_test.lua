@@ -136,6 +136,21 @@ return {
     t.eq(projected.cases[4].classification,"harness-tooling-issue")
   end,
 
+  test_projection_support_is_explicit_and_does_not_expand_v1 = function()
+    local _, ctx, canonical = bundle()
+    t.eq(compat.projection_supported(canonical.result_set), true)
+    canonical.result_set.cases[1].execution_status = "lost"
+    canonical.result_set.cases[1].classification = "lost"
+    canonical.result_set.cases[1].non_execution_reason = "runner-disconnected"
+    canonical.result_set.cases[1].assertions[1].status = "skipped"
+    canonical.result_set.cases[1].assertions[1].classification = "skipped"
+    t.eq(compat.projection_supported(canonical.result_set), false)
+    t.raises(function()
+      compat.project_v1(canonical.result_set, canonical.evidence_manifest, ctx)
+    end)
+    t.eq(compat.projection_supported({}), false)
+  end,
+
   test_v1_rejects_bad_status_plan_order_assertions_and_duplicates = function()
     local value, ctx = legacy_fixture(), context()
     t.eq(compat.validate_v1(value, ctx), value)

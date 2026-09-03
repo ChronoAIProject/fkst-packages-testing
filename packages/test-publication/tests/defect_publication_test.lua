@@ -293,7 +293,7 @@ return {
     t.eq(#publication.issue_requests, 1)
   end,
 
-  test_canonical_browser_alias_mismatch_rejects_before_outputs = function()
+  test_canonical_browser_projection_mismatch_rejects_before_outputs = function()
     local value = canonical_request()
     value.publication.job = "ai-browser-control"
     value.publication.execution_path = value.publication.artifact_root .. "/browser-agent-execution.json"
@@ -328,13 +328,25 @@ return {
         artifact_root=value.publication.artifact_root,
       })
       result_set.evidence_manifest_sha256 = manifest.canonical_sha256
-      local alias = structured_contract.copy(result_set)
-      alias.set_id = "foreign-browser-alias"
-      artifacts[value.case_results_ref].value = alias
+      artifacts[value.case_results_ref].value = {
+        schema = results_compat.schema,
+        plan_sha256 = value.plan_sha256,
+        cases = { {
+          case_id = "version", kind = "browser", status = "failed",
+          classification = "product-defect",
+          assertions = {
+            { type = "browser-callback-observed", passed = false },
+            { type = "browser-process-exit-zero", passed = false },
+            { type = "browser-whoami-succeeded", passed = false },
+            { type = "browser-status-authenticated", passed = false },
+          },
+          evidence_ref = value.publication.artifact_root .. "/evidence/version-other.json",
+        } },
+      }
     end })
     local ok, failure = pcall(defect_publication.prepare, value, ports)
     t.eq(ok, false)
-    if tostring(failure):find("canonical browser result alias differs", 1, true) == nil then
+    if tostring(failure):find("canonical and legacy case results differ", 1, true) == nil then
       error(tostring(failure))
     end
     t.eq(ports.write_count(), 0); t.eq(ports.save_count(), 0)

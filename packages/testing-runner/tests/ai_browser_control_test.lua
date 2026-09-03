@@ -247,7 +247,14 @@ return {
       request.artifact_root .. "/evidence-manifest.json"))
     t.eq(result_set.evidence_manifest_artifact_sha256, result_set.evidence_manifest_ref.sha256)
     t.is_true(result_set.evidence_manifest_sha256 ~= result_set.evidence_manifest_artifact_sha256)
-    t.is_true(structured.equal(result_set, writes[request.artifact_root .. "/case-results.json"]))
+    local compatibility = writes[request.artifact_root .. "/case-results.json"]
+    t.eq(compatibility.schema, "testing-structured-case-results.v1")
+    t.eq(compatibility.plan_sha256, request.reviewed_plan_sha256)
+    t.eq(compatibility.cases[1].case_id, case_result.case_id)
+    t.eq(compatibility.cases[1].kind, "browser")
+    t.eq(compatibility.cases[1].status, "passed")
+    t.eq(compatibility.cases[1].classification, "passed")
+    t.eq(#compatibility.cases[1].assertions, 4)
     t.eq(manifest.entries[1].sha256, runtime.artifact_digest(
       request.artifact_root .. "/browser-agent-execution.json"))
     local encoded = json_codec.encode(writes)
@@ -400,6 +407,7 @@ return {
       t.eq(case_result.execution_status, "lost")
       t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
       t.eq(case_result.assertions[1].status, "skipped")
+      t.eq(writes[request.artifact_root .. "/case-results.json"], nil)
     end
   end,
   test_optional_screenshot_and_runner_output_evidence_require_exact_metadata = function()
@@ -516,6 +524,7 @@ return {
       local case_result = canonical_case(request, writes)
       t.eq(case_result.execution_status, "lost")
       t.eq(case_result.non_execution_reason, "execution-lost-between-action-and-assertion")
+      t.eq(writes[request.artifact_root .. "/case-results.json"], nil)
     end
   end,
   test_invalid_completion_before_and_after_an_action_is_fail_closed = function()

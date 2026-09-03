@@ -549,7 +549,7 @@ return {
     end)
   end,
 
-  test_canonical_browser_alias_disagreement_rejects_before_output = function()
+  test_canonical_browser_projection_disagreement_rejects_before_output = function()
     local value = canonical_request()
     local ports = runtime(function(artifacts)
       local plan_value = artifacts[value.test_plan_ref].value
@@ -572,15 +572,21 @@ return {
         artifact_root = result_artifact_root(value),
       })
       result_set.evidence_manifest_sha256 = manifest.canonical_sha256
-      local legacy = structured_contract.copy(result_set)
-      legacy.set_id = "foreign-browser-alias"
-      artifacts[value.case_results_ref].value = legacy
+      artifacts[value.case_results_ref].value = {
+        schema = results_compat.schema,
+        plan_sha256 = value.test_plan_sha256,
+        cases = { {
+          case_id = "health", kind = "browser", status = "passed", classification = "passed",
+          assertions = { { type = "browser-callback-observed", passed = true } },
+          evidence_ref = value.artifact_root .. "/evidence/health-other.json",
+        } },
+      }
       local terminal = artifacts[value.terminal_summary_ref].value
       terminal.counts = { planned=1,executed=1,passed=1,failed=0,skipped=0,error=0,blocked=0 }
     end, value)
     local ok, failure = pcall(qa_publication.prepare_final_report, value, ports)
     t.eq(ok, false)
-    if tostring(failure):find("canonical browser result alias differs", 1, true) == nil then error(tostring(failure)) end
+    if tostring(failure):find("canonical and legacy case results differ", 1, true) == nil then error(tostring(failure)) end
     t.eq(ports.publish_calls(), 0)
     t.eq(ports.report_writes(), 0)
   end,
