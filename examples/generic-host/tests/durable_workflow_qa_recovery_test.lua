@@ -283,8 +283,9 @@ return {
       t.eq(#durable.list_pending(context.project_root, context.durable_root, 10), 0)
       local terminal = recovered:terminal_record()
       t.eq(terminal.status, "blocked")
-      t.eq(terminal.counts.executed, 0)
-      t.eq(terminal.counts.blocked, 1)
+      t.eq(terminal.counts.executed, 1)
+      t.eq(terminal.counts.error, 1)
+      t.eq(terminal.counts.blocked, 0)
       local authorization = recovered.store:load(
         context.request.structured_execution.artifact_root .. "/authorization/cli-version.json")
       t.eq(authorization.value.schema, "testing-effect-authorization-receipt.v1")
