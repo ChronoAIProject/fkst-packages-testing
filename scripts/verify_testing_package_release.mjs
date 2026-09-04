@@ -351,6 +351,7 @@ async function executeVerified(decodedFiles, verified) {
   const packageRoot = path.join(root, "packages/verified-testing-runner");
   try {
     for (const file of decodedFiles) {
+      if (RUNTIME_PATHS.includes(file.path)) continue;
       const target = path.join(packageRoot, file.path);
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, file.bytes, { flag: "wx" });
