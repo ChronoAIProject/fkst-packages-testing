@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-import { createHash, createPublicKey, verify as verifySignature } from "node:crypto";
+import { createHash, createPublicKey, timingSafeEqual, verify as verifySignature } from "node:crypto";
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
@@ -19,6 +19,11 @@ const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$
 
 function fail(message) { throw new Error(message); }
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
+function digestMatches(actual, expected) {
+  const actualBytes = Buffer.from(actual, "ascii");
+  const expectedBytes = Buffer.from(expected, "ascii");
+  return actualBytes.length === expectedBytes.length && timingSafeEqual(actualBytes, expectedBytes);
+}
 function object(value, field) {
   if (value === null || typeof value !== "object" || Array.isArray(value)) fail(`${field} must be an object`);
   return value;
@@ -77,8 +82,9 @@ function parseArguments(argv) {
     if (!name?.startsWith("--") || value === undefined || values.has(name)) fail("arguments must be unique --name value pairs");
     values.set(name, value);
   }
-  const allowed = new Set(["--trusted-authorization-sha256", "--release", "--envelope", "--authorization", "--bundle", "--manifest", "--schema-catalog", "--schema-release"]);
+  const allowed = new Set(["--expected-release-sha256", "--trusted-authorization-sha256", "--release", "--envelope", "--authorization", "--bundle", "--manifest", "--schema-catalog", "--schema-release"]);
   for (const name of values.keys()) if (!allowed.has(name)) fail(`unknown argument ${name}`);
+  if (!values.has("--expected-release-sha256")) fail("--expected-release-sha256 is required exactly once");
   if (!values.has("--trusted-authorization-sha256")) fail("--trusted-authorization-sha256 is required exactly once");
   return values;
 }
@@ -211,11 +217,20 @@ async function executeVerified(decodedFiles, release) {
 
 export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) {
   const args = parseArguments(argv);
+  const expectedReleaseSha256 = args.get("--expected-release-sha256");
   const pin = args.get("--trusted-authorization-sha256");
+  if (!HEX_64.test(expectedReleaseSha256)) fail("--expected-release-sha256 must be exactly 64 lowercase hexadecimal characters");
   if (!HEX_64.test(pin)) fail("--trusted-authorization-sha256 must be exactly 64 lowercase hexadecimal characters");
+
+  const releasePath = args.get("--release") ?? path.join(ROOT, SUBJECT_NAME);
+  const releaseBytes = await readFile(releasePath);
+  const releaseSha256 = sha256(releaseBytes);
+  if (!digestMatches(releaseSha256, expectedReleaseSha256)) fail("release descriptor SHA-256 does not match the independently provisioned expected digest");
+  await stage("release-digest-matched");
+
   const authorizationPath = args.get("--authorization") ?? path.join(ROOT, "package-release/testing-package-release.v1.key.json");
   const authorizationBytes = await readFile(authorizationPath);
-  if (sha256(authorizationBytes) !== pin) fail("authorization record SHA-256 does not match the independently provisioned trust pin");
+  if (!digestMatches(sha256(authorizationBytes), pin)) fail("authorization record SHA-256 does not match the independently provisioned trust pin");
   await stage("trust-pin-matched");
 
   const authorization = parseJson(authorizationBytes, "authorization record"); requireCanonical(authorizationBytes, authorization, "authorization record");
@@ -225,13 +240,12 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   const publicKey = decodeBase64(authorization.publicKey, "authorization publicKey", 32);
   await stage("public-key-imported");
 
-  const releasePath = args.get("--release") ?? path.join(ROOT, SUBJECT_NAME);
   const envelopePath = args.get("--envelope") ?? path.join(ROOT, "package-release/testing-package-release.v1.dsse.json");
   const bundlePath = args.get("--bundle") ?? path.join(ROOT, "package-release/testing-package-bundle.v1.json");
   const manifestPath = args.get("--manifest") ?? path.join(ROOT, "package-release/testing-package-manifest.v1.json");
   const catalogPath = args.get("--schema-catalog") ?? path.join(ROOT, "schema-release/testing-schema-catalog.v1.json");
   const schemaReleasePath = args.get("--schema-release") ?? path.join(ROOT, "schema-release/testing-package-schema-release.v1.json");
-  const [releaseBytes, envelopeBytes, bundleBytes, manifestBytes, catalogBytes, schemaReleaseBytes] = await Promise.all([releasePath, envelopePath, bundlePath, manifestPath, catalogPath, schemaReleasePath].map((file) => readFile(file)));
+  const [envelopeBytes, bundleBytes, manifestBytes, catalogBytes, schemaReleaseBytes] = await Promise.all([envelopePath, bundlePath, manifestPath, catalogPath, schemaReleasePath].map((file) => readFile(file)));
   const envelope = parseJson(envelopeBytes, "DSSE envelope"); requireCanonical(envelopeBytes, envelope, "DSSE envelope");
   closed(envelope, ["payload", "payloadType", "signatures"], "DSSE envelope");
   if (envelope.payloadType !== PAYLOAD_TYPE || !Array.isArray(envelope.signatures) || envelope.signatures.length !== 1) fail("DSSE envelope profile is unsupported");
@@ -256,7 +270,7 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   const bundle = parseJson(bundleBytes, "bundle"); const decodedFiles = verifyBundle(bundleBytes, bundle, release);
   await stage("bundle-verified");
   await executeVerified(decodedFiles, release);
-  return { release, authorizationSha256: pin };
+  return { release, releaseSha256, authorizationSha256: pin };
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
