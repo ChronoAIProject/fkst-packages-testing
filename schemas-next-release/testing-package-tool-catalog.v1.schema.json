@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-package-tool-catalog.v1.schema.json",
+  "title": "Testing Package Tool Catalog v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["canonicalization", "execution_profile", "schema", "tools"],
+  "properties": {
+    "canonicalization": {"const": "fkst-testing-package-tool-catalog-canonical-json.v1"},
+    "execution_profile": {"const": "browser-deterministic.v1"},
+    "schema": {"const": "testing-package-tool-catalog.v1"},
+    "tools": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["capability", "port"],
+        "properties": {
+          "capability": {"const": "browser.read-title.v1"},
+          "port": {"const": "browser_read_title"}
+        }
+      }
+    }
+  },
+  "x-fkst-canonicalization": "fkst-testing-package-tool-catalog-canonical-json.v1"
+}
