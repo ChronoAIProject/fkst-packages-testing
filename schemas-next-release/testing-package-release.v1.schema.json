@@ -1,0 +1,140 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-package-release.v1.schema.json",
+  "title": "Testing Package Release v1",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema", "canonicalization", "package", "bundle", "manifest", "schema_catalog", "schema_release", "source", "producer", "runtime", "executor", "reducer", "result_authority", "mappings", "creation_metadata"],
+  "oneOf": [{"not": {"anyOf": [{"required": ["authority"]}, {"required": ["tool_catalog"]}]}}, {"required": ["authority", "tool_catalog"]}],
+  "properties": {
+    "schema": {"const": "testing-package-release.v1"},
+    "canonicalization": {"const": "fkst-testing-package-release-canonical-json.v1"},
+    "package": {
+      "type": "object", "additionalProperties": false,
+      "required": ["package_id", "package_version", "package_content_sha256", "supported_profile", "capability"],
+      "properties": {
+        "package_id": {"const": "testing-runner"},
+        "package_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "package_content_sha256": {"$ref": "#/$defs/sha256"},
+        "supported_profile": {"const": "browser-deterministic.v1"},
+        "capability": {"const": "browser.read-title.v1"}
+      }
+    },
+    "bundle": {"$ref": "#/$defs/fileBinding"},
+    "manifest": {"$ref": "#/$defs/manifestBinding"},
+    "schema_catalog": {"$ref": "#/$defs/fileBinding"},
+    "schema_release": {"$ref": "#/$defs/fileBinding"},
+    "tool_catalog": {"$ref": "#/$defs/fileBinding"},
+    "authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["issuer", "keyid", "release_sequence", "revocation_authority", "signature_profile", "valid_from", "valid_until"],
+      "properties": {
+        "issuer": {"const": "https://releases.chronoaiproject.org/fkst-packages-testing"},
+        "keyid": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\u0000-\u001f\u007f]+$"},
+        "release_sequence": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "revocation_authority": {"const": "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1"},
+        "signature_profile": {"const": "dsse-ed25519.v1"},
+        "valid_from": {"$ref": "#/$defs/timestamp"},
+        "valid_until": {"$ref": "#/$defs/timestamp"}
+      }
+    },
+    "source": {
+      "type": "object", "additionalProperties": false,
+      "required": ["repository_commit", "fkst_packages_commit", "fkst_substrate_commit"],
+      "properties": {
+        "repository_commit": {"$ref": "#/$defs/commit"},
+        "fkst_packages_commit": {"$ref": "#/$defs/commit"},
+        "fkst_substrate_commit": {"$ref": "#/$defs/commit"}
+      }
+    },
+    "producer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["name", "version", "generator", "generator_version"],
+      "properties": {
+        "name": {"const": "fkst-packages-testing"},
+        "version": {"$ref": "#/$defs/semver"},
+        "generator": {"const": "scripts/generate_testing_package_release.py"},
+        "generator_version": {"$ref": "#/$defs/semver"}
+      }
+    },
+    "runtime": {
+      "type": "object", "additionalProperties": false,
+      "required": ["lua", "platform"],
+      "properties": {"lua": {"const": "5.4.0"}, "platform": {"const": "linux-amd64"}}
+    },
+    "executor": {
+      "type": "object", "additionalProperties": false,
+      "required": ["module", "function", "executor_id"],
+      "properties": {
+        "module": {"const": "testing_package_executor.executor"},
+        "function": {"const": "execute"},
+        "executor_id": {"const": "testing-package-executor.browser-title.v1"}
+      }
+    },
+    "reducer": {
+      "type": "object", "additionalProperties": false,
+      "required": ["schema", "reducer_id", "reducer_version", "reducer_sha256", "policy_profile", "supported_result_contract_majors"],
+      "properties": {
+        "schema": {"const": "testing-assertion-reducer-identity.v1"},
+        "reducer_id": {"const": "testing.assertion-reducer.browser-title-equals"},
+        "reducer_version": {"const": "1.0.0"},
+        "reducer_sha256": {"$ref": "#/$defs/sha256"},
+        "policy_profile": {"const": "browser-title-equals.v1"},
+        "supported_result_contract_majors": {"type": "array", "items": {"const": "testing-case-result-set.v2"}, "minItems": 1, "maxItems": 1}
+      }
+    },
+    "result_authority": {
+      "type": "object", "additionalProperties": false,
+      "required": ["receipt_schema"],
+      "properties": {"receipt_schema": {"const": "testing-result-authority-receipt.v1"}}
+    },
+    "mappings": {
+      "type": "array", "minItems": 1, "maxItems": 1,
+      "items": {
+        "type": "object", "additionalProperties": false,
+        "required": ["entrypoint", "contract_major", "module", "function"],
+        "properties": {
+          "entrypoint": {"const": "testing-runner.run"},
+          "contract_major": {"const": "testing-runner.v1"},
+          "module": {"const": "testing_package_executor.executor"},
+          "function": {"const": "execute"}
+        }
+      }
+    },
+    "creation_metadata": {
+      "type": "object", "additionalProperties": false,
+      "required": ["created_at", "build_id"],
+      "properties": {
+        "created_at": {"const": "2026-09-04T00:00:00Z"},
+        "build_id": {"const": "testing-package-release-walking-skeleton-v1"}
+      }
+    }
+  },
+  "$defs": {
+    "sha256": {"type": "string", "pattern": "^[0-9a-f]{64}$"},
+    "commit": {"type": "string", "pattern": "^[0-9a-f]{40}$"},
+    "semver": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+    "timestamp": {"type": "string", "pattern": "^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])T([01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z$"},
+    "path": {"type": "string", "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(/|$))(?!.*\\\\)[^\\u0000-\\u001f]+$"},
+    "fileBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "sha256": {"$ref": "#/$defs/sha256"}
+      }
+    },
+    "manifestBinding": {
+      "type": "object", "additionalProperties": false,
+      "required": ["path", "size_bytes", "sha256", "manifest_digest"],
+      "properties": {
+        "path": {"$ref": "#/$defs/path"},
+        "size_bytes": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
+        "sha256": {"$ref": "#/$defs/sha256"},
+        "manifest_digest": {"$ref": "#/$defs/sha256"}
+      }
+    }
+  },
+  "x-fkst-canonicalization": "fkst-testing-package-release-canonical-json.v1"
+}

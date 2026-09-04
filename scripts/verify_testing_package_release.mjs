@@ -12,10 +12,14 @@ const STATEMENT_TYPE = "https://in-toto.io/Statement/v1";
 const PREDICATE_TYPE = "https://chronoaiproject.github.io/fkst-packages-testing/attestations/testing-package-release/v1";
 const SUBJECT_NAME = "package-release/testing-package-release.v1.json";
 const KEY_ID = "fkst-packages-testing-release-v1-2026-09-04";
+const AUTHORITY_ISSUER = "https://releases.chronoaiproject.org/fkst-packages-testing";
+const SIGNATURE_PROFILE = "dsse-ed25519.v1";
+const REVOCATION_AUTHORITY = "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1";
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_40 = /^[0-9a-f]{40}$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const UTC_TIMESTAMP = /^\d{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12]\d|3[01])T(?:[01]\d|2[0-3]):[0-5]\d:[0-5]\dZ$/;
 const BUNDLE_PATHS = [
   "libraries/contract/canonical_json.lua",
   "libraries/contract/error_facts.lua",
@@ -83,29 +87,60 @@ function fileBinding(value, field, manifest = false) {
   if (!Number.isSafeInteger(value.size_bytes) || value.size_bytes < 1) fail(`${field}.size_bytes is invalid`);
   if (!HEX_64.test(value.sha256) || (manifest && !HEX_64.test(value.manifest_digest))) fail(`${field} digest is invalid`);
 }
+function timestamp(value, field) {
+  if (typeof value !== "string" || !UTC_TIMESTAMP.test(value) || new Date(value).toISOString().replace(".000Z", "Z") !== value) fail(`${field} must be a canonical UTC timestamp`);
+  return Date.parse(value);
+}
+function keyid(value, field) {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128 || /[\u0000-\u001f\u007f]/u.test(value)) fail(`${field} is invalid`);
+  return value;
+}
 async function stage(name) {
   const log = process.env.FKST_TESTING_PACKAGE_RELEASE_STAGE_LOG;
   if (log) await writeFile(log, `${name}\n`, { flag: "a" });
 }
 function parseArguments(argv) {
   const values = new Map();
+  const revokedKeyids = new Set();
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index], value = argv[index + 1];
-    if (!name?.startsWith("--") || value === undefined || value.startsWith("--") || values.has(name)) fail("arguments must be unique --name value pairs");
+    if (!name?.startsWith("--") || value === undefined || value.startsWith("--")) fail("arguments must be unique --name value pairs");
+    if (name === "--revoked-keyid") {
+      keyid(value, "--revoked-keyid");
+      if (revokedKeyids.has(value)) fail("--revoked-keyid values must be unique");
+      revokedKeyids.add(value);
+      continue;
+    }
+    if (values.has(name)) fail("arguments must be unique --name value pairs");
     values.set(name, value);
   }
-  const allowed = new Set(["--expected-release-sha256", "--trusted-authorization-sha256", "--release", "--envelope", "--authorization", "--bundle", "--manifest", "--schema-catalog", "--schema-release"]);
+  const allowed = new Set(["--expected-release-sha256", "--trusted-authorization-sha256", "--verification-time", "--minimum-release-sequence", "--release", "--envelope", "--authorization", "--bundle", "--manifest", "--tool-catalog", "--schema-catalog", "--schema-release"]);
   for (const name of values.keys()) if (!allowed.has(name)) fail(`unknown argument ${name}`);
   if (!values.has("--expected-release-sha256")) fail("--expected-release-sha256 is required exactly once");
   if (!values.has("--trusted-authorization-sha256")) fail("--trusted-authorization-sha256 is required exactly once");
-  return values;
+  if (!values.has("--verification-time")) fail("--verification-time is required exactly once");
+  if (!values.has("--minimum-release-sequence")) fail("--minimum-release-sequence is required exactly once");
+  timestamp(values.get("--verification-time"), "--verification-time");
+  if (!/^[1-9][0-9]*$/.test(values.get("--minimum-release-sequence"))) fail("--minimum-release-sequence must be a positive safe decimal integer");
+  const minimumReleaseSequence = Number(values.get("--minimum-release-sequence"));
+  if (!Number.isSafeInteger(minimumReleaseSequence)) fail("--minimum-release-sequence must be a positive safe decimal integer");
+  return { values, revokedKeyids, minimumReleaseSequence };
 }
 function verifyReleaseShape(release) {
-  closed(release, ["schema", "canonicalization", "package", "bundle", "manifest", "schema_catalog", "schema_release", "source", "producer", "runtime", "executor", "reducer", "result_authority", "mappings", "creation_metadata"], "release");
+  const successor = Object.hasOwn(release, "authority") || Object.hasOwn(release, "tool_catalog");
+  closed(release, ["schema", "canonicalization", "package", "bundle", "manifest", "schema_catalog", "schema_release", "source", "producer", "runtime", "executor", "reducer", "result_authority", "mappings", "creation_metadata", ...(successor ? ["authority", "tool_catalog"] : [])], "release");
   if (release.schema !== "testing-package-release.v1" || release.canonicalization !== "fkst-testing-package-release-canonical-json.v1") fail("release profile is unsupported");
   closed(release.package, ["package_id", "package_version", "package_content_sha256", "supported_profile", "capability"], "release.package");
   if (release.package.package_id !== "testing-runner" || release.package.package_version !== "1.0.0" || !HEX_64.test(release.package.package_content_sha256) || release.package.supported_profile !== "browser-deterministic.v1" || release.package.capability !== "browser.read-title.v1") fail("release package identity is unsupported");
   fileBinding(release.bundle, "release.bundle"); fileBinding(release.manifest, "release.manifest", true); fileBinding(release.schema_catalog, "release.schema_catalog"); fileBinding(release.schema_release, "release.schema_release");
+  if (successor) {
+    fileBinding(release.tool_catalog, "release.tool_catalog");
+    closed(release.authority, ["issuer", "keyid", "release_sequence", "revocation_authority", "signature_profile", "valid_from", "valid_until"], "release.authority");
+    keyid(release.authority.keyid, "release.authority.keyid");
+    if (release.authority.issuer !== AUTHORITY_ISSUER || release.authority.signature_profile !== SIGNATURE_PROFILE || release.authority.revocation_authority !== REVOCATION_AUTHORITY || !Number.isSafeInteger(release.authority.release_sequence) || release.authority.release_sequence < 1) fail("release authority profile is unsupported");
+    timestamp(release.authority.valid_from, "release.authority.valid_from"); timestamp(release.authority.valid_until, "release.authority.valid_until");
+    if (release.authority.valid_from >= release.authority.valid_until) fail("release authority validity interval is empty");
+  }
   closed(release.source, ["repository_commit", "fkst_packages_commit", "fkst_substrate_commit"], "release.source");
   if (![release.source.repository_commit, release.source.fkst_packages_commit, release.source.fkst_substrate_commit].every((value) => HEX_40.test(value))) fail("release source identities must be exact commits");
   closed(release.producer, ["name", "version", "generator", "generator_version"], "release.producer");
@@ -123,7 +158,9 @@ function verifyReleaseShape(release) {
   closed(release.mappings[0], ["entrypoint", "contract_major", "module", "function"], "release.mapping");
   if (JSON.stringify(release.mappings[0]) !== JSON.stringify({ contract_major: "testing-runner.v1", entrypoint: "testing-runner.run", function: "execute", module: "testing_package_executor.executor" })) fail("release mapping is unsupported");
   closed(release.creation_metadata, ["created_at", "build_id"], "release.creation_metadata");
-  if (release.creation_metadata.created_at !== "2026-09-04T00:00:00Z" || release.creation_metadata.build_id !== "testing-package-release-walking-skeleton-v1") fail("release creation metadata is unsupported");
+  timestamp(release.creation_metadata.created_at, "release.creation_metadata.created_at");
+  if (release.creation_metadata.build_id !== "testing-package-release-walking-skeleton-v1") fail("release creation metadata is unsupported");
+  return successor;
 }
 function verifyManifest(manifestBytes, manifest, release) {
   requireCanonical(manifestBytes, manifest, "manifest", false);
@@ -150,6 +187,17 @@ function verifyManifest(manifestBytes, manifest, release) {
   if (JSON.stringify(manifest.producer) !== JSON.stringify({ name: "fkst-packages-testing", toolchain: "testing-package-release-v1", version: "1.0.0" })) fail("manifest producer identity is unsupported");
   closed(manifest.creation_metadata, ["created_at", "build_id"], "manifest.creation_metadata");
   if (JSON.stringify(manifest.creation_metadata) !== JSON.stringify({ build_id: "testing-package-release-walking-skeleton-v1", created_at: "2026-09-04T00:00:00Z" })) fail("manifest creation metadata is unsupported");
+}
+function verifyToolCatalog(catalogBytes, catalog, release) {
+  requireCanonical(catalogBytes, catalog, "tool catalog");
+  closed(catalog, ["canonicalization", "execution_profile", "schema", "tools"], "tool catalog");
+  if (catalog.schema !== "testing-package-tool-catalog.v1" || catalog.canonicalization !== "fkst-testing-package-tool-catalog-canonical-json.v1" || catalog.execution_profile !== release.package.supported_profile || !Array.isArray(catalog.tools) || catalog.tools.length !== 1) fail("tool catalog profile is unsupported");
+  closed(catalog.tools[0], ["capability", "port"], "tool catalog entry");
+  if (catalog.tools[0].capability !== release.package.capability || catalog.tools[0].port !== "browser_read_title") fail("tool catalog executor port binding is unsupported");
+  if (sha256(catalogBytes) !== release.tool_catalog.sha256 || catalogBytes.length !== release.tool_catalog.size_bytes) fail("tool catalog persisted binding mismatch");
+}
+function inputMatchesLogicalPath(inputPath, logicalPath) {
+  return path.resolve(inputPath).split(path.sep).join("/").endsWith(`/${logicalPath}`);
 }
 function verifyBundle(bundleBytes, bundle, release) {
   requireCanonical(bundleBytes, bundle, "bundle");
@@ -212,7 +260,12 @@ local ports = {
   complete_execution=function(value) return value end,
   now=function() clock_index=clock_index+1; return clock[clock_index] end, sha256=sha256,
 }
+local captured_bindings
+local create_receipt = authority.create_receipt
+authority.create_receipt = function(bindings, sha256_fn) captured_bindings = bindings; return create_receipt(bindings, sha256_fn) end
 local receipt = executor.execute(resolved, ports)
+authority.create_receipt = create_receipt
+authority.validate_receipt(receipt, captured_bindings, sha256)
 authority.canonicalize(receipt, sha256)
 assert(receipt.schema == "testing-result-authority-receipt.v1")
 assert(receipt.classification == "passed")
@@ -245,7 +298,8 @@ async function executeVerified(decodedFiles, release) {
 }
 
 export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) {
-  const args = parseArguments(argv);
+  const parsedArguments = parseArguments(argv);
+  const args = parsedArguments.values;
   const expectedReleaseSha256 = args.get("--expected-release-sha256");
   const pin = args.get("--trusted-authorization-sha256");
   if (!HEX_64.test(expectedReleaseSha256)) fail("--expected-release-sha256 must be exactly 64 lowercase hexadecimal characters");
@@ -257,6 +311,16 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   if (!digestMatches(releaseSha256, expectedReleaseSha256)) fail("release descriptor SHA-256 does not match the independently provisioned expected digest");
   await stage("release-digest-matched");
 
+  const release = parseJson(releaseBytes, "release"); requireCanonical(releaseBytes, release, "release");
+  const successor = verifyReleaseShape(release);
+  const verificationTime = timestamp(args.get("--verification-time"), "--verification-time");
+  if (successor) {
+    if (release.authority.release_sequence < parsedArguments.minimumReleaseSequence) fail("release sequence is below the consumer minimum");
+    if (verificationTime < timestamp(release.authority.valid_from, "release.authority.valid_from") || verificationTime >= timestamp(release.authority.valid_until, "release.authority.valid_until")) fail("release is outside its authorized validity interval");
+    if (parsedArguments.revokedKeyids.has(release.authority.keyid)) fail("release signing key is revoked");
+  }
+  const expectedKeyid = successor ? release.authority.keyid : KEY_ID;
+
   const authorizationPath = args.get("--authorization") ?? path.join(ROOT, "package-release/testing-package-release.v1.key.json");
   const authorizationBytes = await readFile(authorizationPath);
   if (!digestMatches(sha256(authorizationBytes), pin)) fail("authorization record SHA-256 does not match the independently provisioned trust pin");
@@ -265,21 +329,23 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   const authorization = parseJson(authorizationBytes, "authorization record"); requireCanonical(authorizationBytes, authorization, "authorization record");
   closed(authorization, ["algorithm", "authorization", "keyid", "publicKey", "schema"], "authorization record");
   closed(authorization.authorization, ["payloadType", "predicateType", "subject"], "authorization scope");
-  if (authorization.algorithm !== "ed25519" || authorization.schema !== "testing-package-release-key-authorization.v1" || authorization.keyid !== KEY_ID || authorization.authorization.payloadType !== PAYLOAD_TYPE || authorization.authorization.predicateType !== PREDICATE_TYPE || authorization.authorization.subject !== SUBJECT_NAME) fail("authorization record profile is unsupported");
+  if (authorization.algorithm !== "ed25519" || authorization.schema !== "testing-package-release-key-authorization.v1" || authorization.keyid !== expectedKeyid || authorization.authorization.payloadType !== PAYLOAD_TYPE || authorization.authorization.predicateType !== PREDICATE_TYPE || authorization.authorization.subject !== SUBJECT_NAME) fail("authorization record profile is unsupported");
   const publicKey = decodeBase64(authorization.publicKey, "authorization publicKey", 32);
   await stage("public-key-imported");
 
   const envelopePath = args.get("--envelope") ?? path.join(ROOT, "package-release/testing-package-release.v1.dsse.json");
   const bundlePath = args.get("--bundle") ?? path.join(ROOT, "package-release/testing-package-bundle.v1.json");
   const manifestPath = args.get("--manifest") ?? path.join(ROOT, "package-release/testing-package-manifest.v1.json");
+  const toolCatalogPath = args.get("--tool-catalog");
   const catalogPath = args.get("--schema-catalog") ?? path.join(ROOT, "schema-release/testing-schema-catalog.v1.json");
   const schemaReleasePath = args.get("--schema-release") ?? path.join(ROOT, "schema-release/testing-package-schema-release.v1.json");
-  const [envelopeBytes, bundleBytes, manifestBytes, catalogBytes, schemaReleaseBytes] = await Promise.all([envelopePath, bundlePath, manifestPath, catalogPath, schemaReleasePath].map((file) => readFile(file)));
+  if (successor && !toolCatalogPath) fail("--tool-catalog is required for successor releases");
+  const [envelopeBytes, bundleBytes, manifestBytes, toolCatalogBytes, catalogBytes, schemaReleaseBytes] = await Promise.all([envelopePath, bundlePath, manifestPath, toolCatalogPath, catalogPath, schemaReleasePath].map((file) => file ? readFile(file) : null));
   const envelope = parseJson(envelopeBytes, "DSSE envelope"); requireCanonical(envelopeBytes, envelope, "DSSE envelope");
   closed(envelope, ["payload", "payloadType", "signatures"], "DSSE envelope");
   if (envelope.payloadType !== PAYLOAD_TYPE || !Array.isArray(envelope.signatures) || envelope.signatures.length !== 1) fail("DSSE envelope profile is unsupported");
   closed(envelope.signatures[0], ["keyid", "sig"], "DSSE signature");
-  if (envelope.signatures[0].keyid !== KEY_ID) fail("DSSE keyid is unsupported");
+  if (envelope.signatures[0].keyid !== expectedKeyid) fail("DSSE keyid is unsupported");
   const payload = decodeBase64(envelope.payload, "DSSE payload");
   const signature = decodeBase64(envelope.signatures[0].sig, "DSSE signature", 64);
   const key = createPublicKey({ key: Buffer.concat([SPKI_PREFIX, publicKey]), format: "der", type: "spki" });
@@ -290,9 +356,9 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   if (statement._type !== STATEMENT_TYPE || statement.predicateType !== PREDICATE_TYPE || !Array.isArray(statement.subject) || statement.subject.length !== 1) fail("DSSE statement profile is unsupported");
   closed(statement.subject[0], ["digest", "name"], "DSSE subject"); closed(statement.subject[0].digest, ["sha256"], "DSSE subject digest");
   if (statement.subject[0].name !== SUBJECT_NAME || statement.subject[0].digest.sha256 !== sha256(releaseBytes)) fail("DSSE release digest binding mismatch");
-  const release = parseJson(releaseBytes, "release"); requireCanonical(releaseBytes, release, "release"); verifyReleaseShape(release);
-  if (release.bundle.path !== path.relative(ROOT, bundlePath).split(path.sep).join("/") || release.manifest.path !== path.relative(ROOT, manifestPath).split(path.sep).join("/") || release.schema_catalog.path !== path.relative(ROOT, catalogPath).split(path.sep).join("/") || release.schema_release.path !== path.relative(ROOT, schemaReleasePath).split(path.sep).join("/")) fail("release bound paths do not match verifier inputs");
+  if (!inputMatchesLogicalPath(bundlePath, release.bundle.path) || !inputMatchesLogicalPath(manifestPath, release.manifest.path) || !inputMatchesLogicalPath(catalogPath, release.schema_catalog.path) || !inputMatchesLogicalPath(schemaReleasePath, release.schema_release.path) || (successor && !inputMatchesLogicalPath(toolCatalogPath, release.tool_catalog.path))) fail("release bound paths do not match verifier inputs");
   if (sha256(catalogBytes) !== release.schema_catalog.sha256 || catalogBytes.length !== release.schema_catalog.size_bytes || sha256(schemaReleaseBytes) !== release.schema_release.sha256 || schemaReleaseBytes.length !== release.schema_release.size_bytes) fail("schema publication binding mismatch");
+  if (successor) verifyToolCatalog(toolCatalogBytes, parseJson(toolCatalogBytes, "tool catalog"), release);
   await stage("release-verified");
   const manifest = parseJson(manifestBytes, "manifest"); verifyManifest(manifestBytes, manifest, release);
   await stage("manifest-verified");

@@ -36,6 +36,7 @@ SOURCE_COMMIT = (
     ROOT / "package-release/testing-package-release.v1.source-commit"
 ).read_text(encoding="ascii").strip()
 VERIFIER = ROOT / "scripts/verify_testing_package_release.mjs"
+TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 
 
 def run_verifier(
@@ -54,6 +55,10 @@ def run_verifier(
     command.extend([
         "--trusted-authorization-sha256",
         authorization_pin,
+        "--verification-time",
+        "2026-09-04T12:00:00Z",
+        "--minimum-release-sequence",
+        "2",
         "--authorization",
         str(authorization),
     ])
@@ -163,15 +168,16 @@ def signed_case(root: Path, mutate, *, target: str, message: str, allowed: tuple
 def assert_rejection_matrix() -> None:
     legitimate_pin = hashlib.sha256(AUTHORIZATION.read_bytes()).hexdigest()
     expected = ["--expected-release-sha256", RELEASE_SHA256]
+    policy = ["--verification-time", "2026-09-04T12:00:00Z", "--minimum-release-sequence", "2"]
     cli = [
-        ([*expected, "--release", str(ARTIFACTS["release"])], "--trusted-authorization-sha256 is required exactly once"),
-        ([*expected, "--trusted-authorization-sha256", legitimate_pin.upper()], "exactly 64 lowercase hexadecimal"),
-        ([*expected, "--trusted-authorization-sha256", legitimate_pin[:-1]], "exactly 64 lowercase hexadecimal"),
-        ([*expected, "--trusted-authorization-sha256", "g" * 64], "exactly 64 lowercase hexadecimal"),
-        ([*expected, "--trusted-authorization-sha256", legitimate_pin, "--trusted-authorization-sha256", legitimate_pin], "arguments must be unique"),
-        ([*expected, "--trusted-authorization-sha256", "--release", str(ARTIFACTS["release"])], "arguments must be unique"),
-        ([*expected, "--trusted-authorization-sha256", legitimate_pin, "--release", str(ARTIFACTS["release"]), "--release", str(ARTIFACTS["release"])], "arguments must be unique"),
-        ([*expected, "--trusted-authorization-sha256", legitimate_pin, "--unknown", "value"], "unknown argument"),
+        ([*expected, *policy, "--release", str(ARTIFACTS["release"])], "--trusted-authorization-sha256 is required exactly once"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin.upper(), *policy], "exactly 64 lowercase hexadecimal"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin[:-1], *policy], "exactly 64 lowercase hexadecimal"),
+        ([*expected, "--trusted-authorization-sha256", "g" * 64, *policy], "exactly 64 lowercase hexadecimal"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, "--trusted-authorization-sha256", legitimate_pin, *policy], "arguments must be unique"),
+        ([*expected, "--trusted-authorization-sha256", "--release", str(ARTIFACTS["release"]), *policy], "arguments must be unique"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--release", str(ARTIFACTS["release"]), "--release", str(ARTIFACTS["release"])], "arguments must be unique"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--unknown", "value"], "unknown argument"),
     ]
     for arguments, message in cli:
         result = subprocess.run(["node", str(VERIFIER), *arguments], cwd=ROOT, text=True, capture_output=True)
@@ -221,8 +227,8 @@ def assert_rejection_matrix() -> None:
         result = run_verifier(envelope_pin, authorization=envelope_authorization, paths={"envelope": envelope_path}, stage_log=log, success=False)
         assert_rejection(result, log, "DSSE envelope bytes are not canonical", ("trust-pin-matched", "public-key-imported"))
         cases = [
-            ("release", lambda value: value.update(schema="wrong"), "release profile is unsupported", ("trust-pin-matched", "public-key-imported", "dsse-verified")),
-            ("release", lambda value: value["mappings"].append(copy.deepcopy(value["mappings"][0])), "exactly one mapping", ("trust-pin-matched", "public-key-imported", "dsse-verified")),
+            ("release", lambda value: value.update(schema="wrong"), "release profile is unsupported", ()),
+            ("release", lambda value: value["mappings"].append(copy.deepcopy(value["mappings"][0])), "exactly one mapping", ()),
             ("manifest", lambda value: value["runtime_requirements"].update(lua="5.3.0"), "manifest runtime requirements are unsupported", ("trust-pin-matched", "public-key-imported", "dsse-verified", "release-verified")),
             ("manifest", lambda value: value["entrypoints"].append(copy.deepcopy(value["entrypoints"][0])), "manifest must expose exactly testing-runner.run", ("trust-pin-matched", "public-key-imported", "dsse-verified", "release-verified")),
             ("bundle", lambda value: value["files"].append({**value["files"][-1], "path": "libraries/unexpected.lua"}), "bundle files do not match the release allowlist", ("trust-pin-matched", "public-key-imported", "dsse-verified", "release-verified", "manifest-verified")),
@@ -285,6 +291,94 @@ def assert_generator_rejections() -> None:
             os.environ[variable] = original
 
 
+def assert_successor_walking_skeleton(registry) -> None:
+    tracked = tuple(sorted((ROOT / "package-release").glob("*"))) + tuple(sorted((ROOT / "schema-release").glob("*")))
+    snapshots = {path: path.read_bytes() for path in tracked if path.is_file()}
+    expected_paths = {
+        "package-release/testing-package-bundle.v1.json",
+        "package-release/testing-package-manifest.v1.json",
+        "package-release/testing-package-release.v1.json",
+        "package-release/testing-package-release.v1.dsse.json",
+        "package-release/testing-package-release.v1.key.json",
+        "package-release/testing-package-tool-catalog.v1.json",
+    }
+    with tempfile.TemporaryDirectory(prefix="testing-package-successor-") as directory:
+        parent = Path(directory)
+        seed_path = parent / "test-only-public-ed25519-seed.base64"
+        seed_path.write_text(TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64, encoding="ascii")
+        roots = [parent / "first", parent / "second"]
+        for output_root in roots:
+            subprocess.run([
+                sys.executable,
+                str(ROOT / "scripts/generate_testing_package_release.py"),
+                "--output-directory", str(output_root),
+                "--seed-file", str(seed_path),
+                "--source-commit", SOURCE_COMMIT,
+                "--fkst-packages-commit", "1111111111111111111111111111111111111111",
+                "--fkst-substrate-commit", "2222222222222222222222222222222222222222",
+                "--authority-issuer", "https://releases.chronoaiproject.org/fkst-packages-testing",
+                "--authority-keyid", "fkst-packages-testing-successor-test-v1",
+                "--signature-profile", "dsse-ed25519.v1",
+                "--valid-from", "2026-09-04T00:00:00Z",
+                "--valid-until", "2026-09-05T00:00:00Z",
+                "--revocation-authority", "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1",
+                "--release-sequence", "2",
+                "--created-at", "2026-09-04T00:00:00Z",
+            ], cwd=ROOT, check=True)
+            actual_paths = {path.relative_to(output_root).as_posix() for path in output_root.rglob("*") if path.is_file()}
+            assert actual_paths == expected_paths
+
+        for relative in expected_paths:
+            assert (roots[0] / relative).read_bytes() == (roots[1] / relative).read_bytes()
+
+        release_path = roots[0] / "package-release/testing-package-release.v1.json"
+        authorization_path = roots[0] / "package-release/testing-package-release.v1.key.json"
+        tool_catalog_path = roots[0] / "package-release/testing-package-tool-catalog.v1.json"
+        release = json.loads(release_path.read_bytes())
+        catalog = json.loads(tool_catalog_path.read_bytes())
+        successor_schema_paths = tuple(path for path in sorted((ROOT / "schemas").glob("*.schema.json")) if path.name != "testing-package-release.v1.schema.json") + (
+            ROOT / "schemas-next-release/testing-package-release.v1.schema.json",
+            ROOT / "schemas-next-release/testing-package-tool-catalog.v1.schema.json",
+        )
+        successor_registry = offline_registry(successor_schema_paths)
+        _, release_validator = validator_for_schema_file(ROOT / "schemas-next-release/testing-package-release.v1.schema.json", registry=successor_registry)
+        _, catalog_validator = validator_for_schema_file(ROOT / "schemas-next-release/testing-package-tool-catalog.v1.schema.json", registry=successor_registry)
+        assert not tuple(release_validator.iter_errors(release))
+        assert not tuple(catalog_validator.iter_errors(catalog))
+        assert tool_catalog_path.read_bytes() == b'{"canonicalization":"fkst-testing-package-tool-catalog-canonical-json.v1","execution_profile":"browser-deterministic.v1","schema":"testing-package-tool-catalog.v1","tools":[{"capability":"browser.read-title.v1","port":"browser_read_title"}]}\n'
+        assert release["authority"] == {
+            "issuer": "https://releases.chronoaiproject.org/fkst-packages-testing",
+            "keyid": "fkst-packages-testing-successor-test-v1",
+            "release_sequence": 2,
+            "revocation_authority": "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1",
+            "signature_profile": "dsse-ed25519.v1",
+            "valid_from": "2026-09-04T00:00:00Z",
+            "valid_until": "2026-09-05T00:00:00Z",
+        }
+        stage_log = parent / "successor-stages.log"
+        result = run_verifier(
+            hashlib.sha256(authorization_path.read_bytes()).hexdigest(),
+            expected_release_sha256=hashlib.sha256(release_path.read_bytes()).hexdigest(),
+            authorization=authorization_path,
+            paths={
+                "release": release_path,
+                "envelope": roots[0] / "package-release/testing-package-release.v1.dsse.json",
+                "bundle": roots[0] / "package-release/testing-package-bundle.v1.json",
+                "manifest": roots[0] / "package-release/testing-package-manifest.v1.json",
+                "tool-catalog": tool_catalog_path,
+                "schema-catalog": ROOT / "schema-release/testing-schema-catalog.v1.json",
+                "schema-release": ROOT / "schema-release/testing-package-schema-release.v1.json",
+            },
+            stage_log=stage_log,
+            success=True,
+        )
+        assert "testing-package-release: VERIFIED AND EXECUTED" in result.stdout
+        assert_stages(stage_log, SUCCESS_STAGES)
+
+    for path, expected in snapshots.items():
+        assert path.read_bytes() == expected, path
+
+
 def main() -> int:
     assert hashlib.sha256(RELEASE.read_bytes()).hexdigest() == RELEASE_SHA256
     assert hashlib.sha256(AUTHORIZATION.read_bytes()).hexdigest() == AUTHORIZATION_SHA256
@@ -307,6 +401,7 @@ def main() -> int:
     invalid = generator.json.loads((ROOT / "packages/testing-runner/tests/fixtures/testing-package-release.v1/invalid-unknown-field.json").read_text())
     assert not tuple(validator.iter_errors(valid))
     assert tuple(validator.iter_errors(invalid))
+    assert_successor_walking_skeleton(registry)
 
     with tempfile.TemporaryDirectory(prefix="testing-package-release-positive-") as directory:
         stage_log = Path(directory) / "stages.log"

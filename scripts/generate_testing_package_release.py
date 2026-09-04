@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import tempfile
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -33,6 +34,10 @@ SEED_ENVIRONMENT_VARIABLE = "FKST_TESTING_PACKAGE_RELEASE_SIGNING_SEED"
 CREATED_AT = "2026-09-04T00:00:00Z"
 BUILD_ID = "testing-package-release-walking-skeleton-v1"
 VERSION = "1.0.0"
+AUTHORITY_ISSUER = "https://releases.chronoaiproject.org/fkst-packages-testing"
+SIGNATURE_PROFILE = "dsse-ed25519.v1"
+REVOCATION_AUTHORITY = "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1"
+TOOL_CATALOG_PATH = "package-release/testing-package-tool-catalog.v1.json"
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 BUNDLE_FILES = (
     "libraries/contract/canonical_json.lua",
@@ -57,13 +62,25 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def binding(path: Path) -> dict[str, object]:
+def binding(path: Path, logical_path: str | None = None) -> dict[str, object]:
     data = path.read_bytes()
-    return {"path": path.relative_to(ROOT).as_posix(), "size_bytes": len(data), "sha256": sha256(data)}
+    return {"path": logical_path or path.relative_to(ROOT).as_posix(), "size_bytes": len(data), "sha256": sha256(data)}
 
 
-def byte_binding(path: Path, data: bytes) -> dict[str, object]:
-    return {"path": path.relative_to(ROOT).as_posix(), "size_bytes": len(data), "sha256": sha256(data)}
+def byte_binding(logical_path: str, data: bytes) -> dict[str, object]:
+    return {"path": logical_path, "size_bytes": len(data), "sha256": sha256(data)}
+
+
+def canonical_timestamp(value: str, field: str) -> str:
+    if re.fullmatch(r"[0-9]{4}-(?:0[1-9]|1[0-2])-(?:0[1-9]|[12][0-9]|3[01])T(?:[01][0-9]|2[0-3]):[0-5][0-9]:[0-5][0-9]Z", value) is None:
+        raise ValueError(f"{field} must be a canonical UTC timestamp")
+    try:
+        parsed = datetime.strptime(value, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=timezone.utc)
+    except ValueError as error:
+        raise ValueError(f"{field} must be a canonical UTC timestamp") from error
+    if parsed.strftime("%Y-%m-%dT%H:%M:%SZ") != value:
+        raise ValueError(f"{field} must be a canonical UTC timestamp")
+    return value
 
 
 def exact_commit(value: str, field: str) -> str:
@@ -128,7 +145,7 @@ def bundle(source: str) -> tuple[dict[str, object], str]:
     return {"files": records, "schema": "testing-package-bundle.v1"}, content_digest.hexdigest()
 
 
-def manifest(package_content_sha256: str, source: str, packages: str, substrate: str) -> dict[str, object]:
+def manifest(package_content_sha256: str, source: str, packages: str, substrate: str, created_at: str) -> dict[str, object]:
     generator = load_manifest_generator()
     value = {
         "schema": generator.SCHEMA,
@@ -153,7 +170,7 @@ def manifest(package_content_sha256: str, source: str, packages: str, substrate:
             "fkst_substrate": {"id": "fkst-substrate", "commit": substrate},
         },
         "producer": {"name": "fkst-packages-testing", "version": VERSION, "toolchain": "testing-package-release-v1"},
-        "creation_metadata": {"created_at": CREATED_AT, "build_id": BUILD_ID},
+        "creation_metadata": {"created_at": created_at, "build_id": BUILD_ID},
     }
     value["manifest_digest"] = sha256(generator.canonical(value))
     return value
@@ -171,10 +188,19 @@ def reducer_identity() -> dict[str, object]:
     return value
 
 
-def release_value(package_content_sha256: str, bundle_bytes: bytes, manifest_bytes: bytes, manifest_value: dict[str, object], source: str, packages: str, substrate: str) -> dict[str, object]:
-    manifest_binding = byte_binding(MANIFEST_PATH, manifest_bytes)
-    manifest_binding["manifest_digest"] = manifest_value["manifest_digest"]
+def tool_catalog() -> dict[str, object]:
     return {
+        "canonicalization": "fkst-testing-package-tool-catalog-canonical-json.v1",
+        "execution_profile": "browser-deterministic.v1",
+        "schema": "testing-package-tool-catalog.v1",
+        "tools": [{"capability": "browser.read-title.v1", "port": "browser_read_title"}],
+    }
+
+
+def release_value(package_content_sha256: str, bundle_bytes: bytes, manifest_bytes: bytes, manifest_value: dict[str, object], source: str, packages: str, substrate: str, created_at: str, authority: dict[str, object] | None = None, tool_catalog_bytes: bytes | None = None) -> dict[str, object]:
+    manifest_binding = byte_binding("package-release/testing-package-manifest.v1.json", manifest_bytes)
+    manifest_binding["manifest_digest"] = manifest_value["manifest_digest"]
+    value = {
         "schema": "testing-package-release.v1",
         "canonicalization": "fkst-testing-package-release-canonical-json.v1",
         "package": {
@@ -182,7 +208,7 @@ def release_value(package_content_sha256: str, bundle_bytes: bytes, manifest_byt
             "package_content_sha256": package_content_sha256,
             "supported_profile": "browser-deterministic.v1", "capability": "browser.read-title.v1",
         },
-        "bundle": byte_binding(BUNDLE_PATH, bundle_bytes),
+        "bundle": byte_binding("package-release/testing-package-bundle.v1.json", bundle_bytes),
         "manifest": manifest_binding,
         "schema_catalog": binding(CATALOG_PATH),
         "schema_release": binding(SCHEMA_RELEASE_PATH),
@@ -193,8 +219,12 @@ def release_value(package_content_sha256: str, bundle_bytes: bytes, manifest_byt
         "reducer": reducer_identity(),
         "result_authority": {"receipt_schema": "testing-result-authority-receipt.v1"},
         "mappings": [{"entrypoint": "testing-runner.run", "contract_major": "testing-runner.v1", "module": "testing_package_executor.executor", "function": "execute"}],
-        "creation_metadata": {"created_at": CREATED_AT, "build_id": BUILD_ID},
+        "creation_metadata": {"created_at": created_at, "build_id": BUILD_ID},
     }
+    if authority is not None and tool_catalog_bytes is not None:
+        value["authority"] = authority
+        value["tool_catalog"] = byte_binding(TOOL_CATALOG_PATH, tool_catalog_bytes)
+    return value
 
 
 def statement(release_bytes: bytes) -> bytes:
@@ -234,7 +264,7 @@ def signing_seed(seed_file: Path | None) -> bytes:
     return decode_seed(value)
 
 
-def signed_artifacts(release_bytes: bytes, seed: bytes) -> tuple[bytes, bytes]:
+def signed_artifacts(release_bytes: bytes, seed: bytes, keyid: str = KEY_ID) -> tuple[bytes, bytes]:
     payload = statement(release_bytes)
     with tempfile.TemporaryDirectory(prefix="testing-package-release-sign-") as directory:
         root = Path(directory)
@@ -252,12 +282,12 @@ def signed_artifacts(release_bytes: bytes, seed: bytes) -> tuple[bytes, bytes]:
             raise ValueError("OpenSSL returned a malformed Ed25519 signature")
     envelope = {
         "payload": base64.b64encode(payload).decode("ascii"), "payloadType": PAYLOAD_TYPE,
-        "signatures": [{"keyid": KEY_ID, "sig": base64.b64encode(signature).decode("ascii")}],
+        "signatures": [{"keyid": keyid, "sig": base64.b64encode(signature).decode("ascii")}],
     }
     authorization = {
         "algorithm": "ed25519",
         "authorization": {"payloadType": PAYLOAD_TYPE, "predicateType": PREDICATE_TYPE, "subject": SUBJECT_NAME},
-        "keyid": KEY_ID, "publicKey": base64.b64encode(public_key).decode("ascii"),
+        "keyid": keyid, "publicKey": base64.b64encode(public_key).decode("ascii"),
         "schema": "testing-package-release-key-authorization.v1",
     }
     return compact(envelope), compact(authorization)
@@ -297,26 +327,69 @@ def verify_signed_artifacts(release_bytes: bytes) -> None:
             raise ValueError("committed Ed25519 signature verification failed")
 
 
-def unsigned_outputs(source_commit: str) -> dict[Path, bytes]:
+def unsigned_outputs(source_commit: str, *, output_root: Path = ROOT, fkst_packages_commit: str | None = None, fkst_substrate_commit: str | None = None, created_at: str = CREATED_AT, authority: dict[str, object] | None = None) -> dict[Path, bytes]:
     source = repository_commit(source_commit)
-    packages = pinned_commit(ROOT / ".fkst/conformance/fkst-packages.pin", "fkst-packages")
-    substrate = pinned_commit(ROOT / ".fkst/substrate-ref", "fkst-substrate")
+    packages = exact_commit(fkst_packages_commit, "fkst-packages commit") if fkst_packages_commit is not None else pinned_commit(ROOT / ".fkst/conformance/fkst-packages.pin", "fkst-packages")
+    substrate = exact_commit(fkst_substrate_commit, "fkst-substrate commit") if fkst_substrate_commit is not None else pinned_commit(ROOT / ".fkst/substrate-ref", "fkst-substrate")
+    package_root = output_root / "package-release"
+    bundle_path = package_root / "testing-package-bundle.v1.json"
+    manifest_path = package_root / "testing-package-manifest.v1.json"
+    release_path = package_root / "testing-package-release.v1.json"
     bundle_value, package_content_sha256 = bundle(source)
     bundle_bytes = compact(bundle_value)
-    manifest_value = manifest(package_content_sha256, source, packages, substrate)
+    manifest_value = manifest(package_content_sha256, source, packages, substrate, created_at)
     manifest_bytes = load_manifest_generator().canonical(manifest_value)
-    release_bytes = compact(release_value(package_content_sha256, bundle_bytes, manifest_bytes, manifest_value, source, packages, substrate))
-    return {BUNDLE_PATH: bundle_bytes, MANIFEST_PATH: manifest_bytes, RELEASE_PATH: release_bytes}
+    catalog_bytes = compact(tool_catalog()) if authority is not None else None
+    release_bytes = compact(release_value(package_content_sha256, bundle_bytes, manifest_bytes, manifest_value, source, packages, substrate, created_at, authority, catalog_bytes))
+    outputs = {bundle_path: bundle_bytes, manifest_path: manifest_bytes, release_path: release_bytes}
+    if catalog_bytes is not None:
+        outputs[package_root / "testing-package-tool-catalog.v1.json"] = catalog_bytes
+    return outputs
 
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--output-directory", type=Path)
     parser.add_argument("--seed-file", type=Path)
     parser.add_argument("--source-commit", required=True)
+    parser.add_argument("--fkst-packages-commit")
+    parser.add_argument("--fkst-substrate-commit")
+    parser.add_argument("--authority-issuer")
+    parser.add_argument("--authority-keyid")
+    parser.add_argument("--signature-profile")
+    parser.add_argument("--valid-from")
+    parser.add_argument("--valid-until")
+    parser.add_argument("--revocation-authority")
+    parser.add_argument("--release-sequence", type=int)
+    parser.add_argument("--created-at", default=CREATED_AT)
     arguments = parser.parse_args()
     try:
-        expected = unsigned_outputs(arguments.source_commit)
+        authority_arguments = [arguments.authority_issuer, arguments.authority_keyid, arguments.signature_profile, arguments.valid_from, arguments.valid_until, arguments.revocation_authority, arguments.release_sequence]
+        successor = arguments.output_directory is not None
+        if successor and (arguments.check or arguments.fkst_packages_commit is None or arguments.fkst_substrate_commit is None or any(value is None for value in authority_arguments)):
+            raise ValueError("isolated successor generation requires every explicit dependency and authority input")
+        if not successor and any(value is not None for value in authority_arguments):
+            raise ValueError("authority inputs require --output-directory")
+        authority = None
+        keyid = KEY_ID
+        output_root = ROOT
+        if successor:
+            if arguments.authority_issuer != AUTHORITY_ISSUER or arguments.signature_profile != SIGNATURE_PROFILE or arguments.revocation_authority != REVOCATION_AUTHORITY:
+                raise ValueError("successor authority profile is unsupported")
+            if not isinstance(arguments.release_sequence, int) or not 1 <= arguments.release_sequence <= 9007199254740991:
+                raise ValueError("release sequence must be a positive safe integer")
+            keyid = arguments.authority_keyid
+            if not keyid or len(keyid.encode("utf-8")) > 128 or any(ord(character) < 32 or ord(character) == 127 for character in keyid):
+                raise ValueError("authority keyid is invalid")
+            valid_from = canonical_timestamp(arguments.valid_from, "valid-from")
+            valid_until = canonical_timestamp(arguments.valid_until, "valid-until")
+            if valid_from >= valid_until:
+                raise ValueError("authority validity interval must be non-empty")
+            authority = {"issuer": arguments.authority_issuer, "keyid": keyid, "release_sequence": arguments.release_sequence, "revocation_authority": arguments.revocation_authority, "signature_profile": arguments.signature_profile, "valid_from": valid_from, "valid_until": valid_until}
+            output_root = arguments.output_directory.resolve()
+        created_at = canonical_timestamp(arguments.created_at, "created-at")
+        expected = unsigned_outputs(arguments.source_commit, output_root=output_root, fkst_packages_commit=arguments.fkst_packages_commit, fkst_substrate_commit=arguments.fkst_substrate_commit, created_at=created_at, authority=authority)
         if arguments.check:
             for path, data in expected.items():
                 if not path.is_file() or path.read_bytes() != data:
@@ -326,10 +399,14 @@ def main() -> int:
             verify_signed_artifacts(expected[RELEASE_PATH])
         else:
             for path, data in expected.items():
+                path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
-            envelope, authorization = signed_artifacts(expected[RELEASE_PATH], signing_seed(arguments.seed_file))
-            ENVELOPE_PATH.write_bytes(envelope)
-            AUTHORIZATION_PATH.write_bytes(authorization)
+            release_path = output_root / SUBJECT_NAME
+            envelope, authorization = signed_artifacts(expected[release_path], signing_seed(arguments.seed_file), keyid)
+            envelope_path = output_root / "package-release/testing-package-release.v1.dsse.json"
+            authorization_path = output_root / "package-release/testing-package-release.v1.key.json"
+            envelope_path.write_bytes(envelope)
+            authorization_path.write_bytes(authorization)
     except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")
     print("testing-package-release-generation: PASS")
