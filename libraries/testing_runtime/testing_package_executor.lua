@@ -1,5 +1,4 @@
 local contract = require("contract.testing_package_executor")
-local executor = require("testing_package_executor.executor")
 local resolver = require("testing_runtime.package_resolver")
 
 local M = {}
@@ -34,6 +33,7 @@ end
 function M.execute(request, host_ports)
   local resolved = resolver.resolve(request, host_ports)
   if resolved.schema == contract.schemas.admission_conflict then return resolved end
+  local executor = require("testing_package_executor.executor")
   return executor.execute(resolved, execution_ports(host_ports))
 end
 

@@ -35,6 +35,12 @@ SUCCESS_STAGES = [
 SOURCE_COMMIT = (
     ROOT / "package-release/testing-package-release.v1.source-commit"
 ).read_text(encoding="ascii").strip()
+FKST_PACKAGES_COMMIT = next(
+    line.strip()
+    for line in reversed((ROOT / ".fkst/conformance/fkst-packages.pin").read_text(encoding="ascii").splitlines())
+    if line.strip() and not line.lstrip().startswith("#")
+)
+FKST_SUBSTRATE_COMMIT = (ROOT / ".fkst/substrate-ref").read_text(encoding="ascii").strip()
 VERIFIER = ROOT / "scripts/verify_testing_package_release.mjs"
 TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 MULTIBYTE_OVERFLOW_KEYID = "é" * 64 + "a"
@@ -48,6 +54,7 @@ def run_verifier(
     paths: dict[str, Path] | None = None,
     stage_log: Path | None = None,
     extra_arguments: tuple[str, ...] = (),
+    environment_overrides: dict[str, str] | None = None,
     success: bool,
 ) -> subprocess.CompletedProcess[str]:
     command = ["node", str(VERIFIER)]
@@ -67,6 +74,7 @@ def run_verifier(
         command.extend([f"--{name}", str(path)])
     command.extend(extra_arguments)
     environment = os.environ.copy()
+    environment.update(environment_overrides or {})
     if stage_log is not None:
         environment["FKST_TESTING_PACKAGE_RELEASE_STAGE_LOG"] = str(stage_log)
     result = subprocess.run(command, cwd=ROOT, env=environment, text=True, capture_output=True)
@@ -227,9 +235,34 @@ def assert_rejection_matrix() -> None:
         envelope_path = root / "envelope-noncanonical.json"; envelope_path.write_bytes(envelope_bytes[:-1]); log = root / "envelope-noncanonical.log"
         result = run_verifier(envelope_pin, authorization=envelope_authorization, paths={"envelope": envelope_path}, stage_log=log, success=False)
         assert_rejection(result, log, "DSSE envelope bytes are not canonical", ("trust-pin-matched", "public-key-imported"))
+        invalid_envelope = json.loads(envelope_bytes)
+        invalid_envelope["signatures"][0]["sig"] = (
+            "A" if invalid_envelope["signatures"][0]["sig"][0] != "A" else "B"
+        ) + invalid_envelope["signatures"][0]["sig"][1:]
+        invalid_envelope_path = root / "invalid-signature-missing-dependencies.json"
+        invalid_envelope_path.write_bytes(canonical(invalid_envelope))
+        effect_sentinel = root / "executor-effect-sentinel"
+        engine_sentinel = root / "sentinel-engine.sh"
+        engine_sentinel.write_text(f'#!/bin/sh\n: > "{effect_sentinel}"\nexit 99\n', encoding="utf-8")
+        engine_sentinel.chmod(0o755)
+        missing_paths = {
+            "envelope": invalid_envelope_path,
+            "bundle": root / "missing-bundle.json",
+            "manifest": root / "missing-manifest.json",
+            "schema-catalog": root / "missing-schema-catalog.json",
+            "schema-release": root / "missing-schema-release.json",
+        }
+        missing_log = root / "invalid-signature-missing-dependencies.log"
+        result = run_verifier(
+            envelope_pin, authorization=envelope_authorization, paths=missing_paths,
+            stage_log=missing_log, environment_overrides={"FKST_TESTING_ENGINE_BIN": str(engine_sentinel)}, success=False,
+        )
+        assert_rejection(result, missing_log, "Ed25519 DSSE verification failed", ("trust-pin-matched", "public-key-imported"))
+        assert "ENOENT" not in result.stderr and not effect_sentinel.exists()
         cases = [
             ("release", lambda value: value.update(schema="wrong"), "release profile is unsupported", ()),
             ("release", lambda value: value["mappings"].append(copy.deepcopy(value["mappings"][0])), "exactly one mapping", ()),
+            ("release", lambda value: value["source"].update(fkst_packages_commit="1" * 40), "committed provenance pins", ("trust-pin-matched", "public-key-imported", "dsse-verified")),
             ("manifest", lambda value: value["runtime_requirements"].update(lua="5.3.0"), "manifest runtime requirements are unsupported", ("trust-pin-matched", "public-key-imported", "dsse-verified", "release-verified")),
             ("manifest", lambda value: value["entrypoints"].append(copy.deepcopy(value["entrypoints"][0])), "manifest must expose exactly testing-runner.run", ("trust-pin-matched", "public-key-imported", "dsse-verified", "release-verified")),
             ("bundle", lambda value: value["files"].append({**value["files"][-1], "path": "libraries/unexpected.lua"}), "bundle files do not match the release allowlist", ("trust-pin-matched", "public-key-imported", "dsse-verified", "release-verified", "manifest-verified")),
@@ -319,8 +352,8 @@ def assert_successor_walking_skeleton(registry) -> None:
                 "--output-directory", str(output_root),
                 "--seed-file", str(seed_path),
                 "--source-commit", SOURCE_COMMIT,
-                "--fkst-packages-commit", "1111111111111111111111111111111111111111",
-                "--fkst-substrate-commit", "2222222222222222222222222222222222222222",
+                "--fkst-packages-commit", FKST_PACKAGES_COMMIT,
+                "--fkst-substrate-commit", FKST_SUBSTRATE_COMMIT,
                 "--authority-issuer", "https://releases.chronoaiproject.org/fkst-packages-testing",
                 "--authority-keyid", "fkst-packages-testing-successor-test-v1",
                 "--signature-profile", "dsse-ed25519.v1",
@@ -382,6 +415,49 @@ def assert_successor_walking_skeleton(registry) -> None:
         )
         assert "testing-package-release: VERIFIED AND EXECUTED" in result.stdout
         assert_stages(stage_log, SUCCESS_STAGES)
+        substituted_root = parent / "publisher-coordinate-substitution"
+        shutil.copytree(roots[0], substituted_root)
+        substituted_release_path = substituted_root / "package-release/testing-package-release.v1.json"
+        substituted_catalog_path = substituted_root / "package-release/testing-package-tool-catalog.v1.json"
+        substituted_release = json.loads(substituted_release_path.read_bytes())
+        substituted_catalog = json.loads(substituted_catalog_path.read_bytes())
+        substituted_release["executor"].update(module="publisher.sentinel", function="sentinel_default")
+        substituted_release["mappings"][0].update(module="publisher.sentinel", function="sentinel_default")
+        substituted_catalog["tools"][0]["port"] = "publisher_sentinel_port"
+        substituted_catalog_path.write_bytes(canonical(substituted_catalog))
+        substituted_release["tool_catalog"].update(
+            sha256=hashlib.sha256(substituted_catalog_path.read_bytes()).hexdigest(),
+            size_bytes=substituted_catalog_path.stat().st_size,
+        )
+        substituted_release_path.write_bytes(canonical(substituted_release))
+        substituted_envelope, substituted_authorization = generator.signed_artifacts(
+            substituted_release_path.read_bytes(),
+            base64.b64decode(TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64),
+            keyid=substituted_release["authority"]["keyid"],
+        )
+        substituted_envelope_path = substituted_root / "package-release/testing-package-release.v1.dsse.json"
+        substituted_authorization_path = substituted_root / "package-release/testing-package-release.v1.key.json"
+        substituted_envelope_path.write_bytes(substituted_envelope)
+        substituted_authorization_path.write_bytes(substituted_authorization)
+        substituted_log = parent / "publisher-coordinate-substitution.log"
+        substituted_result = run_verifier(
+            hashlib.sha256(substituted_authorization).hexdigest(),
+            expected_release_sha256=hashlib.sha256(substituted_release_path.read_bytes()).hexdigest(),
+            authorization=substituted_authorization_path,
+            paths={
+                "release": substituted_release_path,
+                "envelope": substituted_envelope_path,
+                "bundle": substituted_root / "package-release/testing-package-bundle.v1.json",
+                "manifest": substituted_root / "package-release/testing-package-manifest.v1.json",
+                "tool-catalog": substituted_catalog_path,
+                "schema-catalog": ROOT / "schema-release/testing-schema-catalog.v1.json",
+                "schema-release": ROOT / "schema-release/testing-package-schema-release.v1.json",
+            },
+            stage_log=substituted_log,
+            success=True,
+        )
+        assert "testing-package-release: VERIFIED AND EXECUTED" in substituted_result.stdout
+        assert_stages(substituted_log, SUCCESS_STAGES)
         for index, invalid_keyid in enumerate(("bad\u0085key", MULTIBYTE_OVERFLOW_KEYID)):
             invalid_log = parent / f"invalid-keyid-{index}.log"
             invalid_result = run_verifier(
