@@ -164,7 +164,16 @@ function verifyReleaseShape(release) {
   closed(release.creation_metadata, ["created_at", "build_id"], "release.creation_metadata");
   timestamp(release.creation_metadata.created_at, "release.creation_metadata.created_at");
   if (release.creation_metadata.build_id !== "testing-package-release-walking-skeleton-v1") fail("release creation metadata is unsupported");
-  return successor;
+  return {
+    successor,
+    mapping: {
+      entrypoint: release.mappings[0].entrypoint,
+      contractMajor: release.mappings[0].contract_major,
+      module: release.mappings[0].module,
+      function: release.mappings[0].function,
+      executorId: release.executor.executor_id,
+    },
+  };
 }
 function verifyManifest(manifestBytes, manifest, release) {
   requireCanonical(manifestBytes, manifest, "manifest", false);
@@ -199,6 +208,19 @@ function verifyToolCatalog(catalogBytes, catalog, release) {
   closed(catalog.tools[0], ["capability", "port"], "tool catalog entry");
   if (catalog.tools[0].capability !== release.package.capability || catalog.tools[0].port !== "browser_read_title") fail("tool catalog executor port binding is unsupported");
   if (sha256(catalogBytes) !== release.tool_catalog.sha256 || catalogBytes.length !== release.tool_catalog.size_bytes) fail("tool catalog persisted binding mismatch");
+  return {
+    capability: catalog.tools[0].capability,
+    port: catalog.tools[0].port,
+    executionProfile: catalog.execution_profile,
+  };
+}
+function legacyToolBinding(release) {
+  return { capability: release.package.capability, port: "browser_read_title", executionProfile: release.package.supported_profile };
+}
+function verifyDispatchBindings(release, manifest, mapping, toolBinding) {
+  const manifestEntrypoint = manifest.entrypoints[0];
+  if (mapping.entrypoint !== manifestEntrypoint.name || mapping.contractMajor !== manifestEntrypoint.contract_major || mapping.module !== release.executor.module || mapping.function !== release.executor.function || mapping.executorId !== release.executor.executor_id) fail("verified release mapping does not match manifest and executor identity");
+  if (toolBinding.capability !== release.package.capability || !manifestEntrypoint.capabilities.includes(toolBinding.capability) || toolBinding.executionProfile !== release.package.supported_profile) fail("verified tool binding does not match release and manifest identity");
 }
 function inputMatchesLogicalPath(inputPath, logicalPath) {
   return path.resolve(inputPath).split(path.sep).join("/").endsWith(`/${logicalPath}`);
@@ -226,11 +248,17 @@ function verifyBundle(bundleBytes, bundle, release) {
   if (contentHash.digest("hex") !== release.package.package_content_sha256) fail("bundle package_content_sha256 mismatch");
   return decoded;
 }
-function executionTest(release) {
+function luaString(value) {
+  return JSON.stringify(value);
+}
+function executionTest(release, mapping, toolBinding) {
   return `local contract = require("contract.testing_package_executor")
 local authority = require("contract.testing_result_authority")
 local sha256 = require("contract.sha256").hex
-local executor = require("testing_package_executor.executor")
+local executor = require(${luaString(mapping.module)})
+local execute = executor[${luaString(mapping.function)}]
+assert(type(execute) == "function")
+assert(${luaString(mapping.entrypoint)} == "testing-runner.run")
 local function ref(kind, name) return { kind=kind, ref="immutable://release/" .. name, sha256=sha256(name) } end
 local approved = {
   package_release_ref=ref("testing-package-release", "release"), package_manifest_ref=ref("testing-package-manifest", "manifest"),
@@ -240,10 +268,10 @@ local approved = {
 }
 local identity = { schema=contract.schemas.identity, package_id="testing-runner", package_version="1.0.0",
   package_content_sha256="${release.package.package_content_sha256}", manifest_digest="${release.manifest.manifest_digest}",
-  entrypoint="testing-runner.run", contract_major="testing-runner.v1" }
-local selected = { executor_id="testing-package-executor.browser-title.v1", name="testing-runner.run", contract_major="testing-runner.v1", capabilities={"browser.read-title.v1"} }
-local admission = contract.compute_admission_digest(identity, "browser-deterministic.v1", approved, selected, "dedup-walking-skeleton", sha256)
-local resolved = { schema=contract.schemas.resolved_invocation, executor=identity, execution_profile="browser-deterministic.v1",
+  entrypoint=${luaString(mapping.entrypoint)}, contract_major=${luaString(mapping.contractMajor)} }
+local selected = { executor_id=${luaString(mapping.executorId)}, name=${luaString(mapping.entrypoint)}, contract_major=${luaString(mapping.contractMajor)}, capabilities={${luaString(toolBinding.capability)}} }
+local admission = contract.compute_admission_digest(identity, ${luaString(toolBinding.executionProfile)}, approved, selected, "dedup-walking-skeleton", sha256)
+local resolved = { schema=contract.schemas.resolved_invocation, executor=identity, execution_profile=${luaString(toolBinding.executionProfile)},
   approved_input_refs=approved, source={schema=contract.schemas.source,source_id="fixture-home",target_url="http://127.0.0.1:4173/"},
   plan={schema=contract.schemas.plan,case_id="case-home-title",assertion={assertion_id="assert-home-title",expected="Fixture Home",required=true,type="title-equals"}},
   pql_input={schema=contract.schemas.pql_input,requirement_id="REQ-HOME-TITLE"}, selected_entrypoint=selected,
@@ -258,7 +286,7 @@ local ports = {
   load_effect_intent=function() return nil end, load_effect_receipt=function() return nil end,
   check_freshness=function() return true end,
   persist_effect_intent=function() intents=intents+1; return true end,
-  browser_read_title=function() browser_calls=browser_calls+1; return {schema=contract.schemas.browser_read_title_receipt,effect_id=contract.effect_id,status="succeeded",observed_url=contract.target_url,observed_title="Fixture Home",evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=sha256("evidence")}},evidence_size_bytes=8} end,
+  [${luaString(toolBinding.port)}]=function() browser_calls=browser_calls+1; return {schema=contract.schemas.browser_read_title_receipt,effect_id=contract.effect_id,status="succeeded",observed_url=contract.target_url,observed_title="Fixture Home",evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=sha256("evidence")}},evidence_size_bytes=8} end,
   persist_effect_receipt=function() receipts=receipts+1; return true end,
   write_canonical=function(request) local names={ ["evidence-manifest"]="evidence-manifest.json",["case-result-set"]="case-result-set.json",["result-authority-receipt"]="result-authority-receipt.json" }; return {schema=contract.schemas.write_receipt,status="written",ref={kind="artifact",ref=".testing/runs/dedup-walking-skeleton/"..names[request.kind],sha256=request.canonical_sha256}} end,
   complete_execution=function(value) return value end,
@@ -267,19 +295,19 @@ local ports = {
 local captured_bindings
 local create_receipt = authority.create_receipt
 authority.create_receipt = function(bindings, sha256_fn) captured_bindings = bindings; return create_receipt(bindings, sha256_fn) end
-local receipt = executor.execute(resolved, ports)
+local receipt = execute(resolved, ports)
 authority.create_receipt = create_receipt
 authority.validate_receipt(receipt, captured_bindings, sha256)
 authority.canonicalize(receipt, sha256)
 assert(receipt.schema == "testing-result-authority-receipt.v1")
 assert(receipt.classification == "passed")
 assert(receipt.package_id == "testing-runner")
-assert(receipt.executor_id == "testing-package-executor.browser-title.v1")
+assert(receipt.executor_id == ${luaString(mapping.executorId)})
 assert(browser_calls == 1 and intents == 1 and receipts == 1)
 return { test_verified_release_execution = function() assert(true) end }
 `;
 }
-async function executeVerified(decodedFiles, release) {
+async function executeVerified(decodedFiles, release, mapping, toolBinding) {
   const engine = process.env.FKST_TESTING_ENGINE_BIN || process.env.BIN;
   if (!engine) fail("FKST_TESTING_ENGINE_BIN or BIN is required for isolated executor invocation");
   const root = await mkdtemp(path.join(tmpdir(), "testing-package-release-"));
@@ -293,7 +321,7 @@ async function executeVerified(decodedFiles, release) {
     await mkdir(path.join(packageRoot, "tests"), { recursive: true });
     await writeFile(path.join(root, "fkst.workspace.toml"), '[workspace]\nunits = ["packages/*"]\npackages = ["packages/*"]\nlibraries = []\n', { flag: "wx" });
     await writeFile(path.join(packageRoot, "fkst.toml"), 'kind = "package"\nname = "verified-testing-runner"\npersistence_class = "stateless_adapter"\n[code]\nroot = "libraries"\n', { flag: "wx" });
-    await writeFile(path.join(packageRoot, "tests/release_execution_test.lua"), executionTest(release), { flag: "wx" });
+    await writeFile(path.join(packageRoot, "tests/release_execution_test.lua"), executionTest(release, mapping, toolBinding), { flag: "wx" });
     await stage("materialized");
     const result = spawnSync(engine, ["test", "--project-root", root, "--package-root", packageRoot], { encoding: "utf8", env: { ...process.env, LUA_PATH: "" } });
     if (result.status !== 0) fail(`isolated executor invocation failed: ${(result.stderr || result.stdout).trim()}`);
@@ -316,7 +344,8 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   await stage("release-digest-matched");
 
   const release = parseJson(releaseBytes, "release"); requireCanonical(releaseBytes, release, "release");
-  const successor = verifyReleaseShape(release);
+  const verifiedRelease = verifyReleaseShape(release);
+  const successor = verifiedRelease.successor;
   const verificationTime = timestamp(args.get("--verification-time"), "--verification-time");
   if (successor) {
     if (release.authority.release_sequence < parsedArguments.minimumReleaseSequence) fail("release sequence is below the consumer minimum");
@@ -344,7 +373,7 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   const catalogPath = args.get("--schema-catalog") ?? path.join(ROOT, "schema-release/testing-schema-catalog.v1.json");
   const schemaReleasePath = args.get("--schema-release") ?? path.join(ROOT, "schema-release/testing-package-schema-release.v1.json");
   if (successor && !toolCatalogPath) fail("--tool-catalog is required for successor releases");
-  const [envelopeBytes, bundleBytes, manifestBytes, toolCatalogBytes, catalogBytes, schemaReleaseBytes] = await Promise.all([envelopePath, bundlePath, manifestPath, toolCatalogPath, catalogPath, schemaReleasePath].map((file) => file ? readFile(file) : null));
+  const envelopeBytes = await readFile(envelopePath);
   const envelope = parseJson(envelopeBytes, "DSSE envelope"); requireCanonical(envelopeBytes, envelope, "DSSE envelope");
   closed(envelope, ["payload", "payloadType", "signatures"], "DSSE envelope");
   if (envelope.payloadType !== PAYLOAD_TYPE || !Array.isArray(envelope.signatures) || envelope.signatures.length !== 1) fail("DSSE envelope profile is unsupported");
@@ -361,14 +390,20 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   closed(statement.subject[0], ["digest", "name"], "DSSE subject"); closed(statement.subject[0].digest, ["sha256"], "DSSE subject digest");
   if (statement.subject[0].name !== SUBJECT_NAME || statement.subject[0].digest.sha256 !== sha256(releaseBytes)) fail("DSSE release digest binding mismatch");
   if (!inputMatchesLogicalPath(bundlePath, release.bundle.path) || !inputMatchesLogicalPath(manifestPath, release.manifest.path) || !inputMatchesLogicalPath(catalogPath, release.schema_catalog.path) || !inputMatchesLogicalPath(schemaReleasePath, release.schema_release.path) || (successor && !inputMatchesLogicalPath(toolCatalogPath, release.tool_catalog.path))) fail("release bound paths do not match verifier inputs");
+  const manifestBytes = await readFile(manifestPath);
+  const bundleBytes = await readFile(bundlePath);
+  const toolCatalogBytes = successor ? await readFile(toolCatalogPath) : null;
+  const catalogBytes = await readFile(catalogPath);
+  const schemaReleaseBytes = await readFile(schemaReleasePath);
   if (sha256(catalogBytes) !== release.schema_catalog.sha256 || catalogBytes.length !== release.schema_catalog.size_bytes || sha256(schemaReleaseBytes) !== release.schema_release.sha256 || schemaReleaseBytes.length !== release.schema_release.size_bytes) fail("schema publication binding mismatch");
-  if (successor) verifyToolCatalog(toolCatalogBytes, parseJson(toolCatalogBytes, "tool catalog"), release);
+  const toolBinding = successor ? verifyToolCatalog(toolCatalogBytes, parseJson(toolCatalogBytes, "tool catalog"), release) : legacyToolBinding(release);
   await stage("release-verified");
   const manifest = parseJson(manifestBytes, "manifest"); verifyManifest(manifestBytes, manifest, release);
+  verifyDispatchBindings(release, manifest, verifiedRelease.mapping, toolBinding);
   await stage("manifest-verified");
   const bundle = parseJson(bundleBytes, "bundle"); const decodedFiles = verifyBundle(bundleBytes, bundle, release);
   await stage("bundle-verified");
-  await executeVerified(decodedFiles, release);
+  await executeVerified(decodedFiles, release, verifiedRelease.mapping, toolBinding);
   return { release, releaseSha256, authorizationSha256: pin };
 }
 

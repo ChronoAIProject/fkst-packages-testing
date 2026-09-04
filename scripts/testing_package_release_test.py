@@ -296,6 +296,117 @@ def assert_generator_rejections() -> None:
             os.environ[variable] = original
 
 
+def generate_successor(output_root: Path, seed_path: Path) -> None:
+    subprocess.run([
+        sys.executable,
+        str(ROOT / "scripts/generate_testing_package_release.py"),
+        "--output-directory", str(output_root),
+        "--seed-file", str(seed_path),
+        "--source-commit", SOURCE_COMMIT,
+        "--fkst-packages-commit", "1111111111111111111111111111111111111111",
+        "--fkst-substrate-commit", "2222222222222222222222222222222222222222",
+        "--authority-issuer", "https://releases.chronoaiproject.org/fkst-packages-testing",
+        "--authority-keyid", "fkst-packages-testing-successor-test-v1",
+        "--signature-profile", "dsse-ed25519.v1",
+        "--valid-from", "2026-09-04T00:00:00Z",
+        "--valid-until", "2026-09-05T00:00:00Z",
+        "--revocation-authority", "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1",
+        "--release-sequence", "2",
+        "--created-at", "2026-09-04T00:00:00Z",
+    ], cwd=ROOT, check=True)
+
+
+def successor_verifier_paths(output_root: Path) -> dict[str, Path]:
+    return {
+        "release": output_root / "package-release/testing-package-release.v1.json",
+        "envelope": output_root / "package-release/testing-package-release.v1.dsse.json",
+        "bundle": output_root / "package-release/testing-package-bundle.v1.json",
+        "manifest": output_root / "package-release/testing-package-manifest.v1.json",
+        "tool-catalog": output_root / "package-release/testing-package-tool-catalog.v1.json",
+        "schema-catalog": ROOT / "schema-release/testing-schema-catalog.v1.json",
+        "schema-release": ROOT / "schema-release/testing-package-schema-release.v1.json",
+    }
+
+
+def assert_authenticated_read_ordering() -> None:
+    with tempfile.TemporaryDirectory(prefix="testing-package-authenticated-read-") as directory:
+        root = Path(directory)
+        envelope = json.loads(ARTIFACTS["envelope"].read_bytes())
+        signature = bytearray(base64.b64decode(envelope["signatures"][0]["sig"], validate=True))
+        signature[0] ^= 1
+        envelope["signatures"][0]["sig"] = base64.b64encode(signature).decode("ascii")
+        envelope_path = root / "testing-package-release.v1.dsse.json"
+        envelope_path.write_bytes(canonical(envelope))
+        missing = root / "missing"
+        stage_log = root / "stages.log"
+        result = run_verifier(
+            paths={
+                "envelope": envelope_path,
+                "bundle": missing / "testing-package-bundle.v1.json",
+                "manifest": missing / "testing-package-manifest.v1.json",
+                "schema-catalog": missing / "testing-schema-catalog.v1.json",
+                "schema-release": missing / "testing-package-schema-release.v1.json",
+            },
+            stage_log=stage_log,
+            success=False,
+        )
+        assert result.stderr == "error: Ed25519 DSSE verification failed\n", result.stderr
+        assert "ENOENT" not in result.stderr
+        assert_stages(stage_log, ["release-digest-matched", "trust-pin-matched", "public-key-imported"])
+
+
+def assert_successor_dispatch_rejections() -> None:
+    with tempfile.TemporaryDirectory(prefix="testing-package-dispatch-binding-") as directory:
+        root = Path(directory)
+        seed_path = root / "test-only-public-ed25519-seed.base64"
+        seed_path.write_text(TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64, encoding="ascii")
+        baseline = root / "baseline"
+        generate_successor(baseline, seed_path)
+        seed = base64.b64decode(TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64, validate=True)
+        cases = (
+            ("catalog-capability", "tool-catalog", lambda value: value["tools"][0].update(capability="browser.read-title.v2"), "tool catalog executor port binding is unsupported", ["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"]),
+            ("catalog-port", "tool-catalog", lambda value: value["tools"][0].update(port="legacy_browser_read_title"), "tool catalog executor port binding is unsupported", ["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"]),
+            ("catalog-profile", "tool-catalog", lambda value: value.update(execution_profile="browser-legacy.v1"), "tool catalog profile is unsupported", ["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"]),
+            ("mapping-module", "release", lambda value: value["mappings"][0].update(module="testing_package_executor.legacy"), "release mapping is unsupported", ["release-digest-matched"]),
+            ("mapping-function", "release", lambda value: value["mappings"][0].update(function="legacy_execute"), "release mapping is unsupported", ["release-digest-matched"]),
+            ("mapping-entrypoint", "release", lambda value: value["mappings"][0].update(entrypoint="testing-runner.legacy"), "release mapping is unsupported", ["release-digest-matched"]),
+        )
+        for name, target, mutate, message, expected_stages in cases:
+            case_root = root / name
+            shutil.copytree(baseline, case_root)
+            paths = successor_verifier_paths(case_root)
+            release = json.loads(paths["release"].read_bytes())
+            if target == "tool-catalog":
+                catalog = json.loads(paths[target].read_bytes())
+                mutate(catalog)
+                paths[target].write_bytes(canonical(catalog))
+                release["tool_catalog"].update(
+                    sha256=hashlib.sha256(paths[target].read_bytes()).hexdigest(),
+                    size_bytes=paths[target].stat().st_size,
+                )
+            else:
+                mutate(release)
+            paths["release"].write_bytes(canonical(release))
+            envelope, authorization = generator.signed_artifacts(
+                paths["release"].read_bytes(), seed, release["authority"]["keyid"]
+            )
+            paths["envelope"].write_bytes(envelope)
+            authorization_path = case_root / "package-release/testing-package-release.v1.key.json"
+            authorization_path.write_bytes(authorization)
+            stage_log = root / f"{name}.log"
+            result = run_verifier(
+                hashlib.sha256(authorization).hexdigest(),
+                expected_release_sha256=hashlib.sha256(paths["release"].read_bytes()).hexdigest(),
+                authorization=authorization_path,
+                paths=paths,
+                stage_log=stage_log,
+                success=False,
+            )
+            assert message in result.stderr, result.stderr
+            assert_stages(stage_log, expected_stages)
+            assert "materialized" not in stages(stage_log) and "executed" not in stages(stage_log)
+
+
 def assert_successor_walking_skeleton(registry) -> None:
     tracked = tuple(sorted((ROOT / "package-release").glob("*"))) + tuple(sorted((ROOT / "schema-release").glob("*")))
     snapshots = {path: path.read_bytes() for path in tracked if path.is_file()}
@@ -313,23 +424,7 @@ def assert_successor_walking_skeleton(registry) -> None:
         seed_path.write_text(TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64, encoding="ascii")
         roots = [parent / "first", parent / "second"]
         for output_root in roots:
-            subprocess.run([
-                sys.executable,
-                str(ROOT / "scripts/generate_testing_package_release.py"),
-                "--output-directory", str(output_root),
-                "--seed-file", str(seed_path),
-                "--source-commit", SOURCE_COMMIT,
-                "--fkst-packages-commit", "1111111111111111111111111111111111111111",
-                "--fkst-substrate-commit", "2222222222222222222222222222222222222222",
-                "--authority-issuer", "https://releases.chronoaiproject.org/fkst-packages-testing",
-                "--authority-keyid", "fkst-packages-testing-successor-test-v1",
-                "--signature-profile", "dsse-ed25519.v1",
-                "--valid-from", "2026-09-04T00:00:00Z",
-                "--valid-until", "2026-09-05T00:00:00Z",
-                "--revocation-authority", "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1",
-                "--release-sequence", "2",
-                "--created-at", "2026-09-04T00:00:00Z",
-            ], cwd=ROOT, check=True)
+            generate_successor(output_root, seed_path)
             actual_paths = {path.relative_to(output_root).as_posix() for path in output_root.rglob("*") if path.is_file()}
             assert actual_paths == expected_paths
 
@@ -419,6 +514,8 @@ def main() -> int:
     assert not tuple(validator.iter_errors(valid))
     assert tuple(validator.iter_errors(invalid))
     assert_successor_walking_skeleton(registry)
+    assert_authenticated_read_ordering()
+    assert_successor_dispatch_rejections()
 
     with tempfile.TemporaryDirectory(prefix="testing-package-release-positive-") as directory:
         stage_log = Path(directory) / "stages.log"
