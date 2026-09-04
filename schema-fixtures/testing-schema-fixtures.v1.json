@@ -58,6 +58,13 @@
       "classification_path": null
     },
     {
+      "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-package-release.v1.schema.json",
+      "schema_path": "schemas/testing-package-release.v1.schema.json",
+      "fixture_root": "packages/testing-runner/tests/fixtures/testing-package-release.v1",
+      "index_path": "schema-fixtures/indexes/testing-package-release.v1.json",
+      "classification_path": null
+    },
+    {
       "schema_id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-package-schema-release.v1.schema.json",
       "schema_path": "schemas/testing-package-schema-release.v1.schema.json",
       "fixture_root": "schema-fixtures/publication-meta",

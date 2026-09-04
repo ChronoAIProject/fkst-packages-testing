@@ -1,0 +1,20 @@
+{
+  "schema": "testing-schema-fixture-index.v1",
+  "cases": [
+    {
+      "name": "invalid-unknown-field",
+      "file": "invalid-unknown-field.json",
+      "schema": "testing-package-release.v1",
+      "instance_field": null,
+      "portable_valid": false
+    },
+    {
+      "name": "valid",
+      "file": "valid.json",
+      "schema": "testing-package-release.v1",
+      "instance_field": null,
+      "portable_valid": true
+    }
+  ],
+  "support_files": []
+}
