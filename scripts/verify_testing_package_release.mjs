@@ -32,6 +32,13 @@ const BUNDLE_PATHS = [
   "libraries/contract/time.lua",
   "libraries/testing_package_executor/executor.lua",
 ];
+const RUNTIME_PATHS = [
+  "libraries/contract/testing_package_executor.lua",
+  "libraries/contract/testing_package_manifest.lua",
+  "libraries/testing_runtime/json.lua",
+  "libraries/testing_runtime/package_resolver.lua",
+  "libraries/testing_runtime/testing_package_executor.lua",
+];
 
 function fail(message) { throw new Error(message); }
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
@@ -99,6 +106,10 @@ function keyid(value, field) {
   }
   return value;
 }
+function metadataString(value, field) {
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 180 || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) fail(`${field} is invalid`);
+  return value;
+}
 async function stage(name) {
   const log = process.env.FKST_TESTING_PACKAGE_RELEASE_STAGE_LOG;
   if (log) await writeFile(log, `${name}\n`, { flag: "a" });
@@ -152,7 +163,9 @@ function verifyReleaseShape(release) {
   closed(release.runtime, ["lua", "platform"], "release.runtime");
   if (release.runtime.lua !== "5.4.0" || release.runtime.platform !== "linux-amd64") fail("release runtime identity is unsupported");
   closed(release.executor, ["module", "function", "executor_id"], "release.executor");
-  if (release.executor.module !== "testing_package_executor.executor" || release.executor.function !== "execute" || release.executor.executor_id !== "testing-package-executor.browser-title.v1") fail("release executor identity is unsupported");
+  metadataString(release.executor.module, "release.executor.module");
+  metadataString(release.executor.function, "release.executor.function");
+  metadataString(release.executor.executor_id, "release.executor.executor_id");
   closed(release.reducer, ["schema", "reducer_id", "reducer_version", "reducer_sha256", "policy_profile", "supported_result_contract_majors"], "release.reducer");
   const reducerWithoutDigest = { ...release.reducer }; delete reducerWithoutDigest.reducer_sha256;
   if (release.reducer.schema !== "testing-assertion-reducer-identity.v1" || release.reducer.reducer_id !== "testing.assertion-reducer.browser-title-equals" || release.reducer.reducer_version !== "1.0.0" || release.reducer.policy_profile !== "browser-title-equals.v1" || JSON.stringify(release.reducer.supported_result_contract_majors) !== '["testing-case-result-set.v2"]' || release.reducer.reducer_sha256 !== sha256(compact(reducerWithoutDigest, false))) fail("release reducer identity is unsupported");
@@ -160,7 +173,9 @@ function verifyReleaseShape(release) {
   if (release.result_authority.receipt_schema !== "testing-result-authority-receipt.v1") fail("release result authority identity is unsupported");
   if (!Array.isArray(release.mappings) || release.mappings.length !== 1) fail("release must contain exactly one mapping");
   closed(release.mappings[0], ["entrypoint", "contract_major", "module", "function"], "release.mapping");
-  if (JSON.stringify(release.mappings[0]) !== JSON.stringify({ contract_major: "testing-runner.v1", entrypoint: "testing-runner.run", function: "execute", module: "testing_package_executor.executor" })) fail("release mapping is unsupported");
+  if (release.mappings[0].entrypoint !== "testing-runner.run" || release.mappings[0].contract_major !== "testing-runner.v1") fail("release mapping is unsupported");
+  metadataString(release.mappings[0].module, "release.mapping.module");
+  metadataString(release.mappings[0].function, "release.mapping.function");
   closed(release.creation_metadata, ["created_at", "build_id"], "release.creation_metadata");
   timestamp(release.creation_metadata.created_at, "release.creation_metadata.created_at");
   if (release.creation_metadata.build_id !== "testing-package-release-walking-skeleton-v1") fail("release creation metadata is unsupported");
@@ -197,7 +212,8 @@ function verifyToolCatalog(catalogBytes, catalog, release) {
   closed(catalog, ["canonicalization", "execution_profile", "schema", "tools"], "tool catalog");
   if (catalog.schema !== "testing-package-tool-catalog.v1" || catalog.canonicalization !== "fkst-testing-package-tool-catalog-canonical-json.v1" || catalog.execution_profile !== release.package.supported_profile || !Array.isArray(catalog.tools) || catalog.tools.length !== 1) fail("tool catalog profile is unsupported");
   closed(catalog.tools[0], ["capability", "port"], "tool catalog entry");
-  if (catalog.tools[0].capability !== release.package.capability || catalog.tools[0].port !== "browser_read_title") fail("tool catalog executor port binding is unsupported");
+  if (catalog.tools[0].capability !== release.package.capability) fail("tool catalog capability is unsupported");
+  metadataString(catalog.tools[0].port, "tool catalog port");
   if (sha256(catalogBytes) !== release.tool_catalog.sha256 || catalogBytes.length !== release.tool_catalog.size_bytes) fail("tool catalog persisted binding mismatch");
 }
 function inputMatchesLogicalPath(inputPath, logicalPath) {
@@ -226,74 +242,129 @@ function verifyBundle(bundleBytes, bundle, release) {
   if (contentHash.digest("hex") !== release.package.package_content_sha256) fail("bundle package_content_sha256 mismatch");
   return decoded;
 }
-function executionTest(release) {
+function packageContentBytes(decodedFiles) {
+  const parts = [];
+  for (const file of decodedFiles) parts.push(Buffer.from(file.path), Buffer.from([0, 0x66]), file.bytes, Buffer.from([0]));
+  return Buffer.concat(parts);
+}
+function executionTest(semanticFacts, release, manifest, decodedFiles) {
+  const documents = {
+    package_release_ref: { schema: "testing-package-release.v1", release_id: `${semanticFacts.packageId}-${semanticFacts.packageVersion}` },
+    package_manifest_ref: manifest,
+    source_ref: { schema: "testing-package-source.v1", source_id: "fixture-home", target_url: "http://127.0.0.1:4173/" },
+    plan_ref: { schema: "testing-package-plan.v1", case_id: "case-home-title", assertion: { assertion_id: "assert-home-title", expected: "Fixture Home", required: true, type: "title-equals" } },
+    pql_input_ref: { schema: "testing-package-pql-input.v1", requirement_id: "REQ-HOME-TITLE" },
+    policy_ref: { schema: "testing-package-policy.v1", execution_profile: semanticFacts.executionProfile, authorized_entrypoint: semanticFacts.entrypoint, allowed_capabilities: semanticFacts.capabilities },
+    capability_set_ref: { schema: "testing-package-capability-set.v1", capabilities: semanticFacts.capabilities },
+  };
+  const packageContentHex = packageContentBytes(decodedFiles).toString("hex");
   return `local contract = require("contract.testing_package_executor")
+local error_facts = require("contract.error_facts")
 local authority = require("contract.testing_result_authority")
 local sha256 = require("contract.sha256").hex
-local executor = require("testing_package_executor.executor")
-local function ref(kind, name) return { kind=kind, ref="immutable://release/" .. name, sha256=sha256(name) } end
-local approved = {
-  package_release_ref=ref("testing-package-release", "release"), package_manifest_ref=ref("testing-package-manifest", "manifest"),
-  source_ref=ref("testing-package-source", "source"), plan_ref=ref("testing-package-plan", "plan"),
-  pql_input_ref=ref("testing-package-pql-input", "pql"), policy_ref=ref("testing-package-policy", "policy"),
-  capability_set_ref=ref("testing-package-capability-set", "capabilities"),
+local runtime_json = require("testing_runtime.json")
+local runtime_executor = require("testing_runtime.testing_package_executor")
+local function copy(value)
+  if type(value) ~= "table" then return value end
+  local result = {}
+  for key, item in pairs(value) do result[key] = copy(item) end
+  return result
+end
+local documents = copy(json.decode(${JSON.stringify(JSON.stringify(documents))}))
+local storage, approved = {}, {}
+local refs = {
+  package_release_ref={kind="testing-package-release",ref="immutable://release/package-release.json"},
+  package_manifest_ref={kind="testing-package-manifest",ref="immutable://release/package-manifest.json"},
+  source_ref={kind="testing-package-source",ref="immutable://release/source.json"},
+  plan_ref={kind="testing-package-plan",ref="immutable://release/plan.json"},
+  pql_input_ref={kind="testing-package-pql-input",ref="immutable://release/pql.json"},
+  policy_ref={kind="testing-package-policy",ref="immutable://release/policy.json"},
+  capability_set_ref={kind="testing-package-capability-set",ref="immutable://release/capabilities.json"},
 }
-local identity = { schema=contract.schemas.identity, package_id="testing-runner", package_version="1.0.0",
-  package_content_sha256="${release.package.package_content_sha256}", manifest_digest="${release.manifest.manifest_digest}",
-  entrypoint="testing-runner.run", contract_major="testing-runner.v1" }
-local selected = { executor_id="testing-package-executor.browser-title.v1", name="testing-runner.run", contract_major="testing-runner.v1", capabilities={"browser.read-title.v1"} }
-local admission = contract.compute_admission_digest(identity, "browser-deterministic.v1", approved, selected, "dedup-walking-skeleton", sha256)
-local resolved = { schema=contract.schemas.resolved_invocation, executor=identity, execution_profile="browser-deterministic.v1",
-  approved_input_refs=approved, source={schema=contract.schemas.source,source_id="fixture-home",target_url="http://127.0.0.1:4173/"},
-  plan={schema=contract.schemas.plan,case_id="case-home-title",assertion={assertion_id="assert-home-title",expected="Fixture Home",required=true,type="title-equals"}},
-  pql_input={schema=contract.schemas.pql_input,requirement_id="REQ-HOME-TITLE"}, selected_entrypoint=selected,
-  admission_digest=admission, admission_receipt={schema=contract.schemas.admission_receipt,status="admitted",admission_key="dedup-walking-skeleton",admission_digest=admission},
-  trace_id="trace-walking-skeleton", dedup_key="dedup-walking-skeleton" }
+for _, field in ipairs(contract.reference_order) do
+  local bytes = runtime_json.encode(documents[field])
+  storage[refs[field].ref] = bytes
+  approved[field] = {kind=refs[field].kind,ref=refs[field].ref,sha256=sha256(bytes)}
+end
+local function request(profile)
+  return {schema=contract.schemas.request,executor={schema=contract.schemas.identity,
+    package_id=${JSON.stringify(semanticFacts.packageId)},package_version=${JSON.stringify(semanticFacts.packageVersion)},
+    package_content_sha256=${JSON.stringify(release.package.package_content_sha256)},manifest_digest=${JSON.stringify(release.manifest.manifest_digest)},
+    entrypoint=${JSON.stringify(semanticFacts.entrypoint)},contract_major=${JSON.stringify(semanticFacts.contractMajor)}},
+    execution_profile=profile or ${JSON.stringify(semanticFacts.executionProfile)},approved_input_refs=approved,
+    trace_id="trace-walking-skeleton",dedup_key="dedup-walking-skeleton"}
+end
+local package_content = (${JSON.stringify(packageContentHex)}):gsub("..", function(byte) return string.char(tonumber(byte, 16)) end)
 local browser_calls, intents, receipts = 0, 0, 0
 local clock = {"2026-09-04T00:00:00Z", "2026-09-04T00:00:01Z"}; local clock_index = 0
 local ports = {
+  load_immutable=function(ref) return assert(storage[ref.ref], "unexpected immutable reference") end,
+  load_package_content=function() return package_content end,
+  check_runtime_compatibility=function(value) return value.runtime_requirements.lua == "5.4.0"
+    and value.runtime_requirements.platforms[1] == "linux-amd64"
+    and value.dependencies.fkst_packages.commit == ${JSON.stringify(release.source.fkst_packages_commit)}
+    and value.dependencies.fkst_substrate.commit == ${JSON.stringify(release.source.fkst_substrate_commit)} end,
+  admit_resolution=function(value) return {schema=contract.schemas.admission_receipt,status="admitted",admission_key=value.admission_key,admission_digest=value.admission_digest} end,
   load_completed_execution=function() return nil end, load_result_authority_receipt=function() return nil end,
-  load_canonical_artifact=function() return nil end, decode_json=function() error("unexpected decode") end,
-  claim_execution=function(request) return {schema=contract.schemas.execution_claim_receipt,status="claimed",dedup_key=request.dedup_key,admission_digest=request.admission_digest,claim_id="claim-walking-skeleton"} end,
+  load_canonical_artifact=function() return nil end, decode_json=function(bytes) return copy(json.decode(bytes)) end,
+  claim_execution=function(value) return {schema=contract.schemas.execution_claim_receipt,status="claimed",dedup_key=value.dedup_key,admission_digest=value.admission_digest,claim_id="claim-walking-skeleton"} end,
   load_effect_intent=function() return nil end, load_effect_receipt=function() return nil end,
   check_freshness=function() return true end,
   persist_effect_intent=function() intents=intents+1; return true end,
   browser_read_title=function() browser_calls=browser_calls+1; return {schema=contract.schemas.browser_read_title_receipt,effect_id=contract.effect_id,status="succeeded",observed_url=contract.target_url,observed_title="Fixture Home",evidence_refs={{kind="artifact",ref=".testing/runs/dedup-walking-skeleton/evidence/title.json",sha256=sha256("evidence")}},evidence_size_bytes=8} end,
   persist_effect_receipt=function() receipts=receipts+1; return true end,
-  write_canonical=function(request) local names={ ["evidence-manifest"]="evidence-manifest.json",["case-result-set"]="case-result-set.json",["result-authority-receipt"]="result-authority-receipt.json" }; return {schema=contract.schemas.write_receipt,status="written",ref={kind="artifact",ref=".testing/runs/dedup-walking-skeleton/"..names[request.kind],sha256=request.canonical_sha256}} end,
+  write_canonical=function(value) local names={ ["evidence-manifest"]="evidence-manifest.json",["case-result-set"]="case-result-set.json",["result-authority-receipt"]="result-authority-receipt.json" }; return {schema=contract.schemas.write_receipt,status="written",ref={kind="artifact",ref=".testing/runs/dedup-walking-skeleton/"..names[value.kind],sha256=value.canonical_sha256}} end,
   complete_execution=function(value) return value end,
   now=function() clock_index=clock_index+1; return clock[clock_index] end, sha256=sha256,
 }
+local original_mappings = contract.semantic_mappings
+contract.semantic_mappings = {}
+local ok, err = pcall(runtime_executor.execute, request(), ports)
+assert(not ok and error_facts.error_class_from_message(err) == "unsupported-mapping", tostring(err))
+contract.semantic_mappings = {original_mappings[1], original_mappings[1]}
+ok, err = pcall(runtime_executor.execute, request(), ports)
+assert(not ok and error_facts.error_class_from_message(err) == "mapping-ambiguous", tostring(err))
+contract.semantic_mappings = original_mappings
+ok, err = pcall(runtime_executor.execute, request("unsupported-profile.v1"), ports)
+assert(not ok and error_facts.error_class_from_message(err) == "unsupported-mapping", tostring(err))
+assert(browser_calls == 0 and intents == 0 and receipts == 0)
 local captured_bindings
 local create_receipt = authority.create_receipt
 authority.create_receipt = function(bindings, sha256_fn) captured_bindings = bindings; return create_receipt(bindings, sha256_fn) end
-local receipt = executor.execute(resolved, ports)
+local receipt = runtime_executor.execute(request(), ports)
 authority.create_receipt = create_receipt
 authority.validate_receipt(receipt, captured_bindings, sha256)
 authority.canonicalize(receipt, sha256)
 assert(receipt.schema == "testing-result-authority-receipt.v1")
 assert(receipt.classification == "passed")
-assert(receipt.package_id == "testing-runner")
-assert(receipt.executor_id == "testing-package-executor.browser-title.v1")
+assert(receipt.package_id == ${JSON.stringify(semanticFacts.packageId)})
+assert(receipt.executor_id == contract.executor_id)
 assert(browser_calls == 1 and intents == 1 and receipts == 1)
 return { test_verified_release_execution = function() assert(true) end }
 `;
 }
-async function executeVerified(decodedFiles, release) {
+
+async function executeVerified(decodedFiles, verified) {
   const engine = process.env.FKST_TESTING_ENGINE_BIN || process.env.BIN;
   if (!engine) fail("FKST_TESTING_ENGINE_BIN or BIN is required for isolated executor invocation");
   const root = await mkdtemp(path.join(tmpdir(), "testing-package-release-"));
   const packageRoot = path.join(root, "packages/verified-testing-runner");
   try {
     for (const file of decodedFiles) {
+      if (RUNTIME_PATHS.includes(file.path)) continue;
       const target = path.join(packageRoot, file.path);
       await mkdir(path.dirname(target), { recursive: true });
       await writeFile(target, file.bytes, { flag: "wx" });
     }
+    for (const relative of RUNTIME_PATHS) {
+      const target = path.join(packageRoot, relative);
+      await mkdir(path.dirname(target), { recursive: true });
+      await writeFile(target, await readFile(path.join(ROOT, relative)), { flag: "wx" });
+    }
     await mkdir(path.join(packageRoot, "tests"), { recursive: true });
     await writeFile(path.join(root, "fkst.workspace.toml"), '[workspace]\nunits = ["packages/*"]\npackages = ["packages/*"]\nlibraries = []\n', { flag: "wx" });
     await writeFile(path.join(packageRoot, "fkst.toml"), 'kind = "package"\nname = "verified-testing-runner"\npersistence_class = "stateless_adapter"\n[code]\nroot = "libraries"\n', { flag: "wx" });
-    await writeFile(path.join(packageRoot, "tests/release_execution_test.lua"), executionTest(release), { flag: "wx" });
+    await writeFile(path.join(packageRoot, "tests/release_execution_test.lua"), executionTest(verified.semanticFacts, verified.release, verified.manifest, decodedFiles), { flag: "wx" });
     await stage("materialized");
     const result = spawnSync(engine, ["test", "--project-root", root, "--package-root", packageRoot], { encoding: "utf8", env: { ...process.env, LUA_PATH: "" } });
     if (result.status !== 0) fail(`isolated executor invocation failed: ${(result.stderr || result.stdout).trim()}`);
@@ -344,7 +415,7 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   const catalogPath = args.get("--schema-catalog") ?? path.join(ROOT, "schema-release/testing-schema-catalog.v1.json");
   const schemaReleasePath = args.get("--schema-release") ?? path.join(ROOT, "schema-release/testing-package-schema-release.v1.json");
   if (successor && !toolCatalogPath) fail("--tool-catalog is required for successor releases");
-  const [envelopeBytes, bundleBytes, manifestBytes, toolCatalogBytes, catalogBytes, schemaReleaseBytes] = await Promise.all([envelopePath, bundlePath, manifestPath, toolCatalogPath, catalogPath, schemaReleasePath].map((file) => file ? readFile(file) : null));
+  const envelopeBytes = await readFile(envelopePath);
   const envelope = parseJson(envelopeBytes, "DSSE envelope"); requireCanonical(envelopeBytes, envelope, "DSSE envelope");
   closed(envelope, ["payload", "payloadType", "signatures"], "DSSE envelope");
   if (envelope.payloadType !== PAYLOAD_TYPE || !Array.isArray(envelope.signatures) || envelope.signatures.length !== 1) fail("DSSE envelope profile is unsupported");
@@ -360,7 +431,14 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   if (statement._type !== STATEMENT_TYPE || statement.predicateType !== PREDICATE_TYPE || !Array.isArray(statement.subject) || statement.subject.length !== 1) fail("DSSE statement profile is unsupported");
   closed(statement.subject[0], ["digest", "name"], "DSSE subject"); closed(statement.subject[0].digest, ["sha256"], "DSSE subject digest");
   if (statement.subject[0].name !== SUBJECT_NAME || statement.subject[0].digest.sha256 !== sha256(releaseBytes)) fail("DSSE release digest binding mismatch");
+  const sourceCommit = (await readFile(path.join(ROOT, "package-release/testing-package-release.v1.source-commit"), "ascii")).trim();
+  const packagesPin = (await readFile(path.join(ROOT, ".fkst/conformance/fkst-packages.pin"), "ascii")).split(/\r?\n/u).map((line) => line.trim()).filter((line) => line && !line.startsWith("#")).at(-1);
+  const substratePin = (await readFile(path.join(ROOT, ".fkst/substrate-ref"), "ascii")).trim();
+  if (release.source.repository_commit !== sourceCommit || release.source.fkst_packages_commit !== packagesPin || release.source.fkst_substrate_commit !== substratePin) fail("release source identities do not match committed provenance pins");
+  const gitObject = spawnSync("git", ["cat-file", "-e", `${sourceCommit}^{commit}`], { cwd: ROOT, encoding: "utf8" });
+  if (gitObject.status !== 0) fail("release repository source commit is unavailable");
   if (!inputMatchesLogicalPath(bundlePath, release.bundle.path) || !inputMatchesLogicalPath(manifestPath, release.manifest.path) || !inputMatchesLogicalPath(catalogPath, release.schema_catalog.path) || !inputMatchesLogicalPath(schemaReleasePath, release.schema_release.path) || (successor && !inputMatchesLogicalPath(toolCatalogPath, release.tool_catalog.path))) fail("release bound paths do not match verifier inputs");
+  const [bundleBytes, manifestBytes, toolCatalogBytes, catalogBytes, schemaReleaseBytes] = await Promise.all([bundlePath, manifestPath, toolCatalogPath, catalogPath, schemaReleasePath].map((file) => file ? readFile(file) : null));
   if (sha256(catalogBytes) !== release.schema_catalog.sha256 || catalogBytes.length !== release.schema_catalog.size_bytes || sha256(schemaReleaseBytes) !== release.schema_release.sha256 || schemaReleaseBytes.length !== release.schema_release.size_bytes) fail("schema publication binding mismatch");
   if (successor) verifyToolCatalog(toolCatalogBytes, parseJson(toolCatalogBytes, "tool catalog"), release);
   await stage("release-verified");
@@ -368,8 +446,16 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   await stage("manifest-verified");
   const bundle = parseJson(bundleBytes, "bundle"); const decodedFiles = verifyBundle(bundleBytes, bundle, release);
   await stage("bundle-verified");
-  await executeVerified(decodedFiles, release);
-  return { release, releaseSha256, authorizationSha256: pin };
+  const semanticFacts = {
+    executionProfile: release.package.supported_profile,
+    packageId: release.package.package_id,
+    packageVersion: release.package.package_version,
+    entrypoint: release.mappings[0].entrypoint,
+    contractMajor: release.mappings[0].contract_major,
+    capabilities: [...manifest.entrypoints[0].capabilities],
+  };
+  await executeVerified(decodedFiles, { semanticFacts, release, manifest });
+  return semanticFacts;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
