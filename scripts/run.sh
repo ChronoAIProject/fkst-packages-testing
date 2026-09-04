@@ -548,7 +548,7 @@ run_conformance_fixture() {
 
 cmd_check() {
   local fail=0 ran=0 pkg
-  "$PYTHON_BIN" -B "$ROOT/scripts/check_ci_contract.py" || fail=1; "$PYTHON_BIN" -B "$ROOT/scripts/generate_testing_package_release.py" --check --source-commit "$(cat "$ROOT/package-release/testing-package-release.v1.source-commit")" || fail=1
+  "$PYTHON_BIN" -B "$ROOT/scripts/check_ci_contract.py" || fail=1; if [ -e "$ROOT/scripts/generate_testing_package_release.py" ] || [ -e "$ROOT/package-release/testing-package-release.v1.source-commit" ]; then [ -f "$ROOT/scripts/generate_testing_package_release.py" ] && [ -f "$ROOT/package-release/testing-package-release.v1.source-commit" ] && "$PYTHON_BIN" -B "$ROOT/scripts/generate_testing_package_release.py" --check --source-commit "$(< "$ROOT/package-release/testing-package-release.v1.source-commit")" || fail=1; fi
   run_source_ratchets || fail=1
   resolve_testing_bin
   echo "=== engine conformance (composed closed-world / flat single-root) ==="
