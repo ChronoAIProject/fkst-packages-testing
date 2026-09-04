@@ -418,13 +418,51 @@ def assert_successor_walking_skeleton(registry) -> None:
         substituted_root = parent / "publisher-coordinate-substitution"
         shutil.copytree(roots[0], substituted_root)
         substituted_release_path = substituted_root / "package-release/testing-package-release.v1.json"
+        substituted_bundle_path = substituted_root / "package-release/testing-package-bundle.v1.json"
+        substituted_manifest_path = substituted_root / "package-release/testing-package-manifest.v1.json"
         substituted_catalog_path = substituted_root / "package-release/testing-package-tool-catalog.v1.json"
         substituted_release = json.loads(substituted_release_path.read_bytes())
+        substituted_bundle = json.loads(substituted_bundle_path.read_bytes())
+        substituted_manifest = json.loads(substituted_manifest_path.read_bytes())
         substituted_catalog = json.loads(substituted_catalog_path.read_bytes())
         substituted_release["executor"].update(module="publisher.sentinel", function="sentinel_default")
         substituted_release["mappings"][0].update(module="publisher.sentinel", function="sentinel_default")
         substituted_catalog["tools"][0]["port"] = "publisher_sentinel_port"
+        mapping_record = next(
+            record
+            for record in substituted_bundle["files"]
+            if record["path"] == "libraries/contract/testing_package_executor.lua"
+        )
+        mapping_bytes = base64.b64decode(mapping_record["content_base64"])
+        assert b"M.semantic_mappings = { {" in mapping_bytes
+        mapping_bytes = mapping_bytes.replace(b"M.semantic_mappings = { {", b"M.semantic_mappings = { }")
+        mapping_record.update(
+            content_base64=base64.b64encode(mapping_bytes).decode("ascii"),
+            sha256=hashlib.sha256(mapping_bytes).hexdigest(),
+            size_bytes=len(mapping_bytes),
+        )
+        package_content = b"".join(
+            record["path"].encode() + b"\0f" + base64.b64decode(record["content_base64"]) + b"\0"
+            for record in substituted_bundle["files"]
+        )
+        substituted_bundle_path.write_bytes(canonical(substituted_bundle))
+        substituted_manifest["package_content_sha256"] = hashlib.sha256(package_content).hexdigest()
+        substituted_manifest["manifest_digest"] = hashlib.sha256(canonical(
+            {key: value for key, value in substituted_manifest.items() if key != "manifest_digest"},
+            lf=False,
+        )).hexdigest()
+        substituted_manifest_path.write_bytes(canonical(substituted_manifest, lf=False))
         substituted_catalog_path.write_bytes(canonical(substituted_catalog))
+        substituted_release["package"]["package_content_sha256"] = substituted_manifest["package_content_sha256"]
+        substituted_release["bundle"].update(
+            sha256=hashlib.sha256(substituted_bundle_path.read_bytes()).hexdigest(),
+            size_bytes=substituted_bundle_path.stat().st_size,
+        )
+        substituted_release["manifest"].update(
+            manifest_digest=substituted_manifest["manifest_digest"],
+            sha256=hashlib.sha256(substituted_manifest_path.read_bytes()).hexdigest(),
+            size_bytes=substituted_manifest_path.stat().st_size,
+        )
         substituted_release["tool_catalog"].update(
             sha256=hashlib.sha256(substituted_catalog_path.read_bytes()).hexdigest(),
             size_bytes=substituted_catalog_path.stat().st_size,
@@ -447,8 +485,8 @@ def assert_successor_walking_skeleton(registry) -> None:
             paths={
                 "release": substituted_release_path,
                 "envelope": substituted_envelope_path,
-                "bundle": substituted_root / "package-release/testing-package-bundle.v1.json",
-                "manifest": substituted_root / "package-release/testing-package-manifest.v1.json",
+                "bundle": substituted_bundle_path,
+                "manifest": substituted_manifest_path,
                 "tool-catalog": substituted_catalog_path,
                 "schema-catalog": ROOT / "schema-release/testing-schema-catalog.v1.json",
                 "schema-release": ROOT / "schema-release/testing-package-schema-release.v1.json",

@@ -33,6 +33,7 @@ const BUNDLE_PATHS = [
   "libraries/testing_package_executor/executor.lua",
 ];
 const RUNTIME_PATHS = [
+  "libraries/contract/testing_package_executor.lua",
   "libraries/contract/testing_package_manifest.lua",
   "libraries/testing_runtime/json.lua",
   "libraries/testing_runtime/package_resolver.lua",
