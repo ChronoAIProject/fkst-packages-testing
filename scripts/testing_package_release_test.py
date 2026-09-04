@@ -11,7 +11,7 @@ import tempfile
 from pathlib import Path
 
 import generate_testing_package_release as generator
-from json_schema_test_support import validator_for_schema_file
+from json_schema_test_support import offline_registry, validator_for_schema_file
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -78,7 +78,12 @@ def main() -> int:
         SOURCE_COMMIT,
     ], cwd=ROOT, check=True)
     assert_bundle_uses_pinned_git_tree()
-    _, validator = validator_for_schema_file(ROOT / "schemas/testing-package-release.v1.schema.json")
+    schema_paths = tuple(sorted((ROOT / "schemas").glob("*.schema.json")))
+    registry = offline_registry(schema_paths)
+    _, validator = validator_for_schema_file(
+        ROOT / "schemas/testing-package-release.v1.schema.json",
+        registry=registry,
+    )
     valid = generator.json.loads((ROOT / "packages/testing-runner/tests/fixtures/testing-package-release.v1/valid.json").read_text())
     invalid = generator.json.loads((ROOT / "packages/testing-runner/tests/fixtures/testing-package-release.v1/invalid-unknown-field.json").read_text())
     assert not tuple(validator.iter_errors(valid))
