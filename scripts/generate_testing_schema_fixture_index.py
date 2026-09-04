@@ -51,6 +51,7 @@ def build() -> dict[Path, object]:
     configurations = {
         "testing-assertion-reducer-identity.v1": (RUNNER_FIXTURES / "testing-assertion-reducer-identity.v1", None),
         "testing-package-manifest.v1": (RUNNER_FIXTURES / "testing-package-manifest.v1", None),
+        "testing-package-release.v1": (RUNNER_FIXTURES / "testing-package-release.v1", None),
         "testing-evidence-manifest.v1": (RUNNER_FIXTURES / "testing-evidence-manifest.v1", None),
         "testing-observation.v1": (RUNNER_FIXTURES / "testing-results", None),
         "testing-assertion-result.v1": (RUNNER_FIXTURES / "testing-results", None),

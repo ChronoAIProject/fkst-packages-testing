@@ -8,11 +8,9 @@ import binascii
 import hashlib
 import json
 import os
+import subprocess
 import tempfile
 from pathlib import Path
-
-from cryptography.hazmat.primitives import serialization
-from cryptography.hazmat.primitives.asymmetric.ed25519 import Ed25519PrivateKey
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -95,13 +93,21 @@ def pae(payload: bytes) -> bytes:
 
 
 def build(release_bytes: bytes, seed: bytes) -> tuple[bytes, bytes]:
-    private_key = Ed25519PrivateKey.from_private_bytes(seed)
-    public_key = private_key.public_key().public_bytes(
-        encoding=serialization.Encoding.Raw,
-        format=serialization.PublicFormat.Raw,
-    )
     payload = statement_bytes(release_bytes)
-    signature = private_key.sign(pae(payload))
+    with tempfile.TemporaryDirectory(prefix="testing-schema-release-sign-") as directory:
+        root = Path(directory)
+        private_path, public_path, payload_path, signature_path = root / "private.der", root / "public.der", root / "payload", root / "signature"
+        private_path.write_bytes(bytes.fromhex("302e020100300506032b657004220420") + seed)
+        payload_path.write_bytes(pae(payload))
+        subprocess.run(["openssl", "pkey", "-inform", "DER", "-in", private_path, "-pubout", "-outform", "DER", "-out", public_path], check=True, capture_output=True)
+        subprocess.run(["openssl", "pkeyutl", "-sign", "-rawin", "-inkey", private_path, "-keyform", "DER", "-in", payload_path, "-out", signature_path], check=True, capture_output=True)
+        public_der = public_path.read_bytes()
+        if not public_der.startswith(bytes.fromhex("302a300506032b6570032100")) or len(public_der) != 44:
+            raise ValueError("OpenSSL returned a malformed Ed25519 public key")
+        public_key = public_der[-32:]
+        signature = signature_path.read_bytes()
+        if len(signature) != 64:
+            raise ValueError("OpenSSL returned a malformed Ed25519 signature")
     envelope = {
         "payloadType": PAYLOAD_TYPE,
         "payload": base64.b64encode(payload).decode("ascii"),
@@ -159,7 +165,7 @@ def main() -> int:
         else:
             write_atomic(arguments.output, envelope_bytes)
             write_atomic(arguments.authorization_output, authorization_bytes)
-    except (OSError, ValueError) as error:
+    except (OSError, ValueError, subprocess.CalledProcessError) as error:
         parser.exit(1, f"error: {error}\n")
     print("testing-schema-release-attestation: PASS")
     return 0

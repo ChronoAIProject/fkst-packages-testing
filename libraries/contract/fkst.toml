@@ -18,7 +18,7 @@ version = "workspace"
 
 [exports]
 exact = true
-public = ["contract.browser_control", "contract.browser_readiness", "contract.canonical_json", "contract.context_bundle_identity", "contract.convergence_identity", "contract.environment_factory", "contract.error_facts", "contract.github_issue_create", "contract.payload", "contract.sha256", "contract.project_profile", "contract.source_ref", "contract.strings", "contract.structured_execution", "contract.testing", "contract.testing_design", "contract.testing_execution", "contract.testing_package_executor", "contract.testing_result_authority", "contract.testing_runner_invocation", "contract.testing_schema_catalog", "contract.testing_results", "contract.testing_results_compat", "contract.testing_evidence_manifest", "contract.testing_package_manifest", "contract.time", "contract.transition_version", "contract.workflow_qa"]
+public = ["contract.browser_control", "contract.browser_readiness", "contract.canonical_json", "contract.context_bundle_identity", "contract.convergence_identity", "contract.environment_factory", "contract.error_facts", "contract.github_issue_create", "contract.payload", "contract.sha256", "contract.project_profile", "contract.source_ref", "contract.strings", "contract.structured_execution", "contract.testing", "contract.testing_design", "contract.testing_execution", "contract.testing_package_executor", "contract.testing_package_release", "contract.testing_result_authority", "contract.testing_runner_invocation", "contract.testing_schema_catalog", "contract.testing_results", "contract.testing_results_compat", "contract.testing_evidence_manifest", "contract.testing_package_manifest", "contract.time", "contract.transition_version", "contract.workflow_qa"]
 
 [visibility]
 public = true

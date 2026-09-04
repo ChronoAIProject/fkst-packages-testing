@@ -30,6 +30,7 @@ case "$1" in
     env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
       "$PYTHON_BIN" -S -B "$ROOT/scripts/schema_test_suite.py" \
       "$ROOT/scripts/testing_package_manifest_test.py" \
+      "$ROOT/scripts/testing_package_release_test.py" \
       "$ROOT/scripts/testing_evidence_manifest_schema_test.py" \
       "$ROOT/scripts/testing_results_schema_test.py" \
       "$ROOT/scripts/testing_browser_action_schema_test.py" \
