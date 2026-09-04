@@ -12,6 +12,7 @@ import os
 import re
 import subprocess
 import tempfile
+import unicodedata
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -293,6 +294,16 @@ def signed_artifacts(release_bytes: bytes, seed: bytes, keyid: str = KEY_ID) -> 
     return compact(envelope), compact(authorization)
 
 
+def valid_keyid(value: str) -> bool:
+    if not isinstance(value, str):
+        return False
+    try:
+        encoded = value.encode("utf-8")
+    except UnicodeEncodeError:
+        return False
+    return 1 <= len(encoded) <= 128 and all(unicodedata.category(character) not in {"Cc", "Cs"} for character in value)
+
+
 def verify_signed_artifacts(release_bytes: bytes) -> None:
     envelope_bytes = ENVELOPE_PATH.read_bytes()
     authorization_bytes = AUTHORIZATION_PATH.read_bytes()
@@ -380,7 +391,7 @@ def main() -> int:
             if not isinstance(arguments.release_sequence, int) or not 1 <= arguments.release_sequence <= 9007199254740991:
                 raise ValueError("release sequence must be a positive safe integer")
             keyid = arguments.authority_keyid
-            if not keyid or len(keyid.encode("utf-8")) > 128 or any(ord(character) < 32 or ord(character) == 127 for character in keyid):
+            if not valid_keyid(keyid):
                 raise ValueError("authority keyid is invalid")
             valid_from = canonical_timestamp(arguments.valid_from, "valid-from")
             valid_until = canonical_timestamp(arguments.valid_until, "valid-until")

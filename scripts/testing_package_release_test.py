@@ -37,6 +37,7 @@ SOURCE_COMMIT = (
 ).read_text(encoding="ascii").strip()
 VERIFIER = ROOT / "scripts/verify_testing_package_release.mjs"
 TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
+MULTIBYTE_OVERFLOW_KEYID = "é" * 64 + "a"
 
 
 def run_verifier(
@@ -256,6 +257,10 @@ def assert_rejection_matrix() -> None:
 
 
 def assert_generator_rejections() -> None:
+    assert generator.valid_keyid("é" * 64)
+    assert len(MULTIBYTE_OVERFLOW_KEYID.encode("utf-8")) == 129
+    for invalid_keyid in ("bad\u0085key", MULTIBYTE_OVERFLOW_KEYID):
+        assert not generator.valid_keyid(invalid_keyid)
     variable = generator.SEED_ENVIRONMENT_VARIABLE
     original = os.environ.get(variable)
     seed = base64.b64encode(hashlib.sha256(b"generator-matrix").digest()).decode()
@@ -345,6 +350,9 @@ def assert_successor_walking_skeleton(registry) -> None:
         _, catalog_validator = validator_for_schema_file(ROOT / "schemas-next-release/testing-package-tool-catalog.v1.schema.json", registry=successor_registry)
         assert not tuple(release_validator.iter_errors(release))
         assert not tuple(catalog_validator.iter_errors(catalog))
+        invalid_control_release = copy.deepcopy(release)
+        invalid_control_release["authority"]["keyid"] = "bad\u0085key"
+        assert tuple(release_validator.iter_errors(invalid_control_release))
         assert tool_catalog_path.read_bytes() == b'{"canonicalization":"fkst-testing-package-tool-catalog-canonical-json.v1","execution_profile":"browser-deterministic.v1","schema":"testing-package-tool-catalog.v1","tools":[{"capability":"browser.read-title.v1","port":"browser_read_title"}]}\n'
         assert release["authority"] == {
             "issuer": "https://releases.chronoaiproject.org/fkst-packages-testing",
@@ -374,6 +382,15 @@ def assert_successor_walking_skeleton(registry) -> None:
         )
         assert "testing-package-release: VERIFIED AND EXECUTED" in result.stdout
         assert_stages(stage_log, SUCCESS_STAGES)
+        for index, invalid_keyid in enumerate(("bad\u0085key", MULTIBYTE_OVERFLOW_KEYID)):
+            invalid_log = parent / f"invalid-keyid-{index}.log"
+            invalid_result = run_verifier(
+                extra_arguments=("--revoked-keyid", invalid_keyid),
+                stage_log=invalid_log,
+                success=False,
+            )
+            assert "--revoked-keyid is invalid" in invalid_result.stderr
+            assert_stages(invalid_log, [])
 
     for path, expected in snapshots.items():
         assert path.read_bytes() == expected, path

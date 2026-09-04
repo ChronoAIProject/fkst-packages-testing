@@ -92,7 +92,11 @@ function timestamp(value, field) {
   return Date.parse(value);
 }
 function keyid(value, field) {
-  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128 || /[\u0000-\u001f\u007f]/u.test(value)) fail(`${field} is invalid`);
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128) fail(`${field} is invalid`);
+  for (const character of value) {
+    const codepoint = character.codePointAt(0);
+    if (codepoint <= 0x1f || (codepoint >= 0x7f && codepoint <= 0x9f) || (codepoint >= 0xd800 && codepoint <= 0xdfff)) fail(`${field} is invalid`);
+  }
   return value;
 }
 async function stage(name) {

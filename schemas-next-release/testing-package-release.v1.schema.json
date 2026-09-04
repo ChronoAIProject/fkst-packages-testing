@@ -30,7 +30,7 @@
       "required": ["issuer", "keyid", "release_sequence", "revocation_authority", "signature_profile", "valid_from", "valid_until"],
       "properties": {
         "issuer": {"const": "https://releases.chronoaiproject.org/fkst-packages-testing"},
-        "keyid": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\u0000-\u001f\u007f]+$"},
+        "keyid": {"type": "string", "minLength": 1, "maxLength": 128, "pattern": "^[^\u0000-\u001f\u007f-\u009f]+$"},
         "release_sequence": {"type": "integer", "minimum": 1, "maximum": 9007199254740991},
         "revocation_authority": {"const": "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1"},
         "signature_profile": {"const": "dsse-ed25519.v1"},
