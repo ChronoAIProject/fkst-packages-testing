@@ -72,11 +72,12 @@ def exact_commit(value: str, field: str) -> str:
     return value
 
 
-def repository_commit() -> str:
-    value = subprocess.run(
-        ["git", "rev-parse", "HEAD"], cwd=ROOT, check=True, text=True, capture_output=True
-    ).stdout.strip()
-    return exact_commit(value, "repository commit")
+def repository_commit(value: str) -> str:
+    commit = exact_commit(value, "repository commit")
+    subprocess.run(
+        ["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=ROOT, check=True, capture_output=True
+    )
+    return commit
 
 
 def pinned_commit(path: Path, field: str) -> str:
@@ -97,14 +98,23 @@ def load_manifest_generator():
     return module
 
 
-def bundle() -> tuple[dict[str, object], str]:
+def source_file(commit: str, relative: str) -> bytes:
+    entry = subprocess.run(
+        ["git", "ls-tree", commit, "--", relative], cwd=ROOT, check=True, text=True, capture_output=True
+    ).stdout.rstrip("\n")
+    fields = entry.split(None, 3)
+    if len(fields) != 4 or fields[0] not in {"100644", "100755"} or fields[1] != "blob" or fields[3] != relative:
+        raise ValueError(f"bundle input must be a regular file at source commit: {relative}")
+    return subprocess.run(
+        ["git", "cat-file", "blob", f"{commit}:{relative}"], cwd=ROOT, check=True, capture_output=True
+    ).stdout
+
+
+def bundle(source: str) -> tuple[dict[str, object], str]:
     records = []
     content_digest = hashlib.sha256()
     for relative in sorted(BUNDLE_FILES, key=lambda value: value.encode("utf-8")):
-        path = ROOT / relative
-        if not path.is_file() or path.is_symlink():
-            raise ValueError(f"bundle input must be a regular non-symlink file: {relative}")
-        data = path.read_bytes()
+        data = source_file(source, relative)
         records.append({
             "content_base64": base64.b64encode(data).decode("ascii"),
             "path": relative,
@@ -287,11 +297,11 @@ def verify_signed_artifacts(release_bytes: bytes) -> None:
             raise ValueError("committed Ed25519 signature verification failed")
 
 
-def unsigned_outputs() -> dict[Path, bytes]:
-    source = repository_commit()
+def unsigned_outputs(source_commit: str) -> dict[Path, bytes]:
+    source = repository_commit(source_commit)
     packages = pinned_commit(ROOT / ".fkst/conformance/fkst-packages.pin", "fkst-packages")
     substrate = pinned_commit(ROOT / ".fkst/substrate-ref", "fkst-substrate")
-    bundle_value, package_content_sha256 = bundle()
+    bundle_value, package_content_sha256 = bundle(source)
     bundle_bytes = compact(bundle_value)
     manifest_value = manifest(package_content_sha256, source, packages, substrate)
     manifest_bytes = load_manifest_generator().canonical(manifest_value)
@@ -303,9 +313,10 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--seed-file", type=Path)
+    parser.add_argument("--source-commit", required=True)
     arguments = parser.parse_args()
     try:
-        expected = unsigned_outputs()
+        expected = unsigned_outputs(arguments.source_commit)
         if arguments.check:
             for path, data in expected.items():
                 if not path.is_file() or path.read_bytes() != data:

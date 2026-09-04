@@ -16,6 +16,9 @@ from json_schema_test_support import validator_for_schema_file
 
 ROOT = Path(__file__).resolve().parents[1]
 AUTHORIZATION = ROOT / "package-release/testing-package-release.v1.key.json"
+SOURCE_COMMIT = (
+    ROOT / "package-release/testing-package-release.v1.source-commit"
+).read_text(encoding="ascii").strip()
 VERIFIER = ROOT / "scripts/verify_testing_package_release.mjs"
 
 
@@ -32,7 +35,13 @@ def run_verifier(pin: str, *, authorization: Path = AUTHORIZATION, paths: dict[s
 
 
 def main() -> int:
-    subprocess.run([sys.executable, str(ROOT / "scripts/generate_testing_package_release.py"), "--check"], cwd=ROOT, check=True)
+    subprocess.run([
+        sys.executable,
+        str(ROOT / "scripts/generate_testing_package_release.py"),
+        "--check",
+        "--source-commit",
+        SOURCE_COMMIT,
+    ], cwd=ROOT, check=True)
     _, validator = validator_for_schema_file(ROOT / "schemas/testing-package-release.v1.schema.json")
     valid = generator.json.loads((ROOT / "packages/testing-runner/tests/fixtures/testing-package-release.v1/valid.json").read_text())
     invalid = generator.json.loads((ROOT / "packages/testing-runner/tests/fixtures/testing-package-release.v1/invalid-unknown-field.json").read_text())
