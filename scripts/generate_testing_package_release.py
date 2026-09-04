@@ -226,7 +226,7 @@ def signing_seed(seed_file: Path | None) -> bytes:
     if seed_file is not None and environment_value is not None:
         raise ValueError(f"use either --seed-file or {SEED_ENVIRONMENT_VARIABLE}, not both")
     if seed_file is not None:
-        value = seed_file.read_text(encoding="ascii").strip()
+        value = seed_file.read_text(encoding="ascii")
     elif environment_value is not None:
         value = environment_value
     else:

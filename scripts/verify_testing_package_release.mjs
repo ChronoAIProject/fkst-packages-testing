@@ -16,6 +16,18 @@ const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_40 = /^[0-9a-f]{40}$/;
 const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+const BUNDLE_PATHS = [
+  "libraries/contract/canonical_json.lua",
+  "libraries/contract/error_facts.lua",
+  "libraries/contract/sha256.lua",
+  "libraries/contract/strings.lua",
+  "libraries/contract/testing_evidence_manifest.lua",
+  "libraries/contract/testing_package_executor.lua",
+  "libraries/contract/testing_result_authority.lua",
+  "libraries/contract/testing_results.lua",
+  "libraries/contract/time.lua",
+  "libraries/testing_package_executor/executor.lua",
+];
 
 function fail(message) { throw new Error(message); }
 function sha256(bytes) { return createHash("sha256").update(bytes).digest("hex"); }
@@ -74,7 +86,7 @@ function parseArguments(argv) {
   const values = new Map();
   for (let index = 0; index < argv.length; index += 2) {
     const name = argv[index], value = argv[index + 1];
-    if (!name?.startsWith("--") || value === undefined || values.has(name)) fail("arguments must be unique --name value pairs");
+    if (!name?.startsWith("--") || value === undefined || value.startsWith("--") || values.has(name)) fail("arguments must be unique --name value pairs");
     values.set(name, value);
   }
   const allowed = new Set(["--trusted-authorization-sha256", "--release", "--envelope", "--authorization", "--bundle", "--manifest", "--schema-catalog", "--schema-release"]);
@@ -109,13 +121,29 @@ function verifyReleaseShape(release) {
 }
 function verifyManifest(manifestBytes, manifest, release) {
   requireCanonical(manifestBytes, manifest, "manifest", false);
+  closed(manifest, ["schema", "canonicalization", "package_id", "package_version", "source_commit", "package_content_sha256", "supported_contracts", "entrypoints", "semantic_capabilities", "runtime_requirements", "dependencies", "producer", "creation_metadata", "manifest_digest"], "manifest");
   const manifestWithoutDigest = { ...manifest }; delete manifestWithoutDigest.manifest_digest;
+  if (!HEX_64.test(manifest.manifest_digest)) fail("manifest manifest_digest is invalid");
   if (manifest.manifest_digest !== sha256(compact(manifestWithoutDigest, false))) fail("manifest canonical digest mismatch");
   if (manifest.manifest_digest !== release.manifest.manifest_digest || sha256(manifestBytes) !== release.manifest.sha256 || manifestBytes.length !== release.manifest.size_bytes) fail("manifest persisted binding mismatch");
-  closed(manifest, ["schema", "canonicalization", "package_id", "package_version", "source_commit", "package_content_sha256", "supported_contracts", "entrypoints", "semantic_capabilities", "runtime_requirements", "dependencies", "producer", "creation_metadata", "manifest_digest"], "manifest");
-  if (manifest.schema !== "testing-package-manifest.v1" || manifest.canonicalization !== "fkst-testing-package-manifest-canonical-json.v1" || manifest.package_id !== "testing-runner" || manifest.package_version !== release.package.package_version || manifest.source_commit !== release.source.repository_commit || manifest.package_content_sha256 !== release.package.package_content_sha256) fail("manifest release identity mismatch");
+  if (manifest.schema !== "testing-package-manifest.v1" || manifest.canonicalization !== "fkst-testing-package-manifest-canonical-json.v1" || manifest.package_id !== "testing-runner" || manifest.package_version !== "1.0.0" || manifest.package_version !== release.package.package_version || manifest.source_commit !== release.source.repository_commit || manifest.package_content_sha256 !== release.package.package_content_sha256) fail("manifest release identity mismatch");
+  closed(manifest.supported_contracts, ["majors", "canonicalization_profiles"], "manifest.supported_contracts");
+  if (JSON.stringify(manifest.supported_contracts) !== JSON.stringify({ canonicalization_profiles: ["fkst-testing-package-manifest-canonical-json.v1"], majors: ["testing-runner.v1"] })) fail("manifest supported contracts are unsupported");
+  if (!Array.isArray(manifest.entrypoints) || manifest.entrypoints.length !== 1) fail("manifest must expose exactly testing-runner.run");
+  closed(manifest.entrypoints[0], ["capabilities", "contract_major", "name"], "manifest entrypoint");
   if (JSON.stringify(manifest.entrypoints) !== JSON.stringify([{ capabilities: ["browser.read-title.v1"], contract_major: "testing-runner.v1", name: "testing-runner.run" }])) fail("manifest must expose exactly testing-runner.run");
+  if (JSON.stringify(manifest.semantic_capabilities) !== '["browser.read-title.v1"]') fail("manifest semantic capabilities are unsupported");
+  closed(manifest.runtime_requirements, ["lua", "platforms"], "manifest.runtime_requirements");
+  if (JSON.stringify(manifest.runtime_requirements) !== JSON.stringify({ lua: "5.4.0", platforms: ["linux-amd64"] })) fail("manifest runtime requirements are unsupported");
+  closed(manifest.dependencies, ["fkst_packages", "fkst_substrate"], "manifest.dependencies");
+  closed(manifest.dependencies.fkst_packages, ["id", "commit"], "manifest.dependencies.fkst_packages");
+  closed(manifest.dependencies.fkst_substrate, ["id", "commit"], "manifest.dependencies.fkst_substrate");
+  if (manifest.dependencies.fkst_packages.id !== "fkst-packages" || manifest.dependencies.fkst_substrate.id !== "fkst-substrate") fail("manifest dependency identity is unsupported");
   if (manifest.dependencies.fkst_packages.commit !== release.source.fkst_packages_commit || manifest.dependencies.fkst_substrate.commit !== release.source.fkst_substrate_commit) fail("manifest dependency identity mismatch");
+  closed(manifest.producer, ["name", "version", "toolchain"], "manifest.producer");
+  if (JSON.stringify(manifest.producer) !== JSON.stringify({ name: "fkst-packages-testing", toolchain: "testing-package-release-v1", version: "1.0.0" })) fail("manifest producer identity is unsupported");
+  closed(manifest.creation_metadata, ["created_at", "build_id"], "manifest.creation_metadata");
+  if (JSON.stringify(manifest.creation_metadata) !== JSON.stringify({ build_id: "testing-package-release-walking-skeleton-v1", created_at: "2026-09-04T00:00:00Z" })) fail("manifest creation metadata is unsupported");
 }
 function verifyBundle(bundleBytes, bundle, release) {
   requireCanonical(bundleBytes, bundle, "bundle");
@@ -136,6 +164,7 @@ function verifyBundle(bundleBytes, bundle, release) {
     contentHash.update(Buffer.from(record.path)); contentHash.update(Buffer.from([0, 0x66])); contentHash.update(bytes); contentHash.update(Buffer.from([0]));
     decoded.push({ path: record.path, bytes });
   }
+  if (JSON.stringify(decoded.map((file) => file.path)) !== JSON.stringify(BUNDLE_PATHS)) fail("bundle files do not match the release allowlist");
   if (contentHash.digest("hex") !== release.package.package_content_sha256) fail("bundle package_content_sha256 mismatch");
   return decoded;
 }
