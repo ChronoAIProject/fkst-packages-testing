@@ -34,6 +34,41 @@ def run_verifier(pin: str, *, authorization: Path = AUTHORIZATION, paths: dict[s
     return result
 
 
+def assert_bundle_uses_pinned_git_tree() -> None:
+    with tempfile.TemporaryDirectory(prefix="testing-package-release-source-") as directory:
+        root = Path(directory)
+        relative = "libraries/testing_package_executor/executor.lua"
+        source_path = root / relative
+        source_path.parent.mkdir(parents=True)
+        pinned_bytes = b"return { execute = function() return 'pinned' end }\n"
+        substituted_bytes = b"return { execute = function() return 'substituted' end }\n"
+        source_path.write_bytes(pinned_bytes)
+        subprocess.run(["git", "init", "--quiet"], cwd=root, check=True)
+        subprocess.run(["git", "add", relative], cwd=root, check=True)
+        subprocess.run([
+            "git", "-c", "user.name=Testing Package Release", "-c", "user.email=testing-package-release@example.invalid",
+            "commit", "--quiet", "-m", "pin bundle source",
+        ], cwd=root, check=True)
+        source_commit = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=root, check=True, text=True, capture_output=True
+        ).stdout.strip()
+        source_path.write_bytes(substituted_bytes)
+
+        original_root = generator.ROOT
+        original_bundle_files = generator.BUNDLE_FILES
+        try:
+            generator.ROOT = root
+            generator.BUNDLE_FILES = (relative,)
+            bundle, _ = generator.bundle(generator.repository_commit(source_commit))
+        finally:
+            generator.ROOT = original_root
+            generator.BUNDLE_FILES = original_bundle_files
+
+        bundled_bytes = base64.b64decode(bundle["files"][0]["content_base64"], validate=True)
+        assert bundled_bytes == pinned_bytes
+        assert bundled_bytes != substituted_bytes
+
+
 def main() -> int:
     subprocess.run([
         sys.executable,
@@ -42,6 +77,7 @@ def main() -> int:
         "--source-commit",
         SOURCE_COMMIT,
     ], cwd=ROOT, check=True)
+    assert_bundle_uses_pinned_git_tree()
     _, validator = validator_for_schema_file(ROOT / "schemas/testing-package-release.v1.schema.json")
     valid = generator.json.loads((ROOT / "packages/testing-runner/tests/fixtures/testing-package-release.v1/valid.json").read_text())
     invalid = generator.json.loads((ROOT / "packages/testing-runner/tests/fixtures/testing-package-release.v1/invalid-unknown-field.json").read_text())
