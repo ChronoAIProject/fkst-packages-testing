@@ -17,6 +17,10 @@ M.schemas = {
   effect_authorization_receipt = "testing-effect-authorization-receipt.v1",
 }
 
+M.capabilities = {
+  http_json_path_equals = "testing-runner.http-json-path-equals.v1",
+}
+
 local max_cases = 64
 local max_argv = 32
 local max_assertions = 16
@@ -120,19 +124,45 @@ local function executable(argv)
   return name
 end
 
+local function valid_json_member_path(value)
+  if not bounded(value, 512) then return false end
+  local segments = {}
+  for segment in value:gmatch("[^%.]+") do
+    if segment:match("^[A-Za-z_][A-Za-z0-9_%-]*$") == nil then return false end
+    table.insert(segments, segment)
+  end
+  return #segments > 0 and table.concat(segments, ".") == value
+end
+
+local function valid_json_scalar(value)
+  local kind = type(value)
+  if kind == "string" then return bounded(value, 512) end
+  if kind == "boolean" then return true end
+  return kind == "number" and value == math.floor(value) and math.abs(value) <= 9007199254740991
+end
+
 local function validate_assertion(value, kind)
-  only_fields(value, { type = true, expected = true }, "assertion")
+  only_fields(value, { type = true, expected = true, path = true }, "assertion")
   if kind == "cli" then
     if value.type ~= "exit-code" or type(value.expected) ~= "number"
-      or value.expected ~= math.floor(value.expected) or value.expected < 0 or value.expected > 255 then
+      or value.expected ~= math.floor(value.expected) or value.expected < 0 or value.expected > 255
+      or value.path ~= nil then
       fail("unsupported-assertion", "CLI cases support only exit-code assertions")
     end
   elseif value.type == "status-code" then
     if type(value.expected) ~= "number" or value.expected ~= math.floor(value.expected)
-      or value.expected < 100 or value.expected > 599 then
+      or value.expected < 100 or value.expected > 599 or value.path ~= nil then
       fail("unsupported-assertion", "HTTP status-code assertion is invalid")
     end
-  elseif value.type ~= "body-contains" or not bounded(value.expected, 512) then
+  elseif value.type == "body-contains" then
+    if not bounded(value.expected, 512) or value.path ~= nil then
+      fail("unsupported-assertion", "HTTP body-contains assertion is invalid")
+    end
+  elseif value.type == "json-path-equals" then
+    if not valid_json_member_path(value.path) or not valid_json_scalar(value.expected) then
+      fail("unsupported-assertion", "HTTP json-path-equals assertion is invalid")
+    end
+  else
     fail("unsupported-assertion", "HTTP assertion is invalid")
   end
 end

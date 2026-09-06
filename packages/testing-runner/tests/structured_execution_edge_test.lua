@@ -59,6 +59,7 @@ local function run_edge(mutate, options)
       if options.http_error then error("http unavailable") end
       return { status = 200, body = "ok" }
     end,
+    decode_json = function() return { status = "parsed", value = {} } end,
     write_artifact = function(path, artifact)
       writes = writes + 1
       if options.fail_evidence and path:find("/evidence/", 1, true) then return false end
@@ -112,6 +113,23 @@ return {
     }) do ports[name] = function() return true end end
     _G.structured_execution_runtime = ports
     t.eq(structured_execution.production_ports(), ports)
+    t.is_true(type(ports.decode_json) == "function")
+    local decode_json = ports.decode_json
+    local original_json = _G.json
+    _G.json = nil
+    t.raises(function() decode_json("{}") end)
+    _G.json = {
+      decode = function(value)
+        if value == "invalid" then error("invalid JSON") end
+        if value == "scalar" then return "not-an-object" end
+        return { status = "ok" }
+      end,
+    }
+    t.eq(decode_json("{}").status, "parsed")
+    t.eq(decode_json("{}").value.status, "ok")
+    t.eq(decode_json("invalid").status, "invalid-json")
+    t.eq(decode_json("scalar").status, "invalid-json")
+    _G.json = original_json
     local invalid = request()
     invalid.schema = "unknown"
     t.eq(structured_execution.result_payload(invalid).status, "blocked")
@@ -130,6 +148,34 @@ return {
       function(_, _, plan) plan.cases[1].skip_classification = "not-executed-risk" end,
       function(_, _, plan) plan.cases[1].kind = "browser" end,
       function(_, _, plan) plan.cases[1].goal = "foreign browser field" end,
+      function(_, _, plan)
+        plan.cases[1] = {
+          case_id = "incomplete-browser",
+          kind = "browser",
+          goal = "Verify browser state.",
+          success_conditions = { "Expected state is visible." },
+          completion_assertions = {
+            {
+              assertion_id = "callback-observed",
+              type = "browser-callback-observed",
+              required = true,
+              completion_field = "callback_observed",
+            },
+            {
+              assertion_id = "process-exit-zero",
+              type = "browser-process-exit-zero",
+              required = true,
+              completion_field = "process_exit_zero",
+            },
+            {
+              assertion_id = "whoami-succeeded",
+              type = "browser-whoami-succeeded",
+              required = true,
+              completion_field = "whoami_succeeded",
+            },
+          },
+        }
+      end,
       function(_, _, plan) plan.cases[1].timeout_seconds = 0 end,
       function(_, _, plan) plan.cases[1].assertions = {} end,
       function(_, _, plan) plan.cases[1].argv = {} end,
@@ -156,6 +202,58 @@ return {
       end,
       function(_, _, plan) plan.cases[1].assertions[1].type = "stdout" end,
       function(_, _, plan, grant) http_case(plan, grant) plan.cases[1].assertions[1].type = "header" end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "$.status", expected = "ok" }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items.0", expected = "ok" }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items[0]", expected = "ok" }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items.*", expected = "ok" }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items[?(@.ok)]", expected = "ok" }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items..status", expected = "ok" }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status", expected = {} }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status" }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status", expected = math.huge }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status", expected = 1.5 }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status", expected = 9007199254740992 }
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1].path = "status"
+      end,
+      function(_, _, plan, grant)
+        http_case(plan, grant)
+        plan.cases[1].assertions[1] = { type = "body-contains", path = "status", expected = "ok" }
+      end,
     }
     for _, mutate in ipairs(mutations) do t.eq(run_edge(mutate).status, "blocked") end
   end,

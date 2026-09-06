@@ -57,6 +57,10 @@ local function values()
 end
 
 return {
+  test_publishes_versioned_json_path_equality_capability = function()
+    t.eq(contract.capabilities.http_json_path_equals, "testing-runner.http-json-path-equals.v1")
+  end,
+
   test_cli_action_envelope_and_receipt_are_closed_and_versioned = function()
     local request = fixtures.request()
     local case = fixtures.plan(request).cases[1]

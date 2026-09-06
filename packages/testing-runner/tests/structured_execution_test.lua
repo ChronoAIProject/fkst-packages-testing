@@ -49,6 +49,11 @@ local function runtime(artifacts, options)
       if options.http_error then error("http unavailable") end
       return options.http_result or { status = 200, body = '{"status":"healthy"}', headers = {} }
     end,
+    decode_json = function(body)
+      if options.decode_error then error("decoder unavailable") end
+      if options.decode_json then return options.decode_json(body) end
+      return { status = "invalid-json" }
+    end,
     write_artifact = function(path, value)
       if options.write_artifact then return options.write_artifact(path, value, writes, artifacts) end
       fixtures.persist_write(artifacts, writes, path, value)
@@ -283,6 +288,152 @@ return {
       artifacts[result.evidence_manifest_path].digest)
     t.eq(completed.claim.claim_id, "claim-110")
     t.eq(completed.result_ref, result.execution_path)
+  end,
+
+  test_json_path_equality_uses_typed_nested_response_value = function()
+    local request = fixtures.request()
+    local plan = fixtures.plan(request, { {
+      case_id = "health-api", kind = "http",
+      request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+      timeout_seconds = 10,
+      assertions = {
+        { type = "status-code", expected = 200 },
+        { type = "json-path-equals", path = "service.status", expected = "healthy" },
+        { type = "json-path-equals", path = "service.ready", expected = true },
+        { type = "json-path-equals", path = "service.count", expected = 2 },
+      },
+    } })
+    local grant = fixtures.grant(request, {
+      cli = {},
+      http = { {
+        origin = "http://127.0.0.1:4173", methods = { "GET" }, path_prefixes = { "/health" },
+      } },
+    })
+    local ports, _, writes = runtime(fixtures.artifacts(request, plan, grant), {
+      http_result = {
+        status = 200,
+        body = '{"service":{"count":2,"ready":true,"status":"healthy"}}',
+        headers = {},
+      },
+      decode_json = function()
+        return {
+          status = "parsed",
+          value = { service = { count = 2, ready = true, status = "healthy" } },
+        }
+      end,
+    })
+    local result = structured_execution.run(request, ports)
+    local canonical = writes[result.case_result_set_path].cases[1]
+    local legacy = writes[result.case_results_path].cases[1]
+    t.eq(result.status, "passed")
+    t.eq(canonical.classification, "deterministic")
+    t.eq(canonical.assertions[2].status, "passed")
+    t.eq(canonical.assertions[3].status, "passed")
+    t.eq(canonical.assertions[4].status, "passed")
+    t.eq(legacy.assertions[2].type, "json-path-equals")
+    t.eq(legacy.assertions[2].passed, true)
+    t.eq(legacy.assertions[3].passed, true)
+    t.eq(legacy.assertions[4].passed, true)
+  end,
+
+  test_json_path_equality_fails_on_missing_invalid_or_differently_typed_value = function()
+    for _, scenario in ipairs({
+      {
+        body = '{"status":"1"}',
+        decoded = { status = "parsed", value = { status = "1" } },
+      },
+      {
+        body = '{"other":1}',
+        decoded = { status = "parsed", value = { other = 1 } },
+      },
+      {
+        body = '{"status":',
+        decoded = { status = "invalid-json" },
+      },
+    }) do
+      local request = fixtures.request()
+      local plan = fixtures.plan(request, { {
+        case_id = "health-api", kind = "http",
+        request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+        timeout_seconds = 10,
+        assertions = { { type = "json-path-equals", path = "status", expected = 1 } },
+      } })
+      local grant = fixtures.grant(request, {
+        cli = {},
+        http = { {
+          origin = "http://127.0.0.1:4173", methods = { "GET" }, path_prefixes = { "/health" },
+        } },
+      })
+      local ports, _, writes = runtime(fixtures.artifacts(request, plan, grant), {
+        http_result = { status = 200, body = scenario.body, headers = {} },
+        decode_json = function() return scenario.decoded end,
+      })
+      local result = structured_execution.run(request, ports)
+      t.eq(result.status, "failed")
+      t.eq(result.classification, "product-defect")
+      t.eq(writes[result.case_result_set_path].cases[1].classification, "assertion_failure")
+      t.eq(writes[result.case_result_set_path].cases[1].assertions[1].status, "failed")
+      t.eq(writes[result.case_results_path].cases[1].assertions[1].passed, false)
+    end
+  end,
+
+  test_json_decoder_infrastructure_failure_blocks_instead_of_reporting_product_defect = function()
+    local request = fixtures.request()
+    local plan = fixtures.plan(request, { {
+      case_id = "health-api", kind = "http",
+      request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+      timeout_seconds = 10,
+      assertions = { { type = "json-path-equals", path = "status", expected = "healthy" } },
+    } })
+    local grant = fixtures.grant(request, {
+      cli = {},
+      http = { {
+        origin = "http://127.0.0.1:4173", methods = { "GET" }, path_prefixes = { "/health" },
+      } },
+    })
+    local ports = runtime(fixtures.artifacts(request, plan, grant), { decode_error = true })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "blocked")
+    t.eq(result.classification, "harness-tooling-issue")
+  end,
+
+  test_failed_cli_assertion_never_calls_http_json_decoder = function()
+    local request = fixtures.request()
+    local calls = 0
+    local ports = runtime(fixtures.artifacts(request), {
+      exec_result = { exit_code = 1, stdout = "", stderr = "failed" },
+      decode_json = function() calls = calls + 1 error("must not decode CLI output") end,
+    })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "failed")
+    t.eq(result.classification, "product-defect")
+    t.eq(calls, 0)
+  end,
+
+  test_invalid_json_decoder_result_blocks_as_harness_issue = function()
+    local request = fixtures.request()
+    local plan = fixtures.plan(request, { {
+      case_id = "health-api", kind = "http",
+      request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+      timeout_seconds = 10,
+      assertions = { { type = "json-path-equals", path = "status", expected = "healthy" } },
+    } })
+    local grant = fixtures.grant(request, {
+      cli = {},
+      http = { {
+        origin = "http://127.0.0.1:4173", methods = { "GET" }, path_prefixes = { "/health" },
+      } },
+    })
+    for _, malformed in ipairs({
+      function() return nil end,
+      function() return "parsed" end,
+      function() return {} end,
+    }) do
+      local ports = runtime(fixtures.artifacts(request, plan, grant), { decode_json = malformed })
+      local result = structured_execution.run(request, ports)
+      t.eq(result.status, "blocked")
+      t.eq(result.classification, "harness-tooling-issue")
+    end
   end,
 
   test_http_assertion_failure_is_canonical_and_projects_to_v1 = function()
