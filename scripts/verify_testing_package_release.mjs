@@ -15,6 +15,9 @@ const KEY_ID = "fkst-packages-testing-release-v1-2026-09-04";
 const AUTHORITY_ISSUER = "https://releases.chronoaiproject.org/fkst-packages-testing";
 const SIGNATURE_PROFILE = "dsse-ed25519.v1";
 const REVOCATION_AUTHORITY = "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1";
+const TOOL_CATALOG_PATH = "package-release/testing-package-tool-catalog.v1.json";
+const METADATA_MAX_UTF8_BYTES = 180;
+const KEY_ID_MAX_UTF8_BYTES = 128;
 const SPKI_PREFIX = Buffer.from("302a300506032b6570032100", "hex");
 const HEX_64 = /^[0-9a-f]{64}$/;
 const HEX_40 = /^[0-9a-f]{40}$/;
@@ -99,7 +102,7 @@ function timestamp(value, field) {
   return Date.parse(value);
 }
 function keyid(value, field) {
-  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 128) fail(`${field} is invalid`);
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > KEY_ID_MAX_UTF8_BYTES) fail(`${field} is invalid`);
   for (const character of value) {
     const codepoint = character.codePointAt(0);
     if (codepoint <= 0x1f || (codepoint >= 0x7f && codepoint <= 0x9f) || (codepoint >= 0xd800 && codepoint <= 0xdfff)) fail(`${field} is invalid`);
@@ -107,7 +110,7 @@ function keyid(value, field) {
   return value;
 }
 function metadataString(value, field) {
-  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > 180 || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) fail(`${field} is invalid`);
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > METADATA_MAX_UTF8_BYTES || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value)) fail(`${field} is invalid`);
   return value;
 }
 async function stage(name) {
@@ -150,6 +153,7 @@ function verifyReleaseShape(release) {
   fileBinding(release.bundle, "release.bundle"); fileBinding(release.manifest, "release.manifest", true); fileBinding(release.schema_catalog, "release.schema_catalog"); fileBinding(release.schema_release, "release.schema_release");
   if (successor) {
     fileBinding(release.tool_catalog, "release.tool_catalog");
+    if (release.tool_catalog.path !== TOOL_CATALOG_PATH) fail("release.tool_catalog.path is unsupported");
     closed(release.authority, ["issuer", "keyid", "release_sequence", "revocation_authority", "signature_profile", "valid_from", "valid_until"], "release.authority");
     keyid(release.authority.keyid, "release.authority.keyid");
     if (release.authority.issuer !== AUTHORITY_ISSUER || release.authority.signature_profile !== SIGNATURE_PROFILE || release.authority.revocation_authority !== REVOCATION_AUTHORITY || !Number.isSafeInteger(release.authority.release_sequence) || release.authority.release_sequence < 1) fail("release authority profile is unsupported");
@@ -163,9 +167,13 @@ function verifyReleaseShape(release) {
   closed(release.runtime, ["lua", "platform"], "release.runtime");
   if (release.runtime.lua !== "5.4.0" || release.runtime.platform !== "linux-amd64") fail("release runtime identity is unsupported");
   closed(release.executor, ["module", "function", "executor_id"], "release.executor");
-  metadataString(release.executor.module, "release.executor.module");
-  metadataString(release.executor.function, "release.executor.function");
-  metadataString(release.executor.executor_id, "release.executor.executor_id");
+  if (successor) {
+    metadataString(release.executor.module, "release.executor.module");
+    metadataString(release.executor.function, "release.executor.function");
+    metadataString(release.executor.executor_id, "release.executor.executor_id");
+  } else if (JSON.stringify(release.executor) !== JSON.stringify({ executor_id: "testing-package-executor.browser-title.v1", function: "execute", module: "testing_package_executor.executor" })) {
+    fail("release executor identity is unsupported");
+  }
   closed(release.reducer, ["schema", "reducer_id", "reducer_version", "reducer_sha256", "policy_profile", "supported_result_contract_majors"], "release.reducer");
   const reducerWithoutDigest = { ...release.reducer }; delete reducerWithoutDigest.reducer_sha256;
   if (release.reducer.schema !== "testing-assertion-reducer-identity.v1" || release.reducer.reducer_id !== "testing.assertion-reducer.browser-title-equals" || release.reducer.reducer_version !== "1.0.0" || release.reducer.policy_profile !== "browser-title-equals.v1" || JSON.stringify(release.reducer.supported_result_contract_majors) !== '["testing-case-result-set.v2"]' || release.reducer.reducer_sha256 !== sha256(compact(reducerWithoutDigest, false))) fail("release reducer identity is unsupported");
@@ -174,8 +182,12 @@ function verifyReleaseShape(release) {
   if (!Array.isArray(release.mappings) || release.mappings.length !== 1) fail("release must contain exactly one mapping");
   closed(release.mappings[0], ["entrypoint", "contract_major", "module", "function"], "release.mapping");
   if (release.mappings[0].entrypoint !== "testing-runner.run" || release.mappings[0].contract_major !== "testing-runner.v1") fail("release mapping is unsupported");
-  metadataString(release.mappings[0].module, "release.mapping.module");
-  metadataString(release.mappings[0].function, "release.mapping.function");
+  if (successor) {
+    metadataString(release.mappings[0].module, "release.mapping.module");
+    metadataString(release.mappings[0].function, "release.mapping.function");
+  } else if (release.mappings[0].module !== "testing_package_executor.executor" || release.mappings[0].function !== "execute") {
+    fail("release mapping is unsupported");
+  }
   closed(release.creation_metadata, ["created_at", "build_id"], "release.creation_metadata");
   timestamp(release.creation_metadata.created_at, "release.creation_metadata.created_at");
   if (release.creation_metadata.build_id !== "testing-package-release-walking-skeleton-v1") fail("release creation metadata is unsupported");
@@ -388,6 +400,8 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
 
   const release = parseJson(releaseBytes, "release"); requireCanonical(releaseBytes, release, "release");
   const successor = verifyReleaseShape(release);
+  const toolCatalogPath = args.get("--tool-catalog");
+  if (successor && !toolCatalogPath) fail("--tool-catalog is required for successor releases");
   const verificationTime = timestamp(args.get("--verification-time"), "--verification-time");
   if (successor) {
     if (release.authority.release_sequence < parsedArguments.minimumReleaseSequence) fail("release sequence is below the consumer minimum");
@@ -411,10 +425,8 @@ export async function verifyTestingPackageRelease(argv = process.argv.slice(2)) 
   const envelopePath = args.get("--envelope") ?? path.join(ROOT, "package-release/testing-package-release.v1.dsse.json");
   const bundlePath = args.get("--bundle") ?? path.join(ROOT, "package-release/testing-package-bundle.v1.json");
   const manifestPath = args.get("--manifest") ?? path.join(ROOT, "package-release/testing-package-manifest.v1.json");
-  const toolCatalogPath = args.get("--tool-catalog");
   const catalogPath = args.get("--schema-catalog") ?? path.join(ROOT, "schema-release/testing-schema-catalog.v1.json");
   const schemaReleasePath = args.get("--schema-release") ?? path.join(ROOT, "schema-release/testing-package-schema-release.v1.json");
-  if (successor && !toolCatalogPath) fail("--tool-catalog is required for successor releases");
   const envelopeBytes = await readFile(envelopePath);
   const envelope = parseJson(envelopeBytes, "DSSE envelope"); requireCanonical(envelopeBytes, envelope, "DSSE envelope");
   closed(envelope, ["payload", "payloadType", "signatures"], "DSSE envelope");

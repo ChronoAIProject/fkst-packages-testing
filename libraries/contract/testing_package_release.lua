@@ -1,7 +1,12 @@
 local canonical_json = require("contract.canonical_json")
 local error_facts = require("contract.error_facts")
+local time = require("contract.time")
 
 local M = {}
+local MAX_SAFE_INTEGER = 9007199254740991
+local KEY_ID_MAX_UTF8_BYTES = 128
+local METADATA_MAX_UTF8_BYTES = 180
+local TOOL_CATALOG_PATH = "package-release/testing-package-tool-catalog.v1.json"
 
 local function fail(classification, message)
   error(error_facts.error_message("contract.testing-package-release", classification, message))
@@ -24,6 +29,19 @@ local function commit(value, field)
   if type(value) ~= "string" or #value ~= 40 or value:match("^[0-9a-f]+$") == nil then fail("malformed-commit", field) end
 end
 
+local function bounded_string(value, field, maximum)
+  if type(value) ~= "string" or value == "" or #value > maximum or not canonical_json.is_valid_utf8(value) then
+    fail("malformed-metadata", field)
+  end
+  for _, codepoint in utf8.codes(value) do
+    if codepoint <= 0x1f or (codepoint >= 0x7f and codepoint <= 0x9f) then fail("malformed-metadata", field) end
+  end
+end
+
+local function timestamp(value, field)
+  if type(value) ~= "string" or time.iso_timestamp_epoch_seconds(value) == nil then fail("malformed-timestamp", field) end
+end
+
 local function file_binding(value, context, manifest)
   local allowed = { path=true, size_bytes=true, sha256=true }
   if manifest then allowed.manifest_digest = true end
@@ -38,9 +56,10 @@ local function file_binding(value, context, manifest)
 end
 
 function M.validate(value)
+  local successor = type(value) == "table" and (value.authority ~= nil or value.tool_catalog ~= nil)
   fields(value, { schema=true,canonicalization=true,package=true,bundle=true,manifest=true,schema_catalog=true,
     schema_release=true,source=true,producer=true,runtime=true,executor=true,reducer=true,result_authority=true,
-    mappings=true,creation_metadata=true }, "release")
+    mappings=true,creation_metadata=true,authority=successor,tool_catalog=successor }, "release")
   exact(value.schema, "testing-package-release.v1", "schema")
   exact(value.canonicalization, "fkst-testing-package-release-canonical-json.v1", "canonicalization")
   fields(value.package, { package_id=true,package_version=true,package_content_sha256=true,supported_profile=true,capability=true }, "package")
@@ -51,13 +70,30 @@ function M.validate(value)
   exact(value.package.capability, "browser.read-title.v1", "package.capability")
   file_binding(value.bundle, "bundle", false); file_binding(value.manifest, "manifest", true)
   file_binding(value.schema_catalog, "schema_catalog", false); file_binding(value.schema_release, "schema_release", false)
+  if successor then
+    file_binding(value.tool_catalog, "tool_catalog", false)
+    exact(value.tool_catalog.path, TOOL_CATALOG_PATH, "tool_catalog.path")
+    fields(value.authority, { issuer=true,keyid=true,release_sequence=true,revocation_authority=true,signature_profile=true,valid_from=true,valid_until=true }, "authority")
+    exact(value.authority.issuer, "https://releases.chronoaiproject.org/fkst-packages-testing", "authority.issuer")
+    bounded_string(value.authority.keyid, "authority.keyid", KEY_ID_MAX_UTF8_BYTES)
+    if type(value.authority.release_sequence) ~= "number" or value.authority.release_sequence % 1 ~= 0
+        or value.authority.release_sequence < 1 or value.authority.release_sequence > MAX_SAFE_INTEGER then fail("malformed-sequence", "authority.release_sequence") end
+    exact(value.authority.revocation_authority, "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1", "authority.revocation_authority")
+    exact(value.authority.signature_profile, "dsse-ed25519.v1", "authority.signature_profile")
+    timestamp(value.authority.valid_from, "authority.valid_from"); timestamp(value.authority.valid_until, "authority.valid_until")
+    if value.authority.valid_from >= value.authority.valid_until then fail("malformed-interval", "authority validity interval must be non-empty") end
+  end
   fields(value.source, { repository_commit=true,fkst_packages_commit=true,fkst_substrate_commit=true }, "source")
   commit(value.source.repository_commit, "source.repository_commit"); commit(value.source.fkst_packages_commit, "source.fkst_packages_commit"); commit(value.source.fkst_substrate_commit, "source.fkst_substrate_commit")
   fields(value.producer, { name=true,version=true,generator=true,generator_version=true }, "producer")
   exact(value.producer.name, "fkst-packages-testing", "producer.name"); exact(value.producer.generator, "scripts/generate_testing_package_release.py", "producer.generator")
   fields(value.runtime, { lua=true,platform=true }, "runtime"); exact(value.runtime.lua, "5.4.0", "runtime.lua"); exact(value.runtime.platform, "linux-amd64", "runtime.platform")
   fields(value.executor, { module=true,["function"]=true,executor_id=true }, "executor")
-  exact(value.executor.module, "testing_package_executor.executor", "executor.module"); exact(value.executor["function"], "execute", "executor.function"); exact(value.executor.executor_id, "testing-package-executor.browser-title.v1", "executor.executor_id")
+  if successor then
+    bounded_string(value.executor.module, "executor.module", METADATA_MAX_UTF8_BYTES); bounded_string(value.executor["function"], "executor.function", METADATA_MAX_UTF8_BYTES); bounded_string(value.executor.executor_id, "executor.executor_id", METADATA_MAX_UTF8_BYTES)
+  else
+    exact(value.executor.module, "testing_package_executor.executor", "executor.module"); exact(value.executor["function"], "execute", "executor.function"); exact(value.executor.executor_id, "testing-package-executor.browser-title.v1", "executor.executor_id")
+  end
   fields(value.reducer, { schema=true,reducer_id=true,reducer_version=true,reducer_sha256=true,policy_profile=true,supported_result_contract_majors=true }, "reducer")
   exact(value.reducer.schema, "testing-assertion-reducer-identity.v1", "reducer.schema"); exact(value.reducer.reducer_id, "testing.assertion-reducer.browser-title-equals", "reducer.reducer_id"); exact(value.reducer.reducer_version, "1.0.0", "reducer.reducer_version"); digest(value.reducer.reducer_sha256, "reducer.reducer_sha256"); exact(value.reducer.policy_profile, "browser-title-equals.v1", "reducer.policy_profile")
   if type(value.reducer.supported_result_contract_majors) ~= "table" or #value.reducer.supported_result_contract_majors ~= 1 then fail("mapping-mismatch", "reducer majors") end
@@ -65,7 +101,12 @@ function M.validate(value)
   fields(value.result_authority, { receipt_schema=true }, "result_authority"); exact(value.result_authority.receipt_schema, "testing-result-authority-receipt.v1", "result_authority.receipt_schema")
   if type(value.mappings) ~= "table" or #value.mappings ~= 1 then fail("mapping-mismatch", "mappings must contain exactly one entry") end
   fields(value.mappings[1], { entrypoint=true,contract_major=true,module=true,["function"]=true }, "mapping")
-  exact(value.mappings[1].entrypoint, "testing-runner.run", "mapping.entrypoint"); exact(value.mappings[1].contract_major, "testing-runner.v1", "mapping.contract_major"); exact(value.mappings[1].module, "testing_package_executor.executor", "mapping.module"); exact(value.mappings[1]["function"], "execute", "mapping.function")
+  exact(value.mappings[1].entrypoint, "testing-runner.run", "mapping.entrypoint"); exact(value.mappings[1].contract_major, "testing-runner.v1", "mapping.contract_major")
+  if successor then
+    bounded_string(value.mappings[1].module, "mapping.module", METADATA_MAX_UTF8_BYTES); bounded_string(value.mappings[1]["function"], "mapping.function", METADATA_MAX_UTF8_BYTES)
+  else
+    exact(value.mappings[1].module, "testing_package_executor.executor", "mapping.module"); exact(value.mappings[1]["function"], "execute", "mapping.function")
+  end
   fields(value.creation_metadata, { created_at=true,build_id=true }, "creation_metadata")
   exact(value.creation_metadata.created_at, "2026-09-04T00:00:00Z", "creation_metadata.created_at"); exact(value.creation_metadata.build_id, "testing-package-release-walking-skeleton-v1", "creation_metadata.build_id")
   return value

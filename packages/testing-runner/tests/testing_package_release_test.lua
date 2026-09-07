@@ -1,4 +1,5 @@
 local release = require("contract.testing_package_release")
+local error_facts = require("contract.error_facts")
 local t = fkst.test
 
 local function plain(value)
@@ -16,6 +17,35 @@ local function load(name)
   return value
 end
 
+local function successor()
+  local value = load("valid")
+  value.authority = {
+    issuer = "https://releases.chronoaiproject.org/fkst-packages-testing",
+    keyid = "fkst-packages-testing-successor-test-v1",
+    release_sequence = 2,
+    revocation_authority = "https://releases.chronoaiproject.org/fkst-packages-testing/revocations/v1",
+    signature_profile = "dsse-ed25519.v1",
+    valid_from = "2026-09-04T00:00:00Z",
+    valid_until = "2026-09-05T00:00:00Z",
+  }
+  value.tool_catalog = {
+    path = "package-release/testing-package-tool-catalog.v1.json",
+    sha256 = string.rep("a", 64),
+    size_bytes = 1,
+  }
+  return value
+end
+
+local function rejects(value)
+  return not pcall(function() release.validate(value) end)
+end
+
+local function rejection_class(value)
+  local ok, err = pcall(function() release.validate(value) end)
+  t.eq(ok, false)
+  return error_facts.error_class_from_message(err)
+end
+
 return {
   test_valid_release_contract = function()
     local value = load("valid")
@@ -26,5 +56,63 @@ return {
   test_release_contract_rejects_unknown_fields = function()
     local ok = pcall(function() release.validate(load("invalid-unknown-field")) end)
     t.eq(ok, false)
+  end,
+
+  test_successor_accepts_bounded_publisher_metadata = function()
+    local value = successor()
+    value.executor = { module = "publisher.module", ["function"] = "publisher_function", executor_id = "publisher.executor" }
+    value.mappings[1].module = "publisher.mapping"
+    value.mappings[1]["function"] = "publisher_mapping"
+    t.eq(release.validate(value), value)
+  end,
+
+  test_successor_rejects_malformed_publisher_metadata = function()
+    for _, invalid in ipairs({
+      { value = "", mutate = function(value, malformed) value.executor.module = malformed end },
+      { value = false, mutate = function(value, malformed) value.executor["function"] = malformed end },
+      { value = string.rep("x", 181), mutate = function(value, malformed) value.executor.executor_id = malformed end },
+      { value = "publisher\0mapping", mutate = function(value, malformed) value.mappings[1].module = malformed end },
+      { value = "\255", mutate = function(value, malformed) value.mappings[1]["function"] = malformed end },
+    }) do
+      local value = successor()
+      invalid.mutate(value, invalid.value)
+      t.eq(rejection_class(value), "malformed-metadata")
+    end
+  end,
+
+  test_successor_rejects_incomplete_or_malformed_policy = function()
+    local value = successor()
+    value.tool_catalog = nil
+    t.eq(rejects(value), true)
+
+    value = successor()
+    value.authority.keyid = "bad\194\133key"
+    t.eq(rejects(value), true)
+
+    value = successor()
+    value.authority.release_sequence = 9007199254740992
+    t.eq(rejects(value), true)
+
+    value = successor()
+    value.authority.valid_from = "2026-02-30T00:00:00Z"
+    t.eq(rejects(value), true)
+
+    value = successor()
+    value.authority.valid_until = value.authority.valid_from
+    t.eq(rejects(value), true)
+
+    value = successor()
+    value.tool_catalog.path = "publisher/tool-catalog.json"
+    t.eq(rejects(value), true)
+  end,
+
+  test_legacy_rejects_publisher_coordinate_substitution = function()
+    local value = load("valid")
+    value.executor.module = "publisher.module"
+    t.eq(rejects(value), true)
+
+    value = load("valid")
+    value.mappings[1]["function"] = "publisher_mapping"
+    t.eq(rejects(value), true)
   end,
 }
