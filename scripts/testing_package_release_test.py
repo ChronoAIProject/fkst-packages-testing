@@ -387,19 +387,13 @@ def assert_expected_release_first_gate() -> None:
         engine = root / "engine.sh"
         engine.write_text(f'#!/bin/sh\n: > "{effect_sentinel}"\nexit 99\n', encoding="utf-8")
         engine.chmod(0o755)
-        paths = {
-            "release": release,
-            "envelope": root / "missing-envelope.json",
-            "bundle": root / "missing-bundle.json",
-            "manifest": root / "missing-manifest.json",
-            "tool-catalog": root / "missing-tool-catalog.json",
-            "schema-catalog": root / "missing-schema-catalog.json",
-            "schema-release": root / "missing-schema-release.json",
-        }
         result = run_verifier(
             expected_release_sha256="0" * 64,
             authorization=root / "missing-authorization.json",
-            paths=paths,
+            paths={"release": release, **{
+                name: root / f"missing-{name}.json"
+                for name in ("envelope", "bundle", "manifest", "tool-catalog", "schema-catalog", "schema-release")
+            }},
             stage_log=stage_log,
             environment_overrides={"FKST_TESTING_ENGINE_BIN": str(engine), "TMPDIR": str(temporary_root)},
             success=False,
@@ -537,17 +531,9 @@ def assert_successor_walking_skeleton(registry) -> None:
         assert_stages(stage_log, SUCCESS_STAGES)
 
         def run_successor_rejection(
-            name: str,
-            message: str,
-            *,
-            mutate_release=None,
-            mutate_catalog=None,
-            serialize_release=None,
-            serialize_catalog=None,
-            extra_arguments: tuple[str, ...] = (),
-            environment_overrides: dict[str, str] | None = None,
-            expected_stages: list[str] | None = None,
-            verification_time: str = "2026-09-04T12:00:00Z",
+            name: str, message: str, *, mutate_release=None, mutate_catalog=None, serialize_release=None, serialize_catalog=None,
+            extra_arguments: tuple[str, ...] = (), environment_overrides: dict[str, str] | None = None,
+            expected_stages: list[str] | None = None, verification_time: str = "2026-09-04T12:00:00Z",
             minimum_release_sequence: str = "2",
         ) -> None:
             case_root = parent / f"successor-rejection-{name}"
