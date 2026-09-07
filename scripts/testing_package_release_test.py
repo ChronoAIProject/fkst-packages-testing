@@ -44,6 +44,7 @@ FKST_SUBSTRATE_COMMIT = (ROOT / ".fkst/substrate-ref").read_text(encoding="ascii
 VERIFIER = ROOT / "scripts/verify_testing_package_release.mjs"
 TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64 = "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8="
 MULTIBYTE_OVERFLOW_KEYID = "é" * 64 + "a"
+MULTIBYTE_OVERFLOW_METADATA = "é" * 90 + "a"
 
 
 def run_verifier(
@@ -55,6 +56,8 @@ def run_verifier(
     stage_log: Path | None = None,
     extra_arguments: tuple[str, ...] = (),
     environment_overrides: dict[str, str] | None = None,
+    verification_time: str = "2026-09-04T12:00:00Z",
+    minimum_release_sequence: str = "2",
     success: bool,
 ) -> subprocess.CompletedProcess[str]:
     command = ["node", str(VERIFIER)]
@@ -64,9 +67,9 @@ def run_verifier(
         "--trusted-authorization-sha256",
         authorization_pin,
         "--verification-time",
-        "2026-09-04T12:00:00Z",
+        verification_time,
         "--minimum-release-sequence",
-        "2",
+        minimum_release_sequence,
         "--authorization",
         str(authorization),
     ])
@@ -187,7 +190,21 @@ def assert_rejection_matrix() -> None:
         ([*expected, "--trusted-authorization-sha256", "--release", str(ARTIFACTS["release"]), *policy], "arguments must be unique"),
         ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--release", str(ARTIFACTS["release"]), "--release", str(ARTIFACTS["release"])], "arguments must be unique"),
         ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--unknown", "value"], "unknown argument"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, "--minimum-release-sequence", "2"], "--verification-time is required exactly once"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, "--verification-time", "2026-09-04T12:00:00Z"], "--minimum-release-sequence is required exactly once"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--verification-time", "2026-09-04T12:00:00Z"], "arguments must be unique"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--minimum-release-sequence", "2"], "arguments must be unique"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, "--verification-time", "2026-02-30T00:00:00Z", "--minimum-release-sequence", "2"], "canonical UTC timestamp"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, "--verification-time", "2026-09-04T12:00:00+00:00", "--minimum-release-sequence", "2"], "canonical UTC timestamp"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, "--verification-time", "2026-09-04T12:00:00.000Z", "--minimum-release-sequence", "2"], "canonical UTC timestamp"),
     ]
+    for invalid_sequence in ("0", "-1", "01", "1.0", "9007199254740992"):
+        cli.append(([*expected, "--trusted-authorization-sha256", legitimate_pin, "--verification-time", "2026-09-04T12:00:00Z", "--minimum-release-sequence", invalid_sequence], "positive safe decimal integer"))
+    cli.extend([
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--revoked-keyid", "bad\u0085key"], "--revoked-keyid is invalid"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--revoked-keyid", MULTIBYTE_OVERFLOW_KEYID], "--revoked-keyid is invalid"),
+        ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--revoked-keyid", "duplicate", "--revoked-keyid", "duplicate"], "--revoked-keyid values must be unique"),
+    ])
     for arguments, message in cli:
         result = subprocess.run(["node", str(VERIFIER), *arguments], cwd=ROOT, text=True, capture_output=True)
         assert result.returncode != 0 and message in result.stderr
@@ -329,6 +346,42 @@ def assert_generator_rejections() -> None:
             os.environ[variable] = original
 
 
+def assert_expected_release_first_gate() -> None:
+    with tempfile.TemporaryDirectory(prefix="testing-package-release-first-gate-") as directory:
+        root = Path(directory)
+        release = root / "release.json"
+        release.write_bytes(b"{not-json")
+        stage_log = root / "stages.log"
+        temporary_root = root / "tmp"
+        temporary_root.mkdir()
+        effect_sentinel = root / "effect-sentinel"
+        engine = root / "engine.sh"
+        engine.write_text(f'#!/bin/sh\n: > "{effect_sentinel}"\nexit 99\n', encoding="utf-8")
+        engine.chmod(0o755)
+        paths = {
+            "release": release,
+            "envelope": root / "missing-envelope.json",
+            "bundle": root / "missing-bundle.json",
+            "manifest": root / "missing-manifest.json",
+            "tool-catalog": root / "missing-tool-catalog.json",
+            "schema-catalog": root / "missing-schema-catalog.json",
+            "schema-release": root / "missing-schema-release.json",
+        }
+        result = run_verifier(
+            expected_release_sha256="0" * 64,
+            authorization=root / "missing-authorization.json",
+            paths=paths,
+            stage_log=stage_log,
+            environment_overrides={"FKST_TESTING_ENGINE_BIN": str(engine), "TMPDIR": str(temporary_root)},
+            success=False,
+        )
+        assert "release descriptor SHA-256 does not match the independently provisioned expected digest" in result.stderr
+        assert "not valid JSON" not in result.stderr and "ENOENT" not in result.stderr
+        assert_stages(stage_log, [])
+        assert not effect_sentinel.exists()
+        assert tuple(temporary_root.iterdir()) == ()
+
+
 def assert_successor_walking_skeleton(registry) -> None:
     tracked = tuple(sorted((ROOT / "package-release").glob("*"))) + tuple(sorted((ROOT / "schema-release").glob("*")))
     snapshots = {path: path.read_bytes() for path in tracked if path.is_file()}
@@ -383,9 +436,47 @@ def assert_successor_walking_skeleton(registry) -> None:
         _, catalog_validator = validator_for_schema_file(ROOT / "schemas-next-release/testing-package-tool-catalog.v1.schema.json", registry=successor_registry)
         assert not tuple(release_validator.iter_errors(release))
         assert not tuple(catalog_validator.iter_errors(catalog))
-        invalid_control_release = copy.deepcopy(release)
-        invalid_control_release["authority"]["keyid"] = "bad\u0085key"
-        assert tuple(release_validator.iter_errors(invalid_control_release))
+        for invalid_keyid in ("bad\u0085key", MULTIBYTE_OVERFLOW_KEYID):
+            invalid_release = copy.deepcopy(release)
+            invalid_release["authority"]["keyid"] = invalid_keyid
+            assert tuple(release_validator.iter_errors(invalid_release))
+        invalid_scalar_release = copy.deepcopy(release)
+        invalid_scalar_release["authority"]["keyid"] = "bad\ud800key"
+        assert next(release_validator.iter_errors(invalid_scalar_release), None) is not None
+        invalid_release = copy.deepcopy(release)
+        invalid_release["authority"]["valid_from"] = "2026-02-30T00:00:00Z"
+        assert tuple(release_validator.iter_errors(invalid_release))
+        for missing in ("authority", "tool_catalog"):
+            invalid_release = copy.deepcopy(release)
+            del invalid_release[missing]
+            assert tuple(release_validator.iter_errors(invalid_release))
+        for missing in release["authority"]:
+            invalid_release = copy.deepcopy(release)
+            del invalid_release["authority"][missing]
+            assert tuple(release_validator.iter_errors(invalid_release))
+        invalid_release = copy.deepcopy(release)
+        invalid_release["authority"]["unexpected"] = True
+        assert tuple(release_validator.iter_errors(invalid_release))
+        invalid_release = copy.deepcopy(release)
+        invalid_release["tool_catalog"]["path"] = "publisher/tool-catalog.json"
+        assert tuple(release_validator.iter_errors(invalid_release))
+        metadata_release = copy.deepcopy(release)
+        metadata_release["executor"].update(module="publisher.module", function="publisher_function", executor_id="publisher.executor")
+        metadata_release["mappings"][0].update(module="publisher.mapping", function="publisher_mapping")
+        assert not tuple(release_validator.iter_errors(metadata_release))
+        legacy_release = json.loads(RELEASE.read_bytes())
+        legacy_release["executor"]["module"] = "publisher.module"
+        assert tuple(release_validator.iter_errors(legacy_release))
+        metadata_catalog = copy.deepcopy(catalog)
+        metadata_catalog["tools"][0]["port"] = "publisher_port"
+        assert not tuple(catalog_validator.iter_errors(metadata_catalog))
+        for invalid_port in ("bad\u0085port", MULTIBYTE_OVERFLOW_METADATA):
+            invalid_catalog = copy.deepcopy(catalog)
+            invalid_catalog["tools"][0]["port"] = invalid_port
+            assert tuple(catalog_validator.iter_errors(invalid_catalog))
+        invalid_scalar_catalog = copy.deepcopy(catalog)
+        invalid_scalar_catalog["tools"][0]["port"] = "bad\ud800port"
+        assert next(catalog_validator.iter_errors(invalid_scalar_catalog), None) is not None
         assert tool_catalog_path.read_bytes() == b'{"canonicalization":"fkst-testing-package-tool-catalog-canonical-json.v1","execution_profile":"browser-deterministic.v1","schema":"testing-package-tool-catalog.v1","tools":[{"capability":"browser.read-title.v1","port":"browser_read_title"}]}\n'
         assert release["authority"] == {
             "issuer": "https://releases.chronoaiproject.org/fkst-packages-testing",
@@ -415,6 +506,207 @@ def assert_successor_walking_skeleton(registry) -> None:
         )
         assert "testing-package-release: VERIFIED AND EXECUTED" in result.stdout
         assert_stages(stage_log, SUCCESS_STAGES)
+
+        def run_successor_rejection(
+            name: str,
+            message: str,
+            *,
+            mutate_release=None,
+            mutate_catalog=None,
+            extra_arguments: tuple[str, ...] = (),
+            environment_overrides: dict[str, str] | None = None,
+            expected_stages: list[str] | None = None,
+            verification_time: str = "2026-09-04T12:00:00Z",
+            minimum_release_sequence: str = "2",
+        ) -> None:
+            case_root = parent / f"successor-rejection-{name}"
+            shutil.copytree(roots[0], case_root)
+            case_release_path = case_root / "package-release/testing-package-release.v1.json"
+            case_catalog_path = case_root / "package-release/testing-package-tool-catalog.v1.json"
+            case_release = json.loads(case_release_path.read_bytes())
+            if mutate_catalog is not None:
+                case_catalog = json.loads(case_catalog_path.read_bytes())
+                mutate_catalog(case_catalog)
+                case_catalog_path.write_bytes(canonical(case_catalog))
+                case_release["tool_catalog"].update(
+                    sha256=hashlib.sha256(case_catalog_path.read_bytes()).hexdigest(),
+                    size_bytes=case_catalog_path.stat().st_size,
+                )
+            if mutate_release is not None:
+                mutate_release(case_release)
+            case_release_path.write_bytes(canonical(case_release))
+            keyid = case_release.get("authority", {}).get("keyid", "fkst-packages-testing-successor-test-v1")
+            envelope, authorization = generator.signed_artifacts(
+                case_release_path.read_bytes(),
+                base64.b64decode(TEST_ONLY_PUBLIC_SIGNING_SEED_BASE64),
+                keyid=keyid,
+            )
+            envelope_path = case_root / "package-release/testing-package-release.v1.dsse.json"
+            authorization_path = case_root / "package-release/testing-package-release.v1.key.json"
+            envelope_path.write_bytes(envelope)
+            authorization_path.write_bytes(authorization)
+            log = parent / f"successor-rejection-{name}.log"
+            effect_sentinel = parent / f"successor-rejection-{name}.effect"
+            engine = parent / f"successor-rejection-{name}.sh"
+            engine.write_text(f'#!/bin/sh\n: > "{effect_sentinel}"\nexit 99\n', encoding="utf-8")
+            engine.chmod(0o755)
+            result = run_verifier(
+                hashlib.sha256(authorization).hexdigest(),
+                expected_release_sha256=hashlib.sha256(case_release_path.read_bytes()).hexdigest(),
+                authorization=authorization_path,
+                paths={
+                    "release": case_release_path,
+                    "envelope": envelope_path,
+                    "bundle": case_root / "package-release/testing-package-bundle.v1.json",
+                    "manifest": case_root / "package-release/testing-package-manifest.v1.json",
+                    "tool-catalog": case_catalog_path,
+                    "schema-catalog": ROOT / "schema-release/testing-schema-catalog.v1.json",
+                    "schema-release": ROOT / "schema-release/testing-package-schema-release.v1.json",
+                },
+                stage_log=log,
+                extra_arguments=extra_arguments,
+                environment_overrides={"FKST_TESTING_ENGINE_BIN": str(engine), **(environment_overrides or {})},
+                verification_time=verification_time,
+                minimum_release_sequence=minimum_release_sequence,
+                success=False,
+            )
+            assert message in result.stderr, result.stderr
+            assert_stages(log, expected_stages if expected_stages is not None else ["release-digest-matched"])
+            assert not effect_sentinel.exists()
+
+        missing_option_root = roots[0]
+        missing_option_release = missing_option_root / "package-release/testing-package-release.v1.json"
+        missing_option_authorization = missing_option_root / "package-release/testing-package-release.v1.key.json"
+        missing_option_log = parent / "successor-missing-tool-option-order.log"
+        missing_authorization = parent / "does-not-exist-authorization.json"
+        missing_tool_option = run_verifier(
+            hashlib.sha256(missing_option_authorization.read_bytes()).hexdigest(),
+            expected_release_sha256=hashlib.sha256(missing_option_release.read_bytes()).hexdigest(),
+            authorization=missing_authorization,
+            paths={"release": missing_option_release},
+            stage_log=missing_option_log,
+            success=False,
+        )
+        assert "--tool-catalog is required for successor releases" in missing_tool_option.stderr
+        assert "ENOENT" not in missing_tool_option.stderr
+        assert_stages(missing_option_log, ["release-digest-matched"])
+
+        run_successor_rejection("not-yet-valid", "outside its authorized validity interval", verification_time="2026-09-03T23:59:59Z")
+        run_successor_rejection("expired", "outside its authorized validity interval", verification_time="2026-09-05T00:00:00Z")
+        run_successor_rejection("revoked", "release signing key is revoked", extra_arguments=("--revoked-keyid", release["authority"]["keyid"]))
+        run_successor_rejection("sequence-floor", "release sequence is below the consumer minimum", minimum_release_sequence="3")
+
+        authority_cases = (
+            ("authority-issuer", lambda value: value["authority"].update(issuer="https://publisher.invalid"), "release authority profile is unsupported"),
+            ("authority-profile", lambda value: value["authority"].update(signature_profile="wrong"), "release authority profile is unsupported"),
+            ("authority-revocation", lambda value: value["authority"].update(revocation_authority="https://publisher.invalid/revocations"), "release authority profile is unsupported"),
+            ("authority-sequence-zero", lambda value: value["authority"].update(release_sequence=0), "release authority profile is unsupported"),
+            ("authority-sequence-fraction", lambda value: value["authority"].update(release_sequence=1.5), "release authority profile is unsupported"),
+            ("authority-sequence-overflow", lambda value: value["authority"].update(release_sequence=9007199254740992), "release authority profile is unsupported"),
+            ("authority-date", lambda value: value["authority"].update(valid_from="2026-02-30T00:00:00Z"), "canonical UTC timestamp"),
+            ("authority-equal", lambda value: value["authority"].update(valid_until=value["authority"]["valid_from"]), "validity interval is empty"),
+            ("authority-reversed", lambda value: value["authority"].update(valid_from="2026-09-06T00:00:00Z"), "validity interval is empty"),
+            ("authority-keyid-control", lambda value: value["authority"].update(keyid="bad\u0085key"), "release.authority.keyid is invalid"),
+            ("authority-keyid-overflow", lambda value: value["authority"].update(keyid=MULTIBYTE_OVERFLOW_KEYID), "release.authority.keyid is invalid"),
+            ("tool-path", lambda value: value["tool_catalog"].update(path="publisher/tool-catalog.json"), "release.tool_catalog.path is unsupported"),
+            ("missing-authority", lambda value: value.pop("authority"), "release fields do not match the closed profile"),
+            ("missing-tool-binding", lambda value: value.pop("tool_catalog"), "release fields do not match the closed profile"),
+        )
+        for name, mutate, message in authority_cases:
+            run_successor_rejection(name, message, mutate_release=mutate)
+        for member in release["authority"]:
+            run_successor_rejection(
+                f"authority-missing-{member}",
+                "release.authority fields do not match the closed profile",
+                mutate_release=lambda value, member=member: value["authority"].pop(member),
+            )
+        run_successor_rejection(
+            "authority-unknown",
+            "release.authority fields do not match the closed profile",
+            mutate_release=lambda value: value["authority"].update(unexpected=True),
+        )
+
+        semantic_cases = (
+            ("package-id", lambda value: value["package"].update(package_id="publisher-runner"), "release package identity is unsupported"),
+            ("package-profile", lambda value: value["package"].update(supported_profile="publisher-profile"), "release package identity is unsupported"),
+            ("package-capability", lambda value: value["package"].update(capability="publisher.capability"), "release package identity is unsupported"),
+            ("mapping-empty", lambda value: value.update(mappings=[]), "exactly one mapping"),
+            ("mapping-multiple", lambda value: value["mappings"].append(copy.deepcopy(value["mappings"][0])), "exactly one mapping"),
+            ("mapping-entrypoint", lambda value: value["mappings"][0].update(entrypoint="publisher.run"), "release mapping is unsupported"),
+            ("mapping-contract", lambda value: value["mappings"][0].update(contract_major="publisher.v1"), "release mapping is unsupported"),
+            ("executor-module-empty", lambda value: value["executor"].update(module=""), "release.executor.module is invalid"),
+            ("executor-function-control", lambda value: value["executor"].update(function="bad\u0085function"), "release.executor.function is invalid"),
+            ("executor-id-overflow", lambda value: value["executor"].update(executor_id=MULTIBYTE_OVERFLOW_METADATA), "release.executor.executor_id is invalid"),
+            ("mapping-module-empty", lambda value: value["mappings"][0].update(module=""), "release.mapping.module is invalid"),
+            ("mapping-function-overflow", lambda value: value["mappings"][0].update(function=MULTIBYTE_OVERFLOW_METADATA), "release.mapping.function is invalid"),
+            ("reducer-schema", lambda value: value["reducer"].update(schema="wrong"), "release reducer identity is unsupported"),
+            ("reducer-id", lambda value: value["reducer"].update(reducer_id="wrong"), "release reducer identity is unsupported"),
+            ("reducer-version", lambda value: value["reducer"].update(reducer_version="2.0.0"), "release reducer identity is unsupported"),
+            ("reducer-digest", lambda value: value["reducer"].update(reducer_sha256="0" * 64), "release reducer identity is unsupported"),
+            ("reducer-profile", lambda value: value["reducer"].update(policy_profile="wrong"), "release reducer identity is unsupported"),
+            ("reducer-contract", lambda value: value["reducer"].update(supported_result_contract_majors=["wrong"]), "release reducer identity is unsupported"),
+            ("result-authority", lambda value: value["result_authority"].update(receipt_schema="wrong"), "release result authority identity is unsupported"),
+        )
+        for name, mutate, message in semantic_cases:
+            run_successor_rejection(name, message, mutate_release=mutate)
+
+        for source_field in ("repository_commit", "fkst_packages_commit", "fkst_substrate_commit"):
+            run_successor_rejection(
+                f"source-{source_field}",
+                "release source identities do not match committed provenance pins",
+                mutate_release=lambda value, source_field=source_field: value["source"].update({source_field: "1" * 40}),
+                expected_stages=["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"],
+            )
+
+        catalog_cases = (
+            ("catalog-schema", lambda value: value.update(schema="wrong"), "tool catalog profile is unsupported"),
+            ("catalog-canonicalization", lambda value: value.update(canonicalization="wrong"), "tool catalog profile is unsupported"),
+            ("catalog-profile", lambda value: value.update(execution_profile="wrong"), "tool catalog profile is unsupported"),
+            ("catalog-capability", lambda value: value["tools"][0].update(capability="wrong"), "tool catalog capability is unsupported"),
+            ("catalog-empty", lambda value: value.update(tools=[]), "tool catalog profile is unsupported"),
+            ("catalog-multiple", lambda value: value["tools"].append(copy.deepcopy(value["tools"][0])), "tool catalog profile is unsupported"),
+            ("catalog-port-control", lambda value: value["tools"][0].update(port="bad\u0085port"), "tool catalog port is invalid"),
+            ("catalog-port-overflow", lambda value: value["tools"][0].update(port=MULTIBYTE_OVERFLOW_METADATA), "tool catalog port is invalid"),
+            ("catalog-missing-schema", lambda value: value.pop("schema"), "tool catalog fields do not match the closed profile"),
+            ("catalog-extra", lambda value: value.update(unexpected=True), "tool catalog fields do not match the closed profile"),
+            ("catalog-entry-missing-port", lambda value: value["tools"][0].pop("port"), "tool catalog entry fields do not match the closed profile"),
+            ("catalog-entry-extra", lambda value: value["tools"][0].update(module="publisher.module"), "tool catalog entry fields do not match the closed profile"),
+        )
+        for name, mutate, message in catalog_cases:
+            run_successor_rejection(name, message, mutate_catalog=mutate, expected_stages=["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"])
+
+        invalid_envelope = json.loads((roots[0] / "package-release/testing-package-release.v1.dsse.json").read_bytes())
+        invalid_envelope["signatures"][0]["sig"] = (
+            "A" if invalid_envelope["signatures"][0]["sig"][0] != "A" else "B"
+        ) + invalid_envelope["signatures"][0]["sig"][1:]
+        invalid_envelope_path = parent / "successor-invalid-signature.json"
+        invalid_envelope_path.write_bytes(canonical(invalid_envelope))
+        invalid_signature_log = parent / "successor-invalid-signature.log"
+        invalid_signature_effect = parent / "successor-invalid-signature.effect"
+        invalid_signature_engine = parent / "successor-invalid-signature.sh"
+        invalid_signature_engine.write_text(f'#!/bin/sh\n: > "{invalid_signature_effect}"\nexit 99\n', encoding="utf-8")
+        invalid_signature_engine.chmod(0o755)
+        invalid_signature_result = run_verifier(
+            hashlib.sha256(authorization_path.read_bytes()).hexdigest(),
+            expected_release_sha256=hashlib.sha256(release_path.read_bytes()).hexdigest(),
+            authorization=authorization_path,
+            paths={
+                "release": release_path,
+                "envelope": invalid_envelope_path,
+                "bundle": parent / "missing-successor-bundle.json",
+                "manifest": parent / "missing-successor-manifest.json",
+                "tool-catalog": parent / "missing-successor-tool-catalog.json",
+                "schema-catalog": parent / "missing-successor-schema-catalog.json",
+                "schema-release": parent / "missing-successor-schema-release.json",
+            },
+            stage_log=invalid_signature_log,
+            environment_overrides={"FKST_TESTING_ENGINE_BIN": str(invalid_signature_engine)},
+            success=False,
+        )
+        assert "Ed25519 DSSE verification failed" in invalid_signature_result.stderr
+        assert "ENOENT" not in invalid_signature_result.stderr
+        assert_stages(invalid_signature_log, ["release-digest-matched", "trust-pin-matched", "public-key-imported"])
+        assert not invalid_signature_effect.exists()
         substituted_root = parent / "publisher-coordinate-substitution"
         shutil.copytree(roots[0], substituted_root)
         substituted_release_path = substituted_root / "package-release/testing-package-release.v1.json"
@@ -522,6 +814,7 @@ def main() -> int:
     ], cwd=ROOT, check=True)
     assert_bundle_uses_pinned_git_tree()
     assert_generator_rejections()
+    assert_expected_release_first_gate()
     schema_paths = tuple(sorted((ROOT / "schemas").glob("*.schema.json")))
     registry = offline_registry(schema_paths)
     _, validator = validator_for_schema_file(
