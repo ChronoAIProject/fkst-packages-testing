@@ -1,4 +1,5 @@
 local release = require("contract.testing_package_release")
+local error_facts = require("contract.error_facts")
 local t = fkst.test
 
 local function plain(value)
@@ -39,6 +40,12 @@ local function rejects(value)
   return not pcall(function() release.validate(value) end)
 end
 
+local function rejection_class(value)
+  local ok, err = pcall(function() release.validate(value) end)
+  t.eq(ok, false)
+  return error_facts.error_class_from_message(err)
+end
+
 return {
   test_valid_release_contract = function()
     local value = load("valid")
@@ -57,6 +64,20 @@ return {
     value.mappings[1].module = "publisher.mapping"
     value.mappings[1]["function"] = "publisher_mapping"
     t.eq(release.validate(value), value)
+  end,
+
+  test_successor_rejects_malformed_publisher_metadata = function()
+    for _, invalid in ipairs({
+      { value = "", mutate = function(value, malformed) value.executor.module = malformed end },
+      { value = false, mutate = function(value, malformed) value.executor["function"] = malformed end },
+      { value = string.rep("x", 181), mutate = function(value, malformed) value.executor.executor_id = malformed end },
+      { value = "publisher\0mapping", mutate = function(value, malformed) value.mappings[1].module = malformed end },
+      { value = "\255", mutate = function(value, malformed) value.mappings[1]["function"] = malformed end },
+    }) do
+      local value = successor()
+      invalid.mutate(value, invalid.value)
+      t.eq(rejection_class(value), "malformed-metadata")
+    end
   end,
 
   test_successor_rejects_incomplete_or_malformed_policy = function()
