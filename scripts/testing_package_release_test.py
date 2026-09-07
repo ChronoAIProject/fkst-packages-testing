@@ -138,6 +138,11 @@ ARTIFACTS = {
 def canonical(value: object, *, lf: bool = True) -> bytes:
     return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode() + (b"\n" if lf else b"")
 
+
+def canonical_with_escaped_scalars(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=True, sort_keys=True, separators=(",", ":")).encode() + b"\n"
+
+
 def stages(path: Path) -> tuple[str, ...]:
     return tuple(path.read_text().splitlines()) if path.exists() else ()
 
@@ -205,9 +210,33 @@ def assert_rejection_matrix() -> None:
         ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--revoked-keyid", MULTIBYTE_OVERFLOW_KEYID], "--revoked-keyid is invalid"),
         ([*expected, "--trusted-authorization-sha256", legitimate_pin, *policy, "--revoked-keyid", "duplicate", "--revoked-keyid", "duplicate"], "--revoked-keyid values must be unique"),
     ])
-    for arguments, message in cli:
-        result = subprocess.run(["node", str(VERIFIER), *arguments], cwd=ROOT, text=True, capture_output=True)
-        assert result.returncode != 0 and message in result.stderr
+    with tempfile.TemporaryDirectory(prefix="testing-package-release-cli-") as directory:
+        root = Path(directory)
+        for index, (arguments, message) in enumerate(cli):
+            stage_log = root / f"{index}.stages.log"
+            temporary_root = root / f"{index}.tmp"
+            temporary_root.mkdir()
+            effect_sentinel = root / f"{index}.effect"
+            engine = root / f"{index}.sh"
+            engine.write_text(f'#!/bin/sh\n: > "{effect_sentinel}"\nexit 99\n', encoding="utf-8")
+            engine.chmod(0o755)
+            environment = os.environ.copy()
+            environment.update({
+                "FKST_TESTING_ENGINE_BIN": str(engine),
+                "FKST_TESTING_PACKAGE_RELEASE_STAGE_LOG": str(stage_log),
+                "TMPDIR": str(temporary_root),
+            })
+            result = subprocess.run(
+                ["node", str(VERIFIER), *arguments],
+                cwd=ROOT,
+                env=environment,
+                text=True,
+                capture_output=True,
+            )
+            assert result.returncode != 0 and message in result.stderr
+            assert_stages(stage_log, [])
+            assert not effect_sentinel.exists()
+            assert tuple(temporary_root.iterdir()) == ()
     with tempfile.TemporaryDirectory(prefix=".testing-package-release-matrix-", dir=ROOT) as directory:
         root = Path(directory)
         authorization_cases = [
@@ -383,7 +412,7 @@ def assert_expected_release_first_gate() -> None:
 
 
 def assert_successor_walking_skeleton(registry) -> None:
-    tracked = tuple(sorted((ROOT / "package-release").glob("*"))) + tuple(sorted((ROOT / "schema-release").glob("*")))
+    tracked = tuple(sorted((ROOT / "package-release").rglob("*"))) + tuple(sorted((ROOT / "schema-release").rglob("*")))
     snapshots = {path: path.read_bytes() for path in tracked if path.is_file()}
     expected_paths = {
         "package-release/testing-package-bundle.v1.json",
@@ -513,6 +542,8 @@ def assert_successor_walking_skeleton(registry) -> None:
             *,
             mutate_release=None,
             mutate_catalog=None,
+            serialize_release=None,
+            serialize_catalog=None,
             extra_arguments: tuple[str, ...] = (),
             environment_overrides: dict[str, str] | None = None,
             expected_stages: list[str] | None = None,
@@ -527,14 +558,18 @@ def assert_successor_walking_skeleton(registry) -> None:
             if mutate_catalog is not None:
                 case_catalog = json.loads(case_catalog_path.read_bytes())
                 mutate_catalog(case_catalog)
-                case_catalog_path.write_bytes(canonical(case_catalog))
+                case_catalog_path.write_bytes(
+                    serialize_catalog(case_catalog) if serialize_catalog is not None else canonical(case_catalog)
+                )
                 case_release["tool_catalog"].update(
                     sha256=hashlib.sha256(case_catalog_path.read_bytes()).hexdigest(),
                     size_bytes=case_catalog_path.stat().st_size,
                 )
             if mutate_release is not None:
                 mutate_release(case_release)
-            case_release_path.write_bytes(canonical(case_release))
+            case_release_path.write_bytes(
+                serialize_release(case_release) if serialize_release is not None else canonical(case_release)
+            )
             keyid = case_release.get("authority", {}).get("keyid", "fkst-packages-testing-successor-test-v1")
             envelope, authorization = generator.signed_artifacts(
                 case_release_path.read_bytes(),
@@ -601,6 +636,7 @@ def assert_successor_walking_skeleton(registry) -> None:
             ("authority-profile", lambda value: value["authority"].update(signature_profile="wrong"), "release authority profile is unsupported"),
             ("authority-revocation", lambda value: value["authority"].update(revocation_authority="https://publisher.invalid/revocations"), "release authority profile is unsupported"),
             ("authority-sequence-zero", lambda value: value["authority"].update(release_sequence=0), "release authority profile is unsupported"),
+            ("authority-sequence-negative", lambda value: value["authority"].update(release_sequence=-1), "release authority profile is unsupported"),
             ("authority-sequence-fraction", lambda value: value["authority"].update(release_sequence=1.5), "release authority profile is unsupported"),
             ("authority-sequence-overflow", lambda value: value["authority"].update(release_sequence=9007199254740992), "release authority profile is unsupported"),
             ("authority-date", lambda value: value["authority"].update(valid_from="2026-02-30T00:00:00Z"), "canonical UTC timestamp"),
@@ -649,6 +685,20 @@ def assert_successor_walking_skeleton(registry) -> None:
         )
         for name, mutate, message in semantic_cases:
             run_successor_rejection(name, message, mutate_release=mutate)
+        for name, field, message in (
+            ("executor-module-surrogate", ("executor", "module"), "release.executor.module is invalid"),
+            ("mapping-module-surrogate", ("mappings", "module"), "release.mapping.module is invalid"),
+        ):
+            run_successor_rejection(
+                name,
+                message,
+                mutate_release=(
+                    (lambda value: value["executor"].update(module="bad\ud800module"))
+                    if field[0] == "executor"
+                    else (lambda value: value["mappings"][0].update(module="bad\ud800module"))
+                ),
+                serialize_release=canonical_with_escaped_scalars,
+            )
 
         for source_field in ("repository_commit", "fkst_packages_commit", "fkst_substrate_commit"):
             run_successor_rejection(
@@ -674,6 +724,32 @@ def assert_successor_walking_skeleton(registry) -> None:
         )
         for name, mutate, message in catalog_cases:
             run_successor_rejection(name, message, mutate_catalog=mutate, expected_stages=["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"])
+        run_successor_rejection(
+            "catalog-port-surrogate",
+            "tool catalog port is invalid",
+            mutate_catalog=lambda value: value["tools"][0].update(port="bad\ud800port"),
+            serialize_catalog=canonical_with_escaped_scalars,
+            expected_stages=["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"],
+        )
+        run_successor_rejection(
+            "catalog-wrong-digest",
+            "tool catalog persisted binding mismatch",
+            mutate_release=lambda value: value["tool_catalog"].update(sha256="0" * 64),
+            expected_stages=["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"],
+        )
+        run_successor_rejection(
+            "catalog-wrong-size",
+            "tool catalog persisted binding mismatch",
+            mutate_release=lambda value: value["tool_catalog"].update(size_bytes=value["tool_catalog"]["size_bytes"] + 1),
+            expected_stages=["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"],
+        )
+        run_successor_rejection(
+            "catalog-noncanonical-persisted-bytes",
+            "tool catalog bytes are not canonical",
+            mutate_catalog=lambda value: None,
+            serialize_catalog=lambda value: json.dumps(value, indent=2, ensure_ascii=False).encode("utf-8"),
+            expected_stages=["release-digest-matched", "trust-pin-matched", "public-key-imported", "dsse-verified"],
+        )
 
         invalid_envelope = json.loads((roots[0] / "package-release/testing-package-release.v1.dsse.json").read_bytes())
         invalid_envelope["signatures"][0]["sig"] = (
@@ -682,6 +758,8 @@ def assert_successor_walking_skeleton(registry) -> None:
         invalid_envelope_path = parent / "successor-invalid-signature.json"
         invalid_envelope_path.write_bytes(canonical(invalid_envelope))
         invalid_signature_log = parent / "successor-invalid-signature.log"
+        invalid_signature_tmp = parent / "successor-invalid-signature.tmp"
+        invalid_signature_tmp.mkdir()
         invalid_signature_effect = parent / "successor-invalid-signature.effect"
         invalid_signature_engine = parent / "successor-invalid-signature.sh"
         invalid_signature_engine.write_text(f'#!/bin/sh\n: > "{invalid_signature_effect}"\nexit 99\n', encoding="utf-8")
@@ -700,13 +778,17 @@ def assert_successor_walking_skeleton(registry) -> None:
                 "schema-release": parent / "missing-successor-schema-release.json",
             },
             stage_log=invalid_signature_log,
-            environment_overrides={"FKST_TESTING_ENGINE_BIN": str(invalid_signature_engine)},
+            environment_overrides={
+                "FKST_TESTING_ENGINE_BIN": str(invalid_signature_engine),
+                "TMPDIR": str(invalid_signature_tmp),
+            },
             success=False,
         )
         assert "Ed25519 DSSE verification failed" in invalid_signature_result.stderr
         assert "ENOENT" not in invalid_signature_result.stderr
         assert_stages(invalid_signature_log, ["release-digest-matched", "trust-pin-matched", "public-key-imported"])
         assert not invalid_signature_effect.exists()
+        assert tuple(invalid_signature_tmp.iterdir()) == ()
         substituted_root = parent / "publisher-coordinate-substitution"
         shutil.copytree(roots[0], substituted_root)
         substituted_release_path = substituted_root / "package-release/testing-package-release.v1.json"

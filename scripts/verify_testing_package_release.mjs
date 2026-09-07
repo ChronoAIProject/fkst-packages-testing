@@ -110,7 +110,7 @@ function keyid(value, field) {
   return value;
 }
 function metadataString(value, field) {
-  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > METADATA_MAX_UTF8_BYTES || /[\u0000-\u001f\u007f-\u009f]/u.test(value)) fail(`${field} is invalid`);
+  if (typeof value !== "string" || value.length === 0 || Buffer.byteLength(value, "utf8") > METADATA_MAX_UTF8_BYTES || /[\u0000-\u001f\u007f-\u009f\ud800-\udfff]/u.test(value)) fail(`${field} is invalid`);
   return value;
 }
 async function stage(name) {
