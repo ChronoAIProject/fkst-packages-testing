@@ -219,19 +219,17 @@ return {
       end,
       function(_, _, plan) plan.cases[1].assertions[1].type = "stdout" end,
       function(_, _, plan, grant) http_case(plan, grant) plan.cases[1].assertions[1].type = "header" end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1].path = "status"
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "body-contains", path = "status", expected = "ok" }
-      end,
     }
     for _, mutate in ipairs(mutations) do t.eq(run_edge(mutate).status, "blocked") end
   end,
 
   test_json_path_equality_validator_rejects_unsupported_path_and_scalar_shapes = function()
+    for _, assertion in ipairs({
+      { type = "status-code", path = "status", expected = 200 },
+      { type = "body-contains", path = "status", expected = "ok" },
+    }) do
+      assert_rejects_http_assertion(assertion)
+    end
     for _, path in ipairs({
       "$.status",
       "items.0",
