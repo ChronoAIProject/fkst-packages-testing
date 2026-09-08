@@ -1,5 +1,5 @@
 local contract = require("contract.testing_design_generation")
-local json = require("testing_runtime.json")
+local host_json = json
 local t = fkst.test
 
 local fixture_root = "packages/testing-design/tests/fixtures/generation/v1/"
@@ -8,7 +8,7 @@ local function load(name)
   local handle = assert(io.open(fixture_root .. name .. ".json", "rb"))
   local body = handle:read("*a")
   handle:close()
-  return json.decode(body)
+  return host_json.decode(body)
 end
 
 local function assert_classification(expected, callback)
