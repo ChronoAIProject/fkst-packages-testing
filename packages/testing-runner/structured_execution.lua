@@ -234,14 +234,14 @@ local function effect_error(case, value)
   }
 end
 
-local function tooling_error(case, value)
+local function tooling_error(case)
   return {
     case_id = case.case_id,
     kind = case.kind,
     status = "error",
     classification = "harness-tooling-issue",
     assertions = {},
-    evidence = { error_excerpt = tostring(value):sub(1, 600) },
+    evidence = { error_excerpt = "JSON assertion decoder unavailable or invalid" },
   }
 end
 
@@ -354,7 +354,7 @@ local function execute_case(case, grant, ports, context)
           local assertion_ok
           assertion_ok, assertion_passed = pcall(assert_http, assertion, response, ports)
           if not assertion_ok then
-            case_result = tooling_error(case, assertion_passed)
+            case_result = tooling_error(case)
             passed = false
             break
           end
