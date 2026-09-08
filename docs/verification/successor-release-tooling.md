@@ -8,11 +8,12 @@ an execution result, and a durable evidence URL. Verdicts are `supported`, `gap`
 aggregate suite success is not substituted for a missing named test. Normative behavior remains in the
 contracts, schemas, verifier, generator, and tests. This document is descriptive evidence only.
 
-The supplied local issue bundle contains the complete `#818` history and its approved amendment
-summary, but not the original bodies and comments for `#800`, `#806`, `#808`, `#810`, or `#812`.
-Accordingly, this record completes the execution evidence for every locally identified amended
-criterion, but it does not claim verbatim-source or criterion-set completeness for `#800` or `#806`.
-That residual limitation is reported explicitly rather than inferred away from a green suite.
+The authoritative [issue `#800`] and [issue `#806`] records were audited in full, including their
+accepted comments through September 8, 2026. The `#806` amendment posted September 5, 2026 after
+merged `#808` supersedes the original publisher-return dispatch clauses: publisher coordinates are
+bounded signed metadata, while Runtime's existing semantic mapping exclusively selects local code
+and the capability adapter. The audit below accounts for every original acceptance criterion and
+accepted amendment before applying execution evidence.
 
 ## Evaluation identity and product-tree equivalence
 
@@ -83,10 +84,32 @@ provenance-matched Hosted job subsequently executed the relevant suites successf
 
 ## Requirement-to-evidence matrix
 
-Every `supported` row below cites the same revision-bound [CI job] and a named test executed by a
-reported passing suite. “Source issue” reflects the amended requirement mapping available in the
-local `#818` record; the absent original issue text remains the separate completeness limitation in
-the conclusions.
+Every `supported` evidence row in the implementation matrix below cites the same revision-bound
+[CI job] and a named test executed by a reported passing suite.
+
+### Authoritative source audit
+
+The full-source audit maps the authoritative records to the evidence rows below as follows:
+
+| Authoritative criterion set | Complete disposition and evidence-row mapping | Verdict |
+| --- | --- | --- |
+| `#800` production profile and exact existing Runner, executor, reducer, ResultAuthority, authority, and tool-catalog identities | Mapped to “Authority, validity window...”, “Tool catalog path...”, “Successor coordinates...”, and “A passing executor...” | `supported` |
+| `#800` independent verification time, revocation, sequence, expected-release, and trusted-authorization policy inputs and grammar | Mapped to “Expected release digest...”, “Authority, validity window...”, “UTF-8 byte bounds...”, and “The full authoritative rejection matrix...” | `supported` |
+| `#800` causal zero-activity expected-release regression, including poisoned paths, empty `TMPDIR`, absent engine sentinel, and exact diagnostic | Mapped to “Expected release digest...” and “Wrong expected digest...” | `supported` |
+| `#800` isolated deterministic generation from explicit source/dependency pins and an external ephemeral seed, including reproducible bytes, schema/Lua validation, DSSE/trust/catalog binding, executor smoke, and no ambient fallback | Mapped to “Repository and dependency inputs...”, “Generation is deterministic...”, “Signed release, authorization...”, and “A passing executor...” | `supported` |
+| `#800` complete negative matrix and zero forbidden effects at each owner boundary | Mapped to “The full authoritative rejection matrix...”, with the authority, UTF-8/date, catalog, legacy/successor, and receipt rows naming the owning tests | `supported` |
+| `#800` recursive committed-artifact immutability, temporary-root containment, no production secret, no new parallel authority/format/Runtime owner, and separate authorized publication | Mapped to “Signed release, authorization...”, “Generation is deterministic...”, and the production-signing boundary | `supported` |
+| `#806` seven authenticated gates, invalid-signature poison proof, exact expected-release diagnostic, and no eager dependent reads | Mapped to “Expected release digest...” and “Wrong expected digest...” | `supported` |
+| Original `#806` clauses requiring publisher-returned `module`, `function`, and `port` to drive execution | Superseded by the authoritative September 5, 2026 amendment after `#808`; the replacement Runtime-only criterion maps to “Only Runtime resolves executable code...” | `supported` |
+| Amended `#806` Runtime-only resolution, bounded successor publisher metadata, strict legacy coordinates, exact semantic identities, and distinct catalog-port versus local-adapter authority | Mapped to “Successor coordinates...” and “Only Runtime resolves executable code...” | `supported` |
+| Amended `#806` exact catalog path, explicit `--tool-catalog` ordering, closed catalog, Lua successor validation, UTF-8 byte/scalar/control rules, and strict real-date validation | Mapped to “Tool catalog path...”, “UTF-8 byte bounds...”, and “Lua malformed publisher-metadata...” | `supported` |
+| Amended `#806` complete causal rejection matrix, including authority, policy grammar, catalog, package/mapping/reducer/receipt, source/dependency/schema/manifest/bundle, and Runtime zero/ambiguous/unsupported cases | Mapped to “The full authoritative rejection matrix...” and its named owner-specific rows | `supported` |
+| Amended `#806` positive temporary verification, Runtime execution, complete passing ResultAuthority receipt, recursive artifact snapshots, temporary containment, and test-only signing | Mapped to “A passing executor...”, “Signed release, authorization...”, and “Generation is deterministic...” | `supported` |
+| `#800` and `#806` required focused, package, Generic Host, AI smoke, repository, provenance, and formatting checks | Mapped to the revision-bound execution record and [CI job] | `supported` |
+
+Administrative lineage, PR-target, workflow, and closeout-owner statements were also reviewed; they
+add no product acceptance criterion. The audit found no omitted authoritative criterion and no
+remaining source-completeness uncertainty.
 
 | Amended requirement / source issue | Implementation path and symbol | Named test | Revision-bound execution and URL | Verdict |
 | --- | --- | --- | --- | --- |
@@ -97,46 +120,38 @@ the conclusions.
 | Tool catalog path, bytes, binding, profile, capability, and Runtime port are exact (`#800`, `#806`, `#810`) | `scripts/verify_testing_package_release.mjs`: `TOOL_CATALOG_PATH`, `verifyToolCatalog`, `verifyTestingPackageRelease`; `schemas-next-release/testing-package-tool-catalog.v1.schema.json`; `scripts/generate_testing_package_release.py`: `tool_catalog`, `release_value` | `scripts/testing_package_release_test.py`: `assert_successor_walking_skeleton` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; `testing-package-release: PASS` in [CI job] | `supported` |
 | Successor coordinates are opaque signed metadata while legacy coordinates remain strict (`#800`, `#806`, superseded dispatch amendment in `#810`) | `scripts/verify_testing_package_release.mjs`: `verifyReleaseShape`; `schemas-next-release/testing-package-release.v1.schema.json`: legacy and successor `allOf` conditions; `libraries/contract/testing_package_release.lua`: `bounded_string`, `M.validate` | `scripts/testing_package_release_test.py`: `assert_successor_walking_skeleton`; `packages/testing-runner/tests/testing_package_release_test.lua`: `test_successor_accepts_bounded_publisher_metadata`, `test_legacy_rejects_publisher_coordinate_substitution` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; Python release test and `testing-runner` package suite passed in [CI job] | `supported` |
 | Only Runtime resolves executable code; publisher-named modules are not loaded (`#806`, `#810`) | `scripts/verify_testing_package_release.mjs`: `RUNTIME_PATHS`, `executionTest`, `executeVerified`; `contracts/testing-package-release.v1.md`: “The release layer does not own Runtime fetch” paragraph | `scripts/testing_package_release_test.py`: `assert_successor_walking_skeleton` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; the walking skeleton and runner smoke passed in [CI job] | `supported` |
-| The full locally identified rejection matrix prevents effects before each applicable gate (`#800`, `#806`, `#808`, `#810`) | `scripts/verify_testing_package_release.mjs`: `closed`, `requireCanonical`, `fileBinding`, `verifyReleaseShape`, `verifyManifest`, `verifyToolCatalog`, `verifyBundle`, `executeVerified`, `verifyTestingPackageRelease`; `scripts/generate_testing_package_release.py`: `unsigned_outputs`, `main` | `scripts/testing_package_release_test.py`: `assert_rejection_matrix`, `assert_generator_rejections`, `assert_expected_release_first_gate`, `assert_successor_walking_skeleton` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; `testing-package-release: PASS` in [CI job] | `supported` |
+| The full authoritative rejection matrix prevents effects before each applicable gate (`#800`, `#806`, `#808`, `#810`) | `scripts/verify_testing_package_release.mjs`: `closed`, `requireCanonical`, `fileBinding`, `verifyReleaseShape`, `verifyManifest`, `verifyToolCatalog`, `verifyBundle`, `executeVerified`, `verifyTestingPackageRelease`; `scripts/generate_testing_package_release.py`: `unsigned_outputs`, `main` | `scripts/testing_package_release_test.py`: `assert_rejection_matrix`, `assert_generator_rejections`, `assert_expected_release_first_gate`, `assert_successor_walking_skeleton` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; `testing-package-release: PASS` in [CI job] | `supported` |
 | A passing executor and complete `ResultAuthority` receipt validation precede success (`#800`, `#806`) | `scripts/verify_testing_package_release.mjs`: `executionTest`, `executeVerified`; `libraries/contract/testing_result_authority.lua`: `M.create_receipt`, `M.validate_receipt`, `M.canonicalize` | `scripts/testing_package_release_test.py`: `assert_successor_walking_skeleton`, `SUCCESS_STAGES`; `packages/testing-runner/tests/testing_result_authority_contract_test.lua`: `test_identity_is_symbolic_versioned_and_digest_bound`, `test_receipt_replays_byte_identically_and_rejects_substitution`, `test_semantically_false_digest_consistent_result_is_rejected`, `test_rejects_malformed_identity_receipt_and_write_shapes`, `test_rejects_artifact_semantic_and_completion_mismatches` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; Python release test and `testing-runner` package suite passed in [CI job] | `supported` |
 | Signed release, authorization, bundle, manifest, schema publication, and successor catalog artifacts are immutable and bound (`#800`, `#806`) | `package-release/testing-package-release.v1.json`; `package-release/testing-package-release.v1.dsse.json`; `package-release/testing-package-release.v1.key.json`; `package-release/testing-package-bundle.v1.json`; `package-release/testing-package-manifest.v1.json`; `schema-release/testing-package-schema-release.v1.json`; `schema-release/testing-package-schema-release.v1.dsse.json`; `schema-release/testing-package-schema-release.v1.key.json`; `scripts/generate_testing_package_release.py`: `TOOL_CATALOG_PATH`, `tool_catalog`, `unsigned_outputs`; `scripts/verify_testing_package_release.mjs`: `fileBinding`, `verifyManifest`, `verifyToolCatalog`, `verifyBundle`, `verifyTestingPackageRelease` | `scripts/testing_package_release_test.py`: `main`, `assert_rejection_matrix`, `assert_successor_walking_skeleton` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; `testing-package-release: PASS` and `testing-schema-publication: PASS` in [CI job] | `supported` |
 | Repository and dependency inputs use exact real commit pins (`#800`, `#806`) | `scripts/generate_testing_package_release.py`: `repository_commit`, `pinned_commit`, `source_file`, `unsigned_outputs`; `.fkst/conformance/fkst-packages.pin`; `.fkst/substrate-ref`; `package-release/testing-package-release.v1.source-commit` | `scripts/testing_package_release_test.py`: `assert_bundle_uses_pinned_git_tree`, `assert_rejection_matrix`, `assert_generator_rejections` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; engine provenance matched `1e21b9b57fcfe0b09521c16d77c85e693e755718` and the release test passed in [CI job] | `supported` |
 | Generation is deterministic, complete, contained, and free of ambient source fallback (`#800`, `#806`, `#810`) | `scripts/generate_testing_package_release.py`: `canonical_timestamp`, `exact_commit`, `repository_commit`, `pinned_commit`, `source_file`, `signing_seed`, `signed_artifacts`, `unsigned_outputs`, `main` | `scripts/testing_package_release_test.py`: `assert_generator_rejections`, `assert_successor_walking_skeleton`, `main` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; `testing-package-release: PASS` in [CI job] | `supported` |
 | Lua malformed publisher-metadata regression is repaired (`#812`, merged by `#814`) | `libraries/contract/testing_package_release.lua`: `bounded_string`, `M.validate` | `packages/testing-runner/tests/testing_package_release_test.lua`: `test_successor_rejects_malformed_publisher_metadata` | Synthetic checkout `7d9757b7cb76344bc8d0486ec51c6f53740b5f60`; `testing-runner` reported `347 passed, 0 failed` and the final Lua coverage ratchet passed in [CI job] | `supported` |
-| The rows above exhaust the verbatim original and amended acceptance criteria of `#800` and `#806` | Original `#800` and `#806` issue bodies and accepted amendment comments | A source-completeness review against those original records | The supplied local bundle does not contain those records, and this delivery is prohibited from fetching GitHub content independently | `unverified` |
-
-No locally evidenced row is classified `gap`. The only `unverified` row is source-completeness: the
-available evidence proves execution of the mapped behaviors but cannot prove that unavailable
-original issue text contains no additional criterion.
+No authoritative criterion is classified `gap` or `unverified`.
 
 ## Conclusions
 
 ### Issue `#806`
 
-Status: `supported` for every locally identified amended tooling criterion: authentication-first
+Status: `supported` for every authoritative amended tooling criterion: authentication-first
 ordering, causal poison proofs, authority policy, metadata bounds, exact catalog binding,
 Runtime-only code resolution, legacy compatibility, pre-effect rejection, executor success, receipt
 validation, immutable artifact binding, exact provenance pins, and deterministic contained
-generation. No product `gap` is evidenced. Exhaustive criterion-set completeness is `unverified`
-because the original `#806` body and amendment comments are absent from the supplied local record.
+generation. The full original record and the September 5, 2026 Runtime-only amendment are exhausted
+by the source audit; no `gap` or `unverified` criterion remains.
 
-Closeout recommendation: do not use aggregate CI alone and do not claim unconditional closure from
-this document. A maintainer with access to the original `#806` record may close it if a verbatim
-criterion audit finds no requirement beyond the supported rows. Any omitted criterion must be added
-as `supported`, `gap`, or `unverified` before closure.
+Closeout recommendation: `#806` is supported for tooling acceptance and may close on this record.
+This conclusion does not authorize production signing or alter Runtime ownership.
 
 ### Issue `#800`
 
-Status: `supported` for every locally identified amended tooling criterion: deterministic generation,
+Status: `supported` for every authoritative amended tooling criterion: deterministic generation,
 real immutable source pins, signed release and authorization output, bound bundle, manifest, schema
 publication, and tool catalog, strict verifier rejection ordering, temporary successor execution,
-and complete receipt validation. No product `gap` is evidenced. Exhaustive criterion-set completeness
-is `unverified` because the original `#800` body and amendment comments are absent from the supplied
-local record.
+and complete receipt validation. The full original record and accepted comments are exhausted by the
+source audit; no `gap` or `unverified` criterion remains.
 
-Closeout recommendation: a maintainer may close `#800` only after comparing its verbatim original and
-amended criteria with this matrix and confirming that no criterion is omitted. The successful Hosted
-job removes the former execution-evidence blocker; it does not remove the source-completeness blocker.
+Closeout recommendation: `#800` is supported for its non-secret tooling acceptance and may close on
+this record. Authorized production publication under `#745` remains separate.
 
 ## Production-signing boundary
 
@@ -150,3 +165,5 @@ release.
 [CI job `101927476554`]: https://github.com/ChronoAIProject/fkst-packages-testing/actions/runs/34183597265/job/101927476554
 [CI job]: https://github.com/ChronoAIProject/fkst-packages-testing/actions/runs/34183597265/job/101927476554
 [base-to-head comparison]: https://github.com/ChronoAIProject/fkst-packages-testing/compare/bdf7055156759ff4f066fd82ab830aad6353c25f...6242eb8c7faa63d652d3ac6cefc7ba7a8b2f4df0
+[issue `#800`]: https://github.com/ChronoAIProject/fkst-packages-testing/issues/800
+[issue `#806`]: https://github.com/ChronoAIProject/fkst-packages-testing/issues/806
