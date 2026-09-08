@@ -234,6 +234,17 @@ local function effect_error(case, value)
   }
 end
 
+local function tooling_error(case, value)
+  return {
+    case_id = case.case_id,
+    kind = case.kind,
+    status = "error",
+    classification = "harness-tooling-issue",
+    assertions = {},
+    evidence = { error_excerpt = tostring(value):sub(1, 600) },
+  }
+end
+
 local function valid_effect_response(case, response)
   if type(response) ~= "table" then return false end
   if case.kind == "cli" then
@@ -339,27 +350,37 @@ local function execute_case(case, grant, ports, context)
       for index, assertion in ipairs(case.assertions) do
         local assertion_passed
         if case.kind == "cli" then assertion_passed = assert_cli(assertion, response)
-        else assertion_passed = assert_http(assertion, response, ports) end
+        else
+          local assertion_ok
+          assertion_ok, assertion_passed = pcall(assert_http, assertion, response, ports)
+          if not assertion_ok then
+            case_result = tooling_error(case, assertion_passed)
+            passed = false
+            break
+          end
+        end
         assertions[index] = { type = assertion.type, passed = assertion_passed }
         if not assertion_passed then passed = false end
       end
-      case_result = {
-        case_id = case.case_id,
-        kind = case.kind,
-        status = passed and "passed" or "failed",
-        classification = passed and "passed" or "product-defect",
-        assertions = assertions,
-        evidence = case.kind == "cli" and {
-          exit_code = tonumber(response.exit_code) or -1,
-          stdout_excerpt = tostring(response.stdout or ""):sub(1, 600),
-          stderr_excerpt = tostring(response.stderr or ""):sub(1, 600),
-          authorization_receipt_path = context.request.artifact_root
-            .. "/authorization/" .. case.case_id .. ".json",
-        } or {
-          status_code = tonumber(response.status) or 0,
-          body_excerpt = tostring(response.body or ""):sub(1, 600),
-        },
-      }
+      if case_result == nil then
+        case_result = {
+          case_id = case.case_id,
+          kind = case.kind,
+          status = passed and "passed" or "failed",
+          classification = passed and "passed" or "product-defect",
+          assertions = assertions,
+          evidence = case.kind == "cli" and {
+            exit_code = tonumber(response.exit_code) or -1,
+            stdout_excerpt = tostring(response.stdout or ""):sub(1, 600),
+            stderr_excerpt = tostring(response.stderr or ""):sub(1, 600),
+            authorization_receipt_path = context.request.artifact_root
+              .. "/authorization/" .. case.case_id .. ".json",
+          } or {
+            status_code = tonumber(response.status) or 0,
+            body_excerpt = tostring(response.body or ""):sub(1, 600),
+          },
+        }
+      end
     end
   end
   return case_result

@@ -1,4 +1,5 @@
 local contract = require("contract.structured_execution")
+local error_facts = require("contract.error_facts")
 local fixtures = require("tests.structured_execution_helpers")
 local sha256_bytes = require("tests.fixtures.sha256_helpers")
 local structured_execution = require("structured_execution")
@@ -85,6 +86,22 @@ http_case = function(plan, grant)
     methods = { "GET" },
     path_prefixes = { "/health" },
   } }
+end
+
+local function validate_http_assertion(assertion)
+  return contract.validate_case({
+    case_id = "http-validator",
+    kind = "http",
+    request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+    timeout_seconds = 10,
+    assertions = { assertion },
+  }, {}, false)
+end
+
+local function assert_rejects_http_assertion(assertion)
+  local ok, err = pcall(function() validate_http_assertion(assertion) end)
+  t.eq(ok, false)
+  t.eq(error_facts.error_class_from_message(err), "unsupported-assertion")
 end
 
 return {
@@ -204,50 +221,6 @@ return {
       function(_, _, plan, grant) http_case(plan, grant) plan.cases[1].assertions[1].type = "header" end,
       function(_, _, plan, grant)
         http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "$.status", expected = "ok" }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items.0", expected = "ok" }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items[0]", expected = "ok" }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items.*", expected = "ok" }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items[?(@.ok)]", expected = "ok" }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "items..status", expected = "ok" }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status", expected = {} }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status" }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status", expected = math.huge }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status", expected = 1.5 }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
-        plan.cases[1].assertions[1] = { type = "json-path-equals", path = "status", expected = 9007199254740992 }
-      end,
-      function(_, _, plan, grant)
-        http_case(plan, grant)
         plan.cases[1].assertions[1].path = "status"
       end,
       function(_, _, plan, grant)
@@ -256,6 +229,48 @@ return {
       end,
     }
     for _, mutate in ipairs(mutations) do t.eq(run_edge(mutate).status, "blocked") end
+  end,
+
+  test_json_path_equality_validator_rejects_unsupported_path_and_scalar_shapes = function()
+    for _, path in ipairs({
+      "$.status",
+      "items.0",
+      "items[0]",
+      "items.*",
+      "items[?(@.ok)]",
+      "items..status",
+    }) do
+      assert_rejects_http_assertion({ type = "json-path-equals", path = path, expected = "ok" })
+    end
+    for _, expected in ipairs({
+      {},
+      math.huge,
+      1.5,
+    }) do
+      assert_rejects_http_assertion({ type = "json-path-equals", path = "status", expected = expected })
+    end
+    assert_rejects_http_assertion({ type = "json-path-equals", path = "status" })
+  end,
+
+  test_json_path_equality_validator_enforces_ieee_safe_integer_bounds = function()
+    for _, expected in ipairs({
+      -9007199254740991,
+      0,
+      9007199254740991,
+    }) do
+      t.eq(validate_http_assertion({
+        type = "json-path-equals",
+        path = "status",
+        expected = expected,
+      }).assertions[1].expected, expected)
+    end
+    for _, expected in ipairs({
+      math.mininteger,
+      -9007199254740992,
+      9007199254740992,
+    }) do
+      assert_rejects_http_assertion({ type = "json-path-equals", path = "status", expected = expected })
+    end
   end,
 
   test_identity_capability_and_effect_failure_edges = function()

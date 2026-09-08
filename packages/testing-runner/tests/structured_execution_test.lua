@@ -379,22 +379,67 @@ return {
 
   test_json_decoder_infrastructure_failure_blocks_instead_of_reporting_product_defect = function()
     local request = fixtures.request()
-    local plan = fixtures.plan(request, { {
-      case_id = "health-api", kind = "http",
-      request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
-      timeout_seconds = 10,
-      assertions = { { type = "json-path-equals", path = "status", expected = "healthy" } },
-    } })
+    local plan = fixtures.plan(request, {
+      {
+        case_id = "cli-version",
+        kind = "cli",
+        argv = { "fixture-cli", "--version" },
+        timeout_seconds = 10,
+        assertions = { { type = "exit-code", expected = 0 } },
+      },
+      {
+        case_id = "health-api",
+        kind = "http",
+        request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+        timeout_seconds = 10,
+        assertions = {
+          { type = "status-code", expected = 200 },
+          { type = "json-path-equals", path = "status", expected = "healthy" },
+        },
+      },
+    })
     local grant = fixtures.grant(request, {
-      cli = {},
+      cli = { { argv_prefix = { "fixture-cli" } } },
       http = { {
         origin = "http://127.0.0.1:4173", methods = { "GET" }, path_prefixes = { "/health" },
       } },
     })
-    local ports = runtime(fixtures.artifacts(request, plan, grant), { decode_error = true })
+    local completed
+    local ports, effects, writes = runtime(fixtures.artifacts(request, plan, grant), {
+      decode_error = true,
+      http_result = { status = 200, body = '{"status":"healthy"}', headers = {} },
+      complete_replay = function(input)
+        completed = input
+        return true
+      end,
+    })
     local result = structured_execution.run(request, ports)
     t.eq(result.status, "blocked")
     t.eq(result.classification, "harness-tooling-issue")
+    t.eq(result.case_count, 2)
+    t.eq(result.passed_count, 1)
+    t.eq(result.error_count, 1)
+    t.eq(#effects, 2)
+    t.eq(effects[1].kind, "cli")
+    t.eq(effects[2].kind, "http")
+    t.eq(completed.claim.claim_id, "claim-110")
+    t.eq(completed.result_ref, result.execution_path)
+    local set = writes[result.case_result_set_path]
+    local legacy = writes[result.case_results_path]
+    local manifest = writes[result.evidence_manifest_path]
+    t.eq(set.schema, "testing-case-result-set.v2")
+    t.eq(#set.cases, 2)
+    t.eq(set.cases[1].execution_status, "passed")
+    t.eq(set.cases[2].execution_status, "error")
+    t.eq(set.cases[2].classification, "execution_error")
+    t.eq(set.cases[2].error.code, "harness-tooling-issue")
+    t.eq(#set.cases[2].assertions, 2)
+    t.eq(set.cases[2].assertions[1].status, "skipped")
+    t.eq(set.cases[2].assertions[2].status, "skipped")
+    t.eq(#legacy.cases, 2)
+    t.eq(#legacy.cases[2].assertions, 0)
+    t.eq(#manifest.entries, 2)
+    t.eq(writes[result.execution_path].status, "blocked")
   end,
 
   test_failed_cli_assertion_never_calls_http_json_decoder = function()

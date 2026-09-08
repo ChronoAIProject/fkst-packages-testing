@@ -25,6 +25,8 @@ local max_cases = 64
 local max_argv = 32
 local max_assertions = 16
 local max_capabilities = 64
+local safe_integer_max = 9007199254740991
+local safe_integer_min = -safe_integer_max
 local browser_completion_fields = {
   callback_observed = true,
   process_exit_zero = true,
@@ -138,7 +140,8 @@ local function valid_json_scalar(value)
   local kind = type(value)
   if kind == "string" then return bounded(value, 512) end
   if kind == "boolean" then return true end
-  return kind == "number" and value == math.floor(value) and math.abs(value) <= 9007199254740991
+  return kind == "number" and value == math.floor(value)
+    and value >= safe_integer_min and value <= safe_integer_max
 end
 
 local function validate_assertion(value, kind)
