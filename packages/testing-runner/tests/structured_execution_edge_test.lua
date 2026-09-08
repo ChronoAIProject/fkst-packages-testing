@@ -1,4 +1,5 @@
 local contract = require("contract.structured_execution")
+local error_facts = require("contract.error_facts")
 local fixtures = require("tests.structured_execution_helpers")
 local sha256_bytes = require("tests.fixtures.sha256_helpers")
 local structured_execution = require("structured_execution")
@@ -59,6 +60,7 @@ local function run_edge(mutate, options)
       if options.http_error then error("http unavailable") end
       return { status = 200, body = "ok" }
     end,
+    decode_json = function() return { status = "parsed", value = {} } end,
     write_artifact = function(path, artifact)
       writes = writes + 1
       if options.fail_evidence and path:find("/evidence/", 1, true) then return false end
@@ -84,6 +86,22 @@ http_case = function(plan, grant)
     methods = { "GET" },
     path_prefixes = { "/health" },
   } }
+end
+
+local function validate_http_assertion(assertion)
+  return contract.validate_case({
+    case_id = "http-validator",
+    kind = "http",
+    request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+    timeout_seconds = 10,
+    assertions = { assertion },
+  }, {}, false)
+end
+
+local function assert_rejects_http_assertion(assertion)
+  local ok, err = pcall(function() validate_http_assertion(assertion) end)
+  t.eq(ok, false)
+  t.eq(error_facts.error_class_from_message(err), "unsupported-assertion")
 end
 
 return {
@@ -112,6 +130,23 @@ return {
     }) do ports[name] = function() return true end end
     _G.structured_execution_runtime = ports
     t.eq(structured_execution.production_ports(), ports)
+    t.is_true(type(ports.decode_json) == "function")
+    local decode_json = ports.decode_json
+    local original_json = _G.json
+    _G.json = nil
+    t.raises(function() decode_json("{}") end)
+    _G.json = {
+      decode = function(value)
+        if value == "invalid" then error("invalid JSON") end
+        if value == "scalar" then return "not-an-object" end
+        return { status = "ok" }
+      end,
+    }
+    t.eq(decode_json("{}").status, "parsed")
+    t.eq(decode_json("{}").value.status, "ok")
+    t.eq(decode_json("invalid").status, "invalid-json")
+    t.eq(decode_json("scalar").status, "invalid-json")
+    _G.json = original_json
     local invalid = request()
     invalid.schema = "unknown"
     t.eq(structured_execution.result_payload(invalid).status, "blocked")
@@ -130,6 +165,34 @@ return {
       function(_, _, plan) plan.cases[1].skip_classification = "not-executed-risk" end,
       function(_, _, plan) plan.cases[1].kind = "browser" end,
       function(_, _, plan) plan.cases[1].goal = "foreign browser field" end,
+      function(_, _, plan)
+        plan.cases[1] = {
+          case_id = "incomplete-browser",
+          kind = "browser",
+          goal = "Verify browser state.",
+          success_conditions = { "Expected state is visible." },
+          completion_assertions = {
+            {
+              assertion_id = "callback-observed",
+              type = "browser-callback-observed",
+              required = true,
+              completion_field = "callback_observed",
+            },
+            {
+              assertion_id = "process-exit-zero",
+              type = "browser-process-exit-zero",
+              required = true,
+              completion_field = "process_exit_zero",
+            },
+            {
+              assertion_id = "whoami-succeeded",
+              type = "browser-whoami-succeeded",
+              required = true,
+              completion_field = "whoami_succeeded",
+            },
+          },
+        }
+      end,
       function(_, _, plan) plan.cases[1].timeout_seconds = 0 end,
       function(_, _, plan) plan.cases[1].assertions = {} end,
       function(_, _, plan) plan.cases[1].argv = {} end,
@@ -158,6 +221,54 @@ return {
       function(_, _, plan, grant) http_case(plan, grant) plan.cases[1].assertions[1].type = "header" end,
     }
     for _, mutate in ipairs(mutations) do t.eq(run_edge(mutate).status, "blocked") end
+  end,
+
+  test_json_path_equality_validator_rejects_unsupported_path_and_scalar_shapes = function()
+    for _, assertion in ipairs({
+      { type = "status-code", path = "status", expected = 200 },
+      { type = "body-contains", path = "status", expected = "ok" },
+    }) do
+      assert_rejects_http_assertion(assertion)
+    end
+    for _, path in ipairs({
+      "$.status",
+      "items.0",
+      "items[0]",
+      "items.*",
+      "items[?(@.ok)]",
+      "items..status",
+    }) do
+      assert_rejects_http_assertion({ type = "json-path-equals", path = path, expected = "ok" })
+    end
+    for _, expected in ipairs({
+      {},
+      math.huge,
+      1.5,
+    }) do
+      assert_rejects_http_assertion({ type = "json-path-equals", path = "status", expected = expected })
+    end
+    assert_rejects_http_assertion({ type = "json-path-equals", path = "status" })
+  end,
+
+  test_json_path_equality_validator_enforces_ieee_safe_integer_bounds = function()
+    for _, expected in ipairs({
+      -9007199254740991,
+      0,
+      9007199254740991,
+    }) do
+      t.eq(validate_http_assertion({
+        type = "json-path-equals",
+        path = "status",
+        expected = expected,
+      }).assertions[1].expected, expected)
+    end
+    for _, expected in ipairs({
+      math.mininteger,
+      -9007199254740992,
+      9007199254740992,
+    }) do
+      assert_rejects_http_assertion({ type = "json-path-equals", path = "status", expected = expected })
+    end
   end,
 
   test_identity_capability_and_effect_failure_edges = function()

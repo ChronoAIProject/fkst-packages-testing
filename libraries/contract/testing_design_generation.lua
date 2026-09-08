@@ -1,4 +1,5 @@
 local canonical_json = require("contract.canonical_json")
+local error_facts = require("contract.error_facts")
 local sha256 = require("contract.sha256")
 
 local G = {
@@ -11,7 +12,7 @@ local G = {
 }
 
 local function fail(code, message)
-  error("contract.testing_design_generation: " .. code .. ": " .. message, 0)
+  error(error_facts.error_message("contract.testing-design-generation", code, message), 0)
 end
 
 local function only_fields(value, allowed, field, code)
