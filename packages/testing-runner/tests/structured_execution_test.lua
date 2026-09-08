@@ -474,10 +474,42 @@ return {
       function() return "parsed" end,
       function() return {} end,
     }) do
-      local ports = runtime(fixtures.artifacts(request, plan, grant), { decode_json = malformed })
+      local completed
+      local ports, effects, writes = runtime(fixtures.artifacts(request, plan, grant), {
+        decode_json = malformed,
+        complete_replay = function(input)
+          completed = input
+          return true
+        end,
+      })
       local result = structured_execution.run(request, ports)
       t.eq(result.status, "blocked")
       t.eq(result.classification, "harness-tooling-issue")
+      t.eq(result.case_count, 1)
+      t.eq(result.error_count, 1)
+      t.eq(#effects, 1)
+      t.eq(effects[1].kind, "http")
+      t.eq(completed.claim.claim_id, "claim-110")
+      t.eq(completed.result_ref, result.execution_path)
+
+      local set = writes[result.case_result_set_path]
+      local legacy = writes[result.case_results_path]
+      local manifest = writes[result.evidence_manifest_path]
+      local execution = writes[result.execution_path]
+      t.eq(set.schema, "testing-case-result-set.v2")
+      t.eq(#set.cases, 1)
+      t.eq(set.cases[1].execution_status, "error")
+      t.eq(set.cases[1].classification, "execution_error")
+      t.eq(set.cases[1].error.code, "harness-tooling-issue")
+      t.eq(#set.cases[1].assertions, 1)
+      t.eq(set.cases[1].assertions[1].type, "json-path-equals")
+      t.eq(set.cases[1].assertions[1].status, "skipped")
+      t.eq(#legacy.cases, 1)
+      t.eq(#legacy.cases[1].assertions, 0)
+      t.eq(#manifest.entries, 1)
+      t.eq(manifest.entries[1].case_id, "health-api")
+      t.eq(execution.status, "blocked")
+      t.eq(execution.classification, "harness-tooling-issue")
     end
   end,
 
