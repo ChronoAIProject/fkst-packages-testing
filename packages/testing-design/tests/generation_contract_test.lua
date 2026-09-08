@@ -1,4 +1,5 @@
 local contract = require("contract.testing_design_generation")
+local error_facts = require("contract.error_facts")
 local host_json = json
 local t = fkst.test
 
@@ -14,7 +15,7 @@ end
 local function assert_classification(expected, callback)
   local ok, message = pcall(callback)
   t.eq(ok, false, "expected validation failure")
-  t.eq(tostring(message):find(":" .. expected .. ":", 1, true) ~= nil, true, "expected " .. expected .. ", got " .. tostring(message))
+  t.eq(error_facts.error_class_from_message(message), expected, "expected " .. expected .. ", got " .. tostring(message))
 end
 
 return {
@@ -31,8 +32,12 @@ return {
     t.eq(contract.canonical_bytes(candidate_set), contract.canonical_bytes(candidate_set))
   end,
 
-  test_rejects_forbidden_action_field_and_unsupported_candidate_statuses = function()
+  test_classifies_request_action_and_candidate_status_failures = function()
     local request = load("valid-request")
+    request.schema = "testing-design.unknown-request.v1"
+    assert_classification("unknown-schema", function() contract.validate_request(request) end)
+
+    request = load("valid-request")
     assert_classification("malformed-action", function() contract.validate_candidate_set(load("invalid-candidate-script"), request) end)
     assert_classification("unsupported-candidate-set-status", function() contract.validate_candidate_set(load("invalid-candidate-set-status"), request) end)
     assert_classification("unsupported-candidate-status", function() contract.validate_candidate_set(load("invalid-candidate-status"), request) end)
