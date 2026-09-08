@@ -119,9 +119,19 @@ local required_ports = {
   "exec_argv", "http_request", "write_artifact", "load_result", "complete_replay",
 }
 
+local function decode_json_response(body)
+  if type(json) ~= "table" or type(json.decode) ~= "function" then
+    error("testing-runner: structured-execution: JSON decoder unavailable")
+  end
+  local ok, value = pcall(json.decode, body)
+  if not ok or type(value) ~= "table" then return { status = "invalid-json" } end
+  return { status = "parsed", value = value }
+end
+
 function M.production_ports()
   local ports = _G.structured_execution_runtime
   if type(ports) ~= "table" then ports = local_runtime.production() end
+  if type(ports.decode_json) ~= "function" then ports.decode_json = decode_json_response end
   for _, name in ipairs(required_ports) do
     if type(ports[name]) ~= "function" then error("testing-runner: structured-execution: missing runtime port " .. name) end
   end
@@ -183,11 +193,34 @@ local function assert_cli(assertion, response)
   return tonumber(response.exit_code) == assertion.expected
 end
 
-local function assert_http(assertion, response)
+local function json_member_value(value, path)
+  local current = value
+  for segment in path:gmatch("[^%.]+") do
+    if type(current) ~= "table" then return false, nil end
+    current = rawget(current, segment)
+    if current == nil then return false, nil end
+  end
+  return true, current
+end
+
+local function assert_http(assertion, response, ports)
   if assertion.type == "status-code" then
     return tonumber(response.status) == assertion.expected
   end
-  return tostring(response.body or ""):find(assertion.expected, 1, true) ~= nil
+  if assertion.type == "body-contains" then
+    return tostring(response.body or ""):find(assertion.expected, 1, true) ~= nil
+  end
+  local ok, decoded = pcall(ports.decode_json, tostring(response.body or ""))
+  if not ok then error("testing-runner: structured-execution: JSON decoder unavailable") end
+  if type(decoded) ~= "table" then
+    error("testing-runner: structured-execution: invalid JSON decoder result")
+  end
+  if decoded.status == "invalid-json" then return false end
+  if decoded.status ~= "parsed" or type(decoded.value) ~= "table" then
+    error("testing-runner: structured-execution: invalid JSON decoder result")
+  end
+  local found, actual = json_member_value(decoded.value, assertion.path)
+  return found and type(actual) == type(assertion.expected) and actual == assertion.expected
 end
 
 local function effect_error(case, value)
@@ -196,6 +229,17 @@ local function effect_error(case, value)
     kind = case.kind,
     status = "error",
     classification = "environment-session-issue",
+    assertions = {},
+    evidence = { error_excerpt = tostring(value):sub(1, 600) },
+  }
+end
+
+local function tooling_error(case, value)
+  return {
+    case_id = case.case_id,
+    kind = case.kind,
+    status = "error",
+    classification = "harness-tooling-issue",
     assertions = {},
     evidence = { error_excerpt = tostring(value):sub(1, 600) },
   }
@@ -304,27 +348,39 @@ local function execute_case(case, grant, ports, context)
       local assertions = {}
       local passed = true
       for index, assertion in ipairs(case.assertions) do
-        local assertion_passed = case.kind == "cli" and assert_cli(assertion, response) or assert_http(assertion, response)
+        local assertion_passed
+        if case.kind == "cli" then assertion_passed = assert_cli(assertion, response)
+        else
+          local assertion_ok
+          assertion_ok, assertion_passed = pcall(assert_http, assertion, response, ports)
+          if not assertion_ok then
+            case_result = tooling_error(case, assertion_passed)
+            passed = false
+            break
+          end
+        end
         assertions[index] = { type = assertion.type, passed = assertion_passed }
         if not assertion_passed then passed = false end
       end
-      case_result = {
-        case_id = case.case_id,
-        kind = case.kind,
-        status = passed and "passed" or "failed",
-        classification = passed and "passed" or "product-defect",
-        assertions = assertions,
-        evidence = case.kind == "cli" and {
-          exit_code = tonumber(response.exit_code) or -1,
-          stdout_excerpt = tostring(response.stdout or ""):sub(1, 600),
-          stderr_excerpt = tostring(response.stderr or ""):sub(1, 600),
-          authorization_receipt_path = context.request.artifact_root
-            .. "/authorization/" .. case.case_id .. ".json",
-        } or {
-          status_code = tonumber(response.status) or 0,
-          body_excerpt = tostring(response.body or ""):sub(1, 600),
-        },
-      }
+      if case_result == nil then
+        case_result = {
+          case_id = case.case_id,
+          kind = case.kind,
+          status = passed and "passed" or "failed",
+          classification = passed and "passed" or "product-defect",
+          assertions = assertions,
+          evidence = case.kind == "cli" and {
+            exit_code = tonumber(response.exit_code) or -1,
+            stdout_excerpt = tostring(response.stdout or ""):sub(1, 600),
+            stderr_excerpt = tostring(response.stderr or ""):sub(1, 600),
+            authorization_receipt_path = context.request.artifact_root
+              .. "/authorization/" .. case.case_id .. ".json",
+          } or {
+            status_code = tonumber(response.status) or 0,
+            body_excerpt = tostring(response.body or ""):sub(1, 600),
+          },
+        }
+      end
     end
   end
   return case_result
