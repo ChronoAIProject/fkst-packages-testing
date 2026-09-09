@@ -13,10 +13,73 @@ local function load(name)
   return host_json.decode(body)
 end
 
+local function load_path(path)
+  local handle = assert(io.open(path, "rb"))
+  local body = handle:read("*a")
+  handle:close()
+  return host_json.decode(body)
+end
+
 local function assert_classification(expected, callback)
   local ok, message = pcall(callback)
   t.eq(ok, false, "expected validation failure")
   t.eq(error_facts.error_class_from_message(message), expected, "expected " .. expected .. ", got " .. tostring(message))
+end
+
+local function apply_case(document, case)
+  local current = document
+  for index = 1, #case.path - 1 do
+    local segment = case.path[index]
+    if type(segment) == "number" then segment = segment + 1 end
+    current = current[segment]
+  end
+  local leaf = case.path[#case.path]
+  if type(leaf) == "number" then leaf = leaf + 1 end
+  if case.operation == "remove" then current[leaf] = nil else current[leaf] = case.value end
+  return document
+end
+
+local function at_path(document, path)
+  local current = document
+  for _, segment in ipairs(path) do current = current[segment] end
+  return current
+end
+
+local function collect_object_locations(schema, instance, path, locations)
+  if schema.type == "object" and type(instance) == "table" then
+    locations[#locations + 1] = { path = path, schema = schema }
+    for key, child_schema in pairs(schema.properties or {}) do
+      if instance[key] ~= nil then
+        local child_path = {}
+        for index, segment in ipairs(path) do child_path[index] = segment end
+        child_path[#child_path + 1] = key
+        collect_object_locations(child_schema, instance[key], child_path, locations)
+      end
+    end
+  elseif schema.type == "array" and type(instance) == "table" and instance[1] ~= nil then
+    local child_path = {}
+    for index, segment in ipairs(path) do child_path[index] = segment end
+    child_path[#child_path + 1] = 1
+    collect_object_locations(schema.items, instance[1], child_path, locations)
+  end
+end
+
+local function expected_object_class(document_name, path)
+  if document_name == "request" then return "malformed-request" end
+  if document_name == "receipt" then return "malformed-receipt" end
+  for _, segment in ipairs(path) do
+    if segment == "action" or segment == "target" then return "malformed-action" end
+    if segment == "assertion" then return "malformed-assertion" end
+    if segment == "traceability" or segment == "requirement_refs" or segment == "journey_refs" or segment == "risk_refs" or segment == "source_refs" or segment == "existing_test_refs" then return "invalid-traceability" end
+  end
+  for _, segment in ipairs(path) do if segment == "candidates" then return "malformed-candidate" end end
+  return "malformed-candidate-set"
+end
+
+local function validate_document(document_name, document, request, candidate_set)
+  if document_name == "request" then return contract.validate_request(document) end
+  if document_name == "candidate_set" then return contract.validate_candidate_set(document, request) end
+  return contract.validate_receipt(document, request, candidate_set)
 end
 
 return {
@@ -234,15 +297,11 @@ return {
     local request = load("valid-request")
     local candidate_set = load("valid-candidate-set")
     local receipt = load("valid-receipt")
-    receipt.rejected_candidates = {
-      total = 3,
-      reasons = {
-        { code = "duplicate-candidate", count = 2 },
-        { code = "unsupported-action", count = 1 },
-      },
-    }
+    local reason_codes = { "duplicate-candidate", "unsupported-action", "unsupported-assertion", "invalid-traceability", "oversized-value", "malformed-candidate" }
+    receipt.rejected_candidates = { total = #reason_codes, reasons = {} }
+    for _, code in ipairs(reason_codes) do receipt.rejected_candidates.reasons[#receipt.rejected_candidates.reasons + 1] = { code = code, count = 1 } end
     t.eq(contract.validate_receipt(receipt, request, candidate_set), receipt)
-    receipt.rejected_candidates.total = 2
+    receipt.rejected_candidates.total = #reason_codes - 1
     assert_classification("malformed-receipt", function() contract.validate_receipt(receipt, request, candidate_set) end)
 
     for _, reasons in ipairs({
@@ -278,5 +337,61 @@ return {
     local receipt = load("valid-receipt")
     receipt.budget.prompt_bytes = request.policy.max_prompt_bytes + 1
     assert_classification("budget-exceeded", function() contract.validate_receipt(receipt, request, load("valid-candidate-set")) end)
+  end,
+
+  test_accepts_leap_day_and_equal_timestamps_with_subsecond_duration = function()
+    local request = load("valid-request")
+    local candidate_set = load("valid-candidate-set")
+    local receipt = load("valid-receipt")
+    receipt.timing.started_at = "2024-02-29T23:59:59Z"
+    receipt.timing.finished_at = "2024-02-29T23:59:59Z"
+    receipt.timing.duration_ms = 25
+    receipt.budget.elapsed_ms = 25
+    t.eq(contract.validate_receipt(receipt, request, candidate_set), receipt)
+  end,
+
+  test_rejects_shared_generation_contract_cases = function()
+    local corpus = load("rejection-cases")
+    for _, case in ipairs(corpus.cases) do
+      local request = load("valid-request")
+      local candidate_set = load("valid-candidate-set")
+      local receipt = load("valid-receipt")
+      local document = ({ request = request, candidate_set = candidate_set, receipt = receipt })[case.document]
+      apply_case(document, case)
+      assert_classification(case.lua_class, function()
+        if case.document == "request" then contract.validate_request(request)
+        elseif case.document == "candidate_set" then contract.validate_candidate_set(candidate_set, request)
+        else contract.validate_receipt(receipt, request, candidate_set) end
+      end)
+    end
+  end,
+
+  test_rejects_every_missing_and_unknown_object_field = function()
+    local definitions = {
+      request = "testing-design.generate-request.v1",
+      candidate_set = "testing-design.candidate-test-case-set.v1",
+      receipt = "testing-design.generation-receipt.v1",
+    }
+    for document_name, identity in pairs(definitions) do
+      local schema = load_path("schemas-next-release/" .. identity .. ".schema.json")
+      local base = load("valid-" .. (document_name == "candidate_set" and "candidate-set" or document_name))
+      local locations = {}
+      collect_object_locations(schema, base, {}, locations)
+      for _, location in ipairs(locations) do
+        local expected = expected_object_class(document_name, location.path)
+        local document = load("valid-" .. (document_name == "candidate_set" and "candidate-set" or document_name))
+        at_path(document, location.path).unknown = true
+        assert_classification(expected, function()
+          validate_document(document_name, document, load("valid-request"), load("valid-candidate-set"))
+        end)
+        for _, field in ipairs(location.schema.required or {}) do
+          document = load("valid-" .. (document_name == "candidate_set" and "candidate-set" or document_name))
+          at_path(document, location.path)[field] = nil
+          assert_classification(expected, function()
+            validate_document(document_name, document, load("valid-request"), load("valid-candidate-set"))
+          end)
+        end
+      end
+    end
   end,
 }
