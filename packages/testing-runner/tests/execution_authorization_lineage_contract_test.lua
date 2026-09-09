@@ -259,6 +259,14 @@ return {
     t.raises(function() lineage.validate_grant_verification_receipt(value, expected(value)) end)
   end,
 
+  test_source_identity_fields_accept_existing_host_relative_identity_keys = function()
+    local value = profile_claim()
+    value.profile_source_ref.ref = "fixtures/canonical-qa-profile"
+    value.approval_authority.ref = "fixtures/canonical-qa"
+    value.evidence_ref.ref = "fixtures/approvals/canonical-qa"
+    t.eq(lineage.validate_profile_claim_receipt(value, expected(value)), value)
+  end,
+
   test_rejects_digest_domain_cross_run_and_cross_repository_substitution = function()
     local value = profile_claim()
     local source = expected(value)

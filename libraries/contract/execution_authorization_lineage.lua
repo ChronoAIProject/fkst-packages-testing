@@ -93,14 +93,7 @@ local function source_ref(value, field, expected_kind)
   only_fields(value, { kind = true, ref = true }, field)
   identity(value.kind, field .. ".kind")
   bounded(value.ref, field .. ".ref", 4096)
-  local prefixes = {
-    ["host-profile-policy"] = "policies/",
-    ["host-policy"] = "policies/",
-    ["signed-attestation"] = "attestations/",
-    ["host-verifier"] = "verifiers/",
-  }
-  local prefix = prefixes[value.kind]
-  if value.kind ~= expected_kind or prefix == nil or value.ref:sub(1, #prefix) ~= prefix
+  if value.kind ~= expected_kind
     or value.ref:match("^[A-Za-z0-9][A-Za-z0-9._/-]*$") == nil
     or value.ref:find("//", 1, true) ~= nil or value.ref:sub(-1) == "/" then
     fail("unsafe-reference", field .. " must be a closed Host identity reference")
