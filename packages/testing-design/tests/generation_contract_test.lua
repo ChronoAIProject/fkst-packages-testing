@@ -230,6 +230,37 @@ return {
     end
   end,
 
+  test_validates_rejected_candidate_reason_counts = function()
+    local request = load("valid-request")
+    local candidate_set = load("valid-candidate-set")
+    local receipt = load("valid-receipt")
+    receipt.rejected_candidates = {
+      total = 3,
+      reasons = {
+        { code = "duplicate-candidate", count = 2 },
+        { code = "unsupported-action", count = 1 },
+      },
+    }
+    t.eq(contract.validate_receipt(receipt, request, candidate_set), receipt)
+    receipt.rejected_candidates.total = 2
+    assert_classification("malformed-receipt", function() contract.validate_receipt(receipt, request, candidate_set) end)
+
+    for _, reasons in ipairs({
+      { { code = "unknown-reason", count = 1 } },
+      { { code = "duplicate-candidate", count = 1 }, { code = "duplicate-candidate", count = 1 } },
+      { { code = "duplicate-candidate", count = 0 } },
+      { { code = "duplicate-candidate", count = 65 } },
+      { { code = "duplicate-candidate", count = 1.5 } },
+      { { code = "duplicate-candidate", count = "1" } },
+      { { code = "duplicate-candidate" } },
+      { { code = "duplicate-candidate", count = 1, unknown = true } },
+    }) do
+      receipt = load("valid-receipt")
+      receipt.rejected_candidates = { total = 1, reasons = reasons }
+      assert_classification("malformed-receipt", function() contract.validate_receipt(receipt, request, candidate_set) end)
+    end
+  end,
+
   test_enforces_cross_document_bindings = function()
     local request = load("valid-request")
     local candidate_set = load("valid-candidate-set")
