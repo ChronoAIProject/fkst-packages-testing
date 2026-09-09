@@ -23,7 +23,13 @@ const splitRef = (reference, baseUri) => {
   const index = resolved.indexOf("#");
   return [index === -1 ? resolved : resolved.slice(0, index), index === -1 ? "" : resolved.slice(index)];
 };
-const utf8Length = (value) => Buffer.byteLength(value, "utf8");
+const utf8Length = (value) => {
+  for (const character of value) {
+    const codepoint = character.codePointAt(0);
+    if (codepoint >= 0xd800 && codepoint <= 0xdfff) return Infinity;
+  }
+  return Buffer.byteLength(value, "utf8");
+};
 const validDateTime = (value) => {
   if (typeof value !== "string") return true;
   const match = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-]\d{2}:\d{2})$/.exec(value);

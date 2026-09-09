@@ -52,7 +52,7 @@ end
 
 local function bounded(value, maximum)
   return type(value) == "string" and #value >= 1 and #value <= maximum
-    and value:find("[%z\1-\31\127]") == nil
+    and canonical_json.is_valid_utf8(value) and value:find("[%z\1-\31\127]") == nil
 end
 
 local function require_bounded(value, maximum, field, code)
@@ -67,8 +67,8 @@ local function require_semver(value, field, code)
   if type(value) ~= "string" or not value:match("^%d+%.%d+%.%d+$") then fail(code, field .. " must be semantic major.minor.patch") end
 end
 
-local function safe_pointer(value, maximum)
-  return bounded(value, maximum) and value:sub(1, 1) ~= "/" and not value:find("[\\%?#@]")
+local function safe_pointer(value, maximum, allow_absolute)
+  return bounded(value, maximum) and (allow_absolute or value:sub(1, 1) ~= "/") and not value:find("[\\%?#@]")
     and value ~= ".." and not value:match("^%.%./") and not value:match("/%.%./") and not value:match("/%.%.$")
 end
 
@@ -95,6 +95,7 @@ end
 
 local function canonical_copy(value, active)
   if value == nil or rawequal(value, canonical_json.null) then fail("canonicalization-failed", "null is not supported") end
+  if type(value) == "number" and math.type(value) ~= "integer" then fail("canonicalization-failed", "floating-point values are not supported") end
   if type(value) ~= "table" then return value end
   if active[value] then fail("canonicalization-failed", "cyclic tables are not supported") end
   local tag = getmetatable(value)
@@ -128,7 +129,7 @@ function G.validate_request(value)
   if not bounded(value.repository.url, 1024) or not value.repository.url:match("^https://") or value.repository.url:find("[%s\\%?#@]") or value.repository.url:sub(-1) == "/" then fail("malformed-request", "repository.url is unsafe") end
   if type(value.repository.target_commit) ~= "string" or #value.repository.target_commit ~= 40 or not value.repository.target_commit:match("^[0-9a-f]+$") then fail("malformed-request", "target_commit is invalid") end
   only_fields(value.repository.worktree, { kind = true, ref = true }, "request.repository.worktree", "malformed-request")
-  if value.repository.worktree.kind ~= "approved-worktree" or not safe_pointer(value.repository.worktree.ref, 512) then fail("malformed-request", "worktree is invalid") end
+  if value.repository.worktree.kind ~= "approved-worktree" or not safe_pointer(value.repository.worktree.ref, 512, true) then fail("malformed-request", "worktree is invalid") end
   only_fields(value.analysis, { repository_analysis = true, requirements_index = true, traceability_seed = true }, "request.analysis", "malformed-request")
   validate_artifact(value.analysis.repository_analysis, "testing-design.repository-analysis.v1", "request.analysis.repository_analysis", "malformed-request")
   validate_artifact(value.analysis.requirements_index, "testing-design.requirements-index.v1", "request.analysis.requirements_index", "malformed-request")

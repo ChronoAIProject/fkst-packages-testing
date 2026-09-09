@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import copy
+import json
+
+from jsonschema import ValidationError
 from pathlib import Path
 
 from json_schema_test_support import load_json, offline_registry, validator_for_schema
@@ -58,6 +61,115 @@ def at_path(document: object, path: tuple[object, ...]) -> object:
     return current
 
 
+def seeded_document(document: object) -> object:
+    document = copy.deepcopy(document)
+    if document["schema"] == "testing-design.candidate-test-case-set.v1":
+        trace = document["candidates"][0]["traceability"]
+        for key in ("journey_refs", "risk_refs"):
+            trace[key] = copy.deepcopy(trace["requirement_refs"])
+        trace["existing_test_refs"] = [{
+            "kind": "artifact", "ref": ".testing/runs/design/existing-test-inventory.v1.json",
+            "sha256": "d" * 64,
+        }]
+    elif document["schema"] == "testing-design.generation-receipt.v1":
+        document["rejected_candidates"] = {"total": 1, "reasons": [{"code": "duplicate-candidate", "count": 1}]}
+    return document
+
+
+def string_samples(spec, controls):
+    prefix, maximum = spec.get("prefix", ""), spec["max"]
+    yield spec.get("minimum", prefix + "x"), True
+    yield prefix + "x" * (maximum - len(prefix)), True
+    yield "", False
+    yield prefix + "x" * (maximum + 1 - len(prefix)), False
+    yield prefix + "界" * ((maximum - len(prefix)) // 3 + 1), False
+    if not spec.get("ascii_only"):
+        count, remainder = divmod(maximum - len(prefix), 3)
+        yield prefix + "界" * count + "x" * remainder, True
+    for control in controls:
+        for value in (chr(control) + prefix + "x", prefix + "x" + chr(control) + "x", prefix + "x" + chr(control)):
+            yield value, False
+
+
+def fixed_string_samples(spec, controls):
+    yield ""
+    for code in controls:
+        control, value = chr(code), spec["value"]
+        yield control + value
+        yield value[:1] + control + value[1:]
+        yield value + control
+    if spec.get("hex"):
+        for value in ("a" * (spec["hex"] - 1), "a" * (spec["hex"] + 1), "A" * spec["hex"], "g" * spec["hex"]):
+            yield value
+
+
+def scalar_value(sample):
+    return "".join(chr(code) for code in sample["codepoints"])
+
+
+def check_utf8_owner(matrix):
+    for schema in ({"x-fkst-maxUtf8Bytes": 4}, {"format": "fkst-utf8-max-32"}):
+        validator = validator_for_schema(schema)
+        for sample in matrix["unicode_scalars"]:
+            value = scalar_value(sample)
+            errors = list(validator.iter_errors(value))
+            assert (not errors) is sample["valid"], sample
+            assert all(isinstance(error, ValidationError) for error in errors)
+            assert validator.is_valid(value) is sample["valid"], sample
+        assert validator.is_valid(json.loads('"\\ud83d\\ude00"'))
+    assert not validator_for_schema({"x-fkst-maxUtf8Bytes": 3}).is_valid("😀")
+    print("generation UTF-8 owner: 17 representative cases passed")
+
+
+def boundary_documents(matrix, documents, identities):
+    for spec in matrix["strings"]:
+        identity = identities[spec["document"]]
+        for sample in matrix["unicode_scalars"]:
+            value = spec.get("prefix", "") + scalar_value(sample)
+            document = seeded_document(documents[identity])
+            apply_case(document, {"path": spec["path"], "operation": "set", "value": value})
+            yield identity, document, sample["valid"] and not spec.get("ascii_only", False), f"scalar {spec['path']} {sample['codepoints']}"
+    for spec in matrix["formats"]:
+        identity = identities[spec["document"]]
+        for sample in spec["values"]:
+            document = seeded_document(documents[identity])
+            apply_case(document, {"path": spec["path"], "operation": "set", "value": sample["value"]})
+            yield identity, document, sample["valid"], f"format {spec['path']} {sample['value']!r}"
+    for spec in matrix["fixed_strings"]:
+        identity = identities[spec["document"]]
+        for index, value in enumerate(fixed_string_samples(spec, matrix["controls"])):
+            document = seeded_document(documents[identity])
+            apply_case(document, {"path": spec["path"], "operation": "set", "value": value})
+            yield identity, document, False, f"fixed string {spec['path']} sample {index}"
+    for spec in matrix["strings"]:
+        identity = identities[spec["document"]]
+        for index, (value, valid) in enumerate(string_samples(spec, matrix["controls"])):
+            document = seeded_document(documents[identity])
+            apply_case(document, {"path": spec["path"], "operation": "set", "value": value})
+            yield identity, document, valid, f"string {spec['path']} sample {index}"
+    for spec in matrix["integers"]:
+        identity = identities[spec["document"]]
+        for value, valid in ((spec["min"], True), (spec["max"], True), (spec["min"] - 1, False),
+                             (spec["max"] + 1, bool(spec.get("schema_unbounded"))), (1.5, False), ("1", False), (True, False)):
+            document = seeded_document(documents[identity])
+            apply_case(document, {"path": spec["path"], "operation": "set", "value": value})
+            yield identity, document, valid, f"integer {spec['path']} {value!r}"
+    for spec in matrix["unsafe"]:
+        identity = identities[spec["document"]]
+        for value in spec["values"]:
+            document = seeded_document(documents[identity])
+            apply_case(document, {"path": spec["path"], "operation": "set", "value": value})
+            yield identity, document, False, f"unsafe {spec['path']} {value!r}"
+    identity = identities["candidate_set"]
+    for spec in matrix["arrays"]:
+        for size in (0, 1, spec["maximum"], spec["maximum"] + 1):
+            document = seeded_document(documents[identity])
+            item = at_path(document, tuple(spec["path"]))[0]
+            values = [copy.deepcopy(item) for _ in range(size)]
+            apply_case(document, {"path": spec["path"], "operation": "set", "value": values})
+            yield identity, document, 1 <= size <= spec["maximum"], f"array {spec['path']} size {size}"
+
+
 def main() -> int:
     pairs = (
         ("testing-design.generate-request.v1", "valid-request.json"),
@@ -80,7 +192,8 @@ def main() -> int:
         documents[identity] = document
         schemas[identity] = schema
 
-    for identity, document in documents.items():
+    for identity, base in documents.items():
+        document = seeded_document(base)
         validator = validators[identity]
         for path, object_schema in object_locations(schemas[identity], document):
             unknown = copy.deepcopy(document)
@@ -113,6 +226,13 @@ def main() -> int:
         "candidate_set": "testing-design.candidate-test-case-set.v1",
         "receipt": "testing-design.generation-receipt.v1",
     }
+    matrix = load_json(FIXTURE_ROOT / "boundary-matrix.json")
+    check_utf8_owner(matrix)
+    count = 0
+    for identity, document, expected, label in boundary_documents(matrix, documents, identity_by_document):
+        assert validators[identity].is_valid(document) is expected, label
+        count += 1
+    print(f"generation boundary matrix: {count} shared cases passed")
     corpus = load_json(FIXTURE_ROOT / "rejection-cases.json")
     for case in corpus["cases"]:
         identity = identity_by_document[case["document"]]

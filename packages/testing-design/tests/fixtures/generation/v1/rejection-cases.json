@@ -1,5 +1,11 @@
 {
   "cases": [
+    {"name":"trace id ends in newline","document":"request","operation":"set","path":["trace_id"],"value":"trace\n","schema_valid":false,"lua_class":"malformed-request"},
+    {"name":"route begins with traversal","document":"candidate_set","operation":"set","path":["candidates",0,"steps",0,"action","target","ref"],"value":"/../secrets","schema_valid":false,"lua_class":"malformed-action"},
+    {"name":"route is traversal","document":"candidate_set","operation":"set","path":["candidates",0,"steps",0,"action","target","ref"],"value":"/..","schema_valid":false,"lua_class":"malformed-action"},
+    {"name":"trace ref is main","document":"candidate_set","operation":"set","path":["candidates",0,"traceability","requirement_refs",0,"ref"],"value":"main","schema_valid":false,"lua_class":"invalid-traceability"},
+    {"name":"trace ref is master","document":"candidate_set","operation":"set","path":["candidates",0,"traceability","requirement_refs",0,"ref"],"value":"master","schema_valid":false,"lua_class":"invalid-traceability"},
+    {"name":"trace ref is mutable tag","document":"candidate_set","operation":"set","path":["candidates",0,"traceability","requirement_refs",0,"ref"],"value":"refs/tags/v1","schema_valid":false,"lua_class":"invalid-traceability"},
     {"name":"request unknown top-level field","document":"request","operation":"set","path":["unknown"],"value":true,"schema_valid":false,"lua_class":"malformed-request"},
     {"name":"request missing dedup key","document":"request","operation":"remove","path":["dedup_key"],"schema_valid":false,"lua_class":"malformed-request"},
     {"name":"repository unknown field","document":"request","operation":"set","path":["repository","unknown"],"value":true,"schema_valid":false,"lua_class":"malformed-request"},
@@ -30,7 +36,7 @@
     {"name":"assertion identity is unsupported","document":"candidate_set","operation":"set","path":["candidates",0,"steps",0,"assertion","assertion_id"],"value":"browser.dom.equals.v1","schema_valid":false,"lua_class":"unsupported-assertion"},
     {"name":"evidence references foreign step","document":"candidate_set","operation":"set","path":["candidates",0,"evidence_requirements",0,"step_id"],"value":"step-unknown","schema_valid":true,"lua_class":"foreign-step-reference"},
     {"name":"requirement traceability is empty","document":"candidate_set","operation":"set","path":["candidates",0,"traceability","requirement_refs"],"value":[],"schema_valid":false,"lua_class":"invalid-traceability"},
-    {"name":"trace ref is mutable branch","document":"candidate_set","operation":"set","path":["candidates",0,"traceability","requirement_refs",0,"ref"],"value":"refs/heads/main","schema_valid":true,"lua_class":"invalid-traceability"},
+    {"name":"trace ref is mutable branch","document":"candidate_set","operation":"set","path":["candidates",0,"traceability","requirement_refs",0,"ref"],"value":"refs/heads/main","schema_valid":false,"lua_class":"invalid-traceability"},
     {"name":"trace ref contains at sign","document":"candidate_set","operation":"set","path":["candidates",0,"traceability","requirement_refs",0,"ref"],"value":"owner@main","schema_valid":false,"lua_class":"invalid-traceability"},
     {"name":"trace ref contains backslash","document":"candidate_set","operation":"set","path":["candidates",0,"traceability","requirement_refs",0,"ref"],"value":"requirements\\REQ-1","schema_valid":false,"lua_class":"invalid-traceability"},
     {"name":"trace ref contains traversal","document":"candidate_set","operation":"set","path":["candidates",0,"traceability","requirement_refs",0,"ref"],"value":"requirements/../REQ-1","schema_valid":false,"lua_class":"invalid-traceability"},
@@ -40,14 +46,14 @@
     {"name":"receipt input digest is foreign","document":"receipt","operation":"set","path":["input_digest"],"value":"0000000000000000000000000000000000000000000000000000000000000000","schema_valid":true,"lua_class":"foreign-request-digest"},
     {"name":"receipt candidate digest is foreign","document":"receipt","operation":"set","path":["validated_output_digest"],"value":"0000000000000000000000000000000000000000000000000000000000000000","schema_valid":true,"lua_class":"foreign-candidate-digest"},
     {"name":"receipt prompt template is foreign","document":"receipt","operation":"set","path":["prompt_template","template_version"],"value":"2.0.0","schema_valid":true,"lua_class":"foreign-prompt-template"},
-    {"name":"receipt policy is foreign","document":"receipt","operation":"set","path":["policy_id"],"value":"testing-design.other-policy.v1","schema_valid":true,"lua_class":"foreign-policy"},
+    {"name":"receipt policy is foreign","document":"receipt","operation":"set","path":["policy_id"],"value":"testing-design.other-policy.v1","schema_valid":false,"lua_class":"foreign-policy"},
     {"name":"prompt budget exceeds policy","document":"receipt","operation":"set","path":["budget","prompt_bytes"],"value":4097,"schema_valid":true,"lua_class":"budget-exceeded"},
     {"name":"response budget exceeds policy","document":"receipt","operation":"set","path":["budget","response_bytes"],"value":4097,"schema_valid":true,"lua_class":"budget-exceeded"},
     {"name":"elapsed budget exceeds policy","document":"receipt","operation":"set","path":["budget","elapsed_ms"],"value":30001,"schema_valid":true,"lua_class":"budget-exceeded"},
     {"name":"rejection reason code is unknown","document":"receipt","operation":"set","path":["rejected_candidates"],"value":{"total":1,"reasons":[{"code":"unknown","count":1}]},"schema_valid":false,"lua_class":"malformed-receipt"},
     {"name":"rejection reason count is zero","document":"receipt","operation":"set","path":["rejected_candidates"],"value":{"total":0,"reasons":[{"code":"duplicate-candidate","count":0}]},"schema_valid":false,"lua_class":"malformed-receipt"},
     {"name":"rejection totals differ","document":"receipt","operation":"set","path":["rejected_candidates"],"value":{"total":2,"reasons":[{"code":"duplicate-candidate","count":1}]},"schema_valid":true,"lua_class":"malformed-receipt"},
-    {"name":"timestamp calendar date is invalid","document":"receipt","operation":"set","path":["timing","finished_at"],"value":"2026-02-29T00:00:00Z","schema_valid":true,"lua_class":"malformed-timing"},
+    {"name":"timestamp calendar date is invalid","document":"receipt","operation":"set","path":["timing","finished_at"],"value":"2026-02-29T00:00:00Z","schema_valid":false,"lua_class":"malformed-timing"},
     {"name":"timestamp interval is reversed","document":"receipt","operation":"set","path":["timing","finished_at"],"value":"2026-09-03T23:59:59Z","schema_valid":true,"lua_class":"malformed-timing"},
     {"name":"duration differs from elapsed","document":"receipt","operation":"set","path":["timing","duration_ms"],"value":24,"schema_valid":true,"lua_class":"malformed-timing"}
   ]
