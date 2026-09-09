@@ -38,6 +38,7 @@ contracts/
   agentic-browser-execution.v1.md
   defect-publication.v1.md
   environment-factory.v1.md
+  execution-authorization-lineage.v1.md
   project-profile.v1.md
   qa-publication.v1.md
   structured-execution.v2.md
