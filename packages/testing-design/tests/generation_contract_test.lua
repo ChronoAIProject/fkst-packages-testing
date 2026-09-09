@@ -49,6 +49,114 @@ return {
     t.eq(contract.canonical_bytes({ items = { 1, false, "value" } }), '{"items":[1,false,"value"]}\n')
   end,
 
+  test_pinned_host_array_marker_is_protected_and_canonical_tags_are_not = function()
+    local array = host_json.decode("[]")
+    t.eq(getmetatable(array), false)
+    t.eq(getmetatable(host_json.decode("{}")), nil)
+    t.eq(pcall(setmetatable, array, nil), false)
+    for _, value in ipairs({ host_json.decode("{}"), canonical_json.array(), canonical_json.object() }) do
+      local tag = getmetatable(value)
+      local ok, result = pcall(setmetatable, value, tag)
+      t.eq(ok, true, "supported tags must permit same-tag assignment: " .. tostring(result))
+      t.eq(rawequal(result, value), true)
+      t.eq(rawequal(getmetatable(value), tag), true)
+      t.eq(next(value), nil)
+    end
+  end,
+
+  test_rejects_protected_host_array_tag_spoof_without_running_metamethods = function()
+    local calls = 0
+    local tag = getmetatable(host_json.decode("[]"))
+    local value = setmetatable({ unknown = "preserve-me" }, {
+      __metatable = tag,
+      __pairs = function() calls = calls + 1; return next, {}, nil end,
+    })
+    t.eq(rawequal(getmetatable(value), tag), true, "spoof must expose the genuine host tag")
+    t.eq(pcall(setmetatable, value, nil), false, "actual metatable must be protected")
+    assert_classification("canonicalization-failed", function() contract.canonical_bytes({ nested = value }) end)
+    t.eq(calls, 0)
+    t.eq(rawget(value, "unknown"), "preserve-me")
+    t.eq(pcall(setmetatable, value, nil), false, "rejection must not alter protection")
+  end,
+
+  test_canonical_tag_spoofs_cannot_erase_fields = function()
+    for index, container in ipairs({ canonical_json.array(), canonical_json.object() }) do
+      local calls = 0
+      local tag = getmetatable(container)
+      local value = setmetatable({ unknown = "preserve-me" }, {
+        __metatable = tag,
+        __pairs = function() calls = calls + 1; return next, {}, nil end,
+      })
+      if index == 1 then
+        assert_classification("canonicalization-failed", function() contract.canonical_bytes(value) end)
+      else
+        t.eq(contract.canonical_bytes(value), '{"unknown":"preserve-me"}\n')
+      end
+      t.eq(calls, 0)
+      t.eq(rawget(value, "unknown"), "preserve-me")
+      t.eq(pcall(setmetatable, value, tag), false)
+    end
+  end,
+
+  test_rejects_metatable_equality_spoof = function()
+    local calls = 0
+    local value = setmetatable({ unknown = "preserve-me" }, setmetatable({}, {
+      __eq = function() calls = calls + 1; return true end,
+    }))
+    assert_classification("canonicalization-failed", function() contract.canonical_bytes(value) end)
+    t.eq(calls, 0)
+    t.eq(rawget(value, "unknown"), "preserve-me")
+  end,
+
+  test_raw_normalization_never_invokes_input_metamethods = function()
+    local calls = 0
+    local function hostile(value, tag)
+      return setmetatable(value, {
+        __metatable = tag,
+        __pairs = function() calls = calls + 1; return next, {}, nil end,
+        __index = function() calls = calls + 1; return "invented" end,
+        __len = function() calls = calls + 1; return 999 end,
+        __eq = function() calls = calls + 1; return true end,
+      })
+    end
+    local host_tag = getmetatable(host_json.decode("[]"))
+    local child = hostile({ field = "preserved" }, getmetatable(canonical_json.object()))
+    local dense = hostile({ child, false }, host_tag)
+    t.eq(contract.canonical_bytes(dense), '[{"field":"preserved"},false]\n')
+    t.eq(contract.canonical_bytes(hostile({}, host_tag)), "[]\n")
+    t.eq(rawequal(rawget(dense, 1), child), true)
+    t.eq(rawget(child, "field"), "preserved")
+    for _, value in ipairs({ hostile({ [2] = "hole" }, host_tag), hostile({ hidden = true }, host_tag), hostile({ 1, hidden = true }, host_tag) }) do
+      assert_classification("canonicalization-failed", function() contract.canonical_bytes(value) end)
+    end
+    local cyclic = hostile({}, host_tag)
+    rawset(cyclic, 1, cyclic)
+    assert_classification("canonicalization-failed", function() contract.canonical_bytes(cyclic) end)
+    for _, tag in ipairs({ true, "unsupported", 42, {} }) do
+      assert_classification("canonicalization-failed", function() contract.canonical_bytes(hostile({}, tag)) end)
+    end
+    t.eq(calls, 0, "normalization must not invoke input metamethods")
+  end,
+
+  test_closed_and_dense_validation_reads_raw_fields = function()
+    local calls = 0
+    local function conceal(value)
+      return setmetatable(value, {
+        __pairs = function() calls = calls + 1; return next, {}, nil end,
+        __index = function() calls = calls + 1; return "invented" end,
+      })
+    end
+    local request = load("valid-request")
+    request.repository = conceal({ unknown = "preserve-me" })
+    assert_classification("malformed-request", function() contract.validate_request(request) end)
+    request.repository = conceal({})
+    assert_classification("malformed-request", function() contract.validate_request(request) end)
+    local candidate_set = load("valid-candidate-set")
+    candidate_set.candidates[1].preconditions = conceal({ [2] = {} })
+    assert_classification("malformed-candidate", function() contract.validate_candidate_set(candidate_set, load("valid-request")) end)
+    t.eq(calls, 0)
+  end,
+
   test_keeps_canonicalization_fail_closed = function()
     for _, body in ipairs({ "null", '[null]', '{"field":null}', '{"nested":[{"field":null}]}' }) do
       assert_classification("canonicalization-failed", function() contract.canonical_bytes(host_json.decode(body)) end)

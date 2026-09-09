@@ -24,29 +24,29 @@ local function fail(code, message)
 end
 
 local function is_array_tag(tag)
-  return tag == canonical_array_tag or (host_array_tag ~= nil and tag == host_array_tag)
+  return rawequal(tag, canonical_array_tag) or (host_array_tag ~= nil and rawequal(tag, host_array_tag))
 end
 
 local function only_fields(value, allowed, field, code)
   if type(value) ~= "table" then fail(code or "malformed-document", field .. " must be an object") end
-  for key in pairs(value) do
+  for key in next, value do
     if type(key) ~= "string" or not allowed[key] then fail(code or "malformed-document", field .. " contains an unknown field") end
   end
   for key in pairs(allowed) do
-    if value[key] == nil then fail(code or "malformed-document", field .. "." .. key .. " is required") end
+    if rawget(value, key) == nil then fail(code or "malformed-document", field .. "." .. key .. " is required") end
   end
 end
 
 local function dense_list(value, minimum, maximum, field, code)
   if type(value) ~= "table" then fail(code, field .. " must be an array") end
   local count = 0
-  for key in pairs(value) do
+  for key in next, value do
     if type(key) ~= "number" or key < 1 or key ~= math.floor(key) then fail(code, field .. " must be a dense array") end
     count = count + 1
   end
   if count < minimum or count > maximum then fail(code, field .. " has an invalid length") end
   if count == 0 and not is_array_tag(getmetatable(value)) then fail(code, field .. " must preserve an empty JSON array") end
-  for index = 1, count do if value[index] == nil then fail(code, field .. " must be a dense array") end end
+  for index = 1, count do if rawget(value, index) == nil then fail(code, field .. " must be a dense array") end end
   return count
 end
 
@@ -94,19 +94,20 @@ local function validate_prompt(value, field, code)
 end
 
 local function canonical_copy(value, active)
-  if value == nil or value == canonical_json.null then fail("canonicalization-failed", "null is not supported") end
+  if value == nil or rawequal(value, canonical_json.null) then fail("canonicalization-failed", "null is not supported") end
   if type(value) ~= "table" then return value end
   if active[value] then fail("canonicalization-failed", "cyclic tables are not supported") end
   local tag = getmetatable(value)
   local array = is_array_tag(tag)
-  if tag ~= nil and not array and tag ~= canonical_object_tag and tag ~= host_object_tag then
+  if tag ~= nil and not array and not rawequal(tag, canonical_object_tag) and not rawequal(tag, host_object_tag) then
     fail("canonicalization-failed", "tables must not have unsupported metatables")
   end
   active[value] = true
   local copy = {}
-  for key, item in pairs(value) do copy[key] = canonical_copy(item, active) end
+  for key, item in next, value do copy[key] = canonical_copy(item, active) end
   active[value] = nil
-  -- Translate decoder container identities without erasing empty objects or mutating inputs.
+  -- Observed tags select representation, not provenance: protected host arrays expose false.
+  -- Raw copying preserves every field without invoking input metamethods or mutating inputs.
   if array then return canonical_json.array(copy) end
   if tag ~= nil or next(value) == nil then return canonical_json.object(copy) end
   return copy
