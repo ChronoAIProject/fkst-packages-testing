@@ -52,7 +52,7 @@ end
 
 local function bounded(value, maximum)
   return type(value) == "string" and #value >= 1 and #value <= maximum
-    and value:find("[%z\1-\31\127]") == nil
+    and canonical_json.is_valid_utf8(value) and value:find("[%z\1-\31\127]") == nil
 end
 
 local function require_bounded(value, maximum, field, code)
@@ -67,9 +67,9 @@ local function require_semver(value, field, code)
   if type(value) ~= "string" or not value:match("^%d+%.%d+%.%d+$") then fail(code, field .. " must be semantic major.minor.patch") end
 end
 
-local function safe_pointer(value, maximum)
-  return bounded(value, maximum) and value:sub(1, 1) ~= "/" and not value:find("[\\%?#@]")
-    and not value:match("^%.%./") and not value:match("/%.%./") and not value:match("/%.%.$")
+local function safe_pointer(value, maximum, allow_absolute)
+  return bounded(value, maximum) and (allow_absolute or value:sub(1, 1) ~= "/") and not value:find("[\\%?#@]")
+    and value ~= ".." and not value:match("^%.%./") and not value:match("/%.%./") and not value:match("/%.%.$")
 end
 
 local function validate_artifact(value, expected_schema, field, code)
@@ -95,6 +95,7 @@ end
 
 local function canonical_copy(value, active)
   if value == nil or rawequal(value, canonical_json.null) then fail("canonicalization-failed", "null is not supported") end
+  if type(value) == "number" and math.type(value) ~= "integer" then fail("canonicalization-failed", "floating-point values are not supported") end
   if type(value) ~= "table" then return value end
   if active[value] then fail("canonicalization-failed", "cyclic tables are not supported") end
   local tag = getmetatable(value)
@@ -125,10 +126,10 @@ function G.validate_request(value)
   only_fields(value, { schema = true, repository = true, analysis = true, existing_test_inventory = true, allowed_catalogs = true, prompt_template = true, policy = true, artifact_root = true, trace_id = true, dedup_key = true }, "request", "malformed-request")
   if value.schema ~= G.schemas.request then fail("unknown-schema", "request schema is invalid") end
   only_fields(value.repository, { url = true, target_commit = true, worktree = true }, "request.repository", "malformed-request")
-  if not bounded(value.repository.url, 1024) or not value.repository.url:match("^https://") or value.repository.url:find("[\\%?#@]") or value.repository.url:sub(-1) == "/" then fail("malformed-request", "repository.url is unsafe") end
+  if not bounded(value.repository.url, 1024) or not value.repository.url:match("^https://") or value.repository.url:find("[%s\\%?#@]") or value.repository.url:sub(-1) == "/" then fail("malformed-request", "repository.url is unsafe") end
   if type(value.repository.target_commit) ~= "string" or #value.repository.target_commit ~= 40 or not value.repository.target_commit:match("^[0-9a-f]+$") then fail("malformed-request", "target_commit is invalid") end
   only_fields(value.repository.worktree, { kind = true, ref = true }, "request.repository.worktree", "malformed-request")
-  if value.repository.worktree.kind ~= "approved-worktree" or not safe_pointer(value.repository.worktree.ref, 512) then fail("malformed-request", "worktree is invalid") end
+  if value.repository.worktree.kind ~= "approved-worktree" or not safe_pointer(value.repository.worktree.ref, 512, true) then fail("malformed-request", "worktree is invalid") end
   only_fields(value.analysis, { repository_analysis = true, requirements_index = true, traceability_seed = true }, "request.analysis", "malformed-request")
   validate_artifact(value.analysis.repository_analysis, "testing-design.repository-analysis.v1", "request.analysis.repository_analysis", "malformed-request")
   validate_artifact(value.analysis.requirements_index, "testing-design.requirements-index.v1", "request.analysis.requirements_index", "malformed-request")
@@ -152,7 +153,7 @@ local function validate_trace_ref(value, field)
   only_fields(value, { kind = true, ref = true, sha256 = true }, field, "invalid-traceability")
   require_bounded(value.kind, 180, field .. ".kind", "invalid-traceability")
   require_bounded(value.ref, 180, field .. ".ref", "invalid-traceability")
-  if value.ref:match("^https?://") or value.ref:find("[%?#]") or value.ref == "main" or value.ref == "master" or value.ref:match("^refs/heads/") or value.ref:match("^refs/tags/") then fail("invalid-traceability", field .. ".ref is mutable") end
+  if value.ref:match("^https?://") or value.ref:find("[\\%?#@]") or value.ref == ".." or value.ref:match("^%.%./") or value.ref:match("/%.%./") or value.ref:match("/%.%.$") or value.ref == "main" or value.ref == "master" or value.ref:match("^refs/heads/") or value.ref:match("^refs/tags/") then fail("invalid-traceability", field .. ".ref is mutable") end
   require_sha(value.sha256, field .. ".sha256", "invalid-traceability")
 end
 
@@ -179,7 +180,7 @@ local function validate_candidate(candidate, request, index)
     only_fields(step.action, { catalog_id = true, catalog_version = true, action_id = true, target = true }, step_field .. ".action", "malformed-action")
     if step.action.catalog_id ~= request.allowed_catalogs.actions.catalog_id or step.action.catalog_version ~= request.allowed_catalogs.actions.catalog_version or step.action.action_id ~= "browser.navigate.v1" then fail("unsupported-action", "action is not allowlisted") end
     only_fields(step.action.target, { kind = true, ref = true }, step_field .. ".action.target", "malformed-action")
-    if step.action.target.kind ~= "route" or not bounded(step.action.target.ref, 512) or step.action.target.ref:sub(1, 1) ~= "/" or step.action.target.ref:match("^//") or step.action.target.ref:find("[^%w%._~%%/%-]") then fail("malformed-action", "route target is unsafe") end
+    if step.action.target.kind ~= "route" or not bounded(step.action.target.ref, 512) or step.action.target.ref:sub(1, 1) ~= "/" or step.action.target.ref:match("^//") or step.action.target.ref:match("/%.%./") or step.action.target.ref:match("/%.%.$") or step.action.target.ref:find("[^%w%._~%%/%-]") then fail("malformed-action", "route target is unsafe") end
     only_fields(step.assertion, { catalog_id = true, catalog_version = true, assertion_id = true, expected = true }, step_field .. ".assertion", "malformed-assertion")
     if step.assertion.catalog_id ~= request.allowed_catalogs.assertions.catalog_id or step.assertion.catalog_version ~= request.allowed_catalogs.assertions.catalog_version or step.assertion.assertion_id ~= "browser.title.equals.v1" then fail("unsupported-assertion", "assertion is not allowlisted") end
     require_bounded(step.assertion.expected, 300, step_field .. ".assertion.expected", "malformed-assertion")

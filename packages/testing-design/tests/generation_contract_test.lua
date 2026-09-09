@@ -13,13 +13,244 @@ local function load(name)
   return host_json.decode(body)
 end
 
+local function load_path(path)
+  local handle = assert(io.open(path, "rb"))
+  local body = handle:read("*a")
+  handle:close()
+  return host_json.decode(body)
+end
+
 local function assert_classification(expected, callback)
   local ok, message = pcall(callback)
   t.eq(ok, false, "expected validation failure")
   t.eq(error_facts.error_class_from_message(message), expected, "expected " .. expected .. ", got " .. tostring(message))
 end
 
+local function apply_case(document, case)
+  local current = document
+  for index = 1, #case.path - 1 do
+    local segment = case.path[index]
+    if type(segment) == "number" then segment = segment + 1 end
+    current = current[segment]
+  end
+  local leaf = case.path[#case.path]
+  if type(leaf) == "number" then leaf = leaf + 1 end
+  if case.operation == "remove" then current[leaf] = nil else current[leaf] = case.value end
+  return document
+end
+
+local function at_path(document, path)
+  local current = document
+  for _, segment in ipairs(path) do current = current[segment] end
+  return current
+end
+
+local function collect_object_locations(schema, instance, path, locations)
+  if schema.type == "object" and type(instance) == "table" then
+    locations[#locations + 1] = { path = path, schema = schema }
+    for key, child_schema in pairs(schema.properties or {}) do
+      if instance[key] ~= nil then
+        local child_path = {}
+        for index, segment in ipairs(path) do child_path[index] = segment end
+        child_path[#child_path + 1] = key
+        collect_object_locations(child_schema, instance[key], child_path, locations)
+      end
+    end
+  elseif schema.type == "array" and type(instance) == "table" and instance[1] ~= nil then
+    local child_path = {}
+    for index, segment in ipairs(path) do child_path[index] = segment end
+    child_path[#child_path + 1] = 1
+    collect_object_locations(schema.items, instance[1], child_path, locations)
+  end
+end
+
+local function expected_object_class(document_name, path)
+  if document_name == "request" then return "malformed-request" end
+  if document_name == "receipt" then return "malformed-receipt" end
+  for _, segment in ipairs(path) do
+    if segment == "action" or segment == "target" then return "malformed-action" end
+    if segment == "assertion" then return "malformed-assertion" end
+    if segment == "traceability" or segment == "requirement_refs" or segment == "journey_refs" or segment == "risk_refs" or segment == "source_refs" or segment == "existing_test_refs" then return "invalid-traceability" end
+  end
+  for _, segment in ipairs(path) do if segment == "candidates" then return "malformed-candidate" end end
+  return "malformed-candidate-set"
+end
+
+local function validate_document(document_name, document, request, candidate_set)
+  if document_name == "request" then return contract.validate_request(document) end
+  if document_name == "candidate_set" then return contract.validate_candidate_set(document, request) end
+  return contract.validate_receipt(document, request, candidate_set)
+end
+
+local function clone(value)
+  return host_json.decode(contract.canonical_bytes(value))
+end
+
+local matrix_output_digest
+local function matrix_context()
+  local request, candidate_set, receipt = load("valid-request"), load("valid-candidate-set"), load("valid-receipt")
+  local trace = candidate_set.candidates[1].traceability
+  for _, key in ipairs({ "journey_refs", "risk_refs" }) do trace[key] = clone(trace.requirement_refs) end
+  trace.existing_test_refs = { { kind = "artifact", ref = request.existing_test_inventory.artifact_pointer, sha256 = request.existing_test_inventory.artifact_digest } }
+  matrix_output_digest = matrix_output_digest or contract.canonical_digest(candidate_set)
+  receipt.validated_output_digest, receipt.candidate_set.artifact_digest = matrix_output_digest, matrix_output_digest
+  receipt.rejected_candidates = { total = 1, reasons = { { code = "duplicate-candidate", count = 1 } } }
+  return { request = request, candidate_set = candidate_set, receipt = receipt }
+end
+
+local function rebind_context(context)
+  local request_digest = contract.canonical_digest(context.request)
+  context.candidate_set.request_digest = request_digest
+  context.receipt.request_digest, context.receipt.input_digest = request_digest, request_digest
+  local output_digest = contract.canonical_digest(context.candidate_set)
+  context.receipt.validated_output_digest, context.receipt.candidate_set.artifact_digest = output_digest, output_digest
+end
+
+local function string_samples(spec, controls)
+  local prefix, maximum = spec.prefix or "", spec.max
+  local samples = {
+    { spec.minimum or prefix .. "x", true }, { prefix .. string.rep("x", maximum - #prefix), true },
+    { "", false }, { prefix .. string.rep("x", maximum + 1 - #prefix), false },
+    { prefix .. string.rep("界", math.floor((maximum - #prefix) / 3) + 1), false },
+  }
+  if not spec.ascii_only then samples[#samples + 1] = { prefix .. string.rep("界", math.floor((maximum - #prefix) / 3)) .. string.rep("x", (maximum - #prefix) % 3), true } end
+  for _, code in ipairs(controls) do
+    local control = string.char(code)
+    for _, value in ipairs({ control .. prefix .. "x", prefix .. "x" .. control .. "x", prefix .. "x" .. control }) do samples[#samples + 1] = { value, false } end
+  end
+  return samples
+end
+
+local function check_matrix_value(spec, value, valid)
+  local context = matrix_context()
+  local document = context[spec.document]
+  apply_case(document, { path = spec.path, operation = "set", value = value })
+  if valid then
+    for _, path in ipairs(spec.bindings or {}) do apply_case(context, { path = path, operation = "set", value = value }) end
+    if spec.path[1] == "rejected_candidates" and spec.path[2] == "total" and value == 0 then context.receipt.rejected_candidates.reasons = canonical_json.array() end
+    if spec.document ~= "request" then rebind_context(context) end
+    t.eq(validate_document(spec.document, document, context.request, context.candidate_set), document)
+  else
+    assert_classification(spec.class, function() validate_document(spec.document, document, context.request, context.candidate_set) end)
+  end
+end
+
 return {
+  test_shared_string_boundaries_and_controls = function()
+    local matrix = load("boundary-matrix")
+    for _, spec in ipairs(matrix.strings) do
+      for _, sample in ipairs(string_samples(spec, matrix.controls)) do check_matrix_value(spec, sample[1], sample[2]) end
+    end
+    for _, spec in ipairs(matrix.unsafe) do
+      for _, value in ipairs(spec.values) do check_matrix_value(spec, value, false) end
+    end
+  end,
+
+  test_shared_fixed_string_controls_and_hex_shapes = function()
+    local matrix = load("boundary-matrix")
+    for _, spec in ipairs(matrix.fixed_strings) do
+      local samples = { "" }
+      for _, code in ipairs(matrix.controls) do
+        local control = string.char(code)
+        samples[#samples + 1] = control .. spec.value
+        samples[#samples + 1] = spec.value:sub(1, 1) .. control .. spec.value:sub(2)
+        samples[#samples + 1] = spec.value .. control
+      end
+      if spec.hex then
+        for _, value in ipairs({ string.rep("a", spec.hex - 1), string.rep("a", spec.hex + 1), string.rep("A", spec.hex), string.rep("g", spec.hex) }) do samples[#samples + 1] = value end
+      end
+      for _, value in ipairs(samples) do check_matrix_value(spec, value, false) end
+    end
+  end,
+
+  test_rejects_invalid_utf8_and_preserves_scalar_boundaries = function()
+    local invalid = { string.char(0x80), string.char(0xc0, 0xaf), string.char(0xe0, 0x80, 0xaf), string.char(0xed, 0xa0, 0x80), string.char(0xf4, 0x90, 0x80, 0x80), string.char(0xf0, 0x90) }
+    for _, value in ipairs(invalid) do
+      local request = load("valid-request")
+      request.trace_id = value
+      assert_classification("malformed-request", function() contract.validate_request(request) end)
+      assert_classification("canonicalization-failed", function() contract.canonical_bytes({ value = value }) end)
+    end
+    for _, value in ipairs({ "é", "界", string.char(0xf0, 0x90, 0x80, 0x80), string.char(0xf4, 0x8f, 0xbf, 0xbf) }) do
+      local request = load("valid-request")
+      request.trace_id = value
+      t.eq(contract.validate_request(request), request)
+      t.eq(contract.canonical_bytes({ value = value }), '{"value":"' .. value .. '"}\n')
+    end
+  end,
+
+  test_canonical_utf8_order_escaping_and_integer_rejections = function()
+    local value = { ["界"] = true, ["é"] = false, a = { "second", "first" }, escape = "\"\\\n\1\127/" }
+    local expected = '{"a":["second","first"],"escape":"\\"\\\\\\n\\u0001' .. string.char(127) .. '/","é":false,"界":true}\n'
+    t.eq(contract.canonical_bytes(value), expected)
+    t.eq(contract.canonical_bytes(value), expected)
+    t.eq(value.a[1], "second")
+    t.eq(value.escape, "\"\\\n\1\127/")
+    for _, number in ipairs({ 1.5, 1.0, math.huge, -math.huge, 0 / 0 }) do
+      assert_classification("canonicalization-failed", function() contract.canonical_bytes({ value = number }) end)
+    end
+    assert_classification("canonicalization-failed", function() contract.canonical_bytes({ [true] = "invalid" }) end)
+  end,
+
+  test_shared_unicode_scalar_representatives = function()
+    local matrix = load("boundary-matrix")
+    for _, spec in ipairs(matrix.strings) do
+      for _, sample in ipairs(matrix.unicode_scalars) do
+        local parts = { spec.prefix or "" }
+        for _, code in ipairs(sample.codepoints) do parts[#parts + 1] = utf8.char(code) end
+        check_matrix_value(spec, table.concat(parts), sample.valid and not spec.ascii_only)
+      end
+    end
+  end,
+
+  test_shared_timestamp_separator_and_worktree_grammar = function()
+    for _, spec in ipairs(load("boundary-matrix").formats) do
+      for _, sample in ipairs(spec.values) do check_matrix_value(spec, sample.value, sample.valid) end
+    end
+  end,
+
+  test_shared_integer_boundaries = function()
+    for _, spec in ipairs(load("boundary-matrix").integers) do
+      for _, value in ipairs({ spec.min, spec.max }) do check_matrix_value(spec, value, true) end
+      for _, value in ipairs({ spec.min - 1, spec.max + 1, 1.5, "1", true }) do check_matrix_value(spec, value, false) end
+    end
+  end,
+
+  test_shared_candidate_and_step_length_boundaries = function()
+    for _, spec in ipairs(load("boundary-matrix").arrays) do
+      for _, size in ipairs({ 0, 1, spec.maximum, spec.maximum + 1 }) do
+        local context = matrix_context()
+        context.request.policy[spec.policy] = spec.maximum
+        local values = canonical_json.array()
+        for index = 1, size do
+          local item = clone(spec.policy == "max_candidates" and context.candidate_set.candidates[1] or context.candidate_set.candidates[1].steps[1])
+          if spec.policy == "max_candidates" then item.candidate_id = "candidate-" .. index
+          else item.step_id = "step-" .. index end
+          values[index] = item
+        end
+        apply_case(context.candidate_set, { path = spec.path, operation = "set", value = values })
+        rebind_context(context)
+        local validate = function() return contract.validate_candidate_set(context.candidate_set, context.request) end
+        if size >= 1 and size <= spec.maximum then
+          t.eq(validate(), context.candidate_set)
+          if size > 1 then
+            context.request.policy[spec.policy] = size - 1
+            rebind_context(context)
+            assert_classification(spec.class, validate)
+          end
+        else assert_classification(spec.class, validate) end
+      end
+      local context = matrix_context()
+      context.request.policy[spec.policy] = 2
+      local item = spec.policy == "max_candidates" and context.candidate_set.candidates[1] or context.candidate_set.candidates[1].steps[1]
+      apply_case(context.candidate_set, { path = spec.path, operation = "set", value = { item, clone(item) } })
+      rebind_context(context)
+      assert_classification(spec.policy == "max_candidates" and "duplicate-candidate-id" or "duplicate-step-id", function()
+        contract.validate_candidate_set(context.candidate_set, context.request)
+      end)
+    end
+  end,
+
   test_validates_traceable_browser_title_candidate_and_receipt = function()
     local request = load("valid-request")
     local candidate_set = load("valid-candidate-set")
@@ -234,15 +465,11 @@ return {
     local request = load("valid-request")
     local candidate_set = load("valid-candidate-set")
     local receipt = load("valid-receipt")
-    receipt.rejected_candidates = {
-      total = 3,
-      reasons = {
-        { code = "duplicate-candidate", count = 2 },
-        { code = "unsupported-action", count = 1 },
-      },
-    }
+    local reason_codes = { "duplicate-candidate", "unsupported-action", "unsupported-assertion", "invalid-traceability", "oversized-value", "malformed-candidate" }
+    receipt.rejected_candidates = { total = #reason_codes, reasons = {} }
+    for _, code in ipairs(reason_codes) do receipt.rejected_candidates.reasons[#receipt.rejected_candidates.reasons + 1] = { code = code, count = 1 } end
     t.eq(contract.validate_receipt(receipt, request, candidate_set), receipt)
-    receipt.rejected_candidates.total = 2
+    receipt.rejected_candidates.total = #reason_codes - 1
     assert_classification("malformed-receipt", function() contract.validate_receipt(receipt, request, candidate_set) end)
 
     for _, reasons in ipairs({
@@ -278,5 +505,61 @@ return {
     local receipt = load("valid-receipt")
     receipt.budget.prompt_bytes = request.policy.max_prompt_bytes + 1
     assert_classification("budget-exceeded", function() contract.validate_receipt(receipt, request, load("valid-candidate-set")) end)
+  end,
+
+  test_accepts_leap_day_and_equal_timestamps_with_subsecond_duration = function()
+    local request = load("valid-request")
+    local candidate_set = load("valid-candidate-set")
+    local receipt = load("valid-receipt")
+    receipt.timing.started_at = "2024-02-29T23:59:59Z"
+    receipt.timing.finished_at = "2024-02-29T23:59:59Z"
+    receipt.timing.duration_ms = 25
+    receipt.budget.elapsed_ms = 25
+    t.eq(contract.validate_receipt(receipt, request, candidate_set), receipt)
+  end,
+
+  test_rejects_shared_generation_contract_cases = function()
+    local corpus = load("rejection-cases")
+    for _, case in ipairs(corpus.cases) do
+      local request = load("valid-request")
+      local candidate_set = load("valid-candidate-set")
+      local receipt = load("valid-receipt")
+      local document = ({ request = request, candidate_set = candidate_set, receipt = receipt })[case.document]
+      apply_case(document, case)
+      assert_classification(case.lua_class, function()
+        validate_document(case.document, document, request, candidate_set)
+      end)
+    end
+  end,
+
+  test_rejects_every_missing_and_unknown_object_field = function()
+    local definitions = {
+      request = "testing-design.generate-request.v1",
+      candidate_set = "testing-design.candidate-test-case-set.v1",
+      receipt = "testing-design.generation-receipt.v1",
+    }
+    for document_name, identity in pairs(definitions) do
+      local schema = load_path("schemas-next-release/" .. identity .. ".schema.json")
+      local base = matrix_context()[document_name]
+      local locations = {}
+      collect_object_locations(schema, base, {}, locations)
+      for _, location in ipairs(locations) do
+        local expected = expected_object_class(document_name, location.path)
+        local context = matrix_context()
+        local document = context[document_name]
+        at_path(document, location.path).unknown = true
+        assert_classification(expected, function()
+          validate_document(document_name, document, context.request, context.candidate_set)
+        end)
+        for _, field in ipairs(location.schema.required or {}) do
+          context = matrix_context()
+          document = context[document_name]
+          at_path(document, location.path)[field] = nil
+          assert_classification(expected, function()
+            validate_document(document_name, document, context.request, context.candidate_set)
+          end)
+        end
+      end
+    end
   end,
 }

@@ -31,12 +31,12 @@
         "url": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^https://(?![^/]*@)(?!.*[\\\\?#])[^/\\s]+(?:/[^/\\s]+)+$",
+          "pattern": "^https://(?![\\s\\S]*[\\\\?#@\\u0000-\\u001F\\u007F])[^/\\s]+(?:/[^/\\s]+)+(?![\\s\\S])",
           "x-fkst-maxUtf8Bytes": 1024
         },
         "target_commit": {
           "type": "string",
-          "pattern": "^[0-9a-f]{40}$"
+          "pattern": "^[0-9a-f]{40}(?![\\s\\S])"
         },
         "worktree": {
           "type": "object",
@@ -52,7 +52,7 @@
             "ref": {
               "type": "string",
               "minLength": 1,
-              "pattern": "^(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+              "pattern": "^(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))(?![\\s\\S]*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
               "x-fkst-maxUtf8Bytes": 512
             }
           }
@@ -87,12 +87,12 @@
             "artifact_pointer": {
               "type": "string",
               "minLength": 1,
-              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+              "pattern": "^(?!/)(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))(?![\\s\\S]*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
               "x-fkst-maxUtf8Bytes": 512
             },
             "artifact_digest": {
               "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
+              "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
             }
           }
         },
@@ -115,12 +115,12 @@
             "artifact_pointer": {
               "type": "string",
               "minLength": 1,
-              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+              "pattern": "^(?!/)(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))(?![\\s\\S]*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
               "x-fkst-maxUtf8Bytes": 512
             },
             "artifact_digest": {
               "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
+              "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
             }
           }
         },
@@ -143,12 +143,12 @@
             "artifact_pointer": {
               "type": "string",
               "minLength": 1,
-              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+              "pattern": "^(?!/)(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))(?![\\s\\S]*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
               "x-fkst-maxUtf8Bytes": 512
             },
             "artifact_digest": {
               "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
+              "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
             }
           }
         }
@@ -173,12 +173,12 @@
         "artifact_pointer": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+          "pattern": "^(?!/)(?![\\s\\S]*(?:^|/)\\.\\.(?:/|$))(?![\\s\\S]*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
           "x-fkst-maxUtf8Bytes": 512
         },
         "artifact_digest": {
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
         }
       }
     },
@@ -202,16 +202,16 @@
             "catalog_id": {
               "type": "string",
               "minLength": 1,
-              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
               "x-fkst-maxUtf8Bytes": 180
             },
             "catalog_version": {
               "type": "string",
-              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?![\\s\\S])"
             },
             "catalog_digest": {
               "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
+              "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
             }
           }
         },
@@ -227,16 +227,16 @@
             "catalog_id": {
               "type": "string",
               "minLength": 1,
-              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
               "x-fkst-maxUtf8Bytes": 180
             },
             "catalog_version": {
               "type": "string",
-              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?![\\s\\S])"
             },
             "catalog_digest": {
               "type": "string",
-              "pattern": "^[0-9a-f]{64}$"
+              "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
             }
           }
         }
@@ -254,16 +254,16 @@
         "template_id": {
           "type": "string",
           "minLength": 1,
-          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
           "x-fkst-maxUtf8Bytes": 180
         },
         "template_version": {
           "type": "string",
-          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?![\\s\\S])"
         },
         "template_digest": {
           "type": "string",
-          "pattern": "^[0-9a-f]{64}$"
+          "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
         }
       }
     },
@@ -312,19 +312,19 @@
     "artifact_root": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^\\.testing/runs/(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#])[^\\u0000-\\u001F\\u007F/](?:[^\\u0000-\\u001F\\u007F]*[^\\u0000-\\u001F\\u007F/])?$",
+      "pattern": "^\\.testing/runs/(?![\\s\\S]*\\.\\.)(?![\\s\\S]*[\\\\?#])[^\\u0000-\\u001F\\u007F/](?:[^\\u0000-\\u001F\\u007F]*[^\\u0000-\\u001F\\u007F/])?(?![\\s\\S])",
       "x-fkst-maxUtf8Bytes": 512
     },
     "trace_id": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
       "x-fkst-maxUtf8Bytes": 180
     },
     "dedup_key": {
       "type": "string",
       "minLength": 1,
-      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+(?![\\s\\S])",
       "x-fkst-maxUtf8Bytes": 180
     }
   }

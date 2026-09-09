@@ -17,7 +17,14 @@ def load_json(path: Path) -> dict[str, object]:
 
 
 def utf8_max_bytes(validator, limit, instance, schema):
-    if isinstance(instance, str) and len(instance.encode("utf-8")) > limit:
+    if not isinstance(instance, str):
+        return
+    try:
+        size = len(instance.encode("utf-8"))
+    except UnicodeEncodeError:
+        yield ValidationError("UTF-8 value contains an unpaired surrogate")
+        return
+    if size > limit:
         yield ValidationError(f"UTF-8 value exceeds {limit} bytes")
 
 
@@ -31,7 +38,7 @@ FORMAT_CHECKER = FormatChecker()
 def register_utf8_format(limit: int) -> None:
     @FORMAT_CHECKER.checks(f"fkst-utf8-max-{limit}")
     def utf8_format(value: object) -> bool:
-        return not isinstance(value, str) or len(value.encode("utf-8")) <= limit
+        return next(utf8_max_bytes(None, limit, value, None), None) is None
 
 
 for byte_limit in (32, 64, 80, 96, 120, 180, 512, 4096):
