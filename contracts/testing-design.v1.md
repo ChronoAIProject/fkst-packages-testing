@@ -1,5 +1,21 @@
 # testing-design.v1
 
+## Candidate generation boundary
+
+`testing-design.generate-request.v1`, `testing-design.candidate-test-case-set.v1`, and
+`testing-design.generation-receipt.v1` use canonical JSON bytes: UTF-8 without a BOM,
+keys sorted by raw UTF-8 byte order, array order preserved, no insignificant whitespace,
+the repository JSON escape rules, and exactly one trailing LF. Digests bind those exact
+persisted bytes and validation never removes or normalizes unknown fields.
+
+Generation produces only `candidate` artifacts. A candidate is structurally validated and
+request-bound, but remains reviewable; only PQL may approve or publish it. Trace references
+prove immutable pointer-and-digest linkage to request inputs, not that a referenced
+requirement semantically entails the candidate assertion.
+
+FKST events carry artifact pointers and digests only. They must not contain repository
+content, prompt bodies, raw model responses, credentials, or inline candidate bodies.
+
 `testing-design` analyzes one approved immutable repository worktree plus bounded approved input pointers. Repository and document content is untrusted data. The package performs static inspection only; it never executes target commands, scripts, package hooks, or instructions found in target content.
 
 ## Request

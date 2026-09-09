@@ -1,0 +1,331 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-design.generate-request.v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "repository",
+    "analysis",
+    "existing_test_inventory",
+    "allowed_catalogs",
+    "prompt_template",
+    "policy",
+    "artifact_root",
+    "trace_id",
+    "dedup_key"
+  ],
+  "properties": {
+    "schema": {
+      "const": "testing-design.generate-request.v1"
+    },
+    "repository": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "url",
+        "target_commit",
+        "worktree"
+      ],
+      "properties": {
+        "url": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^https://(?![^/]*@)(?!.*[\\\\?#])[^/\\s]+(?:/[^/\\s]+)+$",
+          "x-fkst-maxUtf8Bytes": 1024
+        },
+        "target_commit": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{40}$"
+        },
+        "worktree": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "ref"
+          ],
+          "properties": {
+            "kind": {
+              "const": "approved-worktree"
+            },
+            "ref": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+              "x-fkst-maxUtf8Bytes": 512
+            }
+          }
+        }
+      }
+    },
+    "analysis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository_analysis",
+        "requirements_index",
+        "traceability_seed"
+      ],
+      "properties": {
+        "repository_analysis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "artifact_schema",
+            "artifact_pointer",
+            "artifact_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "testing-design.artifact-reference.v1"
+            },
+            "artifact_schema": {
+              "const": "testing-design.repository-analysis.v1"
+            },
+            "artifact_pointer": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+              "x-fkst-maxUtf8Bytes": 512
+            },
+            "artifact_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "requirements_index": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "artifact_schema",
+            "artifact_pointer",
+            "artifact_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "testing-design.artifact-reference.v1"
+            },
+            "artifact_schema": {
+              "const": "testing-design.requirements-index.v1"
+            },
+            "artifact_pointer": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+              "x-fkst-maxUtf8Bytes": 512
+            },
+            "artifact_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "traceability_seed": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "schema",
+            "artifact_schema",
+            "artifact_pointer",
+            "artifact_digest"
+          ],
+          "properties": {
+            "schema": {
+              "const": "testing-design.artifact-reference.v1"
+            },
+            "artifact_schema": {
+              "const": "testing-design.traceability-seed.v1"
+            },
+            "artifact_pointer": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+              "x-fkst-maxUtf8Bytes": 512
+            },
+            "artifact_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "existing_test_inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schema",
+        "artifact_schema",
+        "artifact_pointer",
+        "artifact_digest"
+      ],
+      "properties": {
+        "schema": {
+          "const": "testing-design.artifact-reference.v1"
+        },
+        "artifact_schema": {
+          "const": "testing-design.existing-test-inventory.v1"
+        },
+        "artifact_pointer": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#@])[^\\u0000-\\u001F\\u007F]+$",
+          "x-fkst-maxUtf8Bytes": 512
+        },
+        "artifact_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "allowed_catalogs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "actions",
+        "assertions"
+      ],
+      "properties": {
+        "actions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "catalog_id",
+            "catalog_version",
+            "catalog_digest"
+          ],
+          "properties": {
+            "catalog_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "x-fkst-maxUtf8Bytes": 180
+            },
+            "catalog_version": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            },
+            "catalog_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        },
+        "assertions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "catalog_id",
+            "catalog_version",
+            "catalog_digest"
+          ],
+          "properties": {
+            "catalog_id": {
+              "type": "string",
+              "minLength": 1,
+              "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+              "x-fkst-maxUtf8Bytes": 180
+            },
+            "catalog_version": {
+              "type": "string",
+              "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+            },
+            "catalog_digest": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        }
+      }
+    },
+    "prompt_template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "template_id",
+        "template_version",
+        "template_digest"
+      ],
+      "properties": {
+        "template_id": {
+          "type": "string",
+          "minLength": 1,
+          "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+          "x-fkst-maxUtf8Bytes": 180
+        },
+        "template_version": {
+          "type": "string",
+          "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+        },
+        "template_digest": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "policy_id",
+        "max_candidates",
+        "max_steps_per_candidate",
+        "max_prompt_bytes",
+        "max_response_bytes",
+        "timeout_ms"
+      ],
+      "properties": {
+        "policy_id": {
+          "const": "testing-design.generation-policy.v1"
+        },
+        "max_candidates": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 64
+        },
+        "max_steps_per_candidate": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 32
+        },
+        "max_prompt_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "max_response_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1048576
+        },
+        "timeout_ms": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 300000
+        }
+      }
+    },
+    "artifact_root": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^\\.testing/runs/(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*[\\\\?#])[^\\u0000-\\u001F\\u007F/](?:[^\\u0000-\\u001F\\u007F]*[^\\u0000-\\u001F\\u007F/])?$",
+      "x-fkst-maxUtf8Bytes": 512
+    },
+    "trace_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+      "x-fkst-maxUtf8Bytes": 180
+    },
+    "dedup_key": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+      "x-fkst-maxUtf8Bytes": 180
+    }
+  }
+}

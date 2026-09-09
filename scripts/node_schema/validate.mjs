@@ -42,7 +42,7 @@ const validDateTime = (value) => {
   return true;
 };
 
-const enforcePolicy = (schema, policy, source, location = "#") => {
+export const enforcePolicy = (schema, policy, source, location = "#") => {
   if (typeof schema === "boolean") return;
   if (schema === null || typeof schema !== "object" || Array.isArray(schema)) throw new Error(`${source}:${location}: schema location must be an object or Boolean`);
   for (const [keyword, value] of Object.entries(schema)) {
@@ -59,7 +59,7 @@ const enforcePolicy = (schema, policy, source, location = "#") => {
   }
 };
 
-const profileValid = async (schema, instance, resources, baseUri) => {
+export const profileValid = async (schema, instance, resources, baseUri) => {
   if (typeof schema === "boolean") return true;
   const nestedId = typeof schema.$id === "string" ? new URL(schema.$id, baseUri).href : baseUri;
   if (typeof schema["x-fkst-maxUtf8Bytes"] === "number" && typeof instance === "string" && utf8Length(instance) > schema["x-fkst-maxUtf8Bytes"]) return false;

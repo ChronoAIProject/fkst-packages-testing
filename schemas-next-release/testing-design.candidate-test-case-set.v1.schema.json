@@ -1,0 +1,389 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://chronoaiproject.github.io/fkst-packages-testing/schemas/testing-design.candidate-test-case-set.v1.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "candidate_set_id",
+    "request_digest",
+    "status",
+    "candidates"
+  ],
+  "properties": {
+    "schema": {
+      "const": "testing-design.candidate-test-case-set.v1"
+    },
+    "candidate_set_id": {
+      "type": "string",
+      "minLength": 1,
+      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+      "x-fkst-maxUtf8Bytes": 180
+    },
+    "request_digest": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "status": {
+      "const": "candidate"
+    },
+    "candidates": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "candidate_id",
+          "title",
+          "kind",
+          "status",
+          "preconditions",
+          "steps",
+          "evidence_requirements",
+          "traceability"
+        ],
+        "properties": {
+          "candidate_id": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "x-fkst-maxUtf8Bytes": 180
+          },
+          "title": {
+            "type": "string",
+            "minLength": 1,
+            "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+            "x-fkst-maxUtf8Bytes": 300
+          },
+          "kind": {
+            "const": "browser-smoke"
+          },
+          "status": {
+            "const": "candidate"
+          },
+          "preconditions": {
+            "type": "array",
+            "minItems": 0,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "ref"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "application-base-url"
+                },
+                "ref": {
+                  "const": "application.base_url"
+                }
+              }
+            },
+            "maxItems": 16
+          },
+          "steps": {
+            "type": "array",
+            "minItems": 1,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "step_id",
+                "action",
+                "assertion"
+              ],
+              "properties": {
+                "step_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "x-fkst-maxUtf8Bytes": 180
+                },
+                "action": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "catalog_id",
+                    "catalog_version",
+                    "action_id",
+                    "target"
+                  ],
+                  "properties": {
+                    "catalog_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "catalog_version": {
+                      "type": "string",
+                      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                    },
+                    "action_id": {
+                      "const": "browser.navigate.v1"
+                    },
+                    "target": {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "kind",
+                        "ref"
+                      ],
+                      "properties": {
+                        "kind": {
+                          "const": "route"
+                        },
+                        "ref": {
+                          "type": "string",
+                          "minLength": 1,
+                          "pattern": "^/(?!/)[A-Za-z0-9._~%/-]*$",
+                          "x-fkst-maxUtf8Bytes": 512
+                        }
+                      }
+                    }
+                  }
+                },
+                "assertion": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "catalog_id",
+                    "catalog_version",
+                    "assertion_id",
+                    "expected"
+                  ],
+                  "properties": {
+                    "catalog_id": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "catalog_version": {
+                      "type": "string",
+                      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"
+                    },
+                    "assertion_id": {
+                      "const": "browser.title.equals.v1"
+                    },
+                    "expected": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 300
+                    }
+                  }
+                }
+              }
+            },
+            "maxItems": 32
+          },
+          "evidence_requirements": {
+            "type": "array",
+            "minItems": 0,
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "kind",
+                "when",
+                "step_id"
+              ],
+              "properties": {
+                "kind": {
+                  "const": "browser-screenshot"
+                },
+                "when": {
+                  "const": "after-step"
+                },
+                "step_id": {
+                  "type": "string",
+                  "minLength": 1,
+                  "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                  "x-fkst-maxUtf8Bytes": 180
+                }
+              }
+            },
+            "maxItems": 16
+          },
+          "traceability": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "requirement_refs",
+              "journey_refs",
+              "risk_refs",
+              "source_refs",
+              "existing_test_refs"
+            ],
+            "properties": {
+              "requirement_refs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "ref",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^(?!https?://)(?!.*[?#])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                "maxItems": 32
+              },
+              "journey_refs": {
+                "type": "array",
+                "minItems": 0,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "ref",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^(?!https?://)(?!.*[?#])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                "maxItems": 32
+              },
+              "risk_refs": {
+                "type": "array",
+                "minItems": 0,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "ref",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^(?!https?://)(?!.*[?#])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                "maxItems": 32
+              },
+              "source_refs": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "ref",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^(?!https?://)(?!.*[?#])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                "maxItems": 32
+              },
+              "existing_test_refs": {
+                "type": "array",
+                "minItems": 0,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "kind",
+                    "ref",
+                    "sha256"
+                  ],
+                  "properties": {
+                    "kind": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "ref": {
+                      "type": "string",
+                      "minLength": 1,
+                      "pattern": "^(?!https?://)(?!.*[?#])(?!.*(?:^|/)\\.\\.(?:/|$))[^\\u0000-\\u001F\\u007F]+$",
+                      "x-fkst-maxUtf8Bytes": 180
+                    },
+                    "sha256": {
+                      "type": "string",
+                      "pattern": "^[0-9a-f]{64}$"
+                    }
+                  }
+                },
+                "maxItems": 32
+              }
+            }
+          }
+        }
+      },
+      "maxItems": 64
+    }
+  }
+}
