@@ -2,6 +2,14 @@ local canonical_json = require("contract.canonical_json")
 local error_facts = require("contract.error_facts")
 local sha256 = require("contract.sha256")
 
+local canonical_array_tag = getmetatable(canonical_json.array())
+local canonical_object_tag = getmetatable(canonical_json.object())
+local host_array_tag, host_object_tag
+if type(json) == "table" and type(json.decode) == "function" then
+  host_array_tag = getmetatable(json.decode("[]"))
+  host_object_tag = getmetatable(json.decode("{}"))
+end
+
 local G = {
   schemas = {
     request = "testing-design.generate-request.v1",
@@ -13,6 +21,10 @@ local G = {
 
 local function fail(code, message)
   error(error_facts.error_message("contract.testing-design-generation", code, message), 0)
+end
+
+local function is_array_tag(tag)
+  return tag == canonical_array_tag or (host_array_tag ~= nil and tag == host_array_tag)
 end
 
 local function only_fields(value, allowed, field, code)
@@ -33,6 +45,7 @@ local function dense_list(value, minimum, maximum, field, code)
     count = count + 1
   end
   if count < minimum or count > maximum then fail(code, field .. " has an invalid length") end
+  if count == 0 and not is_array_tag(getmetatable(value)) then fail(code, field .. " must preserve an empty JSON array") end
   for index = 1, count do if value[index] == nil then fail(code, field .. " must be a dense array") end end
   return count
 end
@@ -80,8 +93,27 @@ local function validate_prompt(value, field, code)
   require_sha(value.template_digest, field .. ".template_digest", code)
 end
 
+local function canonical_copy(value, active)
+  if value == nil or value == canonical_json.null then fail("canonicalization-failed", "null is not supported") end
+  if type(value) ~= "table" then return value end
+  if active[value] then fail("canonicalization-failed", "cyclic tables are not supported") end
+  local tag = getmetatable(value)
+  local array = is_array_tag(tag)
+  if tag ~= nil and not array and tag ~= canonical_object_tag and tag ~= host_object_tag then
+    fail("canonicalization-failed", "tables must not have unsupported metatables")
+  end
+  active[value] = true
+  local copy = {}
+  for key, item in pairs(value) do copy[key] = canonical_copy(item, active) end
+  active[value] = nil
+  -- Translate decoder container identities without erasing empty objects or mutating inputs.
+  if array then return canonical_json.array(copy) end
+  if tag ~= nil or next(value) == nil then return canonical_json.object(copy) end
+  return copy
+end
+
 function G.canonical_bytes(value)
-  return canonical_json.encode(value) .. "\n"
+  return canonical_json.encode(canonical_copy(value, {})) .. "\n"
 end
 
 function G.canonical_digest(value)

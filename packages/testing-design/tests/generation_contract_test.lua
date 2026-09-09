@@ -1,4 +1,5 @@
 local contract = require("contract.testing_design_generation")
+local canonical_json = require("contract.canonical_json")
 local error_facts = require("contract.error_facts")
 local host_json = json
 local t = fkst.test
@@ -30,6 +31,74 @@ return {
     t.eq(contract.canonical_digest(candidate_set), "684935a71f8e7f7ac25f8de2681e6910223c158ae9c73b8a172e188da9605930")
     t.eq(contract.canonical_bytes(request), contract.canonical_bytes(request))
     t.eq(contract.canonical_bytes(candidate_set), contract.canonical_bytes(candidate_set))
+  end,
+
+  test_canonicalizes_host_containers_without_mutating_them = function()
+    local value = host_json.decode('{"z":{},"a":[{},[],{"b":false,"a":0}],"empty":[]}')
+    local array_tag, object_tag = getmetatable(value.a), getmetatable(value.z)
+    t.eq(array_tag ~= object_tag, true, "host decoder must distinguish arrays from objects")
+    local expected = '{"a":[{},[],{"a":0,"b":false}],"empty":[],"z":{}}\n'
+    t.eq(contract.canonical_bytes(value), expected)
+    t.eq(contract.canonical_bytes(value), expected)
+    t.eq(getmetatable(value.a), array_tag)
+    t.eq(getmetatable(value.z), object_tag)
+    t.eq(getmetatable(value.a[2]), array_tag)
+    t.eq(contract.canonical_bytes(host_json.decode("[]")), "[]\n")
+    t.eq(contract.canonical_bytes(host_json.decode("{}")), "{}\n")
+    t.eq(contract.canonical_bytes({ items = canonical_json.array(), object = canonical_json.object() }), '{"items":[],"object":{}}\n')
+    t.eq(contract.canonical_bytes({ items = { 1, false, "value" } }), '{"items":[1,false,"value"]}\n')
+  end,
+
+  test_keeps_canonicalization_fail_closed = function()
+    for _, body in ipairs({ "null", '[null]', '{"field":null}', '{"nested":[{"field":null}]}' }) do
+      assert_classification("canonicalization-failed", function() contract.canonical_bytes(host_json.decode(body)) end)
+    end
+    for _, value in ipairs({ canonical_json.null, { field = canonical_json.null }, { [1] = "a", [3] = "c" }, { [1] = "a", field = "b" } }) do
+      assert_classification("canonicalization-failed", function() contract.canonical_bytes(value) end)
+    end
+    assert_classification("canonicalization-failed", function() contract.canonical_bytes(nil) end)
+    local cyclic = host_json.decode("[]")
+    cyclic[1] = cyclic
+    assert_classification("canonicalization-failed", function() contract.canonical_bytes(cyclic) end)
+    local unsupported = setmetatable({}, { __index = { hidden = true } })
+    assert_classification("canonicalization-failed", function() contract.canonical_bytes({ nested = unsupported }) end)
+    assert_classification("canonicalization-failed", function() canonical_json.encode(host_json.decode("[]")) end)
+  end,
+
+  test_empty_arrays_validate_but_objects_and_null_do_not = function()
+    local request = load("valid-request")
+    for _, key in ipairs({ "preconditions", "evidence_requirements" }) do
+      local candidate_set = load("valid-candidate-set")
+      candidate_set.candidates[1][key] = host_json.decode("[]")
+      t.eq(contract.validate_candidate_set(candidate_set, request), candidate_set)
+      for _, body in ipairs({ "{}", "null" }) do
+        candidate_set.candidates[1][key] = host_json.decode(body)
+        assert_classification("malformed-candidate", function() contract.validate_candidate_set(candidate_set, request) end)
+      end
+    end
+    for _, key in ipairs({ "journey_refs", "risk_refs", "existing_test_refs" }) do
+      for _, body in ipairs({ "{}", "null" }) do
+        local candidate_set = load("valid-candidate-set")
+        candidate_set.candidates[1].traceability[key] = host_json.decode(body)
+        assert_classification("invalid-traceability", function() contract.validate_candidate_set(candidate_set, request) end)
+      end
+    end
+    for _, body in ipairs({ "{}", "null" }) do
+      local receipt = load("valid-receipt")
+      receipt.rejected_candidates.reasons = host_json.decode(body)
+      assert_classification("malformed-receipt", function() contract.validate_receipt(receipt, request, load("valid-candidate-set")) end)
+    end
+  end,
+
+  test_retains_unknown_fields_for_closed_document_validation = function()
+    local request = load("valid-request")
+    request.repository.unknown = host_json.decode("[]")
+    t.eq(contract.canonical_bytes(request):find('"unknown":[]', 1, true) ~= nil, true)
+    assert_classification("malformed-request", function() contract.validate_request(request) end)
+    local candidate_set = load("valid-candidate-set")
+    candidate_set.candidates[1].steps[1].action.unknown = host_json.decode("{}")
+    t.eq(contract.canonical_bytes(candidate_set):find('"unknown":{}', 1, true) ~= nil, true)
+    assert_classification("malformed-action", function() contract.validate_candidate_set(candidate_set, load("valid-request")) end)
   end,
 
   test_classifies_request_action_and_candidate_status_failures = function()
