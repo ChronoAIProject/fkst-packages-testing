@@ -427,6 +427,7 @@ return {
     local set = writes[result.case_result_set_path]
     local legacy = writes[result.case_results_path]
     local manifest = writes[result.evidence_manifest_path]
+    local decoder_evidence = writes[request.artifact_root .. "/evidence/health-api.json"]
     t.eq(set.schema, "testing-case-result-set.v2")
     t.eq(#set.cases, 2)
     t.eq(set.cases[1].execution_status, "passed")
@@ -439,6 +440,7 @@ return {
     t.eq(#legacy.cases, 2)
     t.eq(#legacy.cases[2].assertions, 0)
     t.eq(#manifest.entries, 2)
+    t.eq(decoder_evidence.error_excerpt, "JSON assertion decoder unavailable or invalid")
     t.eq(writes[result.execution_path].status, "blocked")
   end,
 
@@ -473,6 +475,8 @@ return {
       function() return nil end,
       function() return "parsed" end,
       function() return {} end,
+      function() return { status = "parsed", value = "not-an-object" } end,
+      function() return { status = "unexpected", value = {} } end,
     }) do
       local completed
       local ports, effects, writes = runtime(fixtures.artifacts(request, plan, grant), {
@@ -496,6 +500,7 @@ return {
       local legacy = writes[result.case_results_path]
       local manifest = writes[result.evidence_manifest_path]
       local execution = writes[result.execution_path]
+      local decoder_evidence = writes[request.artifact_root .. "/evidence/health-api.json"]
       t.eq(set.schema, "testing-case-result-set.v2")
       t.eq(#set.cases, 1)
       t.eq(set.cases[1].execution_status, "error")
@@ -508,6 +513,7 @@ return {
       t.eq(#legacy.cases[1].assertions, 0)
       t.eq(#manifest.entries, 1)
       t.eq(manifest.entries[1].case_id, "health-api")
+      t.eq(decoder_evidence.error_excerpt, "JSON assertion decoder unavailable or invalid")
       t.eq(execution.status, "blocked")
       t.eq(execution.classification, "harness-tooling-issue")
     end
