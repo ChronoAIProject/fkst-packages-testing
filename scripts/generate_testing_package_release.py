@@ -198,7 +198,7 @@ def tool_catalog() -> dict[str, object]:
     }
 
 
-def release_value(package_content_sha256: str, bundle_bytes: bytes, manifest_bytes: bytes, manifest_value: dict[str, object], source: str, packages: str, substrate: str, created_at: str, authority: dict[str, object] | None = None, tool_catalog_bytes: bytes | None = None) -> dict[str, object]:
+def release_value(package_content_sha256: str, bundle_bytes: bytes, manifest_bytes: bytes, manifest_value: dict[str, object], source: str, packages: str, substrate: str, created_at: str, authority: dict[str, object] | None = None, tool_catalog_bytes: bytes | None = None, *, schema_catalog_path: Path = CATALOG_PATH, schema_release_path: Path = SCHEMA_RELEASE_PATH) -> dict[str, object]:
     manifest_binding = byte_binding("package-release/testing-package-manifest.v1.json", manifest_bytes)
     manifest_binding["manifest_digest"] = manifest_value["manifest_digest"]
     value = {
@@ -211,8 +211,8 @@ def release_value(package_content_sha256: str, bundle_bytes: bytes, manifest_byt
         },
         "bundle": byte_binding("package-release/testing-package-bundle.v1.json", bundle_bytes),
         "manifest": manifest_binding,
-        "schema_catalog": binding(CATALOG_PATH),
-        "schema_release": binding(SCHEMA_RELEASE_PATH),
+        "schema_catalog": binding(schema_catalog_path, "schema-release/testing-schema-catalog.v1.json"),
+        "schema_release": binding(schema_release_path, "schema-release/testing-package-schema-release.v1.json"),
         "source": {"repository_commit": source, "fkst_packages_commit": packages, "fkst_substrate_commit": substrate},
         "producer": {"name": "fkst-packages-testing", "version": VERSION, "generator": "scripts/generate_testing_package_release.py", "generator_version": VERSION},
         "runtime": {"lua": "5.4.0", "platform": "linux-amd64"},
@@ -338,7 +338,7 @@ def verify_signed_artifacts(release_bytes: bytes) -> None:
             raise ValueError("committed Ed25519 signature verification failed")
 
 
-def unsigned_outputs(source_commit: str, *, output_root: Path = ROOT, fkst_packages_commit: str | None = None, fkst_substrate_commit: str | None = None, created_at: str = CREATED_AT, authority: dict[str, object] | None = None) -> dict[Path, bytes]:
+def unsigned_outputs(source_commit: str, *, output_root: Path = ROOT, fkst_packages_commit: str | None = None, fkst_substrate_commit: str | None = None, created_at: str = CREATED_AT, authority: dict[str, object] | None = None, schema_catalog_path: Path = CATALOG_PATH, schema_release_path: Path = SCHEMA_RELEASE_PATH) -> dict[Path, bytes]:
     source = repository_commit(source_commit)
     packages = exact_commit(fkst_packages_commit, "fkst-packages commit") if fkst_packages_commit is not None else pinned_commit(ROOT / ".fkst/conformance/fkst-packages.pin", "fkst-packages")
     substrate = exact_commit(fkst_substrate_commit, "fkst-substrate commit") if fkst_substrate_commit is not None else pinned_commit(ROOT / ".fkst/substrate-ref", "fkst-substrate")
@@ -351,7 +351,7 @@ def unsigned_outputs(source_commit: str, *, output_root: Path = ROOT, fkst_packa
     manifest_value = manifest(package_content_sha256, source, packages, substrate, created_at)
     manifest_bytes = load_manifest_generator().canonical(manifest_value)
     catalog_bytes = compact(tool_catalog()) if authority is not None else None
-    release_bytes = compact(release_value(package_content_sha256, bundle_bytes, manifest_bytes, manifest_value, source, packages, substrate, created_at, authority, catalog_bytes))
+    release_bytes = compact(release_value(package_content_sha256, bundle_bytes, manifest_bytes, manifest_value, source, packages, substrate, created_at, authority, catalog_bytes, schema_catalog_path=schema_catalog_path, schema_release_path=schema_release_path))
     outputs = {bundle_path: bundle_bytes, manifest_path: manifest_bytes, release_path: release_bytes}
     if catalog_bytes is not None:
         outputs[package_root / "testing-package-tool-catalog.v1.json"] = catalog_bytes
@@ -362,6 +362,8 @@ def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true")
     parser.add_argument("--output-directory", type=Path)
+    parser.add_argument("--schema-catalog", type=Path, help="staged testing schema catalog bytes")
+    parser.add_argument("--schema-release", type=Path, help="staged testing package schema release bytes")
     parser.add_argument("--seed-file", type=Path)
     parser.add_argument("--source-commit", required=True)
     parser.add_argument("--fkst-packages-commit")
@@ -378,6 +380,9 @@ def main() -> int:
     try:
         authority_arguments = [arguments.authority_issuer, arguments.authority_keyid, arguments.signature_profile, arguments.valid_from, arguments.valid_until, arguments.revocation_authority, arguments.release_sequence]
         successor = arguments.output_directory is not None
+        staged_bindings = arguments.schema_catalog is not None or arguments.schema_release is not None
+        if staged_bindings and (not successor or arguments.schema_catalog is None or arguments.schema_release is None):
+            raise ValueError("staged schema bindings require --output-directory, --schema-catalog, and --schema-release")
         if successor and (arguments.check or arguments.fkst_packages_commit is None or arguments.fkst_substrate_commit is None or any(value is None for value in authority_arguments)):
             raise ValueError("isolated successor generation requires every explicit dependency and authority input")
         if not successor and any(value is not None for value in authority_arguments):
@@ -400,7 +405,9 @@ def main() -> int:
             authority = {"issuer": arguments.authority_issuer, "keyid": keyid, "release_sequence": arguments.release_sequence, "revocation_authority": arguments.revocation_authority, "signature_profile": arguments.signature_profile, "valid_from": valid_from, "valid_until": valid_until}
             output_root = arguments.output_directory.resolve()
         created_at = canonical_timestamp(arguments.created_at, "created-at")
-        expected = unsigned_outputs(arguments.source_commit, output_root=output_root, fkst_packages_commit=arguments.fkst_packages_commit, fkst_substrate_commit=arguments.fkst_substrate_commit, created_at=created_at, authority=authority)
+        schema_catalog_path = arguments.schema_catalog.resolve() if arguments.schema_catalog is not None else CATALOG_PATH
+        schema_release_path = arguments.schema_release.resolve() if arguments.schema_release is not None else SCHEMA_RELEASE_PATH
+        expected = unsigned_outputs(arguments.source_commit, output_root=output_root, fkst_packages_commit=arguments.fkst_packages_commit, fkst_substrate_commit=arguments.fkst_substrate_commit, created_at=created_at, authority=authority, schema_catalog_path=schema_catalog_path, schema_release_path=schema_release_path)
         if arguments.check:
             for path, data in expected.items():
                 if not path.is_file() or path.read_bytes() != data:
@@ -409,11 +416,12 @@ def main() -> int:
                 raise ValueError("signed release artifacts are missing")
             verify_signed_artifacts(expected[RELEASE_PATH])
         else:
+            seed = signing_seed(arguments.seed_file)
             for path, data in expected.items():
                 path.parent.mkdir(parents=True, exist_ok=True)
                 path.write_bytes(data)
             release_path = output_root / SUBJECT_NAME
-            envelope, authorization = signed_artifacts(expected[release_path], signing_seed(arguments.seed_file), keyid)
+            envelope, authorization = signed_artifacts(expected[release_path], seed, keyid)
             envelope_path = output_root / "package-release/testing-package-release.v1.dsse.json"
             authorization_path = output_root / "package-release/testing-package-release.v1.key.json"
             envelope_path.write_bytes(envelope)

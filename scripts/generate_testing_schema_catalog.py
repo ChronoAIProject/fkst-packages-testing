@@ -33,25 +33,32 @@ def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
-def load_object(path: Path) -> dict[str, object]:
+def display_path(path: Path, repository_root: Path) -> str:
+    try:
+        return path.resolve().relative_to(repository_root.resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def load_object(path: Path, repository_root: Path = ROOT) -> dict[str, object]:
     try:
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, UnicodeError, json.JSONDecodeError) as error:
-        raise ValueError(f"unable to load {path.relative_to(ROOT)}: {error}") from error
+        raise ValueError(f"unable to load {display_path(path, repository_root)}: {error}") from error
     if not isinstance(value, dict):
-        raise ValueError(f"expected JSON object: {path.relative_to(ROOT)}")
+        raise ValueError(f"expected JSON object: {display_path(path, repository_root)}")
     return value
 
 
-def safe_repository_path(value: object, field: str, *, directory: bool = False) -> Path:
+def safe_repository_path(value: object, field: str, *, repository_root: Path = ROOT, directory: bool = False) -> Path:
     if not isinstance(value, str) or not value or value.startswith("/"):
         raise ValueError(f"{field} must be a non-empty repository-relative path")
     relative = Path(value)
     if relative.as_posix() != value or ".." in relative.parts or "." in relative.parts:
         raise ValueError(f"{field} must be normalized and repository-contained")
-    path = (ROOT / relative).resolve()
+    path = (repository_root / relative).resolve()
     try:
-        path.relative_to(ROOT.resolve())
+        path.relative_to(repository_root.resolve())
     except ValueError as error:
         raise ValueError(f"{field} escapes the repository") from error
     if directory and not path.is_dir():
@@ -61,8 +68,8 @@ def safe_repository_path(value: object, field: str, *, directory: bool = False) 
     return path
 
 
-def fixture_entries() -> list[dict[str, object]]:
-    document = load_object(FIXTURE_INDEX)
+def fixture_entries(fixture_index: Path = FIXTURE_INDEX, *, repository_root: Path = ROOT) -> list[dict[str, object]]:
+    document = load_object(fixture_index, repository_root)
     if set(document) != {"schema", "fixture_sets"} or document["schema"] != "testing-schema-fixtures.v1":
         raise ValueError("global fixture index has the wrong closed root")
     entries = document["fixture_sets"]
@@ -78,26 +85,26 @@ def fixture_entries() -> list[dict[str, object]]:
     return entries
 
 
-def fixture_manifest(entry: dict[str, object]) -> tuple[str, dict[str, object]]:
+def fixture_manifest(entry: dict[str, object], *, repository_root: Path = ROOT) -> tuple[str, dict[str, object]]:
     schema_id = entry.get("schema_id")
     if not isinstance(schema_id, str):
         raise ValueError("fixture schema_id must be a string")
-    root = safe_repository_path(entry.get("fixture_root"), "fixture_root", directory=True)
-    index_path = safe_repository_path(entry.get("index_path"), "index_path")
+    root = safe_repository_path(entry.get("fixture_root"), "fixture_root", repository_root=repository_root, directory=True)
+    index_path = safe_repository_path(entry.get("index_path"), "index_path", repository_root=repository_root)
     classification_value = entry.get("classification_path")
-    classification_path = None if classification_value is None else safe_repository_path(classification_value, "classification_path")
-    index = load_object(index_path)
+    classification_path = None if classification_value is None else safe_repository_path(classification_value, "classification_path", repository_root=repository_root)
+    index = load_object(index_path, repository_root)
     cases = index.get("cases")
     support_files = index.get("support_files", [])
     if not isinstance(cases, list) or not isinstance(support_files, list):
-        raise ValueError(f"fixture index must declare cases/support_files: {index_path.relative_to(ROOT)}")
+        raise ValueError(f"fixture index must declare cases/support_files: {display_path(index_path, repository_root)}")
     listed = set()
     for case in cases:
         if not isinstance(case, dict) or not isinstance(case.get("file"), str):
-            raise ValueError(f"fixture index case is malformed: {index_path.relative_to(ROOT)}")
+            raise ValueError(f"fixture index case is malformed: {display_path(index_path, repository_root)}")
         listed.add(case["file"])
     if not all(isinstance(value, str) for value in support_files):
-        raise ValueError(f"fixture support_files must be strings: {index_path.relative_to(ROOT)}")
+        raise ValueError(f"fixture support_files must be strings: {display_path(index_path, repository_root)}")
     listed.update(support_files)
     actual = {path.relative_to(root).as_posix() for path in root.rglob("*.json") if path.is_file()}
     if listed != actual:
@@ -109,35 +116,44 @@ def fixture_manifest(entry: dict[str, object]) -> tuple[str, dict[str, object]]:
     if classification_path is not None:
         files.add(classification_path)
     records = []
-    for path in sorted(files, key=lambda candidate: candidate.relative_to(ROOT).as_posix().encode("utf-8")):
+    for path in sorted(files, key=lambda candidate: candidate.relative_to(repository_root).as_posix().encode("utf-8")):
         data = path.read_bytes()
-        records.append({"path": path.relative_to(ROOT).as_posix(), "sha256": sha256(data), "size_bytes": len(data)})
+        records.append({"path": path.relative_to(repository_root).as_posix(), "sha256": sha256(data), "size_bytes": len(data)})
     value = {"schema": "testing-schema-fixture-set.v1", "schema_id": schema_id, "files": records}
     value["fixture_set_sha256"] = sha256(canonical(value))
     filename = Path(str(entry["schema_path"])).name.removesuffix(".schema.json") + ".json"
     return filename, value
 
 
-def build() -> dict[Path, bytes]:
-    entries = fixture_entries()
+def build(*, repository_root: Path = ROOT, schema_root: Path | None = None, fixture_index: Path | None = None,
+          release_root: Path | None = None, package_manifest_path: Path | None = None) -> dict[Path, bytes]:
+    schema_root = schema_root or repository_root / "schemas"
+    fixture_index = fixture_index or repository_root / "schema-fixtures" / "testing-schema-fixtures.v1.json"
+    release_root = release_root or repository_root / "schema-release"
+    fixture_set_root = release_root / "fixture-sets"
+    catalog_path = release_root / "testing-schema-catalog.v1.json"
+    catalog_digest_path = release_root / "testing-schema-catalog.v1.sha256"
+    package_manifest_path = package_manifest_path or release_root / "testing-package-manifest.v1.json"
+    release_path = release_root / "testing-package-schema-release.v1.json"
+    entries = fixture_entries(fixture_index, repository_root=repository_root)
     by_id = {entry["schema_id"]: entry for entry in entries}
     schemas = []
     outputs: dict[Path, bytes] = {}
-    for path in sorted((ROOT / "schemas").glob("*.schema.json"), key=lambda candidate: candidate.name.encode("utf-8")):
+    for path in sorted(schema_root.glob("*.schema.json"), key=lambda candidate: candidate.name.encode("utf-8")):
         schema = validate_schema_file(path)
         schema_id = schema.get("$id")
         if not isinstance(schema_id, str) or not schema_id:
-            raise ValueError(f"schema is missing $id: {path.relative_to(ROOT)}")
+            raise ValueError(f"schema is missing $id: {display_path(path, repository_root)}")
         if schema.get("$schema") != DRAFT:
-            raise ValueError(f"schema draft mismatch: {path.relative_to(ROOT)}")
+            raise ValueError(f"schema draft mismatch: {display_path(path, repository_root)}")
         entry = by_id.pop(schema_id, None)
         if entry is None:
             raise ValueError(f"schema has no fixture set: {schema_id}")
-        expected_path = path.relative_to(ROOT).as_posix()
+        expected_path = path.relative_to(repository_root).as_posix()
         if entry.get("schema_path") != expected_path:
             raise ValueError(f"fixture schema path mismatch: {schema_id}")
-        fixture_filename, fixture_value = fixture_manifest(entry)
-        fixture_path = FIXTURE_SET_ROOT / fixture_filename
+        fixture_filename, fixture_value = fixture_manifest(entry, repository_root=repository_root)
+        fixture_path = fixture_set_root / fixture_filename
         outputs[fixture_path] = persisted(fixture_value)
         match = VERSION.search(path.name)
         if match is None:
@@ -150,7 +166,7 @@ def build() -> dict[Path, bytes]:
             "schema_sha256": sha256(path.read_bytes()),
             "contract_major": int(match.group(1)),
             "status": "stable",
-            "fixture_set_path": fixture_path.relative_to(ROOT).as_posix(),
+            "fixture_set_path": fixture_path.relative_to(repository_root).as_posix(),
             "fixture_set_sha256": fixture_value["fixture_set_sha256"],
         })
     if by_id:
@@ -159,9 +175,9 @@ def build() -> dict[Path, bytes]:
     catalog = {"schema": "testing-schema-catalog.v1", "canonicalization": "fkst-testing-schema-catalog-canonical-json.v1", "schemas": schemas}
     catalog["catalog_sha256"] = sha256(canonical(catalog))
     catalog_bytes = persisted(catalog)
-    outputs[CATALOG_PATH] = catalog_bytes
-    outputs[CATALOG_DIGEST_PATH] = f"{sha256(catalog_bytes)}  {CATALOG_PATH.name}\n".encode()
-    package_manifest_bytes = PACKAGE_MANIFEST_PATH.read_bytes()
+    outputs[catalog_path] = catalog_bytes
+    outputs[catalog_digest_path] = f"{sha256(catalog_bytes)}  {catalog_path.name}\n".encode()
+    package_manifest_bytes = package_manifest_path.read_bytes()
     release = {
         "schema": "testing-package-schema-release.v1",
         "canonicalization": "fkst-testing-package-schema-release-canonical-json.v1",
@@ -178,21 +194,25 @@ def build() -> dict[Path, bytes]:
         "producer": {"name": "fkst-packages-testing", "version": "1.0.0"},
     }
     release["release_sha256"] = sha256(canonical(release))
-    outputs[RELEASE_PATH] = persisted(release)
+    outputs[release_path] = persisted(release)
     return outputs
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--check", action="store_true")
+    parser.add_argument("--repository-root", type=Path, default=ROOT, help="repository-shaped schema, fixture, and release root")
     args = parser.parse_args()
-    outputs = build()
+    repository_root = args.repository_root.resolve()
+    release_root = repository_root / "schema-release"
+    fixture_set_root = release_root / "fixture-sets"
+    outputs = build(repository_root=repository_root)
     if args.check:
         for path, expected in outputs.items():
             if not path.is_file() or path.read_bytes() != expected:
-                raise SystemExit(f"generated schema release drift: {path.relative_to(ROOT)}")
-        actual = {path for path in FIXTURE_SET_ROOT.glob("*.json") if path.is_file()}
-        expected = {path for path in outputs if path.parent == FIXTURE_SET_ROOT}
+                raise SystemExit(f"generated schema release drift: {display_path(path, repository_root)}")
+        actual = {path for path in fixture_set_root.glob("*.json") if path.is_file()}
+        expected = {path for path in outputs if path.parent == fixture_set_root}
         if actual != expected:
             raise SystemExit("generated fixture-set artifact inventory drift")
     else:

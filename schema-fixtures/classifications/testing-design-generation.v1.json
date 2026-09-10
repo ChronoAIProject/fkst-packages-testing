@@ -1,0 +1,16 @@
+{
+  "schema": "testing-schema-fixture-classification.v1",
+  "cases": [
+    {"name": "invalid-candidate-script", "file": "invalid-candidate-script.json", "schema": "testing-design.candidate-test-case-set.v1", "portable_valid": false},
+    {"name": "valid-candidate-set-status-rejected", "file": "valid-candidate-set-status-rejected.json", "schema": "testing-design.candidate-test-case-set.v1", "portable_valid": true},
+    {"name": "valid-candidate-set", "file": "valid-candidate-set.json", "schema": "testing-design.candidate-test-case-set.v1", "portable_valid": true},
+    {"name": "valid-candidate-status-rejected", "file": "valid-candidate-status-rejected.json", "schema": "testing-design.candidate-test-case-set.v1", "portable_valid": true},
+    {"name": "valid-receipt-outcome-budget-exhausted", "file": "valid-receipt-outcome-budget-exhausted.json", "schema": "testing-design.generation-receipt.v1", "portable_valid": true},
+    {"name": "valid-receipt-outcome-partial", "file": "valid-receipt-outcome-partial.json", "schema": "testing-design.generation-receipt.v1", "portable_valid": true},
+    {"name": "valid-receipt-outcome-provider-error", "file": "valid-receipt-outcome-provider-error.json", "schema": "testing-design.generation-receipt.v1", "portable_valid": true},
+    {"name": "valid-receipt-outcome-rejected", "file": "valid-receipt-outcome-rejected.json", "schema": "testing-design.generation-receipt.v1", "portable_valid": true},
+    {"name": "valid-receipt", "file": "valid-receipt.json", "schema": "testing-design.generation-receipt.v1", "portable_valid": true},
+    {"name": "valid-request", "file": "valid-request.json", "schema": "testing-design.generate-request.v1", "portable_valid": true}
+  ],
+  "support_files": ["boundary-matrix.json", "rejection-cases.json"]
+}

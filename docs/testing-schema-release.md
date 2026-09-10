@@ -20,6 +20,20 @@ python3 scripts/generate_testing_schema_fixture_index.py
 python3 scripts/generate_testing_schema_catalog.py
 ```
 
+For an isolated repository-shaped staging root, pass `--repository-root` to the fixture-index and catalog generators. Generation fixtures additionally require the explicit `--generation-fixture-root` and `--generation-classification` inputs; the classification declares each instance schema and expected portable validity, while boundary matrices and rejection corpora remain digest-bound support files.
+
+The package release generator accepts staged catalog bytes only in isolated successor mode:
+
+```sh
+python3 scripts/generate_testing_package_release.py \
+  --output-directory /tmp/testing-schema-stage \
+  --schema-catalog /tmp/testing-schema-stage/schema-release/testing-schema-catalog.v1.json \
+  --schema-release /tmp/testing-schema-stage/schema-release/testing-package-schema-release.v1.json \
+  ...
+```
+
+These physical inputs retain the canonical logical paths `schema-release/testing-schema-catalog.v1.json` and `schema-release/testing-package-schema-release.v1.json` in the package descriptor. Signing inputs are validated before any isolated release bytes are written.
+
 Generate the detached envelope and scoped public-key authorization with an external base64-encoded 32-byte Ed25519 seed:
 
 ```sh
