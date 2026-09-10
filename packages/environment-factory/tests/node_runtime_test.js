@@ -650,6 +650,57 @@ async function main() {
     assert.strictEqual(fs.existsSync(substitutedMarker), false);
     assert.strictEqual(fs.existsSync(substitutedLaunchLease.home), false);
 
+    let synchronizedSubstitutionLease = null;
+    const synchronizedSubstitutionMarker = path.join(temp, 'supervised-synchronized-substitution.txt');
+    const synchronizedClaimPath = path.join(temp, 'supervised-synchronized-substitution', 'claim.json');
+    const synchronizedSubstitution = startOrRecoverSupervisedProcess({
+      claimPath: synchronizedClaimPath,
+      argv: [process.execPath, '-e', 'process.exit(0)'],
+      cwd: temp,
+      createEnvironment(reservation) {
+        const environment = minimalEnvironment(
+          {}, 'supervised-synchronized-substitution', reservation.reservation_id,
+        );
+        synchronizedSubstitutionLease = workerEnvironmentLease(environment);
+        return environment;
+      },
+      binding: { ...startupBinding, effect_id: 'synchronized-substitution-effect' },
+      registrationTimeoutMs: 250,
+      beforeSupervisorLaunch(claim) {
+        const replacement = {
+          schema: 'fkst.supervised-process-launch.v1',
+          startup_token: claim.startup_token,
+          binding_sha256: claim.binding_sha256,
+          claim_path: synchronizedClaimPath,
+          argv: [process.execPath, '-e',
+            `require('fs').writeFileSync(${JSON.stringify(synchronizedSubstitutionMarker)}, 'bad')`],
+          cwd: temp,
+          inherited_fd_count: 0,
+          inherited_fd_identities: [],
+        };
+        const replacementBody = `${stableStringify(replacement)}\n`;
+        fs.unlinkSync(claim.launch_spec_path);
+        fs.writeFileSync(claim.launch_spec_path, replacementBody, { flag: 'wx', mode: 0o600 });
+        const stat = fs.lstatSync(claim.launch_spec_path);
+        const substitutedClaim = JSON.parse(fs.readFileSync(synchronizedClaimPath, 'utf8'));
+        substitutedClaim.launch_spec_identity = {
+          device: String(stat.dev), inode: String(stat.ino), size: stat.size, mode: stat.mode,
+        };
+        substitutedClaim.launch_spec_sha256 = sha256(replacementBody);
+        substitutedClaim.argv_sha256 = sha256(stableStringify(replacement.argv));
+        substitutedClaim.worker_environment_reservation.binding_sha256 = sha256(stableStringify({
+          binding_sha256: substitutedClaim.binding_sha256,
+          argv_sha256: substitutedClaim.argv_sha256,
+          cwd: substitutedClaim.cwd,
+          inherited_fd_identities: substitutedClaim.inherited_fd_identities,
+        }));
+        fs.writeFileSync(synchronizedClaimPath, `${stableStringify(substitutedClaim)}\n`);
+      },
+    });
+    assert.strictEqual(synchronizedSubstitution.state, 'revoked');
+    assert.strictEqual(fs.existsSync(synchronizedSubstitutionMarker), false);
+    assert.strictEqual(fs.existsSync(synchronizedSubstitutionLease.home), false);
+
     let symlinkedLaunchLease = null;
     const symlinkedMarker = path.join(temp, 'supervised-symlinked-command.txt');
     const symlinkedLaunch = startOrRecoverSupervisedProcess({

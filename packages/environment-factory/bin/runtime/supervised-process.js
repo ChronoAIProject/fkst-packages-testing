@@ -231,6 +231,23 @@ function resourceFromClaim(binding, claim) {
   };
 }
 
+function launchInvariantSha256(claim) {
+  return sha256(stableStringify({
+    startup_token: claim.startup_token,
+    binding_sha256: claim.binding_sha256,
+    launch_spec_path: claim.launch_spec_path,
+    launch_spec_sha256: claim.launch_spec_sha256,
+    launch_spec_identity: claim.launch_spec_identity,
+    argv_sha256: claim.argv_sha256,
+    cwd: claim.cwd,
+    cwd_identity: claim.cwd_identity,
+    inherited_fd_count: claim.inherited_fd_count,
+    inherited_fd_identities: claim.inherited_fd_identities,
+    worker_environment_reservation: claim.worker_environment_reservation,
+    worker_environment_lease_sha256: claim.worker_environment_lease_sha256,
+  }));
+}
+
 function startOrRecoverSupervisedProcess(options) {
   const claimPath = requireAbsoluteFile(options.claimPath, 'supervised startup claim');
   const argv = validateArgv(options.argv);
@@ -366,8 +383,11 @@ function startOrRecoverSupervisedProcess(options) {
         const launchSpecIdentity = publishLaunchSpecNoReplace(claim.launch_spec_path, specBody);
         claim = { ...claim, state: 'prepared', launch_spec_identity: launchSpecIdentity };
         writeClaimAtomic(claimPath, claim);
+        const launchInvariant = launchInvariantSha256(claim);
         if (typeof options.beforeSupervisorLaunch === 'function') options.beforeSupervisorLaunch(claim);
-        const supervisor = spawn(process.execPath, [__filename, 'child', claim.launch_spec_path], {
+        const supervisor = spawn(process.execPath, [
+          __filename, 'child', claim.launch_spec_path, claim.launch_spec_sha256, launchInvariant,
+        ], {
           cwd,
           env: environment,
           shell: false,
@@ -451,13 +471,19 @@ function startOrRecoverSupervisedProcess(options) {
   };
 }
 
-function childMain(specPath) {
+function childMain(specPath, expectedSpecSha256, expectedLaunchInvariantSha256) {
+  if (!/^[0-9a-f]{64}$/.test(String(expectedSpecSha256 || ''))
+    || !/^[0-9a-f]{64}$/.test(String(expectedLaunchInvariantSha256 || ''))) {
+    throw new Error('supervised launch trust binding is invalid');
+  }
   const absoluteSpec = requireAbsoluteFile(specPath, 'supervised launch spec');
   const claimPathGuess = absoluteSpec.replace(/\.launch-[0-9a-f]{32}\.json$/, '');
   if (claimPathGuess === absoluteSpec) throw new Error('supervised launch spec path is invalid');
   const initialClaim = readJsonNoFollow(claimPathGuess);
   if (!validClaim(initialClaim, initialClaim && initialClaim.binding_sha256)
-    || initialClaim.state !== 'prepared' || initialClaim.launch_spec_path !== absoluteSpec) {
+    || initialClaim.state !== 'prepared' || initialClaim.launch_spec_path !== absoluteSpec
+    || initialClaim.launch_spec_sha256 !== expectedSpecSha256
+    || launchInvariantSha256(initialClaim) !== expectedLaunchInvariantSha256) {
     throw new Error('supervised startup claim is unavailable or revoked');
   }
   const specBody = readBoundFile(absoluteSpec, initialClaim.launch_spec_identity);
@@ -551,12 +577,12 @@ function childMain(specPath) {
 }
 
 if (require.main === module) {
-  if (process.argv.length !== 4 || process.argv[2] !== 'child') {
+  if (process.argv.length !== 6 || process.argv[2] !== 'child') {
     process.stderr.write('supervised-process: expected child launch spec\n');
     process.exitCode = 2;
   } else {
     try {
-      childMain(process.argv[3]);
+      childMain(process.argv[3], process.argv[4], process.argv[5]);
     } catch (error) {
       process.stderr.write(`supervised-process: ${boundedText(error && error.message, 1024)}\n`);
       process.exitCode = 1;
