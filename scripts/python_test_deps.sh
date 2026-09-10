@@ -37,6 +37,7 @@ case "$1" in
       "$ROOT/scripts/testing_package_executor_request_schema_test.py" \
       "$ROOT/scripts/testing_runner_invocation_schema_test.py" \
       "$ROOT/scripts/testing_schema_publication_test.py" \
+      "$ROOT/scripts/testing_generation_schema_staging_test.py" \
       "$ROOT/scripts/testing_schema_release_attestation_test.py" \
       "$ROOT/scripts/testing_design_generation_schema_test.py"
     env PYTHONNOUSERSITE=1 PYTHONPATH="$DEPS:$ROOT/scripts" \
