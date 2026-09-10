@@ -171,6 +171,18 @@ def assert_rejections() -> None:
         classification["cases"].append(classification["cases"][0])
         (root / CLASSIFICATION).write_text(json.dumps(classification), encoding="utf-8")
         command(sys.executable, str(ROOT / "scripts/generate_testing_schema_fixture_index.py"), "--repository-root", str(root), "--generation-fixture-root", str(root / GENERATION_FIXTURES), "--generation-classification", str(root / CLASSIFICATION), success=False)
+    with tempfile.TemporaryDirectory(prefix="testing-generation-schema-rejections-") as directory:
+        root = Path(directory)
+        prepare_stage(root)
+        classification = load(root / CLASSIFICATION)
+        classification["cases"][0]["schema"] = "testing-design.unknown.v1"
+        fixture_path = root / GENERATION_FIXTURES / classification["cases"][0]["file"]
+        fixture = load(fixture_path)
+        fixture["schema"] = "testing-design.unknown.v1"
+        fixture_path.write_text(json.dumps(fixture), encoding="utf-8")
+        (root / CLASSIFICATION).write_text(json.dumps(classification), encoding="utf-8")
+        result = command(sys.executable, str(ROOT / "scripts/generate_testing_schema_fixture_index.py"), "--repository-root", str(root), "--generation-fixture-root", str(root / GENERATION_FIXTURES), "--generation-classification", str(root / CLASSIFICATION), success=False)
+        assert "fixture classification schema is not configured: testing-design.unknown.v1" in result.stderr
     with tempfile.TemporaryDirectory(prefix="testing-generation-schema-containment-") as directory:
         root = Path(directory)
         prepare_stage(root)

@@ -61,6 +61,8 @@ def classified_cases(root: Path, classification_path: Path) -> tuple[list[dict[s
             raise ValueError("fixture classification case is malformed")
         if not all(isinstance(case[field], str) and case[field] for field in ("name", "file", "schema")):
             raise ValueError("fixture classification case strings must be non-empty")
+        if case["schema"] not in GENERATION_SCHEMA_NAMES:
+            raise ValueError(f"fixture classification schema is not configured: {case['schema']}")
         if not isinstance(case["portable_valid"], bool):
             raise ValueError("fixture classification portable_valid must be boolean")
         if case["file"] in listed:
