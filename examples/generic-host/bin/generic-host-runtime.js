@@ -1227,11 +1227,11 @@ const { structuredExecutionArtifacts } = require('./structured-execution-artifac
 });
 
 function structuredAuthorizationKey(receiptId) {
-  return `testing-runner/cli-effect-authorizations/${sha256(stable(receiptId))}`;
+  return `testing-runner/effect-authorizations/${sha256(stable(receiptId))}`;
 }
 
 function structuredConsumptionKey(receiptId) {
-  return `testing-runner/cli-effect-consumptions/${sha256(stable(receiptId))}`;
+  return `testing-runner/effect-consumptions/${sha256(stable(receiptId))}`;
 }
 
 function localHttpRequest(request, timeoutSeconds) {
@@ -1540,8 +1540,8 @@ function validWindow(value, now) {
     && Number.isFinite(current) && current >= issued && current < expires;
 }
 
-function validCliEnvelope(envelope) {
-  const fields = [
+function validActionEnvelope(envelope, expectedKind) {
+  const commonFields = [
     'schema', 'effect_kind', 'capability', 'profile_ref', 'profile_artifact_sha256',
     'profile_sha256', 'validation_receipt_ref', 'validation_receipt_sha256',
     'preauthorization_ref', 'preauthorization_sha256', 'repository', 'run_id',
@@ -1549,6 +1549,8 @@ function validCliEnvelope(envelope) {
     'workspace_ref', 'plan_ref', 'plan_sha256', 'grant_ref', 'grant_sha256', 'case',
     'resource_bounds', 'attempt', 'trace_id', 'dedup_key', 'expires_at', 'fence_id',
   ];
+  const kind = envelope && envelope.effect_kind;
+  const fields = kind === 'http' ? [...commonFields, 'base_url'] : commonFields;
   const digestFields = [
     'profile_artifact_sha256', 'profile_sha256', 'validation_receipt_sha256',
     'preauthorization_sha256', 'environment_receipt_sha256', 'plan_sha256', 'grant_sha256',
@@ -1560,8 +1562,11 @@ function validCliEnvelope(envelope) {
   const action = envelope && envelope.case;
   const assertions = action && action.assertions;
   return exactKeys(envelope, fields)
-    && envelope.schema === 'testing-cli-action-envelope.v1'
-    && envelope.effect_kind === 'cli' && envelope.capability === 'direct-argv'
+    && (expectedKind === undefined || kind === expectedKind)
+    && (kind === 'cli' || kind === 'http')
+    && envelope.schema === (kind === 'cli'
+      ? 'testing-cli-action-envelope.v1' : 'testing-http-action-envelope.v1')
+    && envelope.capability === (kind === 'cli' ? 'direct-argv' : 'loopback-http')
     && envelope.run_id === envelope.operation_id && envelope.attempt === 1
     && boundedString(envelope.run_id, 180) && /^[A-Za-z0-9._-]+$/.test(envelope.run_id)
     && boundedString(envelope.trace_id, 180) && boundedString(envelope.dedup_key, 180)
@@ -1574,15 +1579,37 @@ function validCliEnvelope(envelope) {
     && Number.isInteger(envelope.resource_bounds.output_bytes)
     && envelope.resource_bounds.output_bytes >= 1024
     && envelope.resource_bounds.output_bytes <= 1024 * 1024
-    && exactKeys(action, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'])
     && boundedString(action.case_id, 180) && /^[A-Za-z0-9._-]+$/.test(action.case_id)
-    && action.kind === 'cli' && validArgv(action.argv)
+    && action.kind === kind
     && Number.isInteger(action.timeout_seconds) && action.timeout_seconds >= 1
     && action.timeout_seconds <= 300 && Array.isArray(assertions)
     && assertions.length > 0 && assertions.length <= 16
-    && assertions.every((assertion) => exactKeys(assertion, ['type', 'expected'])
-      && assertion.type === 'exit-code' && Number.isInteger(assertion.expected)
-      && assertion.expected >= 0 && assertion.expected <= 255);
+    && (kind === 'cli'
+      ? exactKeys(action, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'])
+        && validArgv(action.argv)
+        && assertions.every((assertion) => exactKeys(assertion, ['type', 'expected'])
+          && assertion.type === 'exit-code' && Number.isInteger(assertion.expected)
+          && assertion.expected >= 0 && assertion.expected <= 255)
+      : exactKeys(action, ['case_id', 'kind', 'request', 'timeout_seconds', 'assertions'])
+        && exactKeys(action.request, ['method', 'url', 'headers'])
+        && httpMethods.has(action.request.method) && Array.isArray(action.request.headers)
+        && action.request.headers.length === 0 && splitHttpUrl(envelope.base_url) !== null
+        && splitHttpUrl(action.request.url) !== null
+        && splitHttpUrl(action.request.url).origin === splitHttpUrl(envelope.base_url).origin
+        && assertions.every((assertion) => {
+          if (assertion && assertion.type === 'status-code') {
+            return exactKeys(assertion, ['type', 'expected']) && Number.isInteger(assertion.expected)
+              && assertion.expected >= 100 && assertion.expected <= 599;
+          }
+          if (assertion && assertion.type === 'body-contains') {
+            return exactKeys(assertion, ['type', 'expected']) && boundedString(assertion.expected, 512);
+          }
+          return assertion && assertion.type === 'json-path-equals'
+            && exactKeys(assertion, ['type', 'path', 'expected'])
+            && boundedString(assertion.path, 512)
+            && assertion.path.split('.').every((part) => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(part))
+            && ['string', 'number', 'boolean'].includes(typeof assertion.expected);
+        }));
 }
 
 function activeStructuredRequest(root, runId) {
@@ -1628,7 +1655,7 @@ function structuredAuthorizationReceipt(runId, envelope, decision, reasonCode, i
     ? envelope.expires_at : '2026-07-22T00:21:00Z';
   return {
     schema: 'testing-effect-authorization-receipt.v1', decision, reason_code: reasonCode,
-    receipt_id: `durable-cli-effect-${envelopeSha256.slice(0, 32)}`,
+    receipt_id: `durable-${envelope.effect_kind || 'invalid'}-effect-${envelopeSha256.slice(0, 32)}`,
     envelope_sha256: envelopeSha256, evaluated_input_digests: inputs, issued_at: issuedAt,
     expires_at: expiresAt,
     fence_id: typeof envelope.fence_id === 'string' ? envelope.fence_id : 'invalid-fence',
@@ -1638,7 +1665,7 @@ function structuredAuthorizationReceipt(runId, envelope, decision, reasonCode, i
   };
 }
 
-function authorizeCliEffect(projectRoot, payload) {
+function authorizeEffect(projectRoot, payload, expectedKind) {
   const runId = runIdFor(payload);
   const root = runRoot(runId);
   const config = loadConfig(projectRoot, runId);
@@ -1651,7 +1678,7 @@ function authorizeCliEffect(projectRoot, payload) {
   const deny = (reason, inputs = empty) =>
     structuredAuthorizationReceipt(runId, envelope, 'deny', reason, inputs);
   try {
-    if (!validCliEnvelope(envelope)) return deny('malformed-envelope');
+    if (!validActionEnvelope(envelope, expectedKind)) return deny('malformed-envelope');
     const request = activeStructuredRequest(root, runId);
     if (!envelopeMatchesRequest(envelope, request, payload)) return deny('foreign-binding');
     const profile = artifactRead(projectRoot, envelope.profile_ref, envelope.profile_artifact_sha256);
@@ -1696,10 +1723,12 @@ function authorizeCliEffect(projectRoot, payload) {
     if (!schemasValid) return deny('malformed-input', inputs);
     const preauthorizationValid = preauthorization.value.max_uses === 1
       && validWindow(preauthorization.value, now)
-      && validCliCapabilities(preauthorization.value.capabilities && preauthorization.value.capabilities.cli);
+      && validCliCapabilities(preauthorization.value.capabilities && preauthorization.value.capabilities.cli)
+      && validHttpCapabilities(preauthorization.value.capabilities && preauthorization.value.capabilities.http);
     if (!preauthorizationValid) return deny('stale-preauthorization', inputs);
     const grantValid = grant.value.max_uses === 1 && validWindow(grant.value, now)
-      && validCliCapabilities(grant.value.cli_capabilities);
+      && validCliCapabilities(grant.value.cli_capabilities)
+      && validHttpCapabilities(grant.value.http_capabilities);
     if (!grantValid) return deny('stale-grant', inputs);
     if (!sameRun(validation.value) || !sameRun(preauthorization.value) || !sameRun(environment.value)
       || !sameRun(plan.value) || !sameRun(grant.value)) return deny('foreign-binding', inputs);
@@ -1735,9 +1764,13 @@ function authorizeCliEffect(projectRoot, payload) {
       && grant.value.policy_revision === preauthorization.value.policy_revision
       && samePointer(grant.value.evidence_ref, expectedEvidence);
     if (!authenticated) return deny('foreign-binding', inputs);
-    if (stable(planned) !== stable(envelope.case)
-      || !argvAllowed(envelope.case.argv, preauthorization.value.capabilities.cli)
-      || !argvAllowed(envelope.case.argv, grant.value.cli_capabilities)) {
+    const effectAllowed = envelope.effect_kind === 'cli'
+      ? argvAllowed(envelope.case.argv, preauthorization.value.capabilities.cli)
+        && argvAllowed(envelope.case.argv, grant.value.cli_capabilities)
+      : envelope.base_url === environment.value.base_url
+        && httpAllowed(envelope.case.request, preauthorization.value.capabilities.http)
+        && httpAllowed(envelope.case.request, grant.value.http_capabilities);
+    if (stable(planned) !== stable(envelope.case) || !effectAllowed) {
       return deny('scope-denied', inputs);
     }
     const replayOwned = replay && replay.status === 'claimed' && replay.fence_id === envelope.fence_id
@@ -1751,7 +1784,7 @@ function authorizeCliEffect(projectRoot, payload) {
       && replayBinding.trace_id === envelope.trace_id && replayBinding.dedup_key === envelope.dedup_key;
     if (!replayOwned) return deny('foreign-fence', inputs);
     const fixturePolicy = config.runtime_pep_denial;
-    if (fixturePolicy !== undefined) {
+    if (fixturePolicy !== undefined && envelope.effect_kind === 'cli') {
       const token = process.env.FKST_GENERIC_HOST_FIXTURE_CLI_DENY_TOKEN;
       const fixturePolicyValid = exactKeys(fixturePolicy, ['reason_code', 'token'])
         && fixturePolicy.reason_code === 'profile-policy-denied'
@@ -1762,7 +1795,7 @@ function authorizeCliEffect(projectRoot, payload) {
     const receipt = structuredAuthorizationReceipt(runId, envelope, 'allow', 'authorized', inputs);
     const authorization = { receipt, grant_id: grant.value.grant_id, fence_id: envelope.fence_id };
     const stored = recordImmutable(root, structuredAuthorizationKey(receipt.receipt_id), authorization);
-    if (!stored.written && !stored.replayed) fail('durable CLI authorization receipt conflict');
+    if (!stored.written && !stored.replayed) fail('durable effect authorization receipt conflict');
     return receipt;
   } catch (_error) {
     return deny('malformed-input');
@@ -2173,7 +2206,9 @@ function dispatch(name, payload, projectRoot) {
       return { status: 'claimed', claim_id: fenceId };
     }
     case 'authorize-cli-effect':
-      return authorizeCliEffect(projectRoot, payload);
+      return authorizeEffect(projectRoot, payload, 'cli');
+    case 'authorize-http-effect':
+      return authorizeEffect(projectRoot, payload, 'http');
     case 'exec-argv': {
       const runId = runIdFor(payload);
       const root = runRoot(runId);
@@ -2181,7 +2216,7 @@ function dispatch(name, payload, projectRoot) {
       const envelope = payload.action_envelope;
       const receipt = payload.authorization_receipt;
       const request = activeStructuredRequest(root, runId);
-      const validReceipt = validCliEnvelope(envelope) && envelopeMatchesRequest(envelope, request, payload)
+      const validReceipt = validActionEnvelope(envelope, 'cli') && envelopeMatchesRequest(envelope, request, payload)
         && exactKeys(receipt, [
           'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
           'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
@@ -2240,12 +2275,56 @@ function dispatch(name, payload, projectRoot) {
     case 'http-request': {
       const runId = runIdFor(payload);
       const config = loadConfig(projectRoot, runId);
-      if (payload.operation_id !== runId || payload.base_url !== config.base_url
-        || !payload.request || payload.request.method !== 'GET'
-        || payload.request.url !== config.base_url) fail('structured HTTP request binding differs');
-      const result = localHttpRequest(payload.request, payload.timeout_seconds);
       const request = activeStructuredRequest(runRoot(runId), runId);
-      const sequence = structuredCaseSequence(projectRoot, request, payload.case_id);
+      const envelope = payload.action_envelope;
+      const receipt = payload.authorization_receipt;
+      const validReceipt = validActionEnvelope(envelope, 'http')
+        && envelopeMatchesRequest(envelope, request, payload)
+        && exactKeys(receipt, [
+          'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
+          'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
+          'dedup_key', 'auth_tag',
+        ])
+        && exactKeys(receipt.evaluated_input_digests, [
+          'profile', 'validation_receipt', 'preauthorization', 'environment_receipt', 'plan', 'grant',
+        ])
+        && Object.values(receipt.evaluated_input_digests).every(validDigest)
+        && receipt.schema === 'testing-effect-authorization-receipt.v1'
+        && receipt.decision === 'allow' && receipt.reason_code === 'authorized'
+        && receipt.envelope_sha256 === sha256(stable(envelope))
+        && receipt.auth_tag === sha256(`${runId}\0${receipt.envelope_sha256}\0allow`)
+        && receipt.fence_id === envelope.fence_id && receipt.trace_id === envelope.trace_id
+        && receipt.dedup_key === envelope.dedup_key && receipt.expires_at === envelope.expires_at
+        && receipt.issued_at === '2026-07-22T00:20:00Z'
+        && Date.parse(receipt.expires_at) > Date.parse('2026-07-22T00:20:00Z');
+      const authorization = validReceipt
+        ? recordRead(runRoot(runId), structuredAuthorizationKey(receipt.receipt_id)) : null;
+      const grant = validReceipt
+        ? artifactRead(projectRoot, envelope.grant_ref, envelope.grant_sha256) : null;
+      const replay = grant && grant.value
+        ? recordRead(runRoot(runId), structuredReplayKey(grant.value.grant_id)) : null;
+      if (!validReceipt || !authorization || !grant || !grant.value || typeof grant.value !== 'object'
+        || stable(authorization.receipt) !== stable(receipt)
+        || authorization.grant_id !== grant.value.grant_id || authorization.fence_id !== envelope.fence_id
+        || grant.digest !== envelope.grant_sha256 || !replay || replay.status !== 'claimed'
+        || replay.fence_id !== envelope.fence_id) {
+        fail('durable structured HTTP authorization receipt is unavailable');
+      }
+      if (envelope.operation_id !== runId || envelope.base_url !== config.base_url
+        || envelope.case.request.url !== config.base_url) fail('structured HTTP request binding differs');
+      const consumed = recordClaim(runRoot(runId), structuredConsumptionKey(receipt.receipt_id), {
+        binding: receipt, receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id,
+      });
+      if (!consumed.claimed || consumed.replayed) fail('durable structured HTTP authorization receipt is replayed');
+      artifactWrite(projectRoot, `${payload.artifact_root}/authorization/${envelope.case.case_id}-consumption.json`, {
+        schema: 'generic-host.http-effect-consumption.v1', case_id: envelope.case.case_id,
+        receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id,
+        consumption_fingerprint_sha256: claimFingerprint(
+          config, 'structured-execution-consumption', envelope.fence_id,
+        ),
+      });
+      const result = localHttpRequest(envelope.case.request, envelope.case.timeout_seconds);
+      const sequence = structuredCaseSequence(projectRoot, request, envelope.case.case_id);
       const stored = recordImmutable(runRoot(runId), `testing-runner/target-effects/${sha256(stable(payload))}`, {
         sequence, binding: payload, result,
       });

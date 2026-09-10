@@ -123,8 +123,8 @@ local function run_to_barrier(context, live_pids, label)
   t.eq(barrier.case_results_sha256, recovered.store:digest(barrier.case_results_ref))
   t.eq(barrier.replay_status, "completed")
   t.eq(effect_count(context), 1)
-  t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
-  t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
+  t.eq(#recovered.records:list("testing-runner/effect-authorizations"), 1)
+  t.eq(#recovered.records:list("testing-runner/effect-consumptions"), 1)
   t.eq(recovered:terminal_record(), nil)
   local ownership = recovered:_fixture_effect("fixture-resource-status", {
     run_id = context.run_id,
@@ -159,8 +159,8 @@ local function assert_terminal(context)
   t.eq(#durable.list_pending(context.project_root, context.durable_root, 10), 0)
   t.eq(effect_count(context), 1)
   t.eq(#recovered.records:list("testing-runner/target-effects"), 1)
-  t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
-  t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
+  t.eq(#recovered.records:list("testing-runner/effect-authorizations"), 1)
+  t.eq(#recovered.records:list("testing-runner/effect-consumptions"), 1)
   local recovery = recovered.records:read("generic-host/recovery/execution")
   if context.completed_replay_failpoint ~= nil then t.eq(recovery.replayed, true) else t.eq(recovery, nil) end
 
@@ -483,8 +483,8 @@ return {
       t.eq(authorization.value.schema, "testing-effect-authorization-receipt.v1")
       t.eq(authorization.value.decision, "deny")
       t.eq(authorization.value.reason_code, "profile-policy-denied")
-      t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 0)
-      t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 0)
+      t.eq(#recovered.records:list("testing-runner/effect-authorizations"), 0)
+      t.eq(#recovered.records:list("testing-runner/effect-consumptions"), 0)
       t.eq(#recovered.records:list("testing-runner/target-effects"), 0)
       t.eq(effect_count(context), 0)
       local cleanup = recovered.store:load(terminal.cleanup_receipt_ref).value
@@ -512,8 +512,8 @@ return {
       stop_live(noop_pid, live_pids)
       local after = durable.load(context.project_root, context.durable_root, context.run_id)
       assert_counts_equal(before, record_counts(after))
-      t.eq(#after.records:list("testing-runner/cli-effect-authorizations"), 0)
-      t.eq(#after.records:list("testing-runner/cli-effect-consumptions"), 0)
+      t.eq(#after.records:list("testing-runner/effect-authorizations"), 0)
+      t.eq(#after.records:list("testing-runner/effect-consumptions"), 0)
       t.eq(effect_count(context), 0)
     end)
   end,

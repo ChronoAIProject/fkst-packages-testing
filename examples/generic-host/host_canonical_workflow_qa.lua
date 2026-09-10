@@ -479,13 +479,32 @@ function Context:_structured_runtime()
     end
     return false
   end
+  local function http_allowed(request, capabilities, base_url)
+    local base_origin = execution.local_http_origin(base_url)
+    local origin, request_path = execution.local_http_origin(request and request.url)
+    if base_origin == nil or origin ~= base_origin then return false end
+    for _, capability in ipairs(capabilities or {}) do
+      local capability_origin = execution.local_http_origin(capability.origin)
+      local method_allowed = false
+      for _, method in ipairs(capability.methods or {}) do
+        if method == request.method then method_allowed = true end
+      end
+      if capability_origin == base_origin and method_allowed then
+        for _, prefix in ipairs(capability.path_prefixes or {}) do
+          if request_path:sub(1, #prefix) == prefix then return true end
+        end
+      end
+    end
+    return false
+  end
   local function decision(envelope, value, reason, inputs)
     local envelope_sha256 = sha256_bytes(json_codec.encode(envelope))
     local receipt = {
       schema = execution.schemas.effect_authorization_receipt,
       decision = value,
       reason_code = reason,
-      receipt_id = "canonical-cli-effect-" .. envelope_sha256:sub(1, 32),
+      receipt_id = "canonical-" .. tostring(envelope.effect_kind or "invalid")
+        .. "-effect-" .. envelope_sha256:sub(1, 32),
       envelope_sha256 = envelope_sha256,
       evaluated_input_digests = inputs,
       issued_at = "2026-07-22T00:20:00Z",
@@ -498,7 +517,7 @@ function Context:_structured_runtime()
     if value == "allow" then authorizations[receipt.receipt_id] = copy(receipt) end
     return receipt
   end
-  return {
+  local runtime = {
     sha256_bytes = function(bytes) return sha256_bytes(bytes) end,
     load_artifact = function(path) return context.store:load(path) end,
     now = function(request)
@@ -541,7 +560,7 @@ function Context:_structured_runtime()
     end,
     authorize_cli_effect = function(request)
       local envelope = request.action_envelope
-      local ok = pcall(execution.validate_cli_action_envelope, envelope)
+      local ok = pcall(execution.validate_action_envelope, envelope)
       local empty = {
         profile = string.rep("0", 64), validation_receipt = string.rep("0", 64),
         preauthorization = string.rep("0", 64), environment_receipt = string.rep("0", 64),
@@ -581,6 +600,12 @@ function Context:_structured_runtime()
         if item.case_id == envelope.case.case_id then planned_case = item end
       end
       local replay = claims[grant.value.grant_id]
+      local effect_allowed = envelope.effect_kind == "cli"
+        and argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
+        and argv_allowed(envelope.case.argv, grant.value.cli_capabilities)
+        or envelope.effect_kind == "http" and envelope.base_url == environment.value.base_url
+          and http_allowed(envelope.case.request, preauthorization.value.capabilities.http, envelope.base_url)
+          and http_allowed(envelope.case.request, grant.value.http_capabilities, envelope.base_url)
       if not valid or profile.digest ~= envelope.profile_artifact_sha256
         or project_profile.profile_sha256(profile.value, sha256_bytes) ~= envelope.profile_sha256
         or validation.digest ~= envelope.validation_receipt_sha256
@@ -595,8 +620,7 @@ function Context:_structured_runtime()
         or grant.value.environment_receipt_sha256 ~= environment.digest
         or not equal(environment.value.workspace_ref, envelope.workspace_ref)
         or not equal(planned_case, envelope.case)
-        or not argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
-        or not argv_allowed(envelope.case.argv, grant.value.cli_capabilities)
+        or not effect_allowed
         or type(replay) ~= "table" or replay.fence_id ~= envelope.fence_id then
         return decision(envelope, "deny", "foreign-binding", inputs)
       end
@@ -621,14 +645,23 @@ function Context:_structured_runtime()
       return direct_exec(envelope.case.argv, context.workspace_root)
     end,
     http_request = function(input)
-      if input.operation_id ~= context.run_id or input.base_url ~= context.base_url
-        or input.request.url ~= context.base_url then
+      local envelope = input.action_envelope
+      local receipt = input.authorization_receipt
+      execution.validate_http_action_envelope(envelope)
+      execution.validate_effect_authorization_receipt(receipt, envelope, "2026-07-22T00:20:00Z")
+      local issued = authorizations[receipt.receipt_id]
+      if receipt.decision ~= "allow" or issued == nil or not equal(issued, receipt) then
+        error("canonical structured HTTP authorization receipt is unavailable or replayed")
+      end
+      authorizations[receipt.receipt_id] = nil
+      if envelope.operation_id ~= context.run_id or envelope.base_url ~= context.base_url
+        or envelope.case.request.url ~= context.base_url then
         error("canonical structured HTTP request is not bound to the ready environment")
       end
       table.insert(context.target_effects, {
-        kind = "http", method = input.request.method, url = input.request.url,
+        kind = "http", method = envelope.case.request.method, url = envelope.case.request.url,
       })
-      return http_request(input.request, input.timeout_seconds)
+      return http_request(envelope.case.request, envelope.case.timeout_seconds)
     end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
     load_result = function(request)
@@ -689,6 +722,8 @@ function Context:_structured_runtime()
       return false
     end,
   }
+  runtime.authorize_http_effect = runtime.authorize_cli_effect
+  return runtime
 end
 
 function Context:_ai_browser_runtime()

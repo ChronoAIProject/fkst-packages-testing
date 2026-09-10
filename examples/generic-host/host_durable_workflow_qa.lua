@@ -1134,7 +1134,7 @@ function Context:_structured_runtime()
   local context = self
   local function replay_key(grant_id) return "testing-runner/replay/" .. context:_key(grant_id) end
   local function authorization_key(receipt_id)
-    return "testing-runner/cli-effect-authorizations/" .. context:_key(receipt_id)
+    return "testing-runner/effect-authorizations/" .. context:_key(receipt_id)
   end
   local function argv_allowed(argv, capabilities)
     for _, capability in ipairs(capabilities or {}) do
@@ -1147,13 +1147,32 @@ function Context:_structured_runtime()
     end
     return false
   end
+  local function http_allowed(request, capabilities, base_url)
+    local base_origin = execution.local_http_origin(base_url)
+    local origin, request_path = execution.local_http_origin(request and request.url)
+    if base_origin == nil or origin ~= base_origin then return false end
+    for _, capability in ipairs(capabilities or {}) do
+      local capability_origin = execution.local_http_origin(capability.origin)
+      local method_allowed = false
+      for _, method in ipairs(capability.methods or {}) do
+        if method == request.method then method_allowed = true end
+      end
+      if capability_origin == base_origin and method_allowed then
+        for _, prefix in ipairs(capability.path_prefixes or {}) do
+          if request_path:sub(1, #prefix) == prefix then return true end
+        end
+      end
+    end
+    return false
+  end
   local function decision(envelope, value, reason, inputs)
     local envelope_sha256 = context.records:digest(json_codec.encode(envelope))
     local receipt = {
       schema = execution.schemas.effect_authorization_receipt,
       decision = value,
       reason_code = reason,
-      receipt_id = "durable-cli-effect-" .. envelope_sha256:sub(1, 32),
+      receipt_id = "durable-" .. tostring(envelope.effect_kind or "invalid")
+        .. "-effect-" .. envelope_sha256:sub(1, 32),
       envelope_sha256 = envelope_sha256,
       evaluated_input_digests = inputs,
       issued_at = "2026-07-22T00:20:00Z",
@@ -1166,12 +1185,12 @@ function Context:_structured_runtime()
     if value == "allow" then
       local stored = context.records:immutable(authorization_key(receipt.receipt_id), copy(receipt))
       if stored.written ~= true and stored.replayed ~= true then
-        error("generic-host durable CLI authorization receipt conflict")
+        error("generic-host durable effect authorization receipt conflict")
       end
     end
     return receipt
   end
-  return {
+  local runtime = {
     sha256_bytes = function(bytes) return context.records:digest(bytes) end,
     load_artifact = function(path) return context.store:load(path) end,
     now = function(request)
@@ -1208,7 +1227,7 @@ function Context:_structured_runtime()
     end,
     authorize_cli_effect = function(request)
       local envelope = request.action_envelope
-      local ok = pcall(execution.validate_cli_action_envelope, envelope)
+      local ok = pcall(execution.validate_action_envelope, envelope)
       local empty = {
         profile = string.rep("0", 64), validation_receipt = string.rep("0", 64),
         preauthorization = string.rep("0", 64), environment_receipt = string.rep("0", 64),
@@ -1245,6 +1264,12 @@ function Context:_structured_runtime()
       for _, item in ipairs(plan.value.cases or {}) do
         if item.case_id == envelope.case.case_id then planned_case = item end
       end
+      local effect_allowed = envelope.effect_kind == "cli"
+        and argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
+        and argv_allowed(envelope.case.argv, grant.value.cli_capabilities)
+        or envelope.effect_kind == "http" and envelope.base_url == environment.value.base_url
+          and http_allowed(envelope.case.request, preauthorization.value.capabilities.http, envelope.base_url)
+          and http_allowed(envelope.case.request, grant.value.http_capabilities, envelope.base_url)
       if not valid or profile.digest ~= envelope.profile_artifact_sha256
         or project_profile.profile_sha256(profile.value, function(body) return context.records:digest(body) end)
           ~= envelope.profile_sha256
@@ -1262,8 +1287,7 @@ function Context:_structured_runtime()
         or type(replay) ~= "table" or replay.status ~= "claimed"
         or replay.fence_id ~= envelope.fence_id
         or not equal(planned_case, envelope.case)
-        or not argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
-        or not argv_allowed(envelope.case.argv, grant.value.cli_capabilities) then
+        or not effect_allowed then
         return decision(envelope, "deny", "foreign-binding", inputs)
       end
       return decision(envelope, "allow", "authorized", inputs)
@@ -1280,7 +1304,7 @@ function Context:_structured_runtime()
         error("generic-host durable structured CLI authorization receipt is unavailable")
       end
       local consumed = context.records:claim(
-        "testing-runner/cli-effect-consumptions/" .. context:_key(receipt.receipt_id),
+        "testing-runner/effect-consumptions/" .. context:_key(receipt.receipt_id),
         { binding = copy(receipt), receipt_id = receipt.receipt_id })
       if consumed.claimed ~= true or consumed.replayed == true then
         error("generic-host durable structured CLI authorization receipt is replayed")
@@ -1300,11 +1324,27 @@ function Context:_structured_runtime()
       return result
     end,
     http_request = function(input)
-      if input.operation_id ~= context.run_id or input.base_url ~= context.base_url
-        or input.request.url ~= context.base_url then
+      local envelope = input.action_envelope
+      local receipt = input.authorization_receipt
+      execution.validate_http_action_envelope(envelope)
+      execution.validate_effect_authorization_receipt(receipt, envelope, "2026-07-22T00:20:00Z")
+      local issued = context.records:read(authorization_key(receipt.receipt_id))
+      if receipt.decision ~= "allow"
+        or receipt.envelope_sha256 ~= context.records:digest(json_codec.encode(envelope))
+        or issued == nil or not equal(issued, receipt) then
+        error("generic-host durable structured HTTP authorization receipt is unavailable")
+      end
+      local consumed = context.records:claim(
+        "testing-runner/effect-consumptions/" .. context:_key(receipt.receipt_id),
+        { binding = copy(receipt), receipt_id = receipt.receipt_id })
+      if consumed.claimed ~= true or consumed.replayed == true then
+        error("generic-host durable structured HTTP authorization receipt is replayed")
+      end
+      if envelope.operation_id ~= context.run_id or envelope.base_url ~= context.base_url
+        or envelope.case.request.url ~= context.base_url then
         error("generic-host durable structured HTTP request is not bound to the ready environment")
       end
-      local result = http_request(input.request, input.timeout_seconds)
+      local result = http_request(envelope.case.request, envelope.case.timeout_seconds)
       context.records:immutable("testing-runner/target-effects/" .. context:_key(input), {
         binding = copy(input), result = copy(result),
       })
@@ -1382,6 +1422,8 @@ function Context:_structured_runtime()
       return true
     end,
   }
+  runtime.authorize_http_effect = runtime.authorize_cli_effect
+  return runtime
 end
 
 function Context:_publication_runtime()

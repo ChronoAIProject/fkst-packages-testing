@@ -39,6 +39,10 @@ local function runtime(artifacts, options)
       if options.authorize_cli_effect then return options.authorize_cli_effect(input) end
       return fixtures.authorization_receipt(input.action_envelope)
     end,
+    authorize_http_effect = function(input)
+      if options.authorize_http_effect then return options.authorize_http_effect(input) end
+      return fixtures.authorization_receipt(input.action_envelope)
+    end,
     exec_argv = function(input)
       table.insert(effects, { kind = "cli", request = input })
       if options.exec_error then error("cli unavailable") end
@@ -247,8 +251,9 @@ return {
     t.eq(effects[1].request.action_envelope.repository.commit_sha, request.repository.commit_sha)
     t.eq(effects[1].request.action_envelope.case.argv[2], "--version")
     t.eq(effects[2].kind, "http")
-    t.eq(effects[2].request.base_url, "http://127.0.0.1:4173/health")
-    t.eq(effects[2].request.request.url, "http://127.0.0.1:4173/health")
+    t.eq(effects[2].request.action_envelope.base_url, "http://127.0.0.1:4173/health")
+    t.eq(effects[2].request.action_envelope.case.request.url, "http://127.0.0.1:4173/health")
+    t.eq(effects[2].request.authorization_receipt.decision, "allow")
     local set = writes[result.case_result_set_path]
     local manifest = writes[result.evidence_manifest_path]
     local legacy = writes[result.case_results_path]

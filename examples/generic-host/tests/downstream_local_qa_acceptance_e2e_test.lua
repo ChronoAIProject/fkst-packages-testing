@@ -56,8 +56,8 @@ local function counts(context)
     profile = #context.records:list("generic-host/profile-approval"),
     preauthorization = #context.records:list("generic-host/preauthorization"),
     replay = #context.records:list("testing-runner/replay"),
-    authorization = #context.records:list("testing-runner/cli-effect-authorizations"),
-    consumption = #context.records:list("testing-runner/cli-effect-consumptions"),
+    authorization = #context.records:list("testing-runner/effect-authorizations"),
+    consumption = #context.records:list("testing-runner/effect-consumptions"),
     effects = #context.records:list("testing-runner/target-effects"),
     publication = #context.records:list("test-publication/effects"),
     terminal = #context.records:list("generic-host/terminal"),
@@ -138,14 +138,24 @@ return {
       t.eq(effects[4].value.result.stdout, "")
       t.eq(effects[4].value.result.stderr, REJECTED)
       t.eq(effects[5].value.result.body, RESERVED)
-      t.eq(#at_barrier.records:list("testing-runner/cli-effect-authorizations"), 2)
-      t.eq(#at_barrier.records:list("testing-runner/cli-effect-consumptions"), 2)
+      t.eq(#at_barrier.records:list("testing-runner/effect-authorizations"), 5)
+      t.eq(#at_barrier.records:list("testing-runner/effect-consumptions"), 5)
       for _, expected in ipairs({ "inventory-reserve-three", "inventory-over-reserve-rejected" }) do
         local consumption = artifact(at_barrier, at_barrier.request.structured_execution.artifact_root
           .. "/authorization/" .. expected .. "-consumption.json")
         t.eq(consumption.schema, "generic-host.cli-effect-consumption.v1")
         t.eq(consumption.case_id, expected)
         t.eq(consumption.fence_id, nil)
+        t.is_true(type(consumption.consumption_fingerprint_sha256) == "string")
+        t.eq(#consumption.consumption_fingerprint_sha256, 64)
+      end
+      for _, expected in ipairs({
+        "inventory-initial-state", "inventory-state-after-reserve", "inventory-state-after-rejection",
+      }) do
+        local consumption = artifact(at_barrier, at_barrier.request.structured_execution.artifact_root
+          .. "/authorization/" .. expected .. "-consumption.json")
+        t.eq(consumption.schema, "generic-host.http-effect-consumption.v1")
+        t.eq(consumption.case_id, expected)
         t.is_true(type(consumption.consumption_fingerprint_sha256) == "string")
         t.eq(#consumption.consumption_fingerprint_sha256, 64)
       end
@@ -257,8 +267,8 @@ return {
       t.eq(before.profile, 1)
       t.eq(before.preauthorization, 1)
       t.eq(before.replay, 1)
-      t.eq(before.authorization, 2)
-      t.eq(before.consumption, 2)
+      t.eq(before.authorization, 5)
+      t.eq(before.consumption, 5)
       t.eq(before.effects, 5)
       t.eq(before.publication, 16)
       local published = durable.load(context.project_root, context.durable_root, context.run_id)

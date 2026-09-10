@@ -21,9 +21,11 @@ function run(argv, cwd) {
 function listen() {
   return new Promise((resolve) => {
     const server = http.createServer((_request, response) => {
+      server.requestCount += 1;
       response.writeHead(200, { 'content-type': 'application/json' });
       response.end('{"status":"healthy"}');
     });
+    server.requestCount = 0;
     server.listen(0, '127.0.0.1', () => resolve(server));
   });
 }
@@ -140,6 +142,9 @@ async function main() {
     assert.strictEqual(checkout.status, 'passed');
     workspaceRef = checkout.workspace_ref;
     workspace = JSON.parse(fs.readFileSync(resourcePath(workspaceRef.ref), 'utf8')).path;
+    server = await listen();
+    const address = server.address();
+    const baseUrl = `http://127.0.0.1:${address.port}/health`;
 
     const fsmonitorCanary = path.join(temp, 'ambient-fsmonitor-canary.json');
     const fsmonitorHook = path.join(temp, 'ambient-fsmonitor-hook.js');
@@ -184,12 +189,16 @@ async function main() {
     });
     const preauthorization = writeAuthority('preauthorization', {
       schema: 'testing-structured-execution-authorization.v1', profile_sha256: validation.value.profile_sha256,
-      repository, capabilities: { cli: [{ argv_prefix: [process.execPath] }], http: [] },
+      repository, capabilities: {
+        cli: [{ argv_prefix: [process.execPath] }],
+        http: [{ origin: `http://127.0.0.1:${address.port}`, methods: ['GET'], path_prefixes: ['/health'] }],
+      },
       trace_id: traceId, dedup_key: dedupKey,
     });
     const environment = writeAuthority('environment', {
       schema: 'environment-factory.receipt.v2', status: 'ready', operation_id: operationId,
       profile_sha256: validation.value.profile_sha256, repository, workspace_ref: workspaceRef,
+      base_url: baseUrl,
       trace_id: traceId, dedup_key: dedupKey,
     });
     const cliCase = {
@@ -205,6 +214,11 @@ async function main() {
       ].join(';'), ambientHome], timeout_seconds: 10,
       assertions: [{ type: 'exit-code', expected: 0 }],
     };
+    const httpCase = {
+      case_id: 'http-health', kind: 'http',
+      request: { method: 'GET', url: baseUrl, headers: [] }, timeout_seconds: 10,
+      assertions: [{ type: 'status-code', expected: 200 }],
+    };
     const plan = writeAuthority('plan', {
       schema: 'testing-structured-plan.v2', execution_mode: 'structured-api-cli', repository,
       environment_receipt_sha256: environment.digest, cases: [cliCase],
@@ -214,11 +228,28 @@ async function main() {
       schema: 'testing-structured-execution-grant.v1', grant_id: `${runId}-effect-grant`,
       parent_authorization_sha256: preauthorization.digest, plan_sha256: plan.digest,
       environment_receipt_sha256: environment.digest, repository,
-      cli_capabilities: [{ argv_prefix: [process.execPath] }], authority,
+      cli_capabilities: [{ argv_prefix: [process.execPath] }],
+      http_capabilities: [{
+        origin: `http://127.0.0.1:${address.port}`, methods: ['GET'], path_prefixes: ['/health'],
+      }], authority,
       policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef,
       expires_at: expiresAt, max_uses: 1, trace_id: traceId, dedup_key: dedupKey,
     });
     grantSha256 = grant.digest;
+    const httpPlan = writeAuthority('http-plan', {
+      schema: 'testing-structured-plan.v2', execution_mode: 'structured-api-cli', repository,
+      environment_receipt_sha256: environment.digest, cases: [httpCase],
+      trace_id: traceId, dedup_key: dedupKey,
+    });
+    const httpGrant = writeAuthority('http-grant', {
+      schema: 'testing-structured-execution-grant.v1', grant_id: `${runId}-http-effect-grant`,
+      parent_authorization_sha256: preauthorization.digest, plan_sha256: httpPlan.digest,
+      environment_receipt_sha256: environment.digest, repository,
+      cli_capabilities: [], http_capabilities: [{
+        origin: `http://127.0.0.1:${address.port}`, methods: ['GET'], path_prefixes: ['/health'],
+      }], authority, policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef,
+      expires_at: expiresAt, max_uses: 1, trace_id: traceId, dedup_key: dedupKey,
+    });
 
     fs.mkdirSync(path.dirname(configRef), { recursive: true });
     fs.writeFileSync(configRef, `${stableStringify({
@@ -237,8 +268,12 @@ async function main() {
         authorization_capability: false,
         execution_authorized: false,
       },
-      grant_attestations: [{ grant_sha256: grantSha256, authority,
-        policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef }],
+      grant_attestations: [
+        { grant_sha256: grantSha256, authority,
+          policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef },
+        { grant_sha256: httpGrant.digest, authority,
+          policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef },
+      ],
     })}\n`);
 
     const common = {
@@ -312,22 +347,54 @@ async function main() {
       ...common, action_envelope: foreignEnvelope, authorization_receipt: denied,
     }), /missing, denied, malformed, expired, or foreign/);
 
-    server = await listen();
-    const address = server.address();
-    const baseUrl = `http://127.0.0.1:${address.port}/health`;
-    const response = await dispatch('http-request', {
+    const httpEffectClaim = await dispatch('replay-guard', {
+      ...common, grant_id: httpGrant.value.grant_id, grant_sha256: httpGrant.digest,
+      parent_authorization_sha256: preauthorization.digest, plan_sha256: httpPlan.digest,
+      environment_receipt_sha256: environment.digest,
+    });
+    const httpEnvelope = {
+      schema: 'testing-http-action-envelope.v1', effect_kind: 'http', capability: 'loopback-http',
+      profile_ref: profile.ref, profile_artifact_sha256: profile.digest,
+      profile_sha256: validation.value.profile_sha256,
+      validation_receipt_ref: validation.ref, validation_receipt_sha256: validation.digest,
+      preauthorization_ref: preauthorization.ref, preauthorization_sha256: preauthorization.digest,
+      repository, run_id: operationId, operation_id: operationId,
+      environment_receipt_ref: environment.ref, environment_receipt_sha256: environment.digest,
+      workspace_ref: workspaceRef, base_url: baseUrl,
+      plan_ref: httpPlan.ref, plan_sha256: httpPlan.digest,
+      grant_ref: httpGrant.ref, grant_sha256: httpGrant.digest, case: httpCase,
+      resource_bounds: { output_bytes: 65536 }, attempt: 1,
+      trace_id: traceId, dedup_key: dedupKey, expires_at: expiresAt,
+      fence_id: httpEffectClaim.claim_id,
+    };
+    const requestsBeforeUnauthorized = server.requestCount;
+    await assert.rejects(() => dispatch('http-request', {
       ...common,
       base_url: baseUrl,
       request: { method: 'GET', url: baseUrl, headers: [] },
       timeout_seconds: 10,
+    }), /action envelope/);
+    assert.strictEqual(server.requestCount, requestsBeforeUnauthorized);
+    const httpAuthorization = await dispatch('authorize-http-effect', {
+      ...common, action_envelope: httpEnvelope,
+    });
+    assert.strictEqual(httpAuthorization.decision, 'allow');
+    const response = await dispatch('http-request', {
+      ...common, action_envelope: httpEnvelope, authorization_receipt: httpAuthorization,
     });
     assert.strictEqual(response.status, 200);
     assert.match(response.body, /healthy/);
     await assert.rejects(() => dispatch('http-request', {
-      ...common,
-      base_url: baseUrl,
-      request: { method: 'GET', url: 'http://example.invalid/health', headers: [] },
-      timeout_seconds: 10,
+      ...common, action_envelope: httpEnvelope, authorization_receipt: httpAuthorization,
+    }), /replayed or is unavailable/);
+    const foreignHttpEnvelope = copy(httpEnvelope);
+    foreignHttpEnvelope.case.request.url = 'http://example.invalid/health';
+    const deniedHttp = await dispatch('authorize-http-effect', {
+      ...common, action_envelope: foreignHttpEnvelope,
+    });
+    assert.strictEqual(deniedHttp.decision, 'deny');
+    await assert.rejects(() => dispatch('http-request', {
+      ...common, action_envelope: foreignHttpEnvelope, authorization_receipt: deniedHttp,
     }), /loopback HTTP/);
 
     fs.symlinkSync(temp, linkPath);

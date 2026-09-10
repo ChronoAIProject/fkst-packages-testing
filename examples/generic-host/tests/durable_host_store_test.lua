@@ -279,8 +279,8 @@ return {
 
       local function assert_gateway_unchanged()
         local current = durable.load(context.project_root, context.durable_root, context.run_id)
-        t.eq(#current.records:list("testing-runner/cli-effect-authorizations"), 1)
-        t.eq(#current.records:list("testing-runner/cli-effect-consumptions"), 0)
+        t.eq(#current.records:list("testing-runner/effect-authorizations"), 1)
+        t.eq(#current.records:list("testing-runner/effect-consumptions"), 0)
         t.eq(#current.records:list("testing-runner/target-effects"), 0)
         t.eq(process.effect_count(context), 0)
       end
@@ -364,7 +364,7 @@ return {
         end)
         local consumed = durable.load(context.project_root, context.durable_root, context.run_id)
         t.eq(process.effect_count(context), 1)
-        t.eq(#consumed.records:list("testing-runner/cli-effect-consumptions"), 1)
+        t.eq(#consumed.records:list("testing-runner/effect-consumptions"), 1)
         t.eq(#consumed.records:list("testing-runner/target-effects"), 1)
         return result
       end
@@ -381,8 +381,8 @@ return {
       t.eq(outcome.replayed, false)
       t.is_true(type(authorized_request) == "table")
       local recovered = durable.load(context.project_root, context.durable_root, context.run_id)
-      local authorizations = recovered.records:list("testing-runner/cli-effect-authorizations")
-      local consumptions = recovered.records:list("testing-runner/cli-effect-consumptions")
+      local authorizations = recovered.records:list("testing-runner/effect-authorizations")
+      local consumptions = recovered.records:list("testing-runner/effect-consumptions")
       local replays = recovered.records:list("testing-runner/replay")
       local effects = recovered.records:list("testing-runner/target-effects")
       t.eq(#authorizations, 1)
@@ -425,8 +425,8 @@ return {
       t.eq(replayed.status, "passed")
       t.eq(replayed.replayed, true)
       recovered = durable.load(context.project_root, context.durable_root, context.run_id)
-      t.eq(#recovered.records:list("testing-runner/cli-effect-authorizations"), 1)
-      t.eq(#recovered.records:list("testing-runner/cli-effect-consumptions"), 1)
+      t.eq(#recovered.records:list("testing-runner/effect-authorizations"), 1)
+      t.eq(#recovered.records:list("testing-runner/effect-consumptions"), 1)
       t.eq(#recovered.records:list("testing-runner/target-effects"), 1)
       t.eq(process.effect_count(context), 1)
     end)

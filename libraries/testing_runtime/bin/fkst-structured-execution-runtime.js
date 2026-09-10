@@ -614,22 +614,44 @@ function argvWithin(argv, capabilities) {
     && capability.argv_prefix.every((item, index) => item === argv[index]));
 }
 
+function httpWithin(request, capabilities, baseUrl) {
+  let target;
+  try {
+    target = new URL(request.url);
+  } catch (_error) {
+    return false;
+  }
+  if (target.search || target.hash || localOrigin(target.toString()) !== localOrigin(baseUrl)) return false;
+  return (capabilities || []).some((capability) => {
+    if (!capability || !Array.isArray(capability.methods)
+      || !Array.isArray(capability.path_prefixes)) return false;
+    try {
+      return localOrigin(capability.origin) === localOrigin(baseUrl)
+        && capability.methods.includes(request.method)
+        && capability.path_prefixes.some((prefix) => typeof prefix === 'string'
+          && prefix.startsWith('/') && target.pathname.startsWith(prefix));
+    } catch (_error) {
+      return false;
+    }
+  });
+}
+
 function authorizationPath(receiptId) {
-  return path.join(durableRoot(), 'testing-runner', 'cli-effect-authorization', `${sha256(receiptId)}.json`);
+  return path.join(durableRoot(), 'testing-runner', 'effect-authorization', `${sha256(receiptId)}.json`);
 }
 
 function receiptTag(config, receipt) {
   const unsigned = { ...receipt };
   delete unsigned.auth_tag;
   return crypto.createHmac('sha256', config.state_auth_key)
-    .update(`${config.state_mac_generation}\0cli-effect-receipt\0${stableStringify(unsigned)}`).digest('hex');
+    .update(`${config.state_mac_generation}\0effect-receipt\0${stableStringify(unsigned)}`).digest('hex');
 }
 
 function authorizationReceipt(config, envelope, decision, reasonCode, inputs, now) {
   const envelopeSha256 = sha256(stableStringify(envelope));
   const receipt = {
     schema: 'testing-effect-authorization-receipt.v1', decision, reason_code: reasonCode,
-    receipt_id: `cli-effect-${envelopeSha256.slice(0, 40)}`,
+    receipt_id: `${envelope.effect_kind || 'invalid'}-effect-${envelopeSha256.slice(0, 40)}`,
     envelope_sha256: envelopeSha256,
     evaluated_input_digests: inputs,
     issued_at: utcTimestamp(now), expires_at: envelope.expires_at,
@@ -639,30 +661,30 @@ function authorizationReceipt(config, envelope, decision, reasonCode, inputs, no
   return receipt;
 }
 
-function validateEnvelope(envelope) {
-  exactKeys(envelope, [
+function validateEnvelope(envelope, expectedKind) {
+  const commonFields = [
     'schema', 'effect_kind', 'capability', 'profile_ref', 'profile_artifact_sha256', 'profile_sha256',
     'validation_receipt_ref', 'validation_receipt_sha256', 'preauthorization_ref',
     'preauthorization_sha256', 'repository', 'run_id', 'operation_id',
     'environment_receipt_ref', 'environment_receipt_sha256', 'workspace_ref',
     'plan_ref', 'plan_sha256', 'grant_ref', 'grant_sha256', 'case', 'resource_bounds',
     'attempt', 'trace_id', 'dedup_key', 'expires_at', 'fence_id',
-  ], 'CLI action envelope');
+  ];
+  const kind = envelope && envelope.effect_kind;
+  exactKeys(envelope, kind === 'http' ? [...commonFields, 'base_url'] : commonFields,
+    'action envelope');
   exactKeys(envelope.repository, ['url', 'commit_sha'], 'action repository');
   exactKeys(envelope.workspace_ref, ['kind', 'ref'], 'action workspace');
   exactKeys(envelope.resource_bounds, ['output_bytes'], 'action resource bounds');
-  exactKeys(envelope.case, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'], 'action case');
-  if (!Array.isArray(envelope.case.assertions) || envelope.case.assertions.length < 1
-    || envelope.case.assertions.length > 16
-    || envelope.case.assertions.some((assertion) => !assertion
-      || Object.keys(assertion).sort().join(',') !== 'expected,type'
-      || assertion.type !== 'exit-code' || !Number.isInteger(assertion.expected)
-      || assertion.expected < 0 || assertion.expected > 255)) {
-    throw new Error('CLI action assertions are malformed');
+  if (expectedKind !== undefined && kind !== expectedKind) {
+    throw new Error('action envelope effect kind differs');
   }
-  if (envelope.schema !== 'testing-cli-action-envelope.v1' || envelope.effect_kind !== 'cli'
-    || envelope.capability !== 'direct-argv' || envelope.attempt !== 1
-    || envelope.run_id !== envelope.operation_id || envelope.case.kind !== 'cli'
+  if (!['cli', 'http'].includes(kind)
+    || envelope.schema !== (kind === 'cli'
+      ? 'testing-cli-action-envelope.v1' : 'testing-http-action-envelope.v1')
+    || envelope.capability !== (kind === 'cli' ? 'direct-argv' : 'loopback-http')
+    || envelope.attempt !== 1 || envelope.run_id !== envelope.operation_id
+    || envelope.case.kind !== kind
     || envelope.workspace_ref.kind !== 'workspace'
     || !Number.isInteger(envelope.case.timeout_seconds) || envelope.case.timeout_seconds < 1
     || envelope.case.timeout_seconds > 300
@@ -671,12 +693,47 @@ function validateEnvelope(envelope) {
     || !Number.isFinite(Date.parse(envelope.expires_at))) {
     throw new Error('CLI action envelope is malformed');
   }
-  validateArgv(envelope.case.argv);
+  if (!Array.isArray(envelope.case.assertions) || envelope.case.assertions.length < 1
+    || envelope.case.assertions.length > 16) throw new Error('action assertions are malformed');
+  if (kind === 'cli') {
+    exactKeys(envelope.case, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'], 'action case');
+    if (envelope.case.assertions.some((assertion) => !assertion
+      || Object.keys(assertion).sort().join(',') !== 'expected,type'
+      || assertion.type !== 'exit-code' || !Number.isInteger(assertion.expected)
+      || assertion.expected < 0 || assertion.expected > 255)) {
+      throw new Error('CLI action assertions are malformed');
+    }
+    validateArgv(envelope.case.argv);
+  } else {
+    exactKeys(envelope.case, ['case_id', 'kind', 'request', 'timeout_seconds', 'assertions'], 'action case');
+    exactKeys(envelope.case.request, ['method', 'url', 'headers'], 'HTTP action request');
+    if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(envelope.case.request.method)
+      || !Array.isArray(envelope.case.request.headers) || envelope.case.request.headers.length !== 0
+      || envelope.case.assertions.some((assertion) => {
+        if (!assertion || typeof assertion !== 'object' || Array.isArray(assertion)) return true;
+        if (assertion.type === 'status-code') {
+          return Object.keys(assertion).sort().join(',') !== 'expected,type'
+            || !Number.isInteger(assertion.expected) || assertion.expected < 100 || assertion.expected > 599;
+        }
+        if (assertion.type === 'body-contains') {
+          return Object.keys(assertion).sort().join(',') !== 'expected,type'
+            || typeof assertion.expected !== 'string' || assertion.expected.length > 512;
+        }
+        return assertion.type !== 'json-path-equals'
+          || Object.keys(assertion).sort().join(',') !== 'expected,path,type'
+          || typeof assertion.path !== 'string' || assertion.path.length < 1 || assertion.path.length > 512
+          || !assertion.path.split('.').every((item) => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(item))
+          || !['string', 'number', 'boolean'].includes(typeof assertion.expected);
+      })) throw new Error('HTTP action assertions are malformed');
+    if (localOrigin(envelope.case.request.url) !== localOrigin(envelope.base_url)) {
+      throw new Error('HTTP action origin differs from ready environment');
+    }
+  }
   return envelope;
 }
 
-function evaluateCliEnvelope(config, envelope, now) {
-  validateEnvelope(envelope);
+function evaluateEnvelope(config, envelope, now, expectedKind) {
+  validateEnvelope(envelope, expectedKind);
   const profile = boundArtifact(envelope.profile_ref, envelope.profile_artifact_sha256);
   const validation = boundArtifact(envelope.validation_receipt_ref, envelope.validation_receipt_sha256);
   const preauthorization = boundArtifact(envelope.preauthorization_ref, envelope.preauthorization_sha256);
@@ -727,9 +784,16 @@ function evaluateCliEnvelope(config, envelope, now) {
   if (!planned || stableStringify(planned) !== stableStringify(envelope.case)) {
     throw new Error('approved plan scope differs');
   }
-  if (!argvWithin(envelope.case.argv, preauthorization.value.capabilities && preauthorization.value.capabilities.cli)
-    || !argvWithin(envelope.case.argv, grant.value.cli_capabilities)) {
-    throw new Error('CLI capability is not authorized');
+  if (envelope.effect_kind === 'cli') {
+    if (!argvWithin(envelope.case.argv, preauthorization.value.capabilities && preauthorization.value.capabilities.cli)
+      || !argvWithin(envelope.case.argv, grant.value.cli_capabilities)) {
+      throw new Error('CLI capability is not authorized');
+    }
+  } else if (environment.value.base_url !== envelope.base_url
+    || !httpWithin(envelope.case.request,
+      preauthorization.value.capabilities && preauthorization.value.capabilities.http, envelope.base_url)
+    || !httpWithin(envelope.case.request, grant.value.http_capabilities, envelope.base_url)) {
+    throw new Error('HTTP capability is not authorized');
   }
   const attested = (config.grant_attestations || []).some((entry) => entry.grant_sha256 === grant.digest
     && sameAuthority(entry.authority, grant.value.authority)
@@ -745,7 +809,7 @@ function evaluateCliEnvelope(config, envelope, now) {
   return inputs;
 }
 
-function authorizeCliEffect(payload) {
+function authorizeEffect(payload, expectedKind) {
   const envelope = payload.action_envelope || {};
   const config = runtimeConfig(payload);
   const now = new Date();
@@ -759,7 +823,7 @@ function authorizeCliEffect(payload) {
       runtimeConfigRef: payload.runtime_config_ref,
       artifactRoot: payload.artifact_root,
     });
-    inputs = evaluateCliEnvelope(config, envelope, now);
+    inputs = evaluateEnvelope(config, envelope, now, expectedKind);
     const receipt = authorizationReceipt(config, envelope, 'allow', 'authorized', inputs, now);
     const target = authorizationPath(receipt.receipt_id);
     const release = acquireLock(`${target}.lock`);
@@ -793,15 +857,23 @@ function authorizeCliEffect(payload) {
   }
 }
 
-async function execArgv(payload) {
-  const envelope = validateEnvelope(payload.action_envelope);
+function authorizeCliEffect(payload) {
+  return authorizeEffect(payload, 'cli');
+}
+
+function authorizeHttpEffect(payload) {
+  return authorizeEffect(payload, 'http');
+}
+
+async function consumeAuthorizedEffect(payload, expectedKind, execute) {
+  const envelope = validateEnvelope(payload.action_envelope, expectedKind);
   const config = targetExecutionConfig(payload, envelope.repository);
   const receipt = payload.authorization_receipt;
   exactKeys(receipt, [
     'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
     'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
     'dedup_key', 'auth_tag',
-  ], 'CLI authorization receipt');
+  ], 'effect authorization receipt');
   exactKeys(receipt.evaluated_input_digests, [
     'profile', 'validation_receipt', 'preauthorization', 'environment_receipt', 'plan', 'grant',
   ], 'evaluated authorization inputs');
@@ -814,7 +886,7 @@ async function execArgv(payload) {
     || receipt.auth_tag !== receiptTag(config, receipt) || receipt.fence_id !== envelope.fence_id
     || receipt.trace_id !== envelope.trace_id || receipt.dedup_key !== envelope.dedup_key
     || Date.now() >= Date.parse(receipt.expires_at)) {
-    throw new Error('CLI authorization receipt is missing, denied, malformed, expired, or foreign');
+    throw new Error('effect authorization receipt is missing, denied, malformed, expired, or foreign');
   }
   const target = authorizationPath(receipt.receipt_id);
   const release = acquireLock(`${target}.lock`);
@@ -822,9 +894,17 @@ async function execArgv(payload) {
     const current = fs.existsSync(target) ? readJson(target) : null;
     if (!current || current.status !== 'issued'
       || stableStringify(current.receipt) !== stableStringify(receipt)) {
-      throw new Error('CLI authorization receipt was replayed or is unavailable');
+      throw new Error('effect authorization receipt was replayed or is unavailable');
     }
     writeJsonAtomic(target, { status: 'consumed', receipt });
+    return await execute(envelope, config);
+  } finally {
+    release();
+  }
+}
+
+async function execArgv(payload) {
+  return consumeAuthorizedEffect(payload, 'cli', async (envelope, config) => {
     const workspace = resolveWorkspace({
       operation_id: envelope.operation_id, repository: envelope.repository,
       environment_receipt_sha256: envelope.environment_receipt_sha256,
@@ -860,7 +940,7 @@ async function execArgv(payload) {
     } finally {
       releaseWorkerEnvironment(environment);
     }
-  } finally { release(); }
+  });
 }
 
 function localOrigin(value) {
@@ -873,26 +953,19 @@ function localOrigin(value) {
 }
 
 function httpRequest(payload) {
-  const config = targetExecutionConfig(payload, payload.repository);
-  const allowedMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
-  if (!payload.request || !allowedMethods.has(payload.request.method)
-    || !Array.isArray(payload.request.headers) || payload.request.headers.length !== 0) {
-    throw new Error('HTTP effect request is invalid');
-  }
-  const target = new URL(payload.request.url);
-  if (target.search || target.hash) throw new Error('HTTP effect URL must not contain query or fragment');
-  if (localOrigin(target.toString()) !== localOrigin(payload.base_url)) {
-    throw new Error('HTTP effect origin differs from ready environment');
-  }
-  const maximum = Math.max(1024, Math.min(Number(config.http_response_bytes) || 256 * 1024, 1024 * 1024));
-  return new Promise((resolve, reject) => {
+  return consumeAuthorizedEffect(payload, 'http', (envelope, config) => new Promise((resolve, reject) => {
+    const target = new URL(envelope.case.request.url);
+    const maximum = Math.min(
+      Math.max(1024, Math.min(Number(config.http_response_bytes) || 256 * 1024, 1024 * 1024)),
+      envelope.resource_bounds.output_bytes,
+    );
     const request = http.request({
       hostname: target.hostname,
       port: target.port,
       path: `${target.pathname}${target.search}`,
-      method: payload.request.method,
+      method: envelope.case.request.method,
       headers: {},
-      timeout: Math.max(1, Number(payload.timeout_seconds) || 1) * 1000,
+      timeout: envelope.case.timeout_seconds * 1000,
     }, (response) => {
       const chunks = [];
       let size = 0;
@@ -910,7 +983,7 @@ function httpRequest(payload) {
     request.on('timeout', () => request.destroy(new Error('HTTP effect timed out')));
     request.on('error', reject);
     request.end();
-  });
+  }));
 }
 
 function loadResult(payload) {
@@ -956,6 +1029,7 @@ async function dispatch(name, payload) {
   if (name === 'verify-grant') return verifyGrant(payload);
   if (name === 'replay-guard') return replayGuard(payload);
   if (name === 'authorize-cli-effect') return authorizeCliEffect(payload);
+  if (name === 'authorize-http-effect') return authorizeHttpEffect(payload);
   if (name === 'complete-replay') return completeReplay(payload);
   if (name === 'exec-argv') return execArgv(payload);
   if (name === 'http-request') return httpRequest(payload);
