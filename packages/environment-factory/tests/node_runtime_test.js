@@ -561,6 +561,62 @@ async function main() {
     assert.strictEqual(fs.existsSync(reservedHome), false);
     assert.strictEqual(releaseWorkerEnvironment(recoveredPreClaimEnvironment), true);
 
+    let noClobberLease = null;
+    let foreignLaunchSpecPath = null;
+    const foreignLaunchSpecBody = 'externally-created-launch-spec\n';
+    assert.throws(() => startOrRecoverSupervisedProcess({
+      claimPath: path.join(temp, 'supervised-launch-spec-no-clobber', 'claim.json'),
+      argv: [process.execPath, '-e', 'process.exit(0)'],
+      cwd: temp,
+      createEnvironment(reservation) {
+        const environment = minimalEnvironment(
+          {}, 'supervised-launch-spec-no-clobber', reservation.reservation_id,
+        );
+        noClobberLease = workerEnvironmentLease(environment);
+        return environment;
+      },
+      binding: { ...startupBinding, effect_id: 'launch-spec-no-clobber-effect' },
+      beforeLaunchSpecPublish(claim) {
+        foreignLaunchSpecPath = claim.launch_spec_path;
+        fs.writeFileSync(foreignLaunchSpecPath, foreignLaunchSpecBody, { flag: 'wx' });
+      },
+    }), /immutable content differs/);
+    assert.strictEqual(fs.readFileSync(foreignLaunchSpecPath, 'utf8'), foreignLaunchSpecBody);
+    assert.strictEqual(fs.existsSync(noClobberLease.home), false);
+
+    let oversizedLaunchLease = null;
+    const oversizedTargetMarker = path.join(temp, 'supervised-oversized-target.txt');
+    const oversizedClaimPath = path.join(temp, 'supervised-oversized-launch', 'claim.json');
+    const oversizedLaunch = startOrRecoverSupervisedProcess({
+      claimPath: oversizedClaimPath,
+      argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(oversizedTargetMarker)}, 'bad')`],
+      cwd: temp,
+      createEnvironment(reservation) {
+        const environment = minimalEnvironment(
+          {}, 'supervised-oversized-launch', reservation.reservation_id,
+        );
+        oversizedLaunchLease = workerEnvironmentLease(environment);
+        return environment;
+      },
+      binding: { ...startupBinding, effect_id: 'oversized-launch-effect' },
+      registrationTimeoutMs: 250,
+      beforeSupervisorLaunch(claim) {
+        const oversizedBody = Buffer.alloc(2 * 1024 * 1024 + 1, 0x61);
+        fs.unlinkSync(claim.launch_spec_path);
+        fs.writeFileSync(claim.launch_spec_path, oversizedBody, { flag: 'wx', mode: 0o600 });
+        const stat = fs.lstatSync(claim.launch_spec_path);
+        const substitutedClaim = JSON.parse(fs.readFileSync(oversizedClaimPath, 'utf8'));
+        substitutedClaim.launch_spec_identity = {
+          device: String(stat.dev), inode: String(stat.ino), size: stat.size, mode: stat.mode,
+        };
+        substitutedClaim.launch_spec_sha256 = sha256(oversizedBody);
+        fs.writeFileSync(oversizedClaimPath, `${stableStringify(substitutedClaim)}\n`);
+      },
+    });
+    assert.strictEqual(oversizedLaunch.state, 'revoked');
+    assert.strictEqual(fs.existsSync(oversizedTargetMarker), false);
+    assert.strictEqual(fs.existsSync(oversizedLaunchLease.home), false);
+
     let substitutedLaunchLease = null;
     const substitutedMarker = path.join(temp, 'supervised-substituted-command.txt');
     const substitutedLaunch = startOrRecoverSupervisedProcess({

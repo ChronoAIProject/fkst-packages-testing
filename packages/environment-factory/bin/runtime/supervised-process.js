@@ -22,6 +22,19 @@ const {
 
 const CLAIM_SCHEMA = 'fkst.supervised-process-startup.v1';
 const SPEC_SCHEMA = 'fkst.supervised-process-launch.v1';
+const MAX_METADATA_BYTES = 2 * 1024 * 1024;
+
+function readDescriptorBounded(descriptor, label) {
+  const buffer = Buffer.allocUnsafe(MAX_METADATA_BYTES + 1);
+  let length = 0;
+  while (length < buffer.length) {
+    const count = fs.readSync(descriptor, buffer, length, buffer.length - length, null);
+    if (count === 0) break;
+    length += count;
+  }
+  if (length > MAX_METADATA_BYTES) throw new Error(`${label} exceeds its read bound`);
+  return buffer.subarray(0, length);
+}
 
 function readIfExists(filePath) {
   try {
@@ -33,10 +46,9 @@ function readIfExists(filePath) {
 }
 
 function readJsonNoFollow(filePath) {
-  const maxBytes = 2 * 1024 * 1024;
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const before = fs.lstatSync(filePath);
-    if (!before.isFile() || before.isSymbolicLink() || before.size > maxBytes) {
+    if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_METADATA_BYTES) {
       throw new Error('supervised startup claim is not a bounded regular file');
     }
     const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
@@ -46,14 +58,7 @@ function readJsonNoFollow(filePath) {
         sleep(2);
         continue;
       }
-      const buffer = Buffer.allocUnsafe(maxBytes + 1);
-      let length = 0;
-      while (length < buffer.length) {
-        const count = fs.readSync(descriptor, buffer, length, buffer.length - length, null);
-        if (count === 0) break;
-        length += count;
-      }
-      if (length > maxBytes) throw new Error('supervised startup claim exceeds its read bound');
+      const body = readDescriptorBounded(descriptor, 'supervised startup claim');
       const openedAfter = fs.fstatSync(descriptor);
       const after = fs.lstatSync(filePath);
       if (!sameFileIdentity(fileIdentity(openedBefore), fileIdentity(openedAfter))
@@ -61,7 +66,7 @@ function readJsonNoFollow(filePath) {
         sleep(2);
         continue;
       }
-      return JSON.parse(buffer.subarray(0, length).toString('utf8'));
+      return JSON.parse(body.toString('utf8'));
     } finally {
       fs.closeSync(descriptor);
     }
@@ -148,7 +153,8 @@ function descriptorIdentities(descriptors) {
 
 function readBoundFile(filePath, expectedIdentity) {
   const before = fs.lstatSync(filePath);
-  if (!before.isFile() || before.isSymbolicLink()) {
+  if (!before.isFile() || before.isSymbolicLink() || before.size > MAX_METADATA_BYTES
+    || expectedIdentity.size > MAX_METADATA_BYTES) {
     throw new Error('supervised launch spec is not a regular file');
   }
   const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
@@ -159,7 +165,7 @@ function readBoundFile(filePath, expectedIdentity) {
       || !sameFileIdentity(fileIdentity(openedBefore), expectedIdentity)) {
       throw new Error('supervised launch spec identity changed');
     }
-    const body = fs.readFileSync(descriptor);
+    const body = readDescriptorBounded(descriptor, 'supervised launch spec');
     const openedAfter = fs.fstatSync(descriptor);
     const after = fs.lstatSync(filePath);
     if (!sameFileIdentity(fileIdentity(openedBefore), fileIdentity(openedAfter))
@@ -170,6 +176,33 @@ function readBoundFile(filePath, expectedIdentity) {
   } finally {
     fs.closeSync(descriptor);
   }
+}
+
+function publishLaunchSpecNoReplace(filePath, body) {
+  const pendingPath = `${filePath}.pending.${process.pid}.${crypto.randomBytes(16).toString('hex')}`;
+  let pendingCreated = false;
+  try {
+    fs.writeFileSync(pendingPath, body, { flag: 'wx', mode: 0o600 });
+    pendingCreated = true;
+    try {
+      fs.linkSync(pendingPath, filePath);
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
+  } finally {
+    if (pendingCreated) {
+      try { fs.unlinkSync(pendingPath); } catch (_error) {}
+    }
+  }
+  const stat = fs.lstatSync(filePath);
+  if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_METADATA_BYTES) {
+    throw new Error('supervised launch spec is not a bounded regular file');
+  }
+  const identity = fileIdentity(stat);
+  if (!readBoundFile(filePath, identity).equals(Buffer.from(body))) {
+    throw new Error('supervised launch spec immutable content differs');
+  }
+  return identity;
 }
 
 function transitionClaim(claimPath, token, allowedStates, update) {
@@ -327,24 +360,10 @@ function startOrRecoverSupervisedProcess(options) {
       const specBody = `${stableStringify(spec)}\n`;
       let launched = false;
       try {
-        if (fs.existsSync(claim.launch_spec_path)) {
-          const existing = fs.lstatSync(claim.launch_spec_path);
-          if (!existing.isFile() || existing.isSymbolicLink()) {
-            throw new Error('supervised launch spec is not a regular file');
-          }
-          if (fs.readFileSync(claim.launch_spec_path, 'utf8') !== specBody) {
-            fs.unlinkSync(claim.launch_spec_path);
-          }
+        if (typeof options.beforeLaunchSpecPublish === 'function') {
+          options.beforeLaunchSpecPublish(claim, specBody);
         }
-        if (!fs.existsSync(claim.launch_spec_path)) {
-          fs.writeFileSync(claim.launch_spec_path, specBody, { flag: 'wx', mode: 0o600 });
-        }
-        fs.chmodSync(claim.launch_spec_path, 0o600);
-        const launchSpecStat = fs.lstatSync(claim.launch_spec_path);
-        if (!launchSpecStat.isFile() || launchSpecStat.isSymbolicLink()) {
-          throw new Error('supervised launch spec is not a regular file');
-        }
-        const launchSpecIdentity = fileIdentity(launchSpecStat);
+        const launchSpecIdentity = publishLaunchSpecNoReplace(claim.launch_spec_path, specBody);
         claim = { ...claim, state: 'prepared', launch_spec_identity: launchSpecIdentity };
         writeClaimAtomic(claimPath, claim);
         if (typeof options.beforeSupervisorLaunch === 'function') options.beforeSupervisorLaunch(claim);
