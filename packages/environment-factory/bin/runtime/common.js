@@ -152,7 +152,19 @@ function removeOwnedDirectory(target, expectedIdentity, containmentRoot) {
 }
 
 function readLockOwner(lockPath) {
-  try { return readJson(path.join(lockPath, 'owner.json')); } catch (_error) { return null; }
+  try {
+    const lockStat = fs.lstatSync(lockPath);
+    if (lockStat.isSymbolicLink()) return null;
+    const ownerPath = lockStat.isDirectory() ? path.join(lockPath, 'owner.json') : lockPath;
+    const stat = fs.lstatSync(ownerPath);
+    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_JSON_BYTES) return null;
+    const owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8'));
+    if (!owner || owner.schema !== 'environment-factory.lock-owner.v1'
+      || !Number.isInteger(owner.pid) || owner.pid < 1
+      || typeof owner.process_start_identity !== 'string' || owner.process_start_identity === ''
+      || typeof owner.token !== 'string' || owner.token === '') return null;
+    return owner;
+  } catch (_error) { return null; }
 }
 
 function lockOwnerIsStale(owner) {
@@ -168,33 +180,92 @@ function sameLockOwner(left, right) {
     && left.process_start_identity === right.process_start_identity && left.token === right.token);
 }
 
-function createDirectoryLock(lockPath, identity) {
-  fs.mkdirSync(lockPath);
-  const directoryIdentity = pathIdentity(lockPath);
+function lockPathIdentity(lockPath) {
+  const stat = fs.lstatSync(lockPath);
+  if ((!stat.isDirectory() && !stat.isFile()) || stat.isSymbolicLink()) {
+    throw new Error(`lock path is not a real file or directory: ${lockPath}`);
+  }
+  return pathIdentity(lockPath);
+}
+
+function lockPathStillMatches(lockPath, expectedIdentity) {
+  try {
+    return samePathIdentity(lockPathIdentity(lockPath), expectedIdentity);
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function removeLockPath(lockPath, expectedIdentity) {
+  if (!samePathIdentity(lockPathIdentity(lockPath), expectedIdentity)) {
+    throw new Error(`lock path identity changed: ${lockPath}`);
+  }
+  const stat = fs.lstatSync(lockPath);
+  if (stat.isDirectory()) fs.rmSync(expectedIdentity.realpath, { recursive: true, force: true });
+  else fs.unlinkSync(expectedIdentity.realpath);
+}
+
+function lockOwnerBody(owner) {
+  return `${stableStringify(owner)}\n`;
+}
+
+function pendingLockOwnerPath(lockPath, owner) {
+  return `${lockPath}.owner.${owner.pid}.${owner.token}`;
+}
+
+function removeMatchingPendingLockOwner(lockPath, owner) {
+  const pendingPath = pendingLockOwnerPath(lockPath, owner);
+  try {
+    const stat = fs.lstatSync(pendingPath);
+    if (!stat.isFile() || stat.isSymbolicLink()
+      || fs.readFileSync(pendingPath, 'utf8') !== lockOwnerBody(owner)) return false;
+    fs.unlinkSync(pendingPath);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function createAtomicLock(lockPath, identity) {
   const owner = {
     schema: 'environment-factory.lock-owner.v1',
     pid: process.pid,
     process_start_identity: identity,
     token: crypto.randomBytes(16).toString('hex'),
   };
+  const ownerBody = lockOwnerBody(owner);
+  const pendingPath = pendingLockOwnerPath(lockPath, owner);
   try {
-    fs.writeFileSync(path.join(lockPath, 'owner.json'), `${stableStringify(owner)}\n`, { flag: 'wx' });
+    fs.writeFileSync(pendingPath, ownerBody, { flag: 'wx', mode: 0o600 });
+    fs.linkSync(pendingPath, lockPath);
   } catch (error) {
-    if (samePathIdentity(pathIdentity(lockPath), directoryIdentity)) {
-      fs.rmSync(directoryIdentity.realpath, { recursive: true, force: true });
-    }
+    try { fs.unlinkSync(pendingPath); } catch (_cleanupError) {}
+    throw error;
+  }
+  const lockIdentity = lockPathIdentity(lockPath);
+  if (readLockOwner(lockPath) === null || fs.readFileSync(lockPath, 'utf8') !== ownerBody) {
+    try { removeLockPath(lockPath, lockIdentity); } catch (_cleanupError) {}
+    try { fs.unlinkSync(pendingPath); } catch (_cleanupError) {}
+    throw new Error(`atomic lock publication failed: ${lockPath}`);
+  }
+  try {
+    fs.unlinkSync(pendingPath);
+  } catch (error) {
+    try { removeLockPath(lockPath, lockIdentity); } catch (_cleanupError) {}
     throw error;
   }
   let released = false;
   return {
     owner,
-    directoryIdentity,
+    lockIdentity,
     release() {
       if (released) return;
       const recorded = readLockOwner(lockPath);
       if (sameLockOwner(recorded, owner)
-        && samePathIdentity(pathIdentity(lockPath), directoryIdentity)) {
-        fs.rmSync(directoryIdentity.realpath, { recursive: true, force: true });
+        && samePathIdentity(lockPathIdentity(lockPath), lockIdentity)) {
+        removeLockPath(lockPath, lockIdentity);
       }
       released = true;
     },
@@ -296,7 +367,7 @@ function acquireLock(lockPath, timeoutMs = LOCK_TIMEOUT_MS, options = {}) {
       continue;
     }
     try {
-      const acquired = createDirectoryLock(lockPath, identity);
+      const acquired = createAtomicLock(lockPath, identity);
       if (fs.existsSync(takeoverMarkerPath)) {
         acquired.release();
         continue;
@@ -305,7 +376,17 @@ function acquireLock(lockPath, timeoutMs = LOCK_TIMEOUT_MS, options = {}) {
     } catch (error) {
       if (error.code !== 'EEXIST') throw error;
     }
+    let observedIdentity;
+    try {
+      observedIdentity = lockPathIdentity(lockPath);
+    } catch (error) {
+      if (error.code === 'ENOENT') continue;
+      throw error;
+    }
     const observedOwner = readLockOwner(lockPath);
+    if (observedOwner === null) {
+      throw new Error(`ownerless or malformed lock cannot be recovered safely: ${lockPath}`);
+    }
     if (lockOwnerIsStale(observedOwner)) {
       let takeover;
       try {
@@ -317,30 +398,27 @@ function acquireLock(lockPath, timeoutMs = LOCK_TIMEOUT_MS, options = {}) {
         try {
           if (typeof options.afterTakeoverAcquired === 'function') options.afterTakeoverAcquired(takeover);
           takeover.assertHeld();
-          const currentOwner = readLockOwner(lockPath);
-          if (sameLockOwner(currentOwner, observedOwner) && lockOwnerIsStale(currentOwner)) {
-            const staleIdentity = pathIdentity(lockPath);
-            const confirmedOwner = readLockOwner(lockPath);
-            if (sameLockOwner(confirmedOwner, currentOwner)
-              && samePathIdentity(pathIdentity(lockPath), staleIdentity)) {
-              takeover.assertHeld();
-              fs.rmSync(staleIdentity.realpath, { recursive: true, force: true });
-              while (true) {
+          const confirmedOwner = readLockOwner(lockPath);
+          if (sameLockOwner(confirmedOwner, observedOwner)
+            && lockPathStillMatches(lockPath, observedIdentity)
+            && lockOwnerIsStale(confirmedOwner)) {
+            removeLockPath(lockPath, observedIdentity);
+            removeMatchingPendingLockOwner(lockPath, confirmedOwner);
+            while (true) {
+              try {
+                const acquired = createAtomicLock(lockPath, identity);
                 try {
-                  const acquired = createDirectoryLock(lockPath, identity);
-                  try {
-                    takeover.assertHeld();
-                  } catch (error) {
-                    acquired.release();
-                    throw error;
-                  }
-                  takeover.release();
-                  return acquired.release;
+                  takeover.assertHeld();
                 } catch (error) {
-                  if (error.code !== 'EEXIST') throw error;
-                  if (Date.now() >= deadline) throw new Error(`lock takeover timeout: ${lockPath}`);
-                  sleep(10);
+                  acquired.release();
+                  throw error;
                 }
+                takeover.release();
+                return acquired.release;
+              } catch (error) {
+                if (error.code !== 'EEXIST') throw error;
+                if (Date.now() >= deadline) throw new Error(`lock takeover timeout: ${lockPath}`);
+                sleep(10);
               }
             }
           }
@@ -452,7 +530,7 @@ function requireOwnedDirectory(directory, { privateDirectory = false } = {}) {
   return fs.realpathSync(directory);
 }
 
-function minimalEnvironment(extra = {}, isolationKey = 'shared-runtime-command') {
+function minimalEnvironment(extra = {}, isolationKey = 'shared-runtime-command', reservationId = null) {
   if (!extra || typeof extra !== 'object' || Array.isArray(extra)) {
     throw new Error('command environment must be an object');
   }
@@ -473,21 +551,62 @@ function minimalEnvironment(extra = {}, isolationKey = 'shared-runtime-command')
     throw new Error('worker isolation identity is invalid');
   }
   const identityBody = stableStringify(identity);
+  if (reservationId !== null && !/^[0-9a-f]{32}$/.test(String(reservationId))) {
+    throw new Error('worker environment reservation is invalid');
+  }
   const configuredRuntimeRoot = path.resolve(
     process.env.FKST_RUNTIME_ROOT || path.join('.testing', 'runtime'),
   );
   fs.mkdirSync(configuredRuntimeRoot, { recursive: true });
   const runtimeRoot = requireOwnedDirectory(configuredRuntimeRoot);
   const homesRoot = requireOwnedDirectory(path.join(runtimeRoot, 'worker-homes'), { privateDirectory: true });
-  const home = fs.mkdtempSync(path.join(homesRoot, `${sha256(identityBody).slice(0, 24)}-`));
+  const identitySha256 = sha256(identityBody);
+  const leaseId = reservationId || crypto.randomBytes(16).toString('hex');
+  const home = reservationId === null
+    ? fs.mkdtempSync(path.join(homesRoot, `${identitySha256.slice(0, 24)}-`))
+    : path.join(homesRoot, `reserved-${reservationId}`);
+  let homeCreated = reservationId === null;
+  if (reservationId !== null) {
+    try {
+      fs.mkdirSync(home, { mode: 0o700 });
+      homeCreated = true;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      requireOwnedDirectory(home, { privateDirectory: true });
+    }
+  }
   if (process.platform !== 'win32') fs.chmodSync(home, 0o700);
   const marker = `${stableStringify({
     schema: 'fkst.worker-home-identity.v1',
-    identity_sha256: sha256(identityBody),
-    lease_id: crypto.randomBytes(16).toString('hex'),
+    identity_sha256: identitySha256,
+    lease_id: leaseId,
   })}\n`;
   const markerPath = path.join(home, '.fkst-worker-home.json');
-  fs.writeFileSync(markerPath, marker, { flag: 'wx', mode: 0o600 });
+  const pendingMarkerPath = `${markerPath}.pending`;
+  if (!homeCreated) {
+    if (fs.existsSync(markerPath)) {
+      const stat = fs.lstatSync(markerPath);
+      if (!stat.isFile() || stat.isSymbolicLink() || fs.readFileSync(markerPath, 'utf8') !== marker) {
+        throw new Error('worker environment reservation binding changed');
+      }
+    } else {
+      const entries = fs.readdirSync(home);
+      if (entries.some((entry) => entry !== path.basename(pendingMarkerPath))) {
+        throw new Error('worker environment reservation is not recoverable');
+      }
+      if (fs.existsSync(pendingMarkerPath)) {
+        const pending = fs.lstatSync(pendingMarkerPath);
+        if (!pending.isFile() || pending.isSymbolicLink()) {
+          throw new Error('worker environment reservation marker is invalid');
+        }
+        fs.unlinkSync(pendingMarkerPath);
+      }
+    }
+  }
+  if (!fs.existsSync(markerPath)) {
+    fs.writeFileSync(pendingMarkerPath, marker, { flag: 'wx', mode: 0o600 });
+    fs.renameSync(pendingMarkerPath, markerPath);
+  }
   const configHome = path.join(home, '.config');
   requireOwnedDirectory(configHome, { privateDirectory: true });
   requireOwnedDirectory(path.join(configHome, 'gh'), { privateDirectory: true });
@@ -519,12 +638,13 @@ function minimalEnvironment(extra = {}, isolationKey = 'shared-runtime-command')
     writable: false,
     value: {
       schema: 'fkst.worker-home-lease.v1',
+      lease_id: leaseId,
       home,
       home_identity: pathIdentity(home),
       homes_root: homesRoot,
       homes_root_identity: pathIdentity(homesRoot),
       marker_sha256: sha256(marker),
-      identity_sha256: sha256(identityBody),
+      identity_sha256: identitySha256,
       released: false,
     },
   });
@@ -538,6 +658,7 @@ function workerEnvironmentLease(environment) {
   }
   return {
     schema: lease.schema,
+    lease_id: lease.lease_id,
     home: lease.home,
     home_identity: { ...lease.home_identity },
     homes_root: lease.homes_root,
@@ -549,6 +670,7 @@ function workerEnvironmentLease(environment) {
 
 function verifyWorkerEnvironmentLease(lease) {
   if (!lease || lease.schema !== 'fkst.worker-home-lease.v1'
+    || typeof lease.lease_id !== 'string' || !/^[0-9a-f]{32}$/.test(lease.lease_id)
     || typeof lease.home !== 'string' || typeof lease.homes_root !== 'string'
     || !samePathIdentity(pathIdentity(lease.homes_root), lease.homes_root_identity)
     || !samePathIdentity(pathIdentity(lease.home), lease.home_identity)) {
@@ -565,7 +687,7 @@ function verifyWorkerEnvironmentLease(lease) {
   const value = JSON.parse(marker);
   if (value.schema !== 'fkst.worker-home-identity.v1'
     || value.identity_sha256 !== lease.identity_sha256
-    || typeof value.lease_id !== 'string' || !/^[0-9a-f]{32}$/.test(value.lease_id)) {
+    || value.lease_id !== lease.lease_id) {
     throw new Error('worker environment marker binding changed');
   }
   for (const directory of [path.join(home, '.config'), path.join(home, '.config', 'gh')]) {

@@ -38,11 +38,11 @@ function sha256(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
 }
 
-function childProcessEnvironment(cwd) {
+function childProcessEnvironment(cwd, reservation = null) {
   return minimalEnvironment({}, {
     schema: 'generic-host.worker-isolation.v1',
     cwd_sha256: sha256(path.resolve(cwd)),
-  });
+  }, reservation && reservation.reservation_id);
 }
 
 function durableRoot() {
@@ -1059,7 +1059,7 @@ function startApplication(projectRoot, payload) {
       claimPath: startupClaimPath,
       argv: payload.argv,
       cwd: workspace.path,
-      createEnvironment: () => childProcessEnvironment(workspace.path),
+      createEnvironment: (reservation) => childProcessEnvironment(workspace.path, reservation),
       binding,
   });
   if (launch.interrupted || !launch.resource) fail('application startup was interrupted before registration');

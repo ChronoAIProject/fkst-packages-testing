@@ -33,27 +33,40 @@ function readIfExists(filePath) {
 }
 
 function readJsonNoFollow(filePath) {
-  const before = fs.lstatSync(filePath);
-  if (!before.isFile() || before.isSymbolicLink() || before.size > 2 * 1024 * 1024) {
-    throw new Error('supervised startup claim is not a bounded regular file');
-  }
-  const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
-  try {
-    const openedBefore = fs.fstatSync(descriptor);
-    if (!sameFileIdentity(fileIdentity(before), fileIdentity(openedBefore))) {
-      throw new Error('supervised startup claim identity changed');
+  const maxBytes = 2 * 1024 * 1024;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const before = fs.lstatSync(filePath);
+    if (!before.isFile() || before.isSymbolicLink() || before.size > maxBytes) {
+      throw new Error('supervised startup claim is not a bounded regular file');
     }
-    const body = fs.readFileSync(descriptor, 'utf8');
-    const openedAfter = fs.fstatSync(descriptor);
-    const after = fs.lstatSync(filePath);
-    if (!sameFileIdentity(fileIdentity(openedBefore), fileIdentity(openedAfter))
-      || !sameFileIdentity(fileIdentity(openedAfter), fileIdentity(after))) {
-      throw new Error('supervised startup claim changed while reading');
+    const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0));
+    try {
+      const openedBefore = fs.fstatSync(descriptor);
+      if (!sameFileIdentity(fileIdentity(before), fileIdentity(openedBefore))) {
+        sleep(2);
+        continue;
+      }
+      const buffer = Buffer.allocUnsafe(maxBytes + 1);
+      let length = 0;
+      while (length < buffer.length) {
+        const count = fs.readSync(descriptor, buffer, length, buffer.length - length, null);
+        if (count === 0) break;
+        length += count;
+      }
+      if (length > maxBytes) throw new Error('supervised startup claim exceeds its read bound');
+      const openedAfter = fs.fstatSync(descriptor);
+      const after = fs.lstatSync(filePath);
+      if (!sameFileIdentity(fileIdentity(openedBefore), fileIdentity(openedAfter))
+        || !sameFileIdentity(fileIdentity(openedAfter), fileIdentity(after))) {
+        sleep(2);
+        continue;
+      }
+      return JSON.parse(buffer.subarray(0, length).toString('utf8'));
+    } finally {
+      fs.closeSync(descriptor);
     }
-    return JSON.parse(body);
-  } finally {
-    fs.closeSync(descriptor);
   }
+  throw new Error('supervised startup claim did not stabilize while reading');
 }
 
 function writeClaimAtomic(filePath, value) {
@@ -69,6 +82,8 @@ function requireAbsoluteFile(filePath, label) {
 }
 
 function validClaim(claim, bindingSha256) {
+  const state = claim && claim.state;
+  const leasePending = state === 'allocating';
   return Boolean(claim && claim.schema === CLAIM_SCHEMA && claim.version === 1
     && /^[0-9a-f]{32}$/.test(String(claim.startup_token || ''))
     && claim.binding_sha256 === bindingSha256
@@ -82,10 +97,21 @@ function validClaim(claim, bindingSha256) {
     && Number.isInteger(claim.inherited_fd_count) && claim.inherited_fd_count >= 0
     && Array.isArray(claim.inherited_fd_identities)
     && claim.inherited_fd_identities.length === claim.inherited_fd_count
-    && /^[0-9a-f]{64}$/.test(String(claim.worker_environment_lease_sha256 || ''))
-    && claim.worker_environment_lease
-    && ['preparing', 'prepared', 'registered', 'running', 'exited', 'failed', 'revoked'].includes(claim.state)
-    && (claim.state === 'preparing' || sameFileIdentityShape(claim.launch_spec_identity)));
+    && claim.worker_environment_reservation
+    && claim.worker_environment_reservation.schema === 'fkst.worker-home-reservation.v1'
+    && claim.worker_environment_reservation.reservation_id === claim.startup_token
+    && claim.worker_environment_reservation.binding_sha256 === sha256(stableStringify({
+      binding_sha256: claim.binding_sha256,
+      argv_sha256: claim.argv_sha256,
+      cwd: claim.cwd,
+      inherited_fd_identities: claim.inherited_fd_identities,
+    }))
+    && (leasePending
+      ? claim.worker_environment_lease === null && claim.worker_environment_lease_sha256 === null
+      : claim.worker_environment_lease
+        && /^[0-9a-f]{64}$/.test(String(claim.worker_environment_lease_sha256 || '')))
+    && ['allocating', 'preparing', 'prepared', 'registered', 'running', 'exited', 'failed', 'revoked'].includes(state)
+    && (state === 'allocating' || state === 'preparing' || sameFileIdentityShape(claim.launch_spec_identity)));
 }
 
 function sameFileIdentityShape(identity) {
@@ -194,6 +220,7 @@ function startOrRecoverSupervisedProcess(options) {
   const registrationTimeoutMs = Math.max(250, Math.min(Number(options.registrationTimeoutMs) || 5_000, 30_000));
   let created = false;
   let suppliedLease = null;
+  let environment = null;
   const release = acquireLock(`${claimPath}.lock`);
   try {
     let claim = readIfExists(claimPath);
@@ -201,11 +228,6 @@ function startOrRecoverSupervisedProcess(options) {
       throw new Error('supervised startup claim binding differs');
     }
     if (claim === null) {
-      const environment = options.environment || (typeof options.createEnvironment === 'function'
-        ? options.createEnvironment() : null);
-      if (!environment) throw new Error('supervised process environment is required for a new launch');
-      verifyWorkerEnvironment(environment);
-      suppliedLease = workerEnvironmentLease(environment);
       const token = crypto.randomBytes(16).toString('hex');
       const launchSpecPath = `${claimPath}.launch-${token}.json`;
       const spec = {
@@ -220,10 +242,20 @@ function startOrRecoverSupervisedProcess(options) {
       };
       const specBody = `${stableStringify(spec)}\n`;
       const now = Date.now();
+      const reservation = {
+        schema: 'fkst.worker-home-reservation.v1',
+        reservation_id: token,
+        binding_sha256: sha256(stableStringify({
+          binding_sha256: bindingSha256,
+          argv_sha256: sha256(stableStringify(argv)),
+          cwd,
+          inherited_fd_identities: inheritedFdIdentities,
+        })),
+      };
       claim = {
         schema: CLAIM_SCHEMA,
         version: 1,
-        state: 'preparing',
+        state: 'allocating',
         startup_token: token,
         binding_sha256: bindingSha256,
         created_at_epoch_ms: now,
@@ -236,35 +268,79 @@ function startOrRecoverSupervisedProcess(options) {
         cwd_identity: cwdIdentity,
         inherited_fd_count: inheritedStdio.length,
         inherited_fd_identities: inheritedFdIdentities,
-        worker_environment_lease: suppliedLease,
-        worker_environment_lease_sha256: sha256(stableStringify(suppliedLease)),
+        worker_environment_reservation: reservation,
+        worker_environment_lease: null,
+        worker_environment_lease_sha256: null,
         pid: null,
         pgid: null,
         process_start_identity: null,
       };
       fs.mkdirSync(path.dirname(claimPath), { recursive: true });
-      try {
-        if (typeof options.beforeClaimPersist === 'function') options.beforeClaimPersist();
-        writeClaimAtomic(claimPath, claim);
-      } catch (error) {
-        if (fs.existsSync(claimPath)) {
-          try {
-            writeClaimAtomic(claimPath, {
-              ...claim,
-              state: 'revoked',
-              failure_reason: 'startup-claim-persistence-failed',
-              failed_at_epoch_ms: Date.now(),
-            });
-          } catch (_claimError) {}
-        }
-        releaseWorkerEnvironmentLease(suppliedLease);
-        throw error;
+      if (typeof options.beforeClaimPersist === 'function') options.beforeClaimPersist();
+      writeClaimAtomic(claimPath, claim);
+    }
+    if (claim.state === 'allocating' || claim.state === 'preparing') {
+      if (options.environment || typeof options.createEnvironment !== 'function') {
+        throw new Error('recoverable supervised process environment factory is required');
       }
+      environment = options.createEnvironment({
+        reservation_id: claim.worker_environment_reservation.reservation_id,
+        binding_sha256: claim.worker_environment_reservation.binding_sha256,
+      });
+      if (!environment) throw new Error('supervised process environment is required for a new launch');
+      verifyWorkerEnvironment(environment);
+      suppliedLease = workerEnvironmentLease(environment);
+      if (suppliedLease.lease_id !== claim.worker_environment_reservation.reservation_id) {
+        releaseWorkerEnvironmentLease(suppliedLease);
+        suppliedLease = null;
+        throw new Error('supervised worker environment reservation differs');
+      }
+      if (claim.state === 'allocating') {
+        if (typeof options.afterEnvironmentCreated === 'function'
+          && options.afterEnvironmentCreated(environment, claim) === false) {
+          return { interrupted: true, environment_retained: true };
+        }
+        claim = {
+          ...claim,
+          state: 'preparing',
+          worker_environment_lease: suppliedLease,
+          worker_environment_lease_sha256: sha256(stableStringify(suppliedLease)),
+        };
+        writeClaimAtomic(claimPath, claim);
+      } else if (stableStringify(suppliedLease) !== stableStringify(claim.worker_environment_lease)) {
+        releaseWorkerEnvironmentLease(suppliedLease);
+        suppliedLease = null;
+        throw new Error('supervised worker environment lease differs');
+      }
+    }
+    if (claim.state === 'preparing') {
+      const spec = {
+        schema: SPEC_SCHEMA,
+        startup_token: claim.startup_token,
+        binding_sha256: bindingSha256,
+        claim_path: claimPath,
+        argv,
+        cwd,
+        inherited_fd_count: inheritedStdio.length,
+        inherited_fd_identities: inheritedFdIdentities,
+      };
+      const specBody = `${stableStringify(spec)}\n`;
       let launched = false;
       try {
-        fs.writeFileSync(launchSpecPath, specBody, { flag: 'wx', mode: 0o600 });
-        fs.chmodSync(launchSpecPath, 0o600);
-        const launchSpecStat = fs.lstatSync(launchSpecPath);
+        if (fs.existsSync(claim.launch_spec_path)) {
+          const existing = fs.lstatSync(claim.launch_spec_path);
+          if (!existing.isFile() || existing.isSymbolicLink()) {
+            throw new Error('supervised launch spec is not a regular file');
+          }
+          if (fs.readFileSync(claim.launch_spec_path, 'utf8') !== specBody) {
+            fs.unlinkSync(claim.launch_spec_path);
+          }
+        }
+        if (!fs.existsSync(claim.launch_spec_path)) {
+          fs.writeFileSync(claim.launch_spec_path, specBody, { flag: 'wx', mode: 0o600 });
+        }
+        fs.chmodSync(claim.launch_spec_path, 0o600);
+        const launchSpecStat = fs.lstatSync(claim.launch_spec_path);
         if (!launchSpecStat.isFile() || launchSpecStat.isSymbolicLink()) {
           throw new Error('supervised launch spec is not a regular file');
         }
@@ -272,7 +348,7 @@ function startOrRecoverSupervisedProcess(options) {
         claim = { ...claim, state: 'prepared', launch_spec_identity: launchSpecIdentity };
         writeClaimAtomic(claimPath, claim);
         if (typeof options.beforeSupervisorLaunch === 'function') options.beforeSupervisorLaunch(claim);
-        const supervisor = spawn(process.execPath, [__filename, 'child', launchSpecPath], {
+        const supervisor = spawn(process.execPath, [__filename, 'child', claim.launch_spec_path], {
           cwd,
           env: environment,
           shell: false,
@@ -295,7 +371,7 @@ function startOrRecoverSupervisedProcess(options) {
             failed_at_epoch_ms: Date.now(),
           };
           writeClaimAtomic(claimPath, claim);
-          releaseWorkerEnvironmentLease(suppliedLease);
+          if (suppliedLease) releaseWorkerEnvironmentLease(suppliedLease);
         }
         throw error;
       }

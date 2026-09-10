@@ -75,7 +75,8 @@ function createBudgetRuntime(deps) {
     const directory = path.join(durableRoot(), 'environment-factory', 'resources');
     let names = [];
     try { names = fs.readdirSync(directory); } catch (error) { if (error.code !== 'ENOENT') throw error; }
-    return names.map((name) => readIfExists(path.join(directory, name)))
+    return names.filter((name) => name.endsWith('.json'))
+      .map((name) => readIfExists(path.join(directory, name)))
       .filter((resource) => resource && resource.kind === 'process' && resource.operation_id === operationId
         && !resource.cleaned && Number.isInteger(resource.pid));
   }

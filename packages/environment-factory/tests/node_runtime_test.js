@@ -30,6 +30,19 @@ function delay(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+async function removeTreeEventually(target, timeoutMs = 2_000) {
+  const deadline = Date.now() + timeoutMs;
+  while (true) {
+    try {
+      fs.rmSync(target, { recursive: true, force: true });
+      return;
+    } catch (error) {
+      if (!['ENOTEMPTY', 'EEXIST'].includes(error && error.code) || Date.now() >= deadline) throw error;
+      await delay(10);
+    }
+  }
+}
+
 function stopGroup(child) {
   if (!child || !Number.isInteger(child.pid)) return;
   try { process.kill(-child.pid, 'SIGKILL'); } catch (_error) {
@@ -215,10 +228,38 @@ async function main() {
       token: 'stale-owner-token',
     })}\n`);
     const release = acquireLock(lockPath, 250);
-    const recovered = JSON.parse(fs.readFileSync(path.join(lockPath, 'owner.json'), 'utf8'));
+    const recovered = JSON.parse(fs.readFileSync(lockPath, 'utf8'));
     assert.strictEqual(recovered.pid, process.pid);
     release();
     assert.strictEqual(fs.existsSync(lockPath), false);
+
+    const staleAtomicLockPath = path.join(temp, 'stale-atomic.lock');
+    const staleAtomicOwner = {
+      schema: 'environment-factory.lock-owner.v1',
+      pid: 2147483647,
+      process_start_identity: 'dead process',
+      token: '1'.repeat(32),
+    };
+    const staleAtomicPendingPath = `${staleAtomicLockPath}.owner.${staleAtomicOwner.pid}.${staleAtomicOwner.token}`;
+    fs.writeFileSync(staleAtomicPendingPath, `${stableStringify(staleAtomicOwner)}\n`);
+    fs.linkSync(staleAtomicPendingPath, staleAtomicLockPath);
+    const releaseStaleAtomic = acquireLock(staleAtomicLockPath, 250);
+    assert.strictEqual(fs.existsSync(staleAtomicPendingPath), false);
+    releaseStaleAtomic();
+    assert.strictEqual(fs.existsSync(staleAtomicLockPath), false);
+
+    const ownerlessLockPath = path.join(temp, 'ownerless.lock');
+    fs.mkdirSync(ownerlessLockPath);
+    assert.throws(() => acquireLock(ownerlessLockPath, 250), /cannot be recovered safely/);
+    assert.strictEqual(fs.lstatSync(ownerlessLockPath).isDirectory(), true);
+    fs.rmSync(ownerlessLockPath, { recursive: true });
+
+    const malformedOwnerLockPath = path.join(temp, 'malformed-owner.lock');
+    fs.mkdirSync(malformedOwnerLockPath);
+    fs.writeFileSync(path.join(malformedOwnerLockPath, 'owner.json'), '{}\n');
+    assert.throws(() => acquireLock(malformedOwnerLockPath, 250), /cannot be recovered safely/);
+    assert.strictEqual(fs.lstatSync(malformedOwnerLockPath).isDirectory(), true);
+    fs.rmSync(malformedOwnerLockPath, { recursive: true });
 
     const concurrentLockPath = path.join(temp, 'concurrent-stale.lock');
     const concurrentActivePath = path.join(temp, 'concurrent-stale.active');
@@ -344,8 +385,10 @@ async function main() {
       claimPath: startupClaim,
       argv: startupArgv,
       cwd: temp,
-      createEnvironment() {
-        firstStartupEnvironment = minimalEnvironment({}, 'supervised-crash-window-first');
+      createEnvironment(reservation) {
+        firstStartupEnvironment = minimalEnvironment(
+          {}, 'supervised-crash-window-first', reservation.reservation_id,
+        );
         firstLease = workerEnvironmentLease(firstStartupEnvironment);
         return firstStartupEnvironment;
       },
@@ -364,9 +407,11 @@ async function main() {
       claimPath: startupClaim,
       argv: startupArgv,
       cwd: temp,
-      createEnvironment() {
+      createEnvironment(reservation) {
         recoveryEnvironmentCreated = true;
-        return minimalEnvironment({}, 'supervised-crash-window-recovery');
+        return minimalEnvironment(
+          {}, 'supervised-crash-window-recovery', reservation.reservation_id,
+        );
       },
       binding: startupBinding,
     });
@@ -389,9 +434,11 @@ async function main() {
       claimPath: startupClaim,
       argv: startupArgv,
       cwd: temp,
-      createEnvironment() {
+      createEnvironment(reservation) {
         replayEnvironmentCreated = true;
-        return minimalEnvironment({}, 'supervised-crash-window-replay');
+        return minimalEnvironment(
+          {}, 'supervised-crash-window-replay', reservation.reservation_id,
+        );
       },
       binding: startupBinding,
     });
@@ -413,8 +460,10 @@ async function main() {
       claimPath: failedLaunchClaim,
       argv: [process.execPath, '-e', 'process.exit(0)'],
       cwd: temp,
-      createEnvironment() {
-        const environment = minimalEnvironment({}, 'supervised-failed-launch');
+      createEnvironment(reservation) {
+        const environment = minimalEnvironment(
+          {}, 'supervised-failed-launch', reservation.reservation_id,
+        );
         failedLaunchLease = workerEnvironmentLease(environment);
         return environment;
       },
@@ -432,7 +481,7 @@ async function main() {
       claimPath: path.join(temp, 'supervised-failed-claim', 'claim.json'),
       argv: [process.execPath, '-e', 'process.exit(0)'],
       cwd: temp,
-      createEnvironment() {
+      createEnvironment(reservation) {
         const environment = minimalEnvironment({}, 'supervised-failed-claim');
         failedClaimLease = workerEnvironmentLease(environment);
         return environment;
@@ -442,7 +491,75 @@ async function main() {
         throw new Error('simulated startup claim persistence failure');
       },
     }), /simulated startup claim persistence failure/);
-    assert.strictEqual(fs.existsSync(failedClaimLease.home), false);
+    assert.strictEqual(failedClaimLease, null);
+
+    const preClaimCrashClaim = path.join(temp, 'supervised-pre-claim-crash', 'claim.json');
+    const preClaimCrashReady = path.join(temp, 'supervised-pre-claim-crash.ready.json');
+    const preClaimCrashBinding = { ...startupBinding, effect_id: 'pre-claim-crash-effect' };
+    const preClaimCrashArgv = [process.execPath, '-e', 'process.exit(0)'];
+    const supervisorModulePath = path.resolve(__dirname, '../bin/runtime/supervised-process.js');
+    const commonModulePath = path.resolve(__dirname, '../bin/runtime/common.js');
+    const preClaimCrashSource = [
+      "'use strict';",
+      "const fs = require('fs');",
+      'const { startOrRecoverSupervisedProcess } = require(process.argv[1]);',
+      'const { minimalEnvironment } = require(process.argv[2]);',
+      'const claimPath = process.argv[3];',
+      'const cwd = process.argv[4];',
+      'const readyPath = process.argv[5];',
+      'const binding = JSON.parse(process.argv[6]);',
+      'const argv = JSON.parse(process.argv[7]);',
+      'startOrRecoverSupervisedProcess({',
+      '  claimPath, argv, cwd, binding,',
+      '  createEnvironment(reservation) {',
+      "    return minimalEnvironment({}, 'supervised-pre-claim-hard-crash', reservation.reservation_id);",
+      '  },',
+      '  afterEnvironmentCreated(environment) {',
+      "    fs.writeFileSync(readyPath, JSON.stringify({ home: environment.HOME }), { flag: 'wx' });",
+      '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 10000);',
+      '  },',
+      '});',
+    ].join('\n');
+    const preClaimCrash = spawn(process.execPath, [
+      '-e', preClaimCrashSource, supervisorModulePath, commonModulePath,
+      preClaimCrashClaim, temp, preClaimCrashReady, JSON.stringify(preClaimCrashBinding),
+      JSON.stringify(preClaimCrashArgv),
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let preClaimCrashStderr = '';
+    preClaimCrash.stderr.on('data', (chunk) => { preClaimCrashStderr += chunk.toString(); });
+    const preClaimReadyDeadline = Date.now() + 5_000;
+    while (!fs.existsSync(preClaimCrashReady) && Date.now() < preClaimReadyDeadline) await delay(10);
+    assert.strictEqual(fs.existsSync(preClaimCrashReady), true, preClaimCrashStderr);
+    const reservedHome = JSON.parse(fs.readFileSync(preClaimCrashReady, 'utf8')).home;
+    const allocatingClaim = JSON.parse(fs.readFileSync(preClaimCrashClaim, 'utf8'));
+    assert.strictEqual(allocatingClaim.state, 'allocating');
+    assert.strictEqual(allocatingClaim.worker_environment_lease, null);
+    process.kill(preClaimCrash.pid, 'SIGKILL');
+    await new Promise((resolve, reject) => {
+      preClaimCrash.once('error', reject);
+      preClaimCrash.once('close', resolve);
+    });
+    let recoveredPreClaimEnvironment = null;
+    const recoveredPreClaim = startOrRecoverSupervisedProcess({
+      claimPath: preClaimCrashClaim,
+      argv: preClaimCrashArgv,
+      cwd: temp,
+      binding: preClaimCrashBinding,
+      createEnvironment(reservation) {
+        recoveredPreClaimEnvironment = minimalEnvironment(
+          {}, 'supervised-pre-claim-hard-crash', reservation.reservation_id,
+        );
+        return recoveredPreClaimEnvironment;
+      },
+    });
+    assert.notStrictEqual(recoveredPreClaim.state, 'allocating');
+    assert.strictEqual(recoveredPreClaim.resource.worker_environment_lease.home, reservedHome);
+    assert.strictEqual(workerEnvironmentLease(recoveredPreClaimEnvironment).home, reservedHome);
+    assert.strictEqual(releaseWorkerEnvironmentLease(
+      recoveredPreClaim.resource.worker_environment_lease,
+    ), true);
+    assert.strictEqual(fs.existsSync(reservedHome), false);
+    assert.strictEqual(releaseWorkerEnvironment(recoveredPreClaimEnvironment), true);
 
     let substitutedLaunchLease = null;
     const substitutedMarker = path.join(temp, 'supervised-substituted-command.txt');
@@ -450,8 +567,10 @@ async function main() {
       claimPath: path.join(temp, 'supervised-substituted-launch', 'claim.json'),
       argv: [process.execPath, '-e', 'process.exit(0)'],
       cwd: temp,
-      createEnvironment() {
-        const environment = minimalEnvironment({}, 'supervised-substituted-launch');
+      createEnvironment(reservation) {
+        const environment = minimalEnvironment(
+          {}, 'supervised-substituted-launch', reservation.reservation_id,
+        );
         substitutedLaunchLease = workerEnvironmentLease(environment);
         return environment;
       },
@@ -481,8 +600,10 @@ async function main() {
       claimPath: path.join(temp, 'supervised-symlinked-launch', 'claim.json'),
       argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(symlinkedMarker)}, 'bad')`],
       cwd: temp,
-      createEnvironment() {
-        const environment = minimalEnvironment({}, 'supervised-symlinked-launch');
+      createEnvironment(reservation) {
+        const environment = minimalEnvironment(
+          {}, 'supervised-symlinked-launch', reservation.reservation_id,
+        );
         symlinkedLaunchLease = workerEnvironmentLease(environment);
         return environment;
       },
@@ -654,9 +775,9 @@ async function main() {
     else process.env.FKST_DURABLE_ROOT = previousDurable;
     if (previousRuntime === undefined) delete process.env.FKST_RUNTIME_ROOT;
     else process.env.FKST_RUNTIME_ROOT = previousRuntime;
-    fs.rmSync(temp, { recursive: true, force: true });
-    fs.rmSync(artifactRoot, { recursive: true, force: true });
-    fs.rmSync(hostRoot, { recursive: true, force: true });
+    await removeTreeEventually(temp);
+    await removeTreeEventually(artifactRoot);
+    await removeTreeEventually(hostRoot);
   }
 }
 

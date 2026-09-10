@@ -558,9 +558,10 @@ async function runArgvEffect(payload) {
     }
     const listenerNames = inheritedListenerNames(payload);
     const inheritedStdio = listenerNames.map((_name, index) => 3 + index);
-    const createSupervisedEnvironment = () => {
+    const createSupervisedEnvironment = (reservation) => {
       const environment = minimalEnvironment(
         config.command_environment || {}, workerIsolationIdentity(payload, 'run-argv'),
+        reservation && reservation.reservation_id,
       );
       environment.FKST_LISTEN_FDS = String(listenerNames.length);
       environment.FKST_LISTEN_FDNAMES = listenerNames.join(':');
