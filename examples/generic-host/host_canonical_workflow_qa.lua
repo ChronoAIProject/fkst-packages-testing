@@ -528,10 +528,16 @@ function Context:_structured_runtime()
         end
         return { status = "in-progress" }
       end
-      claim = { claim_id = context.run_id .. "-execution-claim", binding = copy(request) }
+      local private_claim_id = context.run_id .. "-execution-claim"
+      claim = {
+        claim_id = private_claim_id,
+        fence_id = sha256_bytes(context.lineage_projection_secret
+          .. "\0structured-execution-fence\0" .. private_claim_id),
+        binding = copy(request),
+      }
       claims[request.grant_id] = claim
       context.execution_claims = context.execution_claims + 1
-      return { status = "claimed", claim_id = claim.claim_id }
+      return { status = "claimed", claim_id = claim.fence_id }
     end,
     authorize_cli_effect = function(request)
       local envelope = request.action_envelope
@@ -574,6 +580,7 @@ function Context:_structured_runtime()
       for _, item in ipairs(evaluated_plan.cases or {}) do
         if item.case_id == envelope.case.case_id then planned_case = item end
       end
+      local replay = claims[grant.value.grant_id]
       if not valid or profile.digest ~= envelope.profile_artifact_sha256
         or project_profile.profile_sha256(profile.value, sha256_bytes) ~= envelope.profile_sha256
         or validation.digest ~= envelope.validation_receipt_sha256
@@ -589,7 +596,8 @@ function Context:_structured_runtime()
         or not equal(environment.value.workspace_ref, envelope.workspace_ref)
         or not equal(planned_case, envelope.case)
         or not argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
-        or not argv_allowed(envelope.case.argv, grant.value.cli_capabilities) then
+        or not argv_allowed(envelope.case.argv, grant.value.cli_capabilities)
+        or type(replay) ~= "table" or replay.fence_id ~= envelope.fence_id then
         return decision(envelope, "deny", "foreign-binding", inputs)
       end
       return decision(envelope, "allow", "authorized", inputs)
@@ -655,7 +663,7 @@ function Context:_structured_runtime()
     end,
     complete_replay = function(request)
       for _, stored in pairs(claims) do
-        if stored.claim_id == request.claim.claim_id then
+        if stored.fence_id == request.claim.claim_id then
           local artifact, canonical = structured_execution_artifacts(context, request.result_ref)
           local value = artifact and artifact.value or nil
           if value == nil or value.operation_id ~= request.operation_id
@@ -910,6 +918,13 @@ function Context:_generic_host_runtime()
       preauthorization_claim = { value = copy(value), claim_id = context.run_id .. "-preauthorization" }
       context.preauthorization_claims = context.preauthorization_claims + 1
       return { status = "claimed", claim_id = preauthorization_claim.claim_id }
+    end,
+    reconcile_preauthorization_claim = function(value)
+      if preauthorization_claim == nil then return false end
+      for key, item in pairs(value) do
+        if not equal(preauthorization_claim.value[key], item) then return false end
+      end
+      return true
     end,
     grant_values = function(_, materials)
       if context.browser_walking_skeleton then
@@ -1584,6 +1599,10 @@ function M.new(options)
   }
   workflow_qa.validate_request(request)
 
+  local lineage_projection_secret = require_exec({
+    "node", "-e", "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))",
+  })
+
   local context = setmetatable({
     project_root = supervisor_project_root,
     port = port,
@@ -1635,6 +1654,7 @@ function M.new(options)
     browser_clock = 0,
     browser_failpoint = options.browser_failpoint,
     browser_failpoint_fired = false,
+    lineage_projection_secret = lineage_projection_secret,
     browser_crash = options.browser_crash == true,
     cleanup_effects = 0,
     publication_ack_loss = options.publication_ack_loss == true,
@@ -1651,16 +1671,22 @@ function M.new(options)
   local durable_root = options.durable_root
   if durable_root == nil and options.durable == true then durable_root = temp_root .. "/framework-durable" end
   if durable_root ~= nil then
-    local durable = require("host_durable_workflow_qa")
-    durable.initialize(context, durable_root)
-    context.runtime_config_ref = ".testing/generic-host-runtime.json"
-    write_file(context.project_root .. "/" .. context.runtime_config_ref, json_codec.encode({
-      schema = "generic-host.runtime-config.v1",
-      project_root = context.project_root,
-    }) .. "\n")
-    if options.prepare_execution_grant_pending ~= false then
-      local prepared_context = durable.load(context.project_root, durable_root, context.run_id)
-      require("test_support.host_workflow_qa_supervisor").prepare(prepared_context, context.project_root)
+    local ok, failure = pcall(function()
+      local durable = require("host_durable_workflow_qa")
+      durable.initialize(context, durable_root)
+      context.runtime_config_ref = ".testing/generic-host-runtime.json"
+      write_file(context.project_root .. "/" .. context.runtime_config_ref, json_codec.encode({
+        schema = "generic-host.runtime-config.v1",
+        project_root = context.project_root,
+      }) .. "\n")
+      if options.prepare_execution_grant_pending ~= false then
+        local prepared_context = durable.load(context.project_root, durable_root, context.run_id)
+        require("test_support.host_workflow_qa_supervisor").prepare(prepared_context, context.project_root)
+      end
+    end)
+    if not ok then
+      pcall(function() context:cleanup() end)
+      error(failure, 0)
     end
   end
   return context

@@ -11,6 +11,7 @@ function createBudgetRuntime(deps) {
     durableRoot,
     ledgerPath,
     readIfExists,
+    verifyWorkerEnvironment,
     writeJsonAtomic,
   } = deps;
 
@@ -105,6 +106,9 @@ function createBudgetRuntime(deps) {
     const budgets = resourceBudgets(payload);
     const before = enforceCurrentBudgets(payload, options.workspacePath);
     if (!before.passed) return { reason: before.reason, exitCode: -1 };
+    if (options.env && typeof verifyWorkerEnvironment === 'function') {
+      verifyWorkerEnvironment(options.env);
+    }
     const result = await runMeasuredCommand(argv, {
       cwd: options.cwd,
       env: options.env,

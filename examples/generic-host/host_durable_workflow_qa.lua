@@ -4,6 +4,7 @@ local environment_factory = require("contract.environment_factory")
 local json_codec = require("testing_runtime.json")
 local project_profile = require("contract.project_profile")
 local ai_design_loop = require("testing_ai.module_ai_design_loop")
+local lineage_projection = require("testing_runtime.authorization_lineage_projection")
 local Store = require("host_durable_store")
 
 local M = {}
@@ -246,6 +247,88 @@ end
 local Context = {}
 Context.__index = Context
 
+local function bound_artifact(store, path, expected_digest, label)
+  local artifact = store:load(path)
+  if artifact == nil or type(artifact.value) ~= "table"
+    or (expected_digest ~= nil and artifact.digest ~= expected_digest) then
+    error("generic-host durable " .. label .. " artifact binding differs")
+  end
+  return artifact
+end
+
+local lineage_envelope_fields = {
+  repository = true,
+  run_id = true,
+  trace_id = true,
+  dedup_key = true,
+}
+
+local function receipt_fields(source)
+  local fields = {}
+  for key, value in pairs(source) do
+    if lineage_envelope_fields[key] ~= true then fields[key] = copy(value) end
+  end
+  return fields
+end
+
+local function expected_profile_replay_binding(config)
+  return {
+    approval_id = config.approval.approval_id,
+    approval_sha256 = config.validation_receipt.approval_sha256,
+    profile_sha256 = config.validation_receipt.profile_sha256,
+    repository = copy(config.profile.repository),
+    trace_id = config.validation_receipt.trace_id,
+    dedup_key = config.validation_receipt.dedup_key,
+    max_uses = config.approval.max_uses,
+  }
+end
+
+local function profile_claim_receipt(config, store, projector, durable_claim)
+  local claimed_at = type(durable_claim) == "table"
+    and (durable_claim.claimed_at or config.authorization_now) or nil
+  if type(durable_claim) ~= "table"
+    or not equal(durable_claim.binding, expected_profile_replay_binding(config))
+    or type(durable_claim.claim_id) ~= "string" or durable_claim.claim_id == ""
+    or type(claimed_at) ~= "string" or claimed_at == "" then
+    error("generic-host durable environment authorization approval claim is unavailable")
+  end
+  local start = config.request.environment_start
+  local profile = bound_artifact(store, start.profile_ref.ref, nil, "profile")
+  local approval = bound_artifact(store, start.approval_ref.ref, nil, "profile approval")
+  local validation = bound_artifact(store, start.validation_receipt_ref.ref, nil, "profile validation")
+  if profile.value.revision ~= config.validation_receipt.profile_revision
+    or approval.value.approval_id ~= config.validation_receipt.approval_id
+    or validation.value.profile_sha256 ~= config.validation_receipt.profile_sha256
+    or validation.value.approval_sha256 ~= config.validation_receipt.approval_sha256 then
+    error("generic-host durable profile claim source artifacts differ")
+  end
+  local fingerprint = projector:fingerprint("project-profile-approval-claim", durable_claim.claim_id)
+  local source = {
+      repository = { url = config.repository.url, commit_sha = config.repository.commit_sha },
+      run_id = config.run_id,
+      trace_id = config.request.trace_id,
+      dedup_key = config.request.dedup_key,
+      profile_source_ref = copy(config.profile_source_ref),
+      profile_artifact_ref = start.profile_ref.ref,
+      profile_artifact_sha256 = profile.digest,
+      profile_sha256 = validation.value.profile_sha256,
+      profile_revision = profile.value.revision,
+      approval_artifact_ref = start.approval_ref.ref,
+      approval_artifact_sha256 = approval.digest,
+      approval_id = approval.value.approval_id,
+      approval_sha256 = validation.value.approval_sha256,
+      approval_authority = copy(approval.value.authority),
+      policy_revision = approval.value.policy_revision,
+      evidence_ref = copy(approval.value.evidence_ref),
+      validation_receipt_ref = start.validation_receipt_ref.ref,
+      validation_receipt_sha256 = validation.digest,
+      claim_fingerprint_sha256 = fingerprint,
+      claimed_at = claimed_at,
+    }
+  return projector:write_receipt("profile_claim", "profile-claim-" .. fingerprint:sub(1, 32),
+    claimed_at, receipt_fields(source), source)
+end
+
 local canonical_execution_fields = {
   "case_result_set_path", "case_result_set_artifact_sha256",
   "evidence_manifest_path", "evidence_manifest_artifact_sha256",
@@ -297,6 +380,24 @@ local function structured_execution_artifacts(context, result_ref)
     case_result_set = result_set,
     evidence_manifest = manifest,
   }
+end
+
+local function durable_execution_claim(context, required_status)
+  local entries = context.records:list("testing-runner/replay")
+  if #entries ~= 1 or type(entries[1].value) ~= "table"
+    or type(entries[1].value.binding) ~= "table"
+    or (required_status ~= nil and entries[1].value.status ~= required_status) then
+    error("generic-host durable execution claim is unavailable")
+  end
+  return entries[1].value
+end
+
+local function execution_plan_matches_claim(execution_artifact, durable_claim)
+  local value = execution_artifact and execution_artifact.value or nil
+  local binding = durable_claim and durable_claim.binding or nil
+  return type(value) == "table" and type(binding) == "table"
+    and valid_digest(value.plan_sha256) and valid_digest(binding.plan_sha256)
+    and value.plan_sha256 == binding.plan_sha256
 end
 
 function Context:_key(value)
@@ -635,6 +736,400 @@ function Context:_testing_design_runtime()
   }
 end
 
+local function lineage_source(context, fields)
+  local source = {
+    repository = { url = context.repository.url, commit_sha = context.repository.commit_sha },
+    run_id = context.run_id,
+    trace_id = context.request.trace_id,
+    dedup_key = context.request.dedup_key,
+  }
+  for key, value in pairs(fields) do source[key] = copy(value) end
+  return source
+end
+
+local function legacy_preauthorization_binding(request)
+  return {
+    authorization_id = request.authorization_id,
+    preauthorization_sha256 = request.preauthorization_sha256,
+    repository = copy(request.repository),
+    plan_sha256 = request.plan_sha256,
+    environment_receipt_sha256 = request.environment_receipt_sha256,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }
+end
+
+local function canonical_preauthorization_binding(request)
+  return {
+    authorization_id = request.authorization_id,
+    preauthorization_ref = request.preauthorization_ref,
+    preauthorization_sha256 = request.preauthorization_sha256,
+    repository = copy(request.repository),
+    plan_ref = request.plan_ref,
+    plan_sha256 = request.plan_sha256,
+    environment_receipt_ref = request.environment_receipt_ref,
+    environment_receipt_sha256 = request.environment_receipt_sha256,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }
+end
+
+local function compatible_stored_preauthorization_binding(stored)
+  if type(stored) ~= "table" or stored.runtime_config_ref == nil then return stored end
+  if not equal(stored.runtime_config_ref, {
+    kind = "artifact", ref = ".testing/generic-host-runtime.json",
+  }) then return stored end
+  local normalized = copy(stored)
+  normalized.runtime_config_ref = nil
+  return normalized
+end
+
+local function trusted_preauthorization_refs(context)
+  return {
+    preauthorization_ref = context.request.structured_execution.preauthorization_ref,
+    plan_ref = context.request.structured_execution.structured_plan_ref,
+    environment_receipt_ref = context.request.environment_start.artifact_root
+      .. "/environment-receipt-ready.json",
+  }
+end
+
+local function preauthorization_binding_matches(stored, request, trusted_refs)
+  if type(trusted_refs) ~= "table"
+    or request.preauthorization_ref ~= trusted_refs.preauthorization_ref
+    or request.plan_ref ~= trusted_refs.plan_ref
+    or request.environment_receipt_ref ~= trusted_refs.environment_receipt_ref then
+    return false
+  end
+  local normalized = compatible_stored_preauthorization_binding(stored)
+  return equal(normalized, canonical_preauthorization_binding(request))
+    or equal(normalized, legacy_preauthorization_binding(request))
+end
+
+local function preauthorization_request(preauthorization, request)
+  return {
+    authorization_id = preauthorization.value.authorization_id,
+    preauthorization_ref = request.preauthorization_ref,
+    preauthorization_sha256 = preauthorization.digest,
+    repository = copy(request.repository),
+    plan_ref = request.plan_ref,
+    plan_sha256 = request.plan_sha256,
+    environment_receipt_ref = request.environment_receipt_ref,
+    environment_receipt_sha256 = request.environment_receipt_sha256,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+  }
+end
+
+function Context:_private_claim_id(domain)
+  local nonce = next_nonce()
+  return "private-claim-" .. self.records:digest(
+    self.lineage_projection_secret .. "\0" .. domain .. "\0" .. nonce)
+end
+
+function Context:_persist_profile_claim()
+  local durable_claim = self.records:read("generic-host/profile-approval/" .. self.run_id)
+  if type(durable_claim) ~= "table" then
+    error("generic-host durable Profile claim is unavailable")
+  end
+  return profile_claim_receipt(self, self.store, self.lineage, durable_claim)
+end
+
+function Context:_persist_preauthorization_claim(request, durable_claim)
+  if type(durable_claim) ~= "table" then
+    error("generic-host durable preauthorization claim binding differs")
+  end
+  local claimed_at = durable_claim.claimed_at or self.execution_authorization_now
+  if not preauthorization_binding_matches(
+    durable_claim.binding, request, trusted_preauthorization_refs(self))
+    or type(durable_claim.claim_id) ~= "string" or type(claimed_at) ~= "string" then
+    error("generic-host durable preauthorization claim binding differs")
+  end
+  local profile_receipt = self:_persist_profile_claim()
+  local preauthorization = bound_artifact(self.store, request.preauthorization_ref,
+    request.preauthorization_sha256, "preauthorization")
+  local catalog_ref = self.request.structured_execution.case_catalog_ref
+  local catalog = bound_artifact(self.store, catalog_ref,
+    self.request.structured_execution.case_catalog_sha256, "case catalog")
+  local plan = bound_artifact(self.store, request.plan_ref, request.plan_sha256, "structured plan")
+  local environment = bound_artifact(self.store, request.environment_receipt_ref,
+    request.environment_receipt_sha256, "environment receipt")
+  if preauthorization.value.authorization_id ~= request.authorization_id
+    or preauthorization.value.profile_sha256 ~= profile_receipt.value.profile_sha256
+    or preauthorization.value.case_catalog_sha256 ~= catalog.digest
+    or plan.value.environment_receipt_sha256 ~= environment.digest then
+    error("generic-host durable preauthorization lineage source differs")
+  end
+  local fingerprint = self.lineage:fingerprint("structured-preauthorization-claim", durable_claim.claim_id)
+  local source = lineage_source(self, {
+      profile_claim_receipt_ref = profile_receipt.ref,
+      profile_claim_receipt_sha256 = profile_receipt.sha256,
+      preauthorization_ref = request.preauthorization_ref,
+      preauthorization_sha256 = preauthorization.digest,
+      authorization_id = preauthorization.value.authorization_id,
+      profile_sha256 = preauthorization.value.profile_sha256,
+      case_catalog_ref = catalog_ref,
+      case_catalog_sha256 = catalog.digest,
+      plan_ref = request.plan_ref,
+      plan_sha256 = plan.digest,
+      environment_receipt_ref = request.environment_receipt_ref,
+      environment_receipt_sha256 = environment.digest,
+      authority = copy(preauthorization.value.authority),
+      policy_revision = preauthorization.value.policy_revision,
+      evidence_ref = copy(preauthorization.value.evidence_ref),
+      claim_fingerprint_sha256 = fingerprint,
+      claimed_at = claimed_at,
+    })
+  return self.lineage:write_receipt("preauthorization_claim",
+    "preauthorization-claim-" .. fingerprint:sub(1, 32), claimed_at,
+    receipt_fields(source), source)
+end
+
+local function execution_grant_values(context)
+  return {
+    grant_id = context.run_id .. "-grant",
+    evidence_ref = { kind = "signed-attestation", ref = context.run_id .. "-execution-grant" },
+    issued_at = "2026-07-22T00:15:00Z",
+    expires_at = "2026-07-22T00:45:00Z",
+    now = "2026-07-22T00:20:00Z",
+  }
+end
+
+function Context:_persist_grant_verification(request)
+  local preauthorization = bound_artifact(self.store, request.preauthorization_ref,
+    request.preauthorization_sha256, "preauthorization")
+  local durable_claim = self.records:read(
+    "generic-host/preauthorization/" .. self:_key(preauthorization.value.authorization_id))
+  if type(durable_claim) ~= "table" then
+    error("generic-host durable Preauthorization claim is unavailable")
+  end
+  local grant = bound_artifact(self.store, request.grant_ref, request.grant_sha256, "execution grant")
+  local plan = bound_artifact(self.store, request.plan_ref, request.plan_sha256, "structured plan")
+  local environment = bound_artifact(self.store, request.environment_receipt_ref,
+    request.environment_receipt_sha256, "environment receipt")
+  if grant.value.parent_authorization_sha256 ~= preauthorization.digest
+    or grant.value.plan_sha256 ~= plan.digest
+    or grant.value.environment_receipt_sha256 ~= environment.digest
+    or not execution.same_repository(grant.value.repository, request.repository) then
+    error("generic-host durable grant verification source differs")
+  end
+  local derivation_request = {
+    schema = execution.schemas.grant_request,
+    execution_mode = plan.value.execution_mode,
+    repository = copy(request.repository),
+    preauthorization_ref = request.preauthorization_ref,
+    preauthorization_sha256 = preauthorization.digest,
+    plan_ref = request.plan_ref,
+    plan_sha256 = plan.digest,
+    environment_receipt_ref = request.environment_receipt_ref,
+    environment_receipt_sha256 = environment.digest,
+    grant_ref = request.grant_ref,
+    trace_id = request.trace_id,
+    dedup_key = request.dedup_key,
+    source_ref = { kind = "workflow-qa", ref = self.run_id },
+  }
+  local expected_grant = execution.derive_grant(
+    preauthorization.value, preauthorization.digest,
+    plan.value, plan.digest, environment.digest, derivation_request,
+    execution_grant_values(self))
+  if not equal(grant.value, expected_grant) then
+    error("generic-host durable Grant differs from authenticated derivation")
+  end
+  local complete_preauthorization_request = preauthorization_request(preauthorization, request)
+  local preauthorization_receipt = self:_persist_preauthorization_claim(
+    complete_preauthorization_request, durable_claim)
+  local verification_id = "grant-verification-" .. grant.digest:sub(1, 32)
+  local durable = self.records:immutable(
+    "testing-runner/grant-verifications/" .. self.records:digest(grant.digest), {
+    binding = {
+      grant_ref = request.grant_ref,
+      grant_sha256 = grant.digest,
+      preauthorization_ref = request.preauthorization_ref,
+      preauthorization_sha256 = preauthorization.digest,
+      plan_ref = request.plan_ref,
+      plan_sha256 = plan.digest,
+      environment_receipt_ref = request.environment_receipt_ref,
+      environment_receipt_sha256 = environment.digest,
+      repository = copy(request.repository),
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+    },
+    verification_id = verification_id,
+    verified_at = self.execution_authorization_now,
+  })
+  if durable.written ~= true and durable.replayed ~= true then
+    error("generic-host durable grant verification record differs")
+  end
+  local value = durable.value
+  local source = lineage_source(self, {
+      preauthorization_claim_receipt_ref = preauthorization_receipt.ref,
+      preauthorization_claim_receipt_sha256 = preauthorization_receipt.sha256,
+      grant_ref = request.grant_ref,
+      grant_sha256 = grant.digest,
+      grant_id = grant.value.grant_id,
+      parent_authorization_ref = request.preauthorization_ref,
+      parent_authorization_sha256 = preauthorization.digest,
+      plan_ref = request.plan_ref,
+      plan_sha256 = plan.digest,
+      environment_receipt_ref = request.environment_receipt_ref,
+      environment_receipt_sha256 = environment.digest,
+      authority = copy(grant.value.authority),
+      policy_revision = grant.value.policy_revision,
+      evidence_ref = copy(grant.value.evidence_ref),
+      verifier_ref = copy(self.grant_verifier_ref),
+      verification_id = verification_id,
+      verified_at = value.verified_at,
+    })
+  return self.lineage:write_receipt("grant_verification", verification_id,
+    value.verified_at, receipt_fields(source), source)
+end
+
+function Context:_persist_execution_claim(request, durable_claim)
+  if type(durable_claim) ~= "table" then
+    error("generic-host durable execution claim binding differs")
+  end
+  local claimed_at = durable_claim.claimed_at or self.execution_authorization_now
+  if type(durable_claim.claim_id) ~= "string"
+    or type(claimed_at) ~= "string" or not equal(durable_claim.binding, request)
+    or durable_claim.fence_id ~= self.lineage:fingerprint(
+      "structured-execution-fence", durable_claim.claim_id) then
+    error("generic-host durable execution claim binding differs")
+  end
+  local grant_record = self.records:read(
+    "testing-runner/grant-verifications/" .. self.records:digest(request.grant_sha256))
+  if type(grant_record) ~= "table" then
+    error("generic-host durable Grant verification is unavailable")
+  end
+  local grant_request = copy(grant_record.binding)
+  grant_request.grant = bound_artifact(self.store, grant_request.grant_ref,
+    grant_request.grant_sha256, "execution grant").value
+  local grant_receipt = self:_persist_grant_verification(grant_request)
+  local preauthorization = bound_artifact(self.store, request.preauthorization_ref,
+    request.preauthorization_sha256, "preauthorization")
+  local preauthorization_claim = self.records:read(
+    "generic-host/preauthorization/" .. self:_key(preauthorization.value.authorization_id))
+  local complete_preauthorization_request = preauthorization_request(
+    preauthorization, grant_record.binding)
+  local preauthorization_receipt = self:_persist_preauthorization_claim(
+    complete_preauthorization_request, preauthorization_claim)
+  local fingerprint = self.lineage:fingerprint("structured-execution-claim", durable_claim.claim_id)
+  local source = lineage_source(self, {
+      grant_verification_receipt_ref = grant_receipt.ref,
+      grant_verification_receipt_sha256 = grant_receipt.sha256,
+      preauthorization_claim_receipt_ref = preauthorization_receipt.ref,
+      preauthorization_claim_receipt_sha256 = preauthorization_receipt.sha256,
+      grant_ref = request.grant_ref,
+      grant_sha256 = request.grant_sha256,
+      grant_id = request.grant_id,
+      plan_ref = request.plan_ref,
+      plan_sha256 = request.plan_sha256,
+      environment_receipt_ref = request.environment_receipt_ref,
+      environment_receipt_sha256 = request.environment_receipt_sha256,
+      artifact_root = request.artifact_root,
+      operation_id = request.operation_id,
+      claim_fingerprint_sha256 = fingerprint,
+      claimed_at = claimed_at,
+    })
+  return self.lineage:write_receipt("execution_claim",
+    "execution-claim-" .. fingerprint:sub(1, 32), claimed_at,
+    receipt_fields(source), source)
+end
+
+function Context:_authorization_lineage_sources(completion_receipt, completion_expected)
+  local profile, profile_expected = self:_persist_profile_claim()
+  local preauthorization_ref = self.request.structured_execution.preauthorization_ref
+  local preauthorization = bound_artifact(self.store, preauthorization_ref,
+    self.request.structured_execution.preauthorization_sha256, "preauthorization")
+  local preauthorization_claim = self.records:read(
+    "generic-host/preauthorization/" .. self:_key(preauthorization.value.authorization_id))
+  if type(preauthorization_claim) ~= "table" then
+    error("generic-host durable Preauthorization claim is unavailable")
+  end
+  local grant_ref = self.request.structured_execution.grant_ref
+  local grant = bound_artifact(self.store, grant_ref, nil, "execution grant")
+  local grant_record = self.records:read(
+    "testing-runner/grant-verifications/" .. self.records:digest(grant.digest))
+  if type(grant_record) ~= "table" then
+    error("generic-host durable Grant verification is unavailable")
+  end
+  local complete_preauthorization_request = preauthorization_request(
+    preauthorization, grant_record.binding)
+  local preauthorization_receipt, preauthorization_expected = self:_persist_preauthorization_claim(
+    complete_preauthorization_request, preauthorization_claim)
+  local grant_receipt, grant_expected = self:_persist_grant_verification(grant_record.binding)
+  local replay_entries = self.records:list("testing-runner/replay")
+  if #replay_entries ~= 1 or type(replay_entries[1].value) ~= "table" then
+    error("generic-host durable execution claim is unavailable")
+  end
+  local execution_receipt, execution_expected = self:_persist_execution_claim(
+    replay_entries[1].value.binding, replay_entries[1].value)
+  return {
+    profile_claim = profile,
+    preauthorization_claim = preauthorization_receipt,
+    grant_verification = grant_receipt,
+    execution_claim = execution_receipt,
+    execution_completion = completion_receipt,
+  }, {
+    profile_claim = profile_expected,
+    preauthorization_claim = preauthorization_expected,
+    grant_verification = grant_expected,
+    execution_claim = execution_expected,
+    execution_completion = completion_expected,
+  }
+end
+
+function Context:_execution_completion_source(durable_claim)
+  local completed_at = type(durable_claim) == "table" and type(durable_claim.completion) == "table"
+    and (durable_claim.completion.completed_at or self.execution_authorization_now) or nil
+  if type(durable_claim) ~= "table" or durable_claim.status ~= "completed"
+    or type(durable_claim.completion) ~= "table"
+    or type(completed_at) ~= "string" then
+    error("generic-host durable execution completion binding differs")
+  end
+  local completion = durable_claim.completion
+  local execution_claim = self:_persist_execution_claim(durable_claim.binding, durable_claim)
+  local execution_artifact, canonical = structured_execution_artifacts(self, completion.result_ref)
+  if execution_artifact == nil or canonical == nil
+    or execution_artifact.digest ~= completion.result_sha256 then
+    error("generic-host durable canonical completion artifacts are unavailable")
+  end
+  if not execution_plan_matches_claim(execution_artifact, durable_claim) then
+    error("generic-host durable completion Plan binding differs")
+  end
+  local source = lineage_source(self, {
+      execution_claim_receipt_ref = execution_claim.ref,
+      execution_claim_receipt_sha256 = execution_claim.sha256,
+      result_ref = completion.result_ref,
+      result_sha256 = execution_artifact.digest,
+      case_result_set_ref = execution_artifact.value.case_result_set_path,
+      case_result_set_artifact_sha256 = canonical.case_result_set.digest,
+      evidence_manifest_ref = execution_artifact.value.evidence_manifest_path,
+      evidence_manifest_artifact_sha256 = canonical.evidence_manifest.digest,
+      completed_at = completed_at,
+    })
+  return source, completed_at, execution_artifact
+end
+
+function Context:_persist_execution_completion(durable_claim)
+  local source, completed_at, execution_artifact = self:_execution_completion_source(durable_claim)
+  local receipt, completion_expected = self.lineage:write_receipt("execution_completion",
+    "execution-completion-" .. execution_artifact.digest:sub(1, 32), completed_at,
+    receipt_fields(source), source)
+  local artifacts, expected = self:_authorization_lineage_sources(receipt, completion_expected)
+  self.lineage:write_index(completed_at, artifacts, expected)
+  return receipt
+end
+
+function Context:authorization_lineage_evidence()
+  local replay_entries = self.records:list("testing-runner/replay")
+  if #replay_entries ~= 1 or type(replay_entries[1].value) ~= "table"
+    or replay_entries[1].value.status ~= "completed" then
+    error("generic-host durable completed execution claim is unavailable")
+  end
+  local source = self:_execution_completion_source(replay_entries[1].value)
+  local completion = self.lineage:load_receipt("execution_completion", source)
+  return self:_authorization_lineage_sources(completion, source)
+end
+
 function Context:_structured_runtime()
   local context = self
   local function replay_key(grant_id) return "testing-runner/replay/" .. context:_key(grant_id) end
@@ -687,6 +1182,7 @@ function Context:_structured_runtime()
     end,
     verify_grant = function(request)
       local grant = request.grant
+      context:_persist_grant_verification(request)
       return {
         grant_sha256 = request.grant_sha256, authority = copy(grant.authority),
         policy_revision = grant.policy_revision, evidence_ref = copy(grant.evidence_ref),
@@ -694,17 +1190,21 @@ function Context:_structured_runtime()
     end,
     replay_guard = function(request)
       local key = replay_key(request.grant_id)
-      local claim_id = context.run_id .. "-execution-claim"
+      local claim_id = context:_private_claim_id("structured-execution")
+      local fence_id = context.lineage:fingerprint("structured-execution-fence", claim_id)
       local claimed = context.records:claim(key, {
-        status = "claimed", claim_id = claim_id, binding = copy(request),
+        status = "claimed", claim_id = claim_id, fence_id = fence_id, binding = copy(request),
+        claimed_at = context.execution_authorization_now,
       })
       if claimed.claimed ~= true then return nil end
       local value = claimed.value
+      context:_persist_execution_claim(request, value)
       if value.status == "completed" then
+        context:_persist_execution_completion(value)
         return { status = "completed", result_ref = value.result_ref, result_sha256 = value.result_sha256 }
       end
       if claimed.replayed == true then return { status = "in-progress" } end
-      return { status = "claimed", claim_id = claim_id }
+      return { status = "claimed", claim_id = value.fence_id }
     end,
     authorize_cli_effect = function(request)
       local envelope = request.action_envelope
@@ -721,6 +1221,8 @@ function Context:_structured_runtime()
       local environment = context.store:load(envelope.environment_receipt_ref)
       local plan = context.store:load(envelope.plan_ref)
       local grant = context.store:load(envelope.grant_ref)
+      local replay = type(grant) == "table" and type(grant.value) == "table"
+        and context.records:read(replay_key(grant.value.grant_id)) or nil
       local inputs = {
         profile = profile and profile.digest or empty.profile,
         validation_receipt = validation and validation.digest or empty.validation_receipt,
@@ -757,6 +1259,8 @@ function Context:_structured_runtime()
         or grant.value.plan_sha256 ~= plan.digest
         or grant.value.environment_receipt_sha256 ~= environment.digest
         or not equal(environment.value.workspace_ref, envelope.workspace_ref)
+        or type(replay) ~= "table" or replay.status ~= "claimed"
+        or replay.fence_id ~= envelope.fence_id
         or not equal(planned_case, envelope.case)
         or not argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
         or not argv_allowed(envelope.case.argv, grant.value.cli_capabilities) then
@@ -809,9 +1313,14 @@ function Context:_structured_runtime()
     write_artifact = function(path, value) return context.store:write(path, value) end,
     load_result = function(request)
       local artifact = structured_execution_artifacts(context, request.result_ref)
+      local durable_claim = durable_execution_claim(context, "completed")
       if artifact == nil or (request.result_sha256 ~= nil and artifact.digest ~= request.result_sha256) then return nil end
       local value = artifact.value
-      if value.operation_id ~= request.operation_id or value.environment_receipt_sha256 ~= request.environment_receipt_sha256
+      if not execution_plan_matches_claim(artifact, durable_claim)
+        or durable_claim.result_ref ~= request.result_ref
+        or durable_claim.result_sha256 ~= request.result_sha256
+        or value.operation_id ~= request.operation_id
+        or value.environment_receipt_sha256 ~= request.environment_receipt_sha256
         or not execution.same_repository(value.repository, request.repository)
         or value.trace_id ~= request.trace_id or value.dedup_key ~= request.dedup_key then return nil end
       local summary = {
@@ -834,7 +1343,7 @@ function Context:_structured_runtime()
     complete_replay = function(request)
       local current
       for _, entry in ipairs(context.records:list("testing-runner/replay")) do
-        if type(entry.value) == "table" and entry.value.claim_id == request.claim.claim_id then
+        if type(entry.value) == "table" and entry.value.fence_id == request.claim.claim_id then
           current = entry
           break
         end
@@ -859,7 +1368,8 @@ function Context:_structured_runtime()
       local completion = copy(request)
       completion.claim = nil
       completion.result_sha256 = artifact.digest
-      local completed = context.records:complete_replay(current.key, request.claim.claim_id, completion)
+      completion.completed_at = context.execution_authorization_now
+      local completed = context.records:complete_replay(current.key, current.value.claim_id, completion)
       if completed.completed ~= true then return false end
       local verified, verified_canonical = structured_execution_artifacts(context, request.result_ref)
       if verified.digest ~= artifact.digest
@@ -868,6 +1378,7 @@ function Context:_structured_runtime()
           or verified_canonical.evidence_manifest.digest ~= canonical.evidence_manifest.digest)) then
         error("generic-host durable canonical execution artifacts changed during replay completion")
       end
+      context:_persist_execution_completion(completed.value)
       return true
     end,
   }
@@ -952,22 +1463,42 @@ function Context:_generic_host_runtime()
       }
     end,
     claim_preauthorization = function(value)
-      local claimed = context.records:claim("generic-host/preauthorization/" .. context:_key(value.authorization_id), {
-        binding = copy(value), claim_id = context.run_id .. "-preauthorization",
-      })
+      local key = "generic-host/preauthorization/" .. context:_key(value.authorization_id)
+      local existing = context.records:read(key)
+      local claimed
+      if existing ~= nil then
+        claimed = {
+          claimed = preauthorization_binding_matches(
+            existing.binding, value, trusted_preauthorization_refs(context)),
+          replayed = true,
+          value = existing,
+        }
+      else
+        claimed = context.records:claim(key, {
+          binding = canonical_preauthorization_binding(value),
+          claim_id = context:_private_claim_id("structured-preauthorization"),
+          claimed_at = context.execution_authorization_now,
+        })
+      end
       if claimed.claimed ~= true then return { status = "blocked" } end
+      context:_persist_preauthorization_claim(value, claimed.value)
       return {
         status = "claimed", claim_id = claimed.value.claim_id, replayed = claimed.replayed == true,
       }
     end,
-    grant_values = function()
-      return {
-        grant_id = context.run_id .. "-grant",
-        evidence_ref = { kind = "signed-attestation", ref = context.run_id .. "-execution-grant" },
-        issued_at = "2026-07-22T00:15:00Z", expires_at = "2026-07-22T00:45:00Z",
-        now = "2026-07-22T00:20:00Z",
-      }
+    reconcile_preauthorization_claim = function(value)
+      local preauthorization = bound_artifact(context.store, value.preauthorization_ref,
+        value.preauthorization_sha256, "preauthorization")
+      local request = copy(value)
+      request.authorization_id = preauthorization.value.authorization_id
+      local claimed = context.records:read(
+        "generic-host/preauthorization/" .. context:_key(request.authorization_id))
+      if claimed == nil or not preauthorization_binding_matches(
+        claimed.binding, request, trusted_preauthorization_refs(context)) then return false end
+      context:_persist_preauthorization_claim(request, claimed)
+      return true
     end,
+    grant_values = function() return execution_grant_values(context) end,
     record_terminal = function(value)
       local result = context.records:immutable("generic-host/terminal/" .. context.run_id, copy(value))
       return result.written == true or result.replayed == true
@@ -1030,7 +1561,7 @@ function Context:terminal_record()
   return self.records:read("generic-host/terminal/" .. self.run_id)
 end
 
-local function authorization_context(config, records)
+local function authorization_context(config, records, store, projector)
   local authority = copy(config.approval.authority)
   local policy_revision = config.approval.policy_revision
   local evidence_ref = copy(config.approval.evidence_ref)
@@ -1053,9 +1584,16 @@ local function authorization_context(config, records)
     trusted_authorities = { trusted },
     approval_ref = copy(config.authorization_approval_ref),
     replay_guard = function(value)
+      local nonce = next_nonce()
       local claimed = records:claim("generic-host/profile-approval/" .. config.run_id, {
-        binding = copy(value), claim_id = config.run_id .. "-profile-claim",
+        binding = copy(value),
+        claim_id = "private-claim-" .. records:digest(
+          config.lineage_projection_secret .. "\0project-profile\0" .. nonce),
+        claimed_at = config.authorization_now,
       })
+      if claimed.claimed == true then
+        profile_claim_receipt(config, store, projector, claimed.value)
+      end
       return { claimed = claimed.claimed == true, claim_id = claimed.value and claimed.value.claim_id }
     end,
   }
@@ -1069,7 +1607,20 @@ local function build_context(config, durable_root)
   context.durable_root = durable_root
   context.records = records
   context.store = ArtifactStore.new(records)
-  context.authorization_context = authorization_context(config, records)
+  context.profile_source_ref = copy(config.profile_source_ref)
+  context.grant_verifier_ref = copy(config.grant_verifier_ref)
+  context.execution_authorization_now = config.execution_authorization_now
+  context.lineage = lineage_projection.new({
+    store = context.store,
+    sha256 = function(body) return records:digest(body) end,
+    repository = { url = config.repository.url, commit_sha = config.repository.commit_sha },
+    run_id = config.run_id,
+    trace_id = config.request.trace_id,
+    dedup_key = config.request.dedup_key,
+    artifact_root = config.artifact_root,
+    fingerprint_secret = config.lineage_projection_secret,
+  })
+  context.authorization_context = authorization_context(config, records, context.store, context.lineage)
   context.environment_runtime = context:_environment_runtime()
   context.workflow_runtime = context:_workflow_runtime()
   context.module_loop_runtime = context:_module_loop_runtime()
@@ -1100,10 +1651,30 @@ function M.initialize(context, durable_root)
     host_root = context.host_root,
     commit_sha = context.commit_sha,
     repository = copy(context.repository),
+    target_execution_boundary = {
+      schema = "testing-host.target-execution-boundary.v1",
+      mode = "trusted-fixture-exact",
+      target_class = "host-owned-exact-trusted-fixture",
+      repository = copy(context.profile.repository),
+      authority = {
+        kind = "host-policy", ref = "fixtures/" .. context.fixture_name .. "-target-execution-boundary",
+      },
+      policy_revision = "generic-host-trusted-fixture-exact-v1",
+      authorization_capability = false,
+      execution_authorized = false,
+    },
     profile = copy(context.profile),
     approval = copy(context.approval),
     validation_receipt = copy(context.validation_receipt),
+    profile_source_ref = {
+      kind = "host-profile-policy", ref = "fixtures/" .. context.fixture_name .. "-profile",
+    },
+    grant_verifier_ref = {
+      kind = "host-verifier", ref = "fixtures/" .. context.fixture_name .. "-grant-verifier",
+    },
+    lineage_projection_secret = context.lineage_projection_secret,
     authorization_now = context.authorization_context.now,
+    execution_authorization_now = "2026-07-22T00:20:00Z",
     authorization_approval_ref = copy(context.authorization_context.approval_ref),
     completed_replay_failpoint = copy(context.completed_replay_failpoint),
     crash_barrier = copy(context.crash_barrier),

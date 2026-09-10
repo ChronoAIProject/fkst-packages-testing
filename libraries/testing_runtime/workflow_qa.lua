@@ -38,8 +38,12 @@ function M.production(options)
       }, run_root(path), path, 15)
       return type(result) == "table" and result.saved == true
     end,
-    load_artifact = function(path)
-      return cli.call("artifact-load", { path = path }, run_root(path), path, 15)
+    load_artifact = function(path, expected_digest, options)
+      return cli.call("artifact-load", {
+        path = path,
+        expected_digest = expected_digest,
+        durable_only = type(options) == "table" and options.durable_only == true or nil,
+      }, run_root(path), path, 15)
     end,
     write_artifact = function(path, value)
       local result = cli.call("artifact-write", { path = path, value = value }, run_root(path), path, 15)

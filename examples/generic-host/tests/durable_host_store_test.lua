@@ -79,6 +79,78 @@ local function generic_runtime_cli()
 end
 
 return {
+  test_materialized_immutable_artifact_publish_is_atomic_no_clobber = function()
+    local root = os.tmpname() .. "-generic-host-no-clobber"
+    cleanup(root)
+    local target = root .. "/receipt.json"
+    local script = table.concat({
+      "const fs=require('fs'),path=require('path'),runtime=require(path.resolve(process.argv[1]));",
+      "const target=process.argv[2],sentinel='external-sentinel\\n',original=fs.linkSync;",
+      "fs.linkSync=(source,destination)=>{fs.writeFileSync(destination,sentinel,{flag:'wx'});",
+      "return original(source,destination)};let blocked=false;",
+      "try{runtime.materializeImmutableNoReplace(target,'trusted-receipt')}catch(error){",
+      "blocked=String(error&&error.message||error).includes('materialized artifact differs')}",
+      "if(!blocked||fs.readFileSync(target,'utf8')!==sentinel)process.exit(41);",
+      "if(fs.readdirSync(path.dirname(target)).some(name=>name.includes('.tmp-')))process.exit(42);",
+    })
+    local result = direct_exec({ "node", "-e", script, generic_runtime_cli(), target })
+    t.eq(result.exit_code, 0)
+    t.eq(read_file(target), "external-sentinel\n")
+    cleanup(root)
+  end,
+
+  test_materialized_immutable_artifact_rejects_symlink_parent = function()
+    local root = os.tmpname() .. "-generic-host-symlink-parent"
+    local outside = os.tmpname() .. "-generic-host-symlink-outside"
+    cleanup(root)
+    cleanup(outside)
+    local target = root .. "/linked/receipt.json"
+    local script = table.concat({
+      "const fs=require('fs'),path=require('path'),runtime=require(path.resolve(process.argv[1]));",
+      "const root=process.argv[2],outside=process.argv[3],target=root+'/linked/receipt.json';",
+      "fs.mkdirSync(root,{recursive:true});fs.mkdirSync(outside,{recursive:true});",
+      "fs.symlinkSync(outside,root+'/linked','dir');let blocked=false;",
+      "try{runtime.materializeImmutableNoReplace(target,'trusted-receipt',root)}catch(error){",
+      "blocked=String(error&&error.message||error).includes('physical directory')}",
+      "if(!blocked||fs.existsSync(outside+'/receipt.json'))process.exit(43);",
+    })
+    local result = direct_exec({ "node", "-e", script, generic_runtime_cli(), root, outside })
+    t.eq(result.exit_code, 0)
+    t.eq(read_file(outside .. "/receipt.json"), nil)
+    cleanup(root)
+    cleanup(outside)
+  end,
+
+  test_materialized_immutable_artifact_publish_is_anchored_during_parent_swap = function()
+    local root = os.tmpname() .. "-generic-host-parent-swap"
+    local parked = root .. "-parked"
+    local outside = root .. "-outside"
+    cleanup(root)
+    cleanup(parked)
+    cleanup(outside)
+    local target = root .. "/receipt.json"
+    local script = table.concat({
+      "const fs=require('fs'),path=require('path'),runtime=require(path.resolve(process.argv[1]));",
+      "const root=process.argv[2],parked=process.argv[3],outside=process.argv[4];",
+      "fs.mkdirSync(root,{recursive:true});fs.mkdirSync(outside,{recursive:true});",
+      "const original=fs.linkSync;fs.linkSync=(source,destination)=>{",
+      "fs.renameSync(root,parked);fs.renameSync(outside,root);",
+      "try{return original(source,destination)}finally{fs.renameSync(root,outside);fs.renameSync(parked,root)}};",
+      "runtime.materializeImmutableNoReplace(root+'/receipt.json','trusted-receipt',root);",
+      "if(fs.readFileSync(root+'/receipt.json','utf8')!=='trusted-receipt')process.exit(44);",
+      "if(fs.existsSync(outside+'/receipt.json'))process.exit(45);",
+    })
+    local result = direct_exec({
+      "node", "-e", script, generic_runtime_cli(), root, parked, outside,
+    })
+    t.eq(result.exit_code, 0)
+    t.eq(read_file(target), "trusted-receipt")
+    t.eq(read_file(outside .. "/receipt.json"), nil)
+    cleanup(root)
+    cleanup(parked)
+    cleanup(outside)
+  end,
+
   test_generic_host_runtime_echoes_exact_request_id_for_success_and_error = function()
     local root = os.tmpname() .. "-generic-host-runtime-correlation"
     cleanup(root)
@@ -335,7 +407,8 @@ return {
       t.eq(consumption.grant_id, grant.value.grant_id)
       t.eq(consumption.binding.fence_id, envelope.fence_id)
       t.eq(consumption.binding.envelope_sha256, receipt.envelope_sha256)
-      t.eq(replay.claim_id, envelope.fence_id)
+      t.eq(replay.fence_id, envelope.fence_id)
+      t.is_true(replay.claim_id ~= envelope.fence_id)
       t.eq(replay.binding.grant_id, grant.value.grant_id)
       t.eq(replay.binding.grant_sha256, envelope.grant_sha256)
       t.eq(replay.binding.plan_sha256, envelope.plan_sha256)

@@ -419,6 +419,7 @@ function R.production(options)
         release_listener_claims(request.operation_id)
       end
       if not ok then error(verified, 0) end
+      verified.claim_id = nil
       return verified
     end
 

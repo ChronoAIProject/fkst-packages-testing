@@ -4,6 +4,11 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const {
+  minimalEnvironment,
+  releaseWorkerEnvironment,
+  verifyWorkerEnvironment,
+} = require('./common');
 
 function sha256(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
@@ -40,24 +45,36 @@ function sameRepository(left, right) {
   return left && right && left.url === right.url && left.commit_sha === right.commit_sha;
 }
 
-function gitOutput(workspaceRoot, argv, label) {
-  const result = spawnSync('git', argv, {
-    cwd: workspaceRoot,
-    encoding: 'utf8',
-    shell: false,
-    timeout: 5_000,
-    windowsHide: true,
+function gitOutput(workspaceRoot, argv, label, request) {
+  const environment = minimalEnvironment({}, {
+    schema: 'environment-factory.workspace-integrity-isolation.v1',
+    operation_id: request.operation_id,
+    repository: request.repository,
+    purpose: label,
   });
-  if (result.error || result.status !== 0) throw new Error(`workspace ${label} is unavailable`);
-  return String(result.stdout || '').trim();
+  try {
+    verifyWorkerEnvironment(environment);
+    const result = spawnSync('git', argv, {
+      cwd: workspaceRoot,
+      encoding: 'utf8',
+      env: environment,
+      shell: false,
+      timeout: 5_000,
+      windowsHide: true,
+    });
+    if (result.error || result.status !== 0) throw new Error(`workspace ${label} is unavailable`);
+    return String(result.stdout || '').trim();
+  } finally {
+    releaseWorkerEnvironment(environment);
+  }
 }
 
-function currentCommit(workspaceRoot) {
-  return gitOutput(workspaceRoot, ['rev-parse', 'HEAD'], 'commit');
+function currentCommit(workspaceRoot, request) {
+  return gitOutput(workspaceRoot, ['rev-parse', 'HEAD'], 'commit', request);
 }
 
-function trackedChanges(workspaceRoot) {
-  return gitOutput(workspaceRoot, ['status', '--porcelain', '--untracked-files=no'], 'tracked status');
+function trackedChanges(workspaceRoot, request) {
+  return gitOutput(workspaceRoot, ['status', '--porcelain', '--untracked-files=no'], 'tracked status', request);
 }
 
 function resolveWorkspace(request) {
@@ -80,10 +97,11 @@ function resolveWorkspace(request) {
     throw new Error('working_directory differs from workspace binding');
   }
   const workspaceRoot = fs.realpathSync(resource.path);
-  if (currentCommit(workspaceRoot) !== resource.repository.commit_sha) {
+  const isolationRequest = { ...request, repository: resource.repository };
+  if (currentCommit(workspaceRoot, isolationRequest) !== resource.repository.commit_sha) {
     throw new Error('workspace commit binding is invalid');
   }
-  if (request.require_clean === true && trackedChanges(workspaceRoot) !== '') {
+  if (request.require_clean === true && trackedChanges(workspaceRoot, isolationRequest) !== '') {
     throw new Error('workspace tracked files differ from the approved commit');
   }
   const candidate = path.resolve(workspaceRoot, resource.working_directory);

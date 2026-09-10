@@ -91,7 +91,7 @@ return {
       t.eq(context.profile.mutation_policy.allowed_operations[1], "update")
       for _, name in ipairs({
         "load_artifact", "write_artifact", "artifact_digest", "claim_preauthorization",
-        "grant_values", "record_terminal",
+        "reconcile_preauthorization_claim", "grant_values", "record_terminal",
       }) do
         t.eq(type(context.generic_host_runtime[name]), "function")
       end
@@ -145,6 +145,9 @@ return {
           .. "/authorization/" .. expected .. "-consumption.json")
         t.eq(consumption.schema, "generic-host.cli-effect-consumption.v1")
         t.eq(consumption.case_id, expected)
+        t.eq(consumption.fence_id, nil)
+        t.is_true(type(consumption.consumption_fingerprint_sha256) == "string")
+        t.eq(#consumption.consumption_fingerprint_sha256, 64)
       end
       t.eq(at_barrier:terminal_record(), nil)
       local ownership = at_barrier:_fixture_effect("fixture-resource-status", {
@@ -233,6 +236,7 @@ return {
       t.eq(released.process_group_absent, true)
       t.eq(released.listeners_closed, true)
       t.eq(released.workspace_absent, true)
+      t.eq(released.worker_environment_absent, true)
       t.eq(support.read_file(context.workspace_root .. "/state/inventory.json"), nil)
 
       local before = counts(recovered)

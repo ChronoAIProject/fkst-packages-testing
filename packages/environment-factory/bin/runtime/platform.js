@@ -34,21 +34,22 @@ function parsePsTime(value) {
 }
 
 function processTable() {
-  const result = directCommand(['ps', '-axo', 'pid=,pgid=,rss=,time='], {
+  const result = directCommand(['ps', '-axo', 'pid=,pgid=,stat=,rss=,time='], {
     timeoutMs: 2_000,
     outputBytes: 4 * 1024 * 1024,
   });
   if (result.error || result.status !== 0) return null;
   const rows = [];
   for (const line of String(result.stdout || '').split('\n')) {
-    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
+    const match = line.trim().match(/^(\d+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(.+)$/);
     if (!match) continue;
-    const cpuMillis = parsePsTime(match[4]);
+    if (match[3].startsWith('Z')) continue;
+    const cpuMillis = parsePsTime(match[5]);
     if (cpuMillis === null) return null;
     rows.push({
       pid: Number(match[1]),
       pgid: Number(match[2]),
-      rssBytes: Number(match[3]) * 1024,
+      rssBytes: Number(match[4]) * 1024,
       cpuMillis,
     });
   }

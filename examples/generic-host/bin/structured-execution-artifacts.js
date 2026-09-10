@@ -86,8 +86,8 @@ function create(options) {
     }
   }
 
-  function structuredExecutionArtifacts(projectRoot, resultRef) {
-    const execution = artifactRead(projectRoot, resultRef);
+  function structuredExecutionArtifacts(projectRoot, resultRef, resultDigest) {
+    const execution = artifactRead(projectRoot, resultRef, resultDigest);
     const value = execution && execution.value;
     const executionRoot = path.posix.dirname(resultRef);
     if (!value || value.schema !== 'testing-structured-execution.v1'
@@ -102,7 +102,7 @@ function create(options) {
     if (value.case_results_path === undefined && !group) {
       fail('structured execution result binding is invalid');
     }
-    const testPlan = artifactRead(projectRoot, value.test_plan_path);
+    const testPlan = artifactRead(projectRoot, value.test_plan_path, value.plan_sha256);
     const caseResults = value.case_results_path === undefined
       ? undefined : artifactRead(projectRoot, value.case_results_path);
     if (!testPlan || testPlan.digest !== value.plan_sha256
@@ -113,8 +113,10 @@ function create(options) {
     }
     if (!group) return { execution, testPlan, caseResults };
 
-    const caseResultSet = artifactRead(projectRoot, group.caseResultSetPath);
-    const evidenceManifest = artifactRead(projectRoot, group.evidenceManifestPath);
+    const caseResultSet = artifactRead(projectRoot, group.caseResultSetPath,
+      group.caseResultSetDigest);
+    const evidenceManifest = artifactRead(projectRoot, group.evidenceManifestPath,
+      group.evidenceManifestDigest);
     if (!caseResultSet || caseResultSet.digest !== group.caseResultSetDigest) {
       fail('structured execution case result set artifact digest differs');
     }

@@ -2,6 +2,9 @@
 
 const http = require('http');
 const protocol = require('fixture-protocol');
+const { assertCredentialIsolation } = require('./credential-isolation');
+
+assertCredentialIsolation();
 
 const middlewarePort = Number(process.argv[2]);
 

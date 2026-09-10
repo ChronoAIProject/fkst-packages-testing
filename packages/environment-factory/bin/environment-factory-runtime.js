@@ -6,24 +6,45 @@ const http = require('http');
 const https = require('https');
 const net = require('net');
 const path = require('path');
-const { spawn } = require('child_process');
 const { loadAuthorizationBundle } = require('./runtime/authorization');
 const { createBudgetRuntime } = require('./runtime/budgets');
 const {
   DEFAULT_OUTPUT_BYTES, acquireLock, artifactPath, boundedText, commandResult,
-  isSafeArtifactPath, minimalEnvironment, parseArgs, readJson, runtimeConfig, sameArray, sha256,
-  stableStringify, validateArgv, writeJsonAtomic, writeJsonImmutable,
+  isSafeArtifactPath, minimalEnvironment, parseArgs, readJson, releaseWorkerEnvironment,
+  releaseWorkerEnvironmentLease, processStartIdentity, runtimeConfig, sameArray, sha256, stableStringify, validateArgv,
+  verifyWorkerEnvironment, verifyWorkerEnvironmentLease, writeJsonAtomic, writeJsonImmutable,
 } = require('./runtime/common');
+const { validateTargetExecutionBoundary } = require('./runtime/target-execution-boundary');
 const { createListenerClaims } = require('./runtime/listener-claims');
 const { runMeasuredCommand } = require('./runtime/measured-command');
 const { listenersOwnedByProcessGroup, processGroupUsage } = require('./runtime/platform');
+const { startOrRecoverSupervisedProcess } = require('./runtime/supervised-process');
 const { loadState, saveState } = require('./runtime/state');
-const { resolveWorkspace } = require('./runtime/workspace');
+const { readResource: readWorkspaceResource, resolveWorkspace } = require('./runtime/workspace');
 function durableRoot() {
   return path.resolve(process.env.FKST_DURABLE_ROOT || path.join('.testing', 'durable'));
 }
 function executionRoot() {
   return path.resolve(process.env.FKST_RUNTIME_ROOT || path.join('.testing', 'runtime'));
+}
+function workerIsolationIdentity(payload, purpose) {
+  const identity = {
+    schema: 'environment-factory.worker-isolation-identity.v1',
+    operation_id: payload.operation_id,
+    effect_id: payload.effect_id || purpose,
+    purpose,
+  };
+  if (payload.repository) identity.repository = payload.repository;
+  return identity;
+}
+
+function targetExecutionConfig(payload, repository = payload && payload.repository) {
+  const config = runtimeConfig(payload);
+  validateTargetExecutionBoundary(config.target_execution_boundary, repository, {
+    runtimeConfigRef: payload.runtime_config_ref,
+    artifactRoot: payload.artifact_root,
+  });
+  return config;
 }
 function ledgerPath(kind, id) {
   return path.join(durableRoot(), 'environment-factory', kind, `${sha256(String(id))}.json`);
@@ -179,6 +200,7 @@ const {
   durableRoot,
   ledgerPath,
   readIfExists,
+  verifyWorkerEnvironment,
   writeJsonAtomic,
 });
 
@@ -192,7 +214,7 @@ function remainingTimeoutMs(deadline) {
 
 async function checkout(payload) {
   return withEffect(payload, async () => {
-    const config = runtimeConfig(payload);
+    const config = targetExecutionConfig(payload);
     const deadline = effectDeadline(payload);
     const repository = payload.repository || {};
     const source = config.repository_mirrors && config.repository_mirrors[repository.url];
@@ -218,50 +240,56 @@ async function checkout(payload) {
       working_directory: payload.working_directory,
       cleaned: false,
     });
-    const commandEnvironment = minimalEnvironment(config.command_environment || {});
-    const clone = await executeBudgetedCommand(payload,
-      ['git', 'clone', '--quiet', '--no-checkout', source, workspacePath], {
-        env: commandEnvironment,
-        timeoutMs: remainingTimeoutMs(deadline),
-        workspacePath,
-      });
-    if (clone.reason !== null) {
-      return {
-        status: 'blocked',
-        workspace_ref: workspaceRef,
-        cleanup_ref: cleanupRef,
-        diagnostic_ref: writeDiagnostic(payload, 'checkout', {
-          status: 'blocked', reason: clone.reason, stderr: boundedText(clone.stderr, payload.output_bytes),
-        }),
-      };
-    }
-    const checkoutResult = await executeBudgetedCommand(payload,
-      ['git', 'checkout', '--quiet', '--detach', repository.commit_sha], {
+    const commandEnvironment = minimalEnvironment(
+      config.command_environment || {}, workerIsolationIdentity(payload, 'checkout'),
+    );
+    try {
+      const clone = await executeBudgetedCommand(payload,
+        ['git', 'clone', '--quiet', '--no-checkout', source, workspacePath], {
+          env: commandEnvironment,
+          timeoutMs: remainingTimeoutMs(deadline),
+          workspacePath,
+        });
+      if (clone.reason !== null) {
+        return {
+          status: 'blocked',
+          workspace_ref: workspaceRef,
+          cleanup_ref: cleanupRef,
+          diagnostic_ref: writeDiagnostic(payload, 'checkout', {
+            status: 'blocked', reason: clone.reason, stderr: boundedText(clone.stderr, payload.output_bytes),
+          }),
+        };
+      }
+      const checkoutResult = await executeBudgetedCommand(payload,
+        ['git', 'checkout', '--quiet', '--detach', repository.commit_sha], {
+          cwd: workspacePath,
+          env: commandEnvironment,
+          timeoutMs: remainingTimeoutMs(deadline),
+          workspacePath,
+        });
+      const resolved = await executeBudgetedCommand(payload, ['git', 'rev-parse', 'HEAD'], {
         cwd: workspacePath,
         env: commandEnvironment,
         timeoutMs: remainingTimeoutMs(deadline),
         workspacePath,
       });
-    const resolved = await executeBudgetedCommand(payload, ['git', 'rev-parse', 'HEAD'], {
-      cwd: workspacePath,
-      env: commandEnvironment,
-      timeoutMs: remainingTimeoutMs(deadline),
-      workspacePath,
-    });
-    const resolvedCommit = String(resolved.stdout || '').trim();
-    const passed = checkoutResult.reason === null && resolved.reason === null
-      && resolvedCommit === repository.commit_sha;
-    return {
-      status: passed ? 'passed' : 'blocked',
-      resolved_commit: resolvedCommit || null,
-      workspace_ref: workspaceRef,
-      cleanup_ref: cleanupRef,
-      diagnostic_ref: writeDiagnostic(payload, 'checkout', {
+      const resolvedCommit = String(resolved.stdout || '').trim();
+      const passed = checkoutResult.reason === null && resolved.reason === null
+        && resolvedCommit === repository.commit_sha;
+      return {
         status: passed ? 'passed' : 'blocked',
-        resolved_commit: resolvedCommit,
-        stderr: boundedText(`${checkoutResult.stderr} ${resolved.stderr}`, 1024),
-      }),
-    };
+        resolved_commit: resolvedCommit || null,
+        workspace_ref: workspaceRef,
+        cleanup_ref: cleanupRef,
+        diagnostic_ref: writeDiagnostic(payload, 'checkout', {
+          status: passed ? 'passed' : 'blocked',
+          resolved_commit: resolvedCommit,
+          stderr: boundedText(`${checkoutResult.stderr} ${resolved.stderr}`, 1024),
+        }),
+      };
+    } finally {
+      releaseWorkerEnvironment(commandEnvironment);
+    }
   });
 }
 
@@ -374,16 +402,6 @@ async function createReadinessAttempt(payload) {
   });
 }
 
-function processStartIdentity(pid) {
-  if (!Number.isInteger(pid) || pid < 1) return null;
-  const result = commandResult(['ps', '-o', 'lstart=', '-p', String(pid)], {
-    timeoutMs: 1000,
-    outputBytes: 1024,
-  });
-  const identity = result.exitCode === 0 ? result.stdout.trim() : '';
-  return identity || null;
-}
-
 function inheritedListenerNames(payload) {
   if (payload.listener_mode !== 'fkst-inherited-listeners-v1') {
     throw new Error('supervised argv requires fkst-inherited-listeners-v1');
@@ -401,13 +419,22 @@ function inheritedListenerNames(payload) {
 
 async function runArgvEffect(payload) {
   return withEffect(payload, async () => {
-    const config = runtimeConfig(payload);
+    const workspaceResource = readWorkspaceResource(payload.workspace_ref);
+    const config = targetExecutionConfig(payload, workspaceResource.repository);
     const argv = validateArgv(payload.argv);
     const cwd = workspaceCwd(payload);
     const timeoutMs = Math.max(1, Number(payload.timeout_seconds) || 1) * 1000;
     const outputBytes = Number(payload.output_bytes) || DEFAULT_OUTPUT_BYTES;
-    const baseEnv = minimalEnvironment(config.command_environment || {});
+    if (payload.mode !== 'oneshot' && payload.mode !== 'supervised') {
+      throw new Error('unsupported argv mode');
+    }
+    let baseEnv = null;
+    let retainWorkerHome = false;
+    try {
     if (payload.mode === 'oneshot') {
+      baseEnv = minimalEnvironment(
+        config.command_environment || {}, workerIsolationIdentity(payload, 'run-argv'),
+      );
       const frozen = payload.requires_frozen_dependencies === true;
       let frozenProof = null;
       if (frozen) {
@@ -466,14 +493,6 @@ async function runArgvEffect(payload) {
         }),
       };
     }
-    if (payload.mode !== 'supervised') throw new Error('unsupported argv mode');
-    const listenerNames = inheritedListenerNames(payload);
-    const supervisedEnv = {
-      ...baseEnv,
-      FKST_LISTEN_FDS: String(listenerNames.length),
-      FKST_LISTEN_FDNAMES: listenerNames.join(':'),
-    };
-    const inheritedStdio = listenerNames.map((_name, index) => 3 + index);
     resourceBudgets(payload);
     const workspacePath = resolveWorkspace(payload).workspaceRoot;
     const before = enforceCurrentBudgets(payload, workspacePath);
@@ -489,6 +508,9 @@ async function runArgvEffect(payload) {
     }
     const resourceRef = `environment-factory-resource-${sha256(`process\0${payload.operation_id}\0${payload.effect_id}`).slice(0, 32)}`;
     const cleanupRef = { kind: 'resource-cleanup', ref: resourceRef };
+    const processResourcePath = resourcePath(resourceRef);
+    const startupClaimPath = `${processResourcePath}.startup`;
+    const startupClaimExisted = fs.existsSync(startupClaimPath);
     const starting = {
       schema: 'environment-factory.resource.v1',
       kind: 'process',
@@ -496,53 +518,81 @@ async function runArgvEffect(payload) {
       ref: resourceRef,
       effect_id: payload.effect_id,
       argv_sha256: sha256(stableStringify(argv)),
-      ownership_token: crypto.randomBytes(16).toString('hex'),
+      ownership_token: sha256(stableStringify({
+        schema: 'environment-factory.process-ownership.v1',
+        operation_id: payload.operation_id,
+        effect_id: payload.effect_id,
+        ref: resourceRef,
+      })),
       runtime_ports: exactPortList(payload.runtime_ports),
-      pid: null,
-      pgid: null,
-      process_start_identity: null,
+      repository: workspaceResource.repository,
       cleaned: false,
     };
-    writeJsonAtomic(resourcePath(resourceRef), starting);
-    let child;
-    try {
-      child = spawn(argv[0], argv.slice(1), {
-        cwd,
-        env: supervisedEnv,
-        shell: false,
-        detached: true,
-        stdio: ['ignore', 'ignore', 'ignore', ...inheritedStdio],
-      });
-      await new Promise((resolve, reject) => {
-        const timer = setTimeout(resolve, 100);
-        child.once('error', (error) => { clearTimeout(timer); reject(error); });
-      });
-      const earlyExit = child.exitCode !== null;
-      const startIdentity = earlyExit ? null : processStartIdentity(child.pid);
-      if (!earlyExit && startIdentity === null) throw new Error('supervised process identity is unavailable');
-      writeJsonAtomic(resourcePath(resourceRef), {
-        ...starting,
-        pid: child.pid,
-        pgid: child.pid,
-        process_start_identity: startIdentity,
-        cleaned: false,
-      });
-      const measured = earlyExit ? { passed: false, reason: 'supervised-process-exited' }
-        : enforceCurrentBudgets(payload, workspacePath);
-      if (!measured.passed && !earlyExit) {
-        try { process.kill(-child.pid, 'SIGKILL'); } catch (_error) {
-          try { process.kill(child.pid, 'SIGKILL'); } catch (_ignored) {}
-        }
-        writeJsonAtomic(resourcePath(resourceRef), {
-          ...starting,
-          pid: child.pid,
-          pgid: child.pid,
-          process_start_identity: startIdentity,
-          cleaned: false,
-        });
+    const existing = readIfExists(processResourcePath);
+    if (existing) {
+      const volatile = new Set([
+        'startup_state', 'startup_token_sha256', 'pid', 'pgid',
+        'process_start_identity', 'worker_environment_lease',
+      ]);
+      const existingBinding = Object.fromEntries(
+        Object.entries(existing).filter(([key]) => !volatile.has(key)),
+      );
+      if (stableStringify(existingBinding) !== stableStringify(starting)) {
+        throw new Error('supervised process resource binding differs');
       }
-      child.unref();
-      const blocked = earlyExit || !measured.passed;
+      verifyWorkerEnvironmentLease(existing.worker_environment_lease);
+      const state = processGroupState(existing);
+      const running = state.supported && state.alive && state.foreign !== true;
+      return {
+        status: running ? 'running' : 'blocked',
+        early_exit: !running,
+        runtime_ports: exactPortList(payload.runtime_ports),
+        cleanup_ref: cleanupRef,
+        diagnostic_ref: writeDiagnostic(payload, sha256(payload.effect_id).slice(0, 16), {
+          status: running ? 'running' : 'blocked',
+          reason: running ? null : 'supervised-process-exited',
+          replayed_startup_resource: true,
+          output_capture: 'discarded-by-bounded-runtime',
+        }),
+      };
+    }
+    const listenerNames = inheritedListenerNames(payload);
+    const inheritedStdio = listenerNames.map((_name, index) => 3 + index);
+    const createSupervisedEnvironment = () => {
+      const environment = minimalEnvironment(
+        config.command_environment || {}, workerIsolationIdentity(payload, 'run-argv'),
+      );
+      environment.FKST_LISTEN_FDS = String(listenerNames.length);
+      environment.FKST_LISTEN_FDNAMES = listenerNames.join(':');
+      return environment;
+    };
+    try {
+      const launch = startOrRecoverSupervisedProcess({
+        claimPath: startupClaimPath,
+        argv,
+        cwd,
+        createEnvironment: createSupervisedEnvironment,
+        inheritedStdio,
+        binding: starting,
+      });
+      if (launch.interrupted || !launch.resource) {
+        throw new Error('supervised process startup was interrupted before registration');
+      }
+      retainWorkerHome = launch.environment_retained === true;
+      const resource = launch.resource;
+      writeJsonAtomic(processResourcePath, resource);
+      const live = processGroupState(resource);
+      const running = launch.state === 'running' && live.supported && live.alive && live.foreign !== true;
+      const measured = running
+        ? enforceCurrentBudgets(payload, workspacePath)
+        : { passed: false, reason: launch.state === 'failed'
+          ? 'supervised-process-start-failed' : 'supervised-process-exited' };
+      if (!measured.passed && running) {
+        try { process.kill(-resource.pgid, 'SIGKILL'); } catch (_error) {
+          try { process.kill(resource.pid, 'SIGKILL'); } catch (_ignored) {}
+        }
+      }
+      const blocked = !measured.passed;
       return {
         status: blocked ? 'blocked' : 'running',
         early_exit: blocked,
@@ -555,24 +605,7 @@ async function runArgvEffect(payload) {
         }),
       };
     } catch (error) {
-      let pid = null;
-      let cleaned = true;
-      if (child && Number.isInteger(child.pid)) {
-        pid = child.pid;
-        try { process.kill(-child.pid, 'SIGKILL'); } catch (_killError) {
-          try { process.kill(child.pid, 'SIGKILL'); } catch (_ignored) {}
-        }
-        const usage = processGroupUsage([child.pid]);
-        cleaned = usage.supported && usage.processes === 0;
-        child.unref();
-      }
-      writeJsonAtomic(resourcePath(resourceRef), {
-        ...starting,
-        pid,
-        pgid: pid,
-        process_start_identity: pid === null ? null : processStartIdentity(pid),
-        cleaned,
-      });
+      if (!startupClaimExisted && fs.existsSync(startupClaimPath)) retainWorkerHome = true;
       return {
         status: 'blocked',
         early_exit: true,
@@ -582,6 +615,9 @@ async function runArgvEffect(payload) {
           status: 'blocked', reason: boundedText(error.message, 256),
         }),
       };
+    }
+    } finally {
+      if (!retainWorkerHome) releaseWorkerEnvironment(baseEnv);
     }
   });
 }
@@ -616,20 +652,27 @@ function checkHttp(check, timeoutMs) {
   });
 }
 
-async function readinessCheck(check, payload, deadline) {
+async function readinessCheck(check, payload, deadline, config) {
   const remaining = deadline - Date.now();
   if (remaining <= 0) return false;
   if (check.type === 'tcp') return checkTcp(check, Math.min(500, remaining));
   if (check.type === 'http') return checkHttp(check, Math.min(500, remaining));
   if (check.type === 'argv') {
     const workspace = resolveWorkspace(payload);
-    const result = await executeBudgetedCommand(payload, validateArgv(check.argv), {
-      cwd: workspace.cwd,
-      env: minimalEnvironment(runtimeConfig(payload).command_environment || {}),
-      timeoutMs: Math.min(2_000, remaining),
-      workspacePath: workspace.workspaceRoot,
-    });
-    return result.reason === null && Date.now() <= deadline;
+    const environment = minimalEnvironment(
+      config.command_environment || {}, workerIsolationIdentity(payload, 'readiness-argv'),
+    );
+    try {
+      const result = await executeBudgetedCommand(payload, validateArgv(check.argv), {
+        cwd: workspace.cwd,
+        env: environment,
+        timeoutMs: Math.min(2_000, remaining),
+        workspacePath: workspace.workspaceRoot,
+      });
+      return result.reason === null && Date.now() <= deadline;
+    } finally {
+      releaseWorkerEnvironment(environment);
+    }
   }
   return false;
 }
@@ -646,6 +689,8 @@ function initialReadinessState(budgets, checks) {
 
 async function waitReadiness(payload) {
   return withEffect(payload, async () => {
+    const workspaceResource = readWorkspaceResource(payload.workspace_ref);
+    const config = targetExecutionConfig(payload, workspaceResource.repository);
     const budgets = resourceBudgets(payload);
     const checks = Array.isArray(payload.checks) ? payload.checks : [];
     const ports = exactPortList(payload.runtime_ports);
@@ -672,7 +717,7 @@ async function waitReadiness(payload) {
           }
           probes += 1;
         }
-        results.push(await readinessCheck(check, payload, deadline));
+        results.push(await readinessCheck(check, payload, deadline, config));
         if (Date.now() > deadline) { reason = 'readiness-timeout'; break; }
       }
       if (reason === 'network-request-budget-exceeded' || reason === 'readiness-timeout') break;
@@ -751,7 +796,9 @@ async function stopProcess(resource, deadline) {
 function resourceIsReleased(resource) {
   if (resource.kind === 'process') {
     const state = processGroupState(resource);
-    return state.supported && (!state.alive || state.foreign === true);
+    const homeReleased = !resource.worker_environment_lease
+      || !fs.existsSync(resource.worker_environment_lease.home);
+    return state.supported && (!state.alive || state.foreign === true) && homeReleased;
   }
   if (resource.kind === 'workspace') return typeof resource.path === 'string' && !fs.existsSync(resource.path);
   if (resource.kind === 'ports') {
@@ -798,17 +845,30 @@ async function cleanup(payload) {
     const deadline = effectDeadline(payload);
     let cleaned = true;
     if (resource.kind === 'process') {
+      const config = targetExecutionConfig(payload, resource.repository);
       if (Array.isArray(payload.argv) && payload.argv.length > 0) {
-        const config = runtimeConfig(payload);
-        const result = await runMeasuredCommand(validateArgv(payload.argv), {
-          cwd: workspaceCwd(payload),
-          env: minimalEnvironment(config.command_environment || {}),
-          timeoutMs: remainingTimeoutMs(deadline),
-          outputBytes: payload.output_bytes,
-        });
-        cleaned = result.exitCode === 0 && result.timedOut !== true && result.outputExceeded !== true;
+        const environment = minimalEnvironment(
+          config.command_environment || {}, workerIsolationIdentity(payload, 'cleanup-argv'),
+        );
+        try {
+          verifyWorkerEnvironment(environment);
+          const result = await runMeasuredCommand(validateArgv(payload.argv), {
+            cwd: workspaceCwd(payload),
+            env: environment,
+            timeoutMs: remainingTimeoutMs(deadline),
+            outputBytes: payload.output_bytes,
+          });
+          cleaned = result.exitCode === 0 && result.timedOut !== true && result.outputExceeded !== true;
+        } finally {
+          releaseWorkerEnvironment(environment);
+        }
       }
       await stopProcess(resource, deadline);
+      const stopped = processGroupState(resource);
+      if (stopped.supported && (!stopped.alive || stopped.foreign === true)
+        && resource.worker_environment_lease) {
+        releaseWorkerEnvironmentLease(resource.worker_environment_lease);
+      }
       cleaned = cleaned && resourceIsReleased(resource);
     } else if (resource.kind === 'workspace') {
       fs.rmSync(resource.path, { recursive: true, force: true });

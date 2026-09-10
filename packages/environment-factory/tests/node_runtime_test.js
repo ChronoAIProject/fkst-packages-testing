@@ -9,10 +9,21 @@ const { spawn } = require('child_process');
 const {
   acquireLock,
   authorizationArtifact,
+  minimalEnvironment,
+  releaseWorkerEnvironment,
+  releaseWorkerEnvironmentLease,
   stableStringify,
+  verifyWorkerEnvironment,
+  workerEnvironmentLease,
 } = require('../bin/runtime/common');
+const { validateTargetExecutionBoundary } = require('../bin/runtime/target-execution-boundary');
+const { startOrRecoverSupervisedProcess } = require('../bin/runtime/supervised-process');
 const { runMeasuredCommand } = require('../bin/runtime/measured-command');
-const { listenersOwnedByProcessGroup } = require('../bin/runtime/platform');
+const {
+  listenersOwnedByProcessGroup,
+  processGroupState,
+  terminateProcessGroup,
+} = require('../bin/runtime/platform');
 const { dispatch, initialReadinessState, sha256 } = require('../bin/environment-factory-runtime');
 
 function delay(ms) {
@@ -107,10 +118,94 @@ async function main() {
   const artifactRoot = `.testing/runs/environment-node-runtime-${process.pid}`;
   const hostRoot = `.testing/host/environment-factory/environment-node-runtime-${process.pid}`;
   const previousDurable = process.env.FKST_DURABLE_ROOT;
+  const previousRuntime = process.env.FKST_RUNTIME_ROOT;
   process.env.FKST_DURABLE_ROOT = path.join(temp, 'durable');
+  process.env.FKST_RUNTIME_ROOT = path.join(temp, 'runtime');
   fs.rmSync(artifactRoot, { recursive: true, force: true });
   fs.rmSync(hostRoot, { recursive: true, force: true });
+  let crashWindowResource = null;
+  let firstStartupEnvironment = null;
+  let firstLease = null;
   try {
+    const ambientHome = path.join(temp, 'ambient-home');
+    fs.mkdirSync(ambientHome);
+    const isolated = minimalEnvironment({ FKST_SAFE_MARKER: 'present' }, 'node-runtime-isolation');
+    assert.notStrictEqual(isolated.HOME, ambientHome);
+    assert.strictEqual(path.basename(path.dirname(isolated.HOME)), 'worker-homes');
+    assert.strictEqual(isolated.FKST_SAFE_MARKER, 'present');
+    assert.strictEqual(isolated.GIT_CONFIG_NOSYSTEM, '1');
+    assert.strictEqual(isolated.GIT_CONFIG_GLOBAL, process.platform === 'win32' ? 'NUL' : '/dev/null');
+    assert.strictEqual(isolated.GIT_TERMINAL_PROMPT, '0');
+    assert.strictEqual(isolated.GIT_CONFIG_COUNT, '4');
+    assert.strictEqual(isolated.GIT_CONFIG_KEY_2, 'core.fsmonitor');
+    assert.strictEqual(isolated.GIT_CONFIG_VALUE_2, 'false');
+    assert.strictEqual(isolated.GIT_CONFIG_KEY_3, 'core.hooksPath');
+    assert.strictEqual(isolated.GIT_CONFIG_VALUE_3, process.platform === 'win32' ? 'NUL' : '/dev/null');
+    assert.strictEqual(verifyWorkerEnvironment(isolated), true);
+    const secondIsolated = minimalEnvironment({}, 'node-runtime-isolation');
+    assert.notStrictEqual(secondIsolated.HOME, isolated.HOME);
+    assert.strictEqual(path.dirname(secondIsolated.HOME), path.dirname(isolated.HOME));
+    assert.strictEqual(fs.lstatSync(secondIsolated.HOME).isSymbolicLink(), false);
+    if (process.platform !== 'win32') {
+      assert.strictEqual(fs.lstatSync(secondIsolated.HOME).mode & 0o077, 0);
+    }
+    const isolatedHome = isolated.HOME;
+    const secondIsolatedHome = secondIsolated.HOME;
+    assert.strictEqual(releaseWorkerEnvironment(isolated), true);
+    assert.strictEqual(releaseWorkerEnvironment(secondIsolated), true);
+    assert.strictEqual(fs.existsSync(isolatedHome), false);
+    assert.strictEqual(fs.existsSync(secondIsolatedHome), false);
+    for (const key of [
+      'HOME', 'USERPROFILE', 'XDG_CONFIG_HOME', 'GH_CONFIG_DIR', 'GH_TOKEN', 'GITHUB_TOKEN',
+      'GIT_CONFIG_GLOBAL', 'GIT_ASKPASS', 'SSH_AUTH_SOCK', 'SSH_ASKPASS', 'CREDENTIAL_HELPER',
+    ]) {
+      assert.throws(() => minimalEnvironment({ [key]: 'forbidden' }, 'node-runtime-isolation'),
+        /forbidden worker authority key/);
+    }
+    const symlinkRuntime = path.join(temp, 'symlink-runtime');
+    const symlinkTarget = path.join(temp, 'symlink-runtime-target');
+    fs.mkdirSync(symlinkTarget);
+    fs.symlinkSync(symlinkTarget, symlinkRuntime);
+    process.env.FKST_RUNTIME_ROOT = symlinkRuntime;
+    assert.throws(() => minimalEnvironment({}, 'symlink-runtime'), /not a real directory/);
+    process.env.FKST_RUNTIME_ROOT = path.join(temp, 'runtime');
+
+    const trustedRepository = {
+      url: 'https://example.invalid/testing/trusted-fixture.git',
+      commit_sha: '1'.repeat(40),
+    };
+    const boundary = {
+      schema: 'testing-host.target-execution-boundary.v1',
+      mode: 'trusted-fixture-exact',
+      target_class: 'host-owned-exact-trusted-fixture',
+      repository: trustedRepository,
+      authority: { kind: 'host-policy', ref: 'fixtures/runtime-target-boundary' },
+      policy_revision: 'runtime-test-boundary-v1',
+      authorization_capability: false,
+      execution_authorized: false,
+    };
+    assert.deepStrictEqual(validateTargetExecutionBoundary(boundary, trustedRepository, {
+      runtimeConfigRef: { kind: 'artifact', ref: `${hostRoot}/runtime-config.json` },
+      artifactRoot,
+    }), boundary);
+    assert.throws(() => validateTargetExecutionBoundary(boundary, {
+      ...trustedRepository, commit_sha: '2'.repeat(40),
+    }), /HOST_RUNTIME_ISOLATION_REQUIRED/);
+    assert.throws(() => validateTargetExecutionBoundary({ ...boundary, mode: 'isolated-runtime' }),
+      /HOST_RUNTIME_ISOLATION_REQUIRED/);
+    assert.throws(() => validateTargetExecutionBoundary(undefined, trustedRepository),
+      /HOST_RUNTIME_ISOLATION_REQUIRED/);
+    assert.throws(() => validateTargetExecutionBoundary({ ...boundary, repository: {
+      url: 'git@example.invalid:testing/trusted-fixture.git', commit_sha: '1'.repeat(40),
+    } }, trustedRepository), /HOST_RUNTIME_ISOLATION_REQUIRED/);
+    assert.throws(() => validateTargetExecutionBoundary({
+      ...boundary, authorization_capability: true,
+    }, trustedRepository), /non-authorizing admission prerequisite/);
+    assert.throws(() => validateTargetExecutionBoundary(boundary, trustedRepository, {
+      runtimeConfigRef: { kind: 'artifact', ref: `${artifactRoot}/runtime-config.json` },
+      artifactRoot,
+    }), /Host control namespace/);
+
     const lockPath = path.join(temp, 'stale.lock');
     fs.mkdirSync(lockPath);
     fs.writeFileSync(path.join(lockPath, 'owner.json'), `${JSON.stringify({
@@ -124,6 +219,284 @@ async function main() {
     assert.strictEqual(recovered.pid, process.pid);
     release();
     assert.strictEqual(fs.existsSync(lockPath), false);
+
+    const concurrentLockPath = path.join(temp, 'concurrent-stale.lock');
+    const concurrentActivePath = path.join(temp, 'concurrent-stale.active');
+    const concurrentEntriesPath = path.join(temp, 'concurrent-stale.entries');
+    const concurrentViolationPath = path.join(temp, 'concurrent-stale.violation');
+    fs.mkdirSync(concurrentLockPath);
+    fs.writeFileSync(path.join(concurrentLockPath, 'owner.json'), `${JSON.stringify({
+      schema: 'environment-factory.lock-owner.v1',
+      pid: 2147483647,
+      process_start_identity: 'dead process',
+      token: 'concurrent-stale-owner-token',
+    })}\n`);
+    const lockModulePath = path.resolve(__dirname, '../bin/runtime/common.js');
+    const contenderSource = [
+      "'use strict';",
+      "const fs = require('fs');",
+      'const { acquireLock } = require(process.argv[1]);',
+      'const lockPath = process.argv[2];',
+      'const activePath = process.argv[3];',
+      'const entriesPath = process.argv[4];',
+      'const violationPath = process.argv[5];',
+      'const release = acquireLock(lockPath, 5000);',
+      'let ownsActive = false;',
+      'try {',
+      "  fs.writeFileSync(activePath, String(process.pid), { flag: 'wx' });",
+      '  ownsActive = true;',
+      "  fs.appendFileSync(entriesPath, String(process.pid) + '\\n');",
+      '  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 100);',
+      '} catch (error) {',
+      "  fs.appendFileSync(violationPath, String(process.pid) + ':' + error.code + '\\n');",
+      '  process.exitCode = 1;',
+      '} finally {',
+      '  if (ownsActive) fs.unlinkSync(activePath);',
+      '  release();',
+      '}',
+    ].join('\n');
+    const contenders = Array.from({ length: 4 }, () => new Promise((resolve, reject) => {
+      const child = spawn(process.execPath, [
+        '-e', contenderSource, lockModulePath, concurrentLockPath, concurrentActivePath,
+        concurrentEntriesPath, concurrentViolationPath,
+      ], { stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+      child.once('error', reject);
+      child.once('close', (code) => {
+        if (code === 0) resolve();
+        else reject(new Error(`concurrent stale-lock contender failed: ${stderr}`));
+      });
+    }));
+    await Promise.all(contenders);
+    assert.strictEqual(fs.existsSync(concurrentViolationPath), false);
+    assert.strictEqual(fs.readFileSync(concurrentEntriesPath, 'utf8').trim().split('\n').length, 4);
+    assert.strictEqual(fs.existsSync(concurrentLockPath), false);
+    assert.strictEqual(fs.existsSync(`${concurrentLockPath}.takeover.active`), false);
+
+    const crashedTakeoverLockPath = path.join(temp, 'crashed-takeover.lock');
+    const crashedTakeoverReadyPath = path.join(temp, 'crashed-takeover.ready');
+    const crashedTakeoverEnteredPath = path.join(temp, 'crashed-takeover.entered');
+    fs.mkdirSync(crashedTakeoverLockPath);
+    fs.writeFileSync(path.join(crashedTakeoverLockPath, 'owner.json'), `${JSON.stringify({
+      schema: 'environment-factory.lock-owner.v1',
+      pid: 2147483647,
+      process_start_identity: 'dead process',
+      token: 'crashed-takeover-stale-owner-token',
+    })}\n`);
+    const crashedTakeoverSource = [
+      "'use strict';",
+      "const fs = require('fs');",
+      'const { acquireLock } = require(process.argv[1]);',
+      'const release = acquireLock(process.argv[2], 5000, {',
+      '  afterTakeoverAcquired() {',
+      "    fs.writeFileSync(process.argv[3], 'ready', { flag: 'wx' });",
+      '    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 1000);',
+      '  },',
+      '});',
+      "fs.writeFileSync(process.argv[4], 'entered', { flag: 'wx' });",
+      'release();',
+    ].join('\n');
+    const crashedTakeover = spawn(process.execPath, [
+      '-e', crashedTakeoverSource, lockModulePath, crashedTakeoverLockPath,
+      crashedTakeoverReadyPath, crashedTakeoverEnteredPath,
+    ], { stdio: ['ignore', 'ignore', 'pipe'] });
+    let crashedTakeoverStderr = '';
+    crashedTakeover.stderr.on('data', (chunk) => { crashedTakeoverStderr += chunk.toString(); });
+    const readyDeadline = Date.now() + 5_000;
+    while (!fs.existsSync(crashedTakeoverReadyPath) && Date.now() < readyDeadline) await delay(10);
+    assert.strictEqual(fs.existsSync(crashedTakeoverReadyPath), true);
+    const takeoverMarkerPath = `${crashedTakeoverLockPath}.takeover.active`;
+    const takeoverOwner = JSON.parse(fs.readFileSync(takeoverMarkerPath, 'utf8'));
+    process.kill(takeoverOwner.pid, 'SIGKILL');
+    const crashedTakeoverExit = await new Promise((resolve, reject) => {
+      crashedTakeover.once('error', reject);
+      crashedTakeover.once('close', (code) => resolve(code));
+    });
+    assert.notStrictEqual(crashedTakeoverExit, 0, crashedTakeoverStderr);
+    assert.strictEqual(fs.existsSync(crashedTakeoverEnteredPath), false);
+    const recoveredAfterGuardCrash = acquireLock(crashedTakeoverLockPath, 5_000);
+    recoveredAfterGuardCrash();
+    assert.strictEqual(fs.existsSync(crashedTakeoverLockPath), false);
+    assert.strictEqual(fs.existsSync(takeoverMarkerPath), false);
+
+    const startupCounter = path.join(temp, 'supervised-startup-count.txt');
+    const startupClaim = path.join(temp, 'supervised-startup', 'claim.json');
+    const startupBinding = {
+      schema: 'environment-factory.resource.v1',
+      kind: 'process',
+      operation_id: 'crash-window-operation',
+      ref: 'crash-window-process',
+      effect_id: 'crash-window-effect',
+      argv_sha256: sha256('crash-window-argv'),
+      ownership_token: sha256('crash-window-owner'),
+      runtime_ports: [],
+      repository: trustedRepository,
+      cleaned: false,
+    };
+    const startupArgv = [process.execPath, '-e', [
+      "const fs = require('fs');",
+      `fs.appendFileSync(${JSON.stringify(startupCounter)}, 'started\\n');`,
+      'setInterval(() => {}, 1000);',
+    ].join('')];
+    let launchedSupervisorPid = null;
+    const interrupted = startOrRecoverSupervisedProcess({
+      claimPath: startupClaim,
+      argv: startupArgv,
+      cwd: temp,
+      createEnvironment() {
+        firstStartupEnvironment = minimalEnvironment({}, 'supervised-crash-window-first');
+        firstLease = workerEnvironmentLease(firstStartupEnvironment);
+        return firstStartupEnvironment;
+      },
+      binding: startupBinding,
+      afterLaunch(pid) {
+        launchedSupervisorPid = pid;
+        return false;
+      },
+    });
+    assert.strictEqual(interrupted.interrupted, true);
+    assert.strictEqual(fs.existsSync(startupClaim), true);
+    assert.strictEqual(fs.existsSync(firstLease.home), true);
+
+    let recoveryEnvironmentCreated = false;
+    const recoveredStartup = startOrRecoverSupervisedProcess({
+      claimPath: startupClaim,
+      argv: startupArgv,
+      cwd: temp,
+      createEnvironment() {
+        recoveryEnvironmentCreated = true;
+        return minimalEnvironment({}, 'supervised-crash-window-recovery');
+      },
+      binding: startupBinding,
+    });
+    assert.strictEqual(recoveredStartup.interrupted, false);
+    assert.strictEqual(recoveredStartup.state, 'running');
+    assert.strictEqual(recoveredStartup.resource.pid, launchedSupervisorPid);
+    assert.strictEqual(recoveredStartup.resource.worker_environment_lease.home, firstLease.home);
+    assert.strictEqual(recoveredStartup.environment_retained, false);
+    assert.strictEqual(recoveryEnvironmentCreated, false);
+    crashWindowResource = recoveredStartup.resource;
+
+    const counterDeadline = Date.now() + 2_000;
+    while (Date.now() < counterDeadline) {
+      if (fs.existsSync(startupCounter) && fs.readFileSync(startupCounter, 'utf8') === 'started\n') break;
+      await delay(10);
+    }
+    assert.strictEqual(fs.readFileSync(startupCounter, 'utf8'), 'started\n');
+    let replayEnvironmentCreated = false;
+    const replayedStartup = startOrRecoverSupervisedProcess({
+      claimPath: startupClaim,
+      argv: startupArgv,
+      cwd: temp,
+      createEnvironment() {
+        replayEnvironmentCreated = true;
+        return minimalEnvironment({}, 'supervised-crash-window-replay');
+      },
+      binding: startupBinding,
+    });
+    assert.strictEqual(replayedStartup.resource.pid, launchedSupervisorPid);
+    assert.strictEqual(replayedStartup.resource.worker_environment_lease.home, firstLease.home);
+    assert.strictEqual(replayEnvironmentCreated, false);
+    await delay(50);
+    assert.strictEqual(fs.readFileSync(startupCounter, 'utf8'), 'started\n');
+    assert.strictEqual(processGroupState(replayedStartup.resource).alive, true);
+    assert.strictEqual(terminateProcessGroup(replayedStartup.resource, 2_000).released, true);
+    crashWindowResource = null;
+    assert.strictEqual(releaseWorkerEnvironmentLease(firstLease), true);
+    assert.strictEqual(fs.existsSync(firstLease.home), false);
+    assert.strictEqual(releaseWorkerEnvironment(firstStartupEnvironment), true);
+
+    let failedLaunchLease = null;
+    const failedLaunchClaim = path.join(temp, 'supervised-failed-launch', 'claim.json');
+    assert.throws(() => startOrRecoverSupervisedProcess({
+      claimPath: failedLaunchClaim,
+      argv: [process.execPath, '-e', 'process.exit(0)'],
+      cwd: temp,
+      createEnvironment() {
+        const environment = minimalEnvironment({}, 'supervised-failed-launch');
+        failedLaunchLease = workerEnvironmentLease(environment);
+        return environment;
+      },
+      binding: { ...startupBinding, effect_id: 'failed-launch-effect' },
+      registrationTimeoutMs: 250,
+      beforeSupervisorLaunch() {
+        throw new Error('simulated supervisor launch failure');
+      },
+    }), /simulated supervisor launch failure/);
+    assert.strictEqual(JSON.parse(fs.readFileSync(failedLaunchClaim, 'utf8')).state, 'revoked');
+    assert.strictEqual(fs.existsSync(failedLaunchLease.home), false);
+
+    let failedClaimLease = null;
+    assert.throws(() => startOrRecoverSupervisedProcess({
+      claimPath: path.join(temp, 'supervised-failed-claim', 'claim.json'),
+      argv: [process.execPath, '-e', 'process.exit(0)'],
+      cwd: temp,
+      createEnvironment() {
+        const environment = minimalEnvironment({}, 'supervised-failed-claim');
+        failedClaimLease = workerEnvironmentLease(environment);
+        return environment;
+      },
+      binding: { ...startupBinding, effect_id: 'failed-claim-effect' },
+      beforeClaimPersist() {
+        throw new Error('simulated startup claim persistence failure');
+      },
+    }), /simulated startup claim persistence failure/);
+    assert.strictEqual(fs.existsSync(failedClaimLease.home), false);
+
+    let substitutedLaunchLease = null;
+    const substitutedMarker = path.join(temp, 'supervised-substituted-command.txt');
+    const substitutedLaunch = startOrRecoverSupervisedProcess({
+      claimPath: path.join(temp, 'supervised-substituted-launch', 'claim.json'),
+      argv: [process.execPath, '-e', 'process.exit(0)'],
+      cwd: temp,
+      createEnvironment() {
+        const environment = minimalEnvironment({}, 'supervised-substituted-launch');
+        substitutedLaunchLease = workerEnvironmentLease(environment);
+        return environment;
+      },
+      binding: { ...startupBinding, effect_id: 'substituted-launch-effect' },
+      registrationTimeoutMs: 250,
+      beforeSupervisorLaunch(claim) {
+        const substituted = {
+          schema: 'fkst.supervised-process-launch.v1',
+          startup_token: claim.startup_token,
+          binding_sha256: claim.binding_sha256,
+          claim_path: path.join(temp, 'supervised-substituted-launch', 'claim.json'),
+          argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(substitutedMarker)}, 'bad')`],
+          cwd: temp,
+          inherited_fd_count: 0,
+          inherited_fd_identities: [],
+        };
+        fs.writeFileSync(claim.launch_spec_path, `${stableStringify(substituted)}\n`);
+      },
+    });
+    assert.strictEqual(substitutedLaunch.state, 'revoked');
+    assert.strictEqual(fs.existsSync(substitutedMarker), false);
+    assert.strictEqual(fs.existsSync(substitutedLaunchLease.home), false);
+
+    let symlinkedLaunchLease = null;
+    const symlinkedMarker = path.join(temp, 'supervised-symlinked-command.txt');
+    const symlinkedLaunch = startOrRecoverSupervisedProcess({
+      claimPath: path.join(temp, 'supervised-symlinked-launch', 'claim.json'),
+      argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(symlinkedMarker)}, 'bad')`],
+      cwd: temp,
+      createEnvironment() {
+        const environment = minimalEnvironment({}, 'supervised-symlinked-launch');
+        symlinkedLaunchLease = workerEnvironmentLease(environment);
+        return environment;
+      },
+      binding: { ...startupBinding, effect_id: 'symlinked-launch-effect' },
+      registrationTimeoutMs: 250,
+      beforeSupervisorLaunch(claim) {
+        const original = `${claim.launch_spec_path}.original`;
+        fs.renameSync(claim.launch_spec_path, original);
+        fs.symlinkSync(original, claim.launch_spec_path);
+      },
+    });
+    assert.strictEqual(symlinkedLaunch.state, 'revoked');
+    assert.strictEqual(fs.existsSync(symlinkedMarker), false);
+    assert.strictEqual(fs.existsSync(symlinkedLaunchLease.home), false);
 
     for (let index = 0; index < 10; index += 1) {
       const result = await runMeasuredCommand([process.execPath, '-e', 'process.exit(0)'], {
@@ -274,8 +647,13 @@ async function main() {
     const rotated = await dispatch('load-state', { ref: stateRef, runtime_config_ref: runtimeConfigRef });
     assert.strictEqual(rotated.authenticated, false);
   } finally {
+    if (crashWindowResource) terminateProcessGroup(crashWindowResource, 2_000);
+    if (firstLease) releaseWorkerEnvironmentLease(firstLease);
+    if (firstStartupEnvironment) releaseWorkerEnvironment(firstStartupEnvironment);
     if (previousDurable === undefined) delete process.env.FKST_DURABLE_ROOT;
     else process.env.FKST_DURABLE_ROOT = previousDurable;
+    if (previousRuntime === undefined) delete process.env.FKST_RUNTIME_ROOT;
+    else process.env.FKST_RUNTIME_ROOT = previousRuntime;
     fs.rmSync(temp, { recursive: true, force: true });
     fs.rmSync(artifactRoot, { recursive: true, force: true });
     fs.rmSync(hostRoot, { recursive: true, force: true });

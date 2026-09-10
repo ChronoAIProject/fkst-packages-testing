@@ -34,7 +34,7 @@ local function digest(ports, pointer)
 end
 
 local function load_bound(ports, pointer, expected_digest, label)
-  local artifact = ports.load_artifact(pointer)
+  local artifact = ports.load_artifact(pointer, expected_digest)
   if type(artifact) ~= "table" or artifact.digest ~= expected_digest or type(artifact.value) ~= "table" then
     error("workflow-qa: artifact-binding-unavailable: " .. label .. " immutable binding failed")
   end

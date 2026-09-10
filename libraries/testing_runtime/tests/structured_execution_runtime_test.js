@@ -1,6 +1,7 @@
 'use strict';
 
 const assert = require('assert');
+const crypto = require('crypto');
 const fs = require('fs');
 const http = require('http');
 const os = require('os');
@@ -48,6 +49,11 @@ async function main() {
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'structured-runtime-test-'));
   const previousDurable = process.env.FKST_DURABLE_ROOT;
   const previousRuntime = process.env.FKST_RUNTIME_ROOT;
+  const ambientKeys = [
+    'HOME', 'GH_TOKEN', 'GITHUB_TOKEN', 'SSH_AUTH_SOCK', 'GIT_ASKPASS', 'SSH_ASKPASS',
+    'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0',
+  ];
+  const previousAmbient = Object.fromEntries(ambientKeys.map((key) => [key, process.env[key]]));
   process.env.FKST_DURABLE_ROOT = path.join(temp, 'durable');
   process.env.FKST_RUNTIME_ROOT = path.join(temp, 'runtime');
   const runId = `structured-runtime-${process.pid}`;
@@ -79,13 +85,43 @@ async function main() {
     run(['git', 'commit', '--quiet', '-m', 'fixture'], source);
     repository.commit_sha = run(['git', 'rev-parse', 'HEAD'], source);
 
+    const ambientHome = path.join(temp, 'ambient-home');
+    fs.mkdirSync(ambientHome);
+    fs.writeFileSync(path.join(ambientHome, '.gitconfig'), [
+      '[url "file:///definitely-missing-worker-credential-isolation/"]',
+      `\tinsteadOf = ${source}`,
+      '',
+    ].join('\n'));
+    Object.assign(process.env, {
+      HOME: ambientHome,
+      GH_TOKEN: 'ambient-gh-token-canary',
+      GITHUB_TOKEN: 'ambient-github-token-canary',
+      SSH_AUTH_SOCK: path.join(temp, 'ambient-ssh-agent.sock'),
+      GIT_ASKPASS: path.join(temp, 'ambient-git-askpass'),
+      SSH_ASKPASS: path.join(temp, 'ambient-ssh-askpass'),
+      GIT_CONFIG_GLOBAL: path.join(ambientHome, '.gitconfig'),
+      GIT_CONFIG_COUNT: '1',
+      GIT_CONFIG_KEY_0: 'credential.helper',
+      GIT_CONFIG_VALUE_0: 'ambient-helper',
+    });
+
     fs.mkdirSync(path.dirname(environmentConfigRef), { recursive: true });
     fs.writeFileSync(environmentConfigRef, `${stableStringify({
       schema: 'environment-factory.runtime-config.v1',
       state_auth_key: 'environment-runtime-test-state-key-00000000000000000000',
       state_mac_generation: 'environment-runtime-test-v1',
       repository_mirrors: { [repository.url]: source },
-      command_environment: {},
+      command_environment: { FKST_RUNTIME_SAFE_MARKER: 'present' },
+      target_execution_boundary: {
+        schema: 'testing-host.target-execution-boundary.v1',
+        mode: 'trusted-fixture-exact',
+        target_class: 'host-owned-exact-trusted-fixture',
+        repository,
+        authority: { kind: 'host-policy', ref: 'fixtures/structured-runtime-target-boundary' },
+        policy_revision: 'structured-runtime-target-boundary-v1',
+        authorization_capability: false,
+        execution_authorized: false,
+      },
     })}\n`);
     checkout = await environmentDispatch('checkout', {
       effect_id: `${operationId}/checkout`,
@@ -104,6 +140,27 @@ async function main() {
     assert.strictEqual(checkout.status, 'passed');
     workspaceRef = checkout.workspace_ref;
     workspace = JSON.parse(fs.readFileSync(resourcePath(workspaceRef.ref), 'utf8')).path;
+
+    const fsmonitorCanary = path.join(temp, 'ambient-fsmonitor-canary.json');
+    const fsmonitorHook = path.join(temp, 'ambient-fsmonitor-hook.js');
+    fs.writeFileSync(fsmonitorHook, [
+      '#!/usr/bin/env node',
+      "'use strict';",
+      "const fs=require('fs');",
+      `fs.writeFileSync(${JSON.stringify(fsmonitorCanary)}, JSON.stringify({`,
+      "  gh:process.env.GH_TOKEN||null,github:process.env.GITHUB_TOKEN||null,",
+      "  ssh:process.env.SSH_AUTH_SOCK||null,gitAskpass:process.env.GIT_ASKPASS||null,",
+      "  sshAskpass:process.env.SSH_ASKPASS||null,home:process.env.HOME||null,",
+      '}));',
+      "process.stdout.write('\\n');",
+      '',
+    ].join('\n'), { mode: 0o700 });
+    fs.writeFileSync(path.join(ambientHome, '.gitconfig'), [
+      '[core]',
+      `\tfsmonitor = ${fsmonitorHook}`,
+      '',
+    ].join('\n'));
+    run(['git', 'config', 'core.fsmonitor', fsmonitorHook], workspace);
 
     const traceId = `${runId}-trace`;
     const dedupKey = `${runId}-dedup`;
@@ -137,7 +194,15 @@ async function main() {
     });
     const cliCase = {
       case_id: 'cli-version', kind: 'cli',
-      argv: [process.execPath, '-e', 'process.stdout.write(process.cwd())'], timeout_seconds: 10,
+      argv: [process.execPath, '-e', [
+        "const path=require('path')",
+        "for(const key of ['GH_TOKEN','GITHUB_TOKEN','SSH_AUTH_SOCK','GIT_ASKPASS','SSH_ASKPASS'])if(process.env[key])process.exit(70)",
+        "const home=process.env.HOME||''",
+        "const nullDevice=process.platform==='win32'?'NUL':'/dev/null'",
+        "if(home===process.argv[1]||path.basename(path.dirname(home))!=='worker-homes')process.exit(71)",
+        "if(process.env.GIT_CONFIG_NOSYSTEM!=='1'||process.env.GIT_CONFIG_GLOBAL!==nullDevice||process.env.GIT_CONFIG_COUNT!=='4'||process.env.GIT_CONFIG_KEY_0!=='credential.helper'||process.env.GIT_CONFIG_VALUE_0!==''||process.env.GIT_CONFIG_KEY_1!=='core.askPass'||process.env.GIT_CONFIG_VALUE_1!==''||process.env.GIT_CONFIG_KEY_2!=='core.fsmonitor'||process.env.GIT_CONFIG_VALUE_2!=='false'||process.env.GIT_CONFIG_KEY_3!=='core.hooksPath'||process.env.GIT_CONFIG_VALUE_3!==nullDevice||process.env.GIT_TERMINAL_PROMPT!=='0'||process.env.FKST_RUNTIME_SAFE_MARKER!=='present')process.exit(72)",
+        'process.stdout.write(process.cwd())',
+      ].join(';'), ambientHome], timeout_seconds: 10,
       assertions: [{ type: 'exit-code', expected: 0 }],
     };
     const plan = writeAuthority('plan', {
@@ -159,8 +224,19 @@ async function main() {
     fs.writeFileSync(configRef, `${stableStringify({
       schema: 'testing-runtime.structured-execution-config.v1',
       state_auth_key: 'structured-runtime-test-state-key-00000000000000000000',
-      state_mac_generation: 'runtime-test-v1', command_environment: {},
+      state_mac_generation: 'runtime-test-v1',
+      command_environment: { FKST_RUNTIME_SAFE_MARKER: 'present' },
       output_bytes: 65536, http_response_bytes: 65536,
+      target_execution_boundary: {
+        schema: 'testing-host.target-execution-boundary.v1',
+        mode: 'trusted-fixture-exact',
+        target_class: 'host-owned-exact-trusted-fixture',
+        repository,
+        authority: { kind: 'host-policy', ref: 'fixtures/structured-runtime-target-boundary' },
+        policy_revision: 'structured-runtime-target-boundary-v1',
+        authorization_capability: false,
+        execution_authorized: false,
+      },
       grant_attestations: [{ grant_sha256: grantSha256, authority,
         policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef }],
     })}\n`);
@@ -223,6 +299,7 @@ async function main() {
     });
     assert.strictEqual(cli.exit_code, 0);
     assert.strictEqual(cli.stdout, fs.realpathSync(workspace));
+    assert.strictEqual(fs.existsSync(fsmonitorCanary), false);
     await assert.rejects(() => dispatch('exec-argv', {
       ...common, action_envelope: actionEnvelope, authorization_receipt: authorization,
     }), /replayed or is unavailable/);
@@ -266,6 +343,7 @@ async function main() {
       schema: 'testing-structured-execution.v1', operation_id: operationId,
       status: 'passed', classification: 'passed', repository,
       environment_receipt_sha256: common.environment_receipt_sha256,
+      plan_sha256: 'd'.repeat(64),
       trace_id: common.trace_id, dedup_key: common.dedup_key,
       case_count: 1, passed_count: 1, failed_count: 0, skipped_count: 0, error_count: 0,
       test_plan_path: `${artifactRoot}/test-plan.json`,
@@ -293,6 +371,11 @@ async function main() {
     await assert.rejects(() => dispatch('replay-guard', {
       ...historicalClaimRequest, artifact_root: `.testing/runs/${runId}-foreign/execution`,
     }), /replay binding differs/);
+    persistJson(resultRef, { ...historicalExecution, plan_sha256: 'e'.repeat(64) });
+    await assert.rejects(() => dispatch('complete-replay', {
+      ...common, claim: historicalClaim, result_ref: resultRef,
+    }), /execution result binding is invalid/);
+    persistJson(resultRef, historicalExecution);
     const historicalCompletion = await dispatch('complete-replay', {
       ...common, claim: historicalClaim, result_ref: resultRef,
     });
@@ -539,6 +622,25 @@ async function main() {
     assert.strictEqual(fs.readFileSync(caseResultSetPath, 'utf8'), validResultSetArtifact.raw);
     assert.strictEqual(fs.readFileSync(evidenceManifestPath, 'utf8'), validManifestArtifact.raw);
 
+    const replayPath = path.join(process.env.FKST_DURABLE_ROOT, 'testing-runner',
+      'structured-execution', `${sha256(`${runId}-canonical-grant`)}.json`);
+    const replayEnvelopeRaw = fs.readFileSync(replayPath, 'utf8');
+    const replayEnvelope = JSON.parse(replayEnvelopeRaw);
+    const foreignPlanExecutionArtifact = persistJson(resultRef, {
+      ...canonicalExecution, plan_sha256: 'f'.repeat(64),
+    });
+    replayEnvelope.value.result_sha256 = foreignPlanExecutionArtifact.digest;
+    replayEnvelope.mac = crypto.createHmac('sha256',
+      'structured-runtime-test-state-key-00000000000000000000')
+      .update(`runtime-test-v1\0${stableStringify(replayEnvelope.value)}`).digest('hex');
+    fs.writeFileSync(replayPath, `${stableStringify(replayEnvelope)}\n`);
+    await assert.rejects(() => dispatch('load-result', {
+      ...common, result_ref: resultRef, result_sha256: foreignPlanExecutionArtifact.digest,
+      plan_sha256: 'f'.repeat(64),
+    }), /execution result binding is invalid/);
+    fs.writeFileSync(replayPath, replayEnvelopeRaw);
+    persistJson(resultRef, canonicalExecution);
+
     persistJson(caseResultSetPath, { ...resultSet, set_id: 'tampered-after-completion' });
     await assert.rejects(() => dispatch('load-result', {
       ...common, result_ref: resultRef, result_sha256: replay.result_sha256,
@@ -575,6 +677,10 @@ async function main() {
     else process.env.FKST_DURABLE_ROOT = previousDurable;
     if (previousRuntime === undefined) delete process.env.FKST_RUNTIME_ROOT;
     else process.env.FKST_RUNTIME_ROOT = previousRuntime;
+    for (const [key, value] of Object.entries(previousAmbient)) {
+      if (value === undefined) delete process.env[key];
+      else process.env[key] = value;
+    }
     fs.rmSync(`.testing/runs/${runId}`, { recursive: true, force: true });
     fs.rmSync(linkPath, { force: true });
     fs.rmSync(configRef, { force: true });

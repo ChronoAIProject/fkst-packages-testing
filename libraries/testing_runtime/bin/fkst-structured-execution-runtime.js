@@ -13,12 +13,17 @@ const {
   minimalEnvironment,
   parseArgs,
   readJson,
+  releaseWorkerEnvironment,
   sha256,
   stableStringify,
   validateArgv,
+  verifyWorkerEnvironment,
   writeJsonAtomic,
   writeJsonImmutable,
 } = require('../../../packages/environment-factory/bin/runtime/common');
+const {
+  validateTargetExecutionBoundary,
+} = require('../../../packages/environment-factory/bin/runtime/target-execution-boundary');
 const { runMeasuredCommand } = require('../../../packages/environment-factory/bin/runtime/measured-command');
 const { processGroupUsage } = require('../../../packages/environment-factory/bin/runtime/platform');
 const { resolveWorkspace } = require('../../../packages/environment-factory/bin/runtime/workspace');
@@ -40,6 +45,16 @@ function runtimeConfig(payload) {
     || config.state_mac_generation.length > 180) {
     throw new Error('structured execution config requires state_mac_generation');
   }
+  validateTargetExecutionBoundary(config.target_execution_boundary);
+  return config;
+}
+
+function targetExecutionConfig(payload, repository) {
+  const config = runtimeConfig(payload);
+  validateTargetExecutionBoundary(config.target_execution_boundary, repository, {
+    runtimeConfigRef: payload.runtime_config_ref,
+    artifactRoot: payload.artifact_root,
+  });
   return config;
 }
 
@@ -136,6 +151,36 @@ function writeReplay(config, grantId, value) {
     value,
     mac: replayMac(config, value),
   });
+}
+
+function completedReplayForResult(config, payload) {
+  const directory = path.join(durableRoot(), 'testing-runner', 'structured-execution');
+  if (!fs.existsSync(directory)) throw new Error('authenticated completed replay claim is unavailable');
+  const matches = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/.test(entry.name)) continue;
+    const envelope = readJson(path.join(directory, entry.name));
+    if (!envelope || envelope.schema !== 'testing-runtime.structured-execution-replay.v1'
+      || envelope.mac !== replayMac(config, envelope.value)) {
+      throw new Error('structured execution replay state authentication failed');
+    }
+    const value = envelope.value;
+    const binding = value && value.binding;
+    if (!binding || entry.name !== `${sha256(binding.grant_id)}.json`) {
+      throw new Error('structured execution replay state identity differs');
+    }
+    if (value.status === 'completed' && value.result_ref === payload.result_ref
+      && value.result_sha256 === payload.result_sha256
+      && binding.artifact_root === payload.artifact_root
+      && binding.operation_id === payload.operation_id
+      && binding.environment_receipt_sha256 === payload.environment_receipt_sha256
+      && sameRepository(binding.repository, payload.repository)
+      && binding.trace_id === payload.trace_id && binding.dedup_key === payload.dedup_key) {
+      matches.push(value);
+    }
+  }
+  if (matches.length !== 1) throw new Error('authenticated completed replay claim is unavailable or ambiguous');
+  return matches[0];
 }
 
 function sameRepository(left, right) {
@@ -455,6 +500,8 @@ function validateExecutionArtifact(payload, binding, expectedDigest) {
     || !statuses.has(value.status) || typeof value.classification !== 'string'
     || !sameRepository(value.repository, binding.repository)
     || value.environment_receipt_sha256 !== binding.environment_receipt_sha256
+    || !/^[0-9a-f]{64}$/.test(String(value.plan_sha256 || ''))
+    || value.plan_sha256 !== binding.plan_sha256
     || value.trace_id !== binding.trace_id || value.dedup_key !== binding.dedup_key
     || value.test_plan_path !== `${binding.artifact_root}/test-plan.json`
     || value.case_results_path !== `${binding.artifact_root}/case-results.json`
@@ -699,8 +746,8 @@ function evaluateCliEnvelope(config, envelope, now) {
 }
 
 function authorizeCliEffect(payload) {
-  const config = runtimeConfig(payload);
   const envelope = payload.action_envelope || {};
+  const config = runtimeConfig(payload);
   const now = new Date();
   let inputs = {
     profile: '0'.repeat(64), validation_receipt: '0'.repeat(64),
@@ -708,6 +755,10 @@ function authorizeCliEffect(payload) {
     plan: '0'.repeat(64), grant: '0'.repeat(64),
   };
   try {
+    validateTargetExecutionBoundary(config.target_execution_boundary, envelope.repository, {
+      runtimeConfigRef: payload.runtime_config_ref,
+      artifactRoot: payload.artifact_root,
+    });
     inputs = evaluateCliEnvelope(config, envelope, now);
     const receipt = authorizationReceipt(config, envelope, 'allow', 'authorized', inputs, now);
     const target = authorizationPath(receipt.receipt_id);
@@ -743,8 +794,8 @@ function authorizeCliEffect(payload) {
 }
 
 async function execArgv(payload) {
-  const config = runtimeConfig(payload);
   const envelope = validateEnvelope(payload.action_envelope);
+  const config = targetExecutionConfig(payload, envelope.repository);
   const receipt = payload.authorization_receipt;
   exactKeys(receipt, [
     'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
@@ -779,22 +830,36 @@ async function execArgv(payload) {
       environment_receipt_sha256: envelope.environment_receipt_sha256,
       workspace_ref: envelope.workspace_ref, require_clean: true,
     });
-    const result = await runMeasuredCommand(validateArgv(envelope.case.argv), {
-    cwd: workspace.cwd,
-    env: minimalEnvironment(config.command_environment || {}),
-      timeoutMs: envelope.case.timeout_seconds * 1000,
-      outputBytes: Math.min(boundedOutput(config), envelope.resource_bounds.output_bytes),
+    const environment = minimalEnvironment(config.command_environment || {}, {
+      schema: 'testing-runtime.structured-cli-isolation.v1',
+      operation_id: envelope.operation_id,
+      run_id: envelope.run_id,
+      repository: envelope.repository,
+      case_id: envelope.case.case_id,
+      attempt: envelope.attempt,
+      purpose: 'structured-cli',
     });
-    if (result.timedOut) throw new Error('structured CLI effect timed out');
-    if (result.outputExceeded) throw new Error('structured CLI effect exceeded output bound');
-    if (result.error) throw result.error;
-    const remaining = processGroupUsage([result.pgid]);
-    if (!remaining.supported) throw new Error('structured CLI process cleanup verification is unavailable');
-    if (remaining.processes > 0) {
-      try { process.kill(-result.pgid, 'SIGKILL'); } catch (_error) {}
-      throw new Error('structured CLI effect left a surviving process group');
+    try {
+      verifyWorkerEnvironment(environment);
+      const result = await runMeasuredCommand(validateArgv(envelope.case.argv), {
+        cwd: workspace.cwd,
+        env: environment,
+        timeoutMs: envelope.case.timeout_seconds * 1000,
+        outputBytes: Math.min(boundedOutput(config), envelope.resource_bounds.output_bytes),
+      });
+      if (result.timedOut) throw new Error('structured CLI effect timed out');
+      if (result.outputExceeded) throw new Error('structured CLI effect exceeded output bound');
+      if (result.error) throw result.error;
+      const remaining = processGroupUsage([result.pgid]);
+      if (!remaining.supported) throw new Error('structured CLI process cleanup verification is unavailable');
+      if (remaining.processes > 0) {
+        try { process.kill(-result.pgid, 'SIGKILL'); } catch (_error) {}
+        throw new Error('structured CLI effect left a surviving process group');
+      }
+      return { exit_code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
+    } finally {
+      releaseWorkerEnvironment(environment);
     }
-    return { exit_code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
   } finally { release(); }
 }
 
@@ -808,7 +873,7 @@ function localOrigin(value) {
 }
 
 function httpRequest(payload) {
-  const config = runtimeConfig(payload);
+  const config = targetExecutionConfig(payload, payload.repository);
   const allowedMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
   if (!payload.request || !allowedMethods.has(payload.request.method)
     || !Array.isArray(payload.request.headers) || payload.request.headers.length !== 0) {
@@ -852,15 +917,9 @@ function loadResult(payload) {
   if (!/^[0-9a-f]{64}$/.test(String(payload.result_sha256 || ''))) {
     throw new Error('completed execution result digest is required');
   }
-  const binding = {
-    artifact_root: payload.artifact_root,
-    operation_id: payload.operation_id,
-    repository: payload.repository,
-    environment_receipt_sha256: payload.environment_receipt_sha256,
-    trace_id: payload.trace_id,
-    dedup_key: payload.dedup_key,
-  };
-  const artifact = validateExecutionArtifact(payload, binding, payload.result_sha256);
+  const config = runtimeConfig(payload);
+  const replay = completedReplayForResult(config, payload);
+  const artifact = validateExecutionArtifact(payload, replay.binding, payload.result_sha256);
   const execution = artifact.value;
   const result = {
     schema: 'testing-runner.structured-execution-summary.v1',

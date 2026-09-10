@@ -199,6 +199,13 @@ local function runtime(request, materials, mutate_artifacts)
       claim = claim or { value = value, claim_id = "controlled-preauthorization-claim" }
       return { status = "claimed", claim_id = claim.claim_id, replayed = claim_calls > 1 }
     end,
+    reconcile_preauthorization_claim = function(value)
+      if claim == nil then return false end
+      for key, item in pairs(value) do
+        if not execution.equal(claim.value[key], item) then return false end
+      end
+      return true
+    end,
     grant_values = function() return values() end,
     record_terminal = function(value)
       if terminal ~= nil and not workflow_qa.same_request(terminal, value) then return false end

@@ -288,6 +288,16 @@ local function request_fixture(ctx, ports, commit_sha)
     now = "2026-07-16T00:00:30Z",
     trusted_authorities = {},
     repository_mirrors = { [repository.url] = ctx.source_root },
+    target_execution_boundary = {
+      schema = "testing-host.target-execution-boundary.v1",
+      mode = "trusted-fixture-exact",
+      target_class = "host-owned-exact-trusted-fixture",
+      repository = repository,
+      authority = { kind = "host-policy", ref = "fixtures/environment-factory-hermetic" },
+      policy_revision = "environment-factory-hermetic-v1",
+      authorization_capability = false,
+      execution_authorized = false,
+    },
     command_environment = {
       FKST_FIXTURE_EVIDENCE_DIR = ctx.evidence_root,
     },

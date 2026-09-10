@@ -141,6 +141,7 @@ local function grant_runtime(mutate)
       claims = claims + 1
       return { status = "claimed", claim_id = "local-qa-host-claim" }
     end,
+    reconcile_preauthorization_claim = function() return claims > 0 end,
     grant_values = function()
       return {
         grant_id = "local-qa-host-grant",
@@ -216,6 +217,7 @@ local function terminal_fixture()
     write_artifact = function() return true end,
     artifact_digest = function() return digest("a") end,
     claim_preauthorization = function() return { status = "claimed", claim_id = "unused" } end,
+    reconcile_preauthorization_claim = function() return true end,
     grant_values = function() return {} end,
     record_terminal = function(value)
       records = records + 1

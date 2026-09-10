@@ -74,6 +74,24 @@ claim succeeds and persist them immutably. A fixture verifier may exercise the c
 a production trust root. Loss of an exported receipt may be repaired only as an idempotent projection
 of the same authenticated durable state; a receipt must never be imported to recreate a claim.
 
+The durable generic Host reference implementation projects all five receipts at the Profile claim,
+Preauthorization claim, Grant verification, execution claim, and completion effect points. It writes
+canonical JSON without a trailing newline so the persisted byte digest is the receipt canonical
+digest, then validates the complete lineage index through this contract. Restart paths project the
+same bytes from authenticated durable state and reject an existing Grant that cannot be reconciled to
+its earlier claim. Raw durable handles never leave the Host.
+
+Routine human approval is not a requirement of this lineage. A trusted Host may make Profile and
+Preauthorization decisions through deterministic machine policy. That automation does not collapse
+the distinct single-use claims, turn audit receipts into capabilities, or grant publication,
+promotion, regression, or gating authority.
+
+Authorization lineage also does not replace target isolation admission. Before a target effect, the
+runtime independently requires the exact `testing-host.target-execution-boundary.v1` repository
+binding documented in `contracts/target-execution-boundary.v1.md`. Compatibility, machine policy
+admission, Preauthorization, and a valid Grant cannot authorize an unknown repository when that
+boundary is absent or mismatched.
+
 Existing Project Profile, Grant request/result, structured execution request-v3, and summary-v1
 contracts remain unchanged. Production consumers requiring authorization lineage must use a future
 explicit request/result version or a separate lineage index; adding receipt fields to strict v1 payloads

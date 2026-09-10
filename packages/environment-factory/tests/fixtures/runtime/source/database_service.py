@@ -14,6 +14,32 @@ DATABASE_PATH = FIXTURE_ROOT / "state.sqlite3"
 EVIDENCE_ROOT = Path(os.environ["FKST_FIXTURE_EVIDENCE_DIR"])
 
 
+def assert_credential_isolation():
+    for key in ("GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS"):
+        if os.environ.get(key):
+            raise RuntimeError(f"worker inherited forbidden authority: {key}")
+    home = Path(os.environ.get("HOME", ""))
+    null_device = "NUL" if os.name == "nt" else "/dev/null"
+    if (
+        home.parent.name != "worker-homes"
+        or os.environ.get("GIT_CONFIG_NOSYSTEM") != "1"
+        or os.environ.get("GIT_CONFIG_GLOBAL") != null_device
+        or os.environ.get("GIT_CONFIG_KEY_0") != "credential.helper"
+        or os.environ.get("GIT_CONFIG_VALUE_0") != ""
+        or os.environ.get("GIT_CONFIG_KEY_1") != "core.askPass"
+        or os.environ.get("GIT_CONFIG_VALUE_1") != ""
+        or os.environ.get("GIT_CONFIG_KEY_2") != "core.fsmonitor"
+        or os.environ.get("GIT_CONFIG_VALUE_2") != "false"
+        or os.environ.get("GIT_CONFIG_KEY_3") != "core.hooksPath"
+        or os.environ.get("GIT_CONFIG_VALUE_3") != null_device
+        or os.environ.get("GIT_TERMINAL_PROMPT") != "0"
+    ):
+        raise RuntimeError("worker credential isolation controls are incomplete")
+
+
+assert_credential_isolation()
+
+
 def inherited_listener():
     if os.environ.get("FKST_LISTEN_FDS") != "1":
         raise RuntimeError("database requires exactly one inherited listener")
