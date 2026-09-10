@@ -24,7 +24,13 @@
       "const": "testing-design.generation-receipt.v1"
     },
     "outcome": {
-      "const": "complete"
+      "enum": [
+        "complete",
+        "partial",
+        "rejected",
+        "budget-exhausted",
+        "provider-error"
+      ]
     },
     "attempt": {
       "type": "integer",

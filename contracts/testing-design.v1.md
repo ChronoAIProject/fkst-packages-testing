@@ -8,10 +8,13 @@ keys sorted by raw UTF-8 byte order, array order preserved, no insignificant whi
 the repository JSON escape rules, and exactly one trailing LF. Digests bind those exact
 persisted bytes and validation never removes or normalizes unknown fields.
 
-Generation produces only `candidate` artifacts. A candidate is structurally validated and
-request-bound, but remains reviewable; only PQL may approve or publish it. Trace references
-prove immutable pointer-and-digest linkage to request inputs, not that a referenced
-requirement semantically entails the candidate assertion.
+Generation produces only `candidate` or `rejected` artifacts. Every candidate set and receipt
+remains structurally validated and request-bound for `complete`, `partial`, `rejected`,
+`budget-exhausted`, and `provider-error` outcomes; only `complete` requires
+`candidate_set.status = candidate`.
+Only PQL may approve or publish a candidate. Trace references prove immutable
+pointer-and-digest linkage to request inputs, not that a referenced requirement semantically
+entails the candidate assertion.
 
 FKST events carry artifact pointers and digests only. They must not contain repository
 content, prompt bodies, raw model responses, credentials, or inline candidate bodies.

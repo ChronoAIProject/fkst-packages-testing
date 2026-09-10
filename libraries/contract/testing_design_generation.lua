@@ -19,6 +19,15 @@ local G = {
   },
 }
 
+local candidate_statuses = { candidate = true, rejected = true }
+local receipt_outcomes = {
+  complete = true,
+  partial = true,
+  rejected = true,
+  ["budget-exhausted"] = true,
+  ["provider-error"] = true,
+}
+
 local function fail(code, message)
   error(error_facts.error_message("contract.testing-design-generation", code, message), 0)
 end
@@ -163,7 +172,7 @@ local function validate_candidate(candidate, request, index)
   require_bounded(candidate.candidate_id, 180, field .. ".candidate_id", "malformed-candidate")
   require_bounded(candidate.title, 300, field .. ".title", "malformed-candidate")
   if candidate.kind ~= "browser-smoke" then fail("unsupported-candidate-kind", field .. ".kind is unsupported") end
-  if candidate.status ~= "candidate" then fail("unsupported-candidate-status", field .. ".status is unsupported") end
+  if not candidate_statuses[candidate.status] then fail("unsupported-candidate-status", field .. ".status is unsupported") end
   dense_list(candidate.preconditions, 0, 16, field .. ".preconditions", "malformed-candidate")
   for item_index, item in ipairs(candidate.preconditions) do
     only_fields(item, { kind = true, ref = true }, field .. ".preconditions[" .. item_index .. "]", "malformed-candidate")
@@ -208,7 +217,7 @@ function G.validate_candidate_set(value, request)
   G.validate_request(request)
   only_fields(value, { schema = true, candidate_set_id = true, request_digest = true, status = true, candidates = true }, "candidate_set", "malformed-candidate-set")
   if value.schema ~= G.schemas.candidate_set then fail("unknown-schema", "candidate set schema is invalid") end
-  if value.status ~= "candidate" then fail("unsupported-candidate-set-status", "candidate set status is unsupported") end
+  if not candidate_statuses[value.status] then fail("unsupported-candidate-set-status", "candidate set status is unsupported") end
   require_bounded(value.candidate_set_id, 180, "candidate_set_id", "malformed-candidate-set")
   if value.request_digest ~= G.canonical_digest(request) then fail("foreign-request-digest", "request digest differs") end
   dense_list(value.candidates, 1, request.policy.max_candidates, "candidate_set.candidates", "malformed-candidate-set")
@@ -235,7 +244,8 @@ function G.validate_receipt(value, request, candidate_set)
   G.validate_candidate_set(candidate_set, request)
   only_fields(value, { schema = true, outcome = true, attempt = true, request_digest = true, input_digest = true, raw_response_digest = true, validated_output_digest = true, candidate_set = true, provider = true, prompt_template = true, policy_id = true, budget = true, rejected_candidates = true, timing = true }, "receipt", "malformed-receipt")
   if value.schema ~= G.schemas.receipt then fail("unknown-schema", "receipt schema is invalid") end
-  if value.outcome ~= "complete" then fail("unsupported-outcome", "receipt outcome is unsupported") end
+  if not receipt_outcomes[value.outcome] then fail("unsupported-outcome", "receipt outcome is unsupported") end
+  if value.outcome == "complete" and candidate_set.status ~= "candidate" then fail("unsupported-outcome", "complete receipt requires candidate set status candidate") end
   if type(value.attempt) ~= "number" or value.attempt ~= math.floor(value.attempt) or value.attempt < 1 or value.attempt > 8 then fail("malformed-receipt", "attempt is invalid") end
   local request_digest, output_digest = G.canonical_digest(request), G.canonical_digest(candidate_set)
   if value.request_digest ~= request_digest or value.input_digest ~= request_digest then fail("foreign-request-digest", "receipt request binding differs") end
