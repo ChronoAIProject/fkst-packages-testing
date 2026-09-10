@@ -207,19 +207,15 @@ def main() -> int:
                     raise AssertionError(f"missing field unexpectedly validated at {identity}{path!r}/{field}")
 
     candidate_validator = validators["testing-design.candidate-test-case-set.v1"]
-    for fixture_name in (
-        "invalid-candidate-script.json",
-        "invalid-candidate-set-status.json",
-        "invalid-candidate-status.json",
-    ):
-        if candidate_validator.is_valid(load_json(FIXTURE_ROOT / fixture_name)):
-            raise AssertionError(f"candidate fixture unexpectedly validated: {fixture_name}")
+    for fixture_name in ("valid-candidate-set-status-rejected.json", "valid-candidate-status-rejected.json"):
+        candidate_validator.validate(load_json(FIXTURE_ROOT / fixture_name))
+    fixture_name = "invalid-candidate-script.json"
+    if candidate_validator.is_valid(load_json(FIXTURE_ROOT / fixture_name)):
+        raise AssertionError(f"candidate fixture unexpectedly validated: {fixture_name}")
 
     receipt_validator = validators["testing-design.generation-receipt.v1"]
     for outcome in ("partial", "rejected", "budget-exhausted", "provider-error"):
-        fixture_name = f"invalid-receipt-outcome-{outcome}.json"
-        if receipt_validator.is_valid(load_json(FIXTURE_ROOT / fixture_name)):
-            raise AssertionError(f"receipt fixture unexpectedly validated: {fixture_name}")
+        receipt_validator.validate(load_json(FIXTURE_ROOT / f"valid-receipt-outcome-{outcome}.json"))
 
     identity_by_document = {
         "request": "testing-design.generate-request.v1",

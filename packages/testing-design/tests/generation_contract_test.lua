@@ -440,25 +440,77 @@ return {
     assert_classification("malformed-action", function() contract.validate_candidate_set(candidate_set, load("valid-request")) end)
   end,
 
-  test_classifies_request_action_and_candidate_status_failures = function()
+  test_classifies_request_and_action_failures = function()
     local request = load("valid-request")
     request.schema = "testing-design.unknown-request.v1"
     assert_classification("unknown-schema", function() contract.validate_request(request) end)
 
     request = load("valid-request")
     assert_classification("malformed-action", function() contract.validate_candidate_set(load("invalid-candidate-script"), request) end)
-    assert_classification("unsupported-candidate-set-status", function() contract.validate_candidate_set(load("invalid-candidate-set-status"), request) end)
-    assert_classification("unsupported-candidate-status", function() contract.validate_candidate_set(load("invalid-candidate-status"), request) end)
   end,
 
-  test_rejects_every_unsupported_receipt_outcome = function()
+  test_accepts_supported_candidate_statuses_without_inventing_equality = function()
+    local request = load("valid-request")
+    local rejected_set = load("valid-candidate-set-status-rejected")
+    local rejected_candidate = load("valid-candidate-status-rejected")
+    t.eq(contract.validate_candidate_set(rejected_set, request), rejected_set)
+    t.eq(contract.validate_candidate_set(rejected_candidate, request), rejected_candidate)
+
+    local receipt = load("valid-receipt")
+    local output_digest = contract.canonical_digest(rejected_candidate)
+    receipt.validated_output_digest, receipt.candidate_set.artifact_digest = output_digest, output_digest
+    t.eq(contract.validate_receipt(receipt, request, rejected_candidate), receipt)
+  end,
+
+  test_accepts_supported_receipt_outcomes_and_rejected_sets = function()
+    local request = load("valid-request")
+    local candidate_set = load("valid-candidate-set")
+    local rejected_set = load("valid-candidate-set-status-rejected")
+    for _, outcome in ipairs({ "partial", "rejected", "budget-exhausted", "provider-error" }) do
+      local receipt = load("valid-receipt-outcome-" .. outcome)
+      t.eq(contract.validate_receipt(receipt, request, candidate_set), receipt)
+
+      receipt = load("valid-receipt-outcome-" .. outcome)
+      local output_digest = contract.canonical_digest(rejected_set)
+      receipt.validated_output_digest, receipt.candidate_set.artifact_digest = output_digest, output_digest
+      t.eq(contract.validate_receipt(receipt, request, rejected_set), receipt)
+    end
+
+    local receipt = load("valid-receipt")
+    local output_digest = contract.canonical_digest(rejected_set)
+    receipt.validated_output_digest, receipt.candidate_set.artifact_digest = output_digest, output_digest
+    assert_classification("unsupported-outcome", function() contract.validate_receipt(receipt, request, rejected_set) end)
+  end,
+
+  test_non_complete_outcomes_retain_common_invariants = function()
     local request = load("valid-request")
     local candidate_set = load("valid-candidate-set")
     for _, outcome in ipairs({ "partial", "rejected", "budget-exhausted", "provider-error" }) do
-      assert_classification("unsupported-outcome", function()
-        contract.validate_receipt(load("invalid-receipt-outcome-" .. outcome), request, candidate_set)
-      end)
+      local receipt = load("valid-receipt-outcome-" .. outcome)
+      receipt.unknown = true
+      assert_classification("malformed-receipt", function() contract.validate_receipt(receipt, request, candidate_set) end)
+
+      receipt = load("valid-receipt-outcome-" .. outcome)
+      receipt.validated_output_digest = string.rep("0", 64)
+      assert_classification("foreign-candidate-digest", function() contract.validate_receipt(receipt, request, candidate_set) end)
+
+      receipt = load("valid-receipt-outcome-" .. outcome)
+      receipt.budget.prompt_bytes = request.policy.max_prompt_bytes + 1
+      assert_classification("budget-exceeded", function() contract.validate_receipt(receipt, request, candidate_set) end)
+
+      receipt = load("valid-receipt-outcome-" .. outcome)
+      receipt.timing.duration_ms = receipt.budget.elapsed_ms + 1
+      assert_classification("malformed-timing", function() contract.validate_receipt(receipt, request, candidate_set) end)
+
+      local invalid_candidate_set = load("valid-candidate-set")
+      invalid_candidate_set.candidates[1].traceability.source_refs[1].sha256 = string.rep("0", 64)
+      receipt = load("valid-receipt-outcome-" .. outcome)
+      assert_classification("foreign-traceability", function() contract.validate_receipt(receipt, request, invalid_candidate_set) end)
     end
+
+    local receipt = load("valid-receipt-outcome-rejected")
+    receipt.rejected_candidates = { total = 2, reasons = { { code = "duplicate-candidate", count = 1 } } }
+    assert_classification("malformed-receipt", function() contract.validate_receipt(receipt, request, candidate_set) end)
   end,
 
   test_validates_rejected_candidate_reason_counts = function()

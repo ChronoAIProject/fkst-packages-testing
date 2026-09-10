@@ -25,7 +25,10 @@
       "pattern": "^[0-9a-f]{64}(?![\\s\\S])"
     },
     "status": {
-      "const": "candidate"
+      "enum": [
+        "candidate",
+        "rejected"
+      ]
     },
     "candidates": {
       "type": "array",
@@ -60,7 +63,10 @@
             "const": "browser-smoke"
           },
           "status": {
-            "const": "candidate"
+            "enum": [
+              "candidate",
+              "rejected"
+            ]
           },
           "preconditions": {
             "type": "array",

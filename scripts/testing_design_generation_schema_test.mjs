@@ -79,14 +79,18 @@ for (const [identity, base] of documents) {
   }
 }
 
-for (const fixture of ["invalid-candidate-script.json", "invalid-candidate-set-status.json", "invalid-candidate-status.json"]) {
+for (const fixture of ["valid-candidate-set-status-rejected.json", "valid-candidate-status-rejected.json"]) {
+  const result = await validate(schemas.get(identities[1]).$id, await load(path.join(fixtureRoot, fixture)));
+  assert.equal(result.valid, true, `${fixture} must validate`);
+}
+for (const fixture of ["invalid-candidate-script.json"]) {
   const result = await validate(schemas.get(identities[1]).$id, await load(path.join(fixtureRoot, fixture)));
   assert.equal(result.valid, false, `${fixture} must be rejected`);
 }
 for (const outcome of ["partial", "rejected", "budget-exhausted", "provider-error"]) {
-  const fixture = `invalid-receipt-outcome-${outcome}.json`;
+  const fixture = `valid-receipt-outcome-${outcome}.json`;
   const result = await validate(schemas.get(identities[2]).$id, await load(path.join(fixtureRoot, fixture)));
-  assert.equal(result.valid, false, `${fixture} must be rejected`);
+  assert.equal(result.valid, true, `${fixture} must validate`);
 }
 
 const identityByDocument = new Map([
