@@ -112,6 +112,7 @@ function createBudgetRuntime(deps) {
     }
     const result = await runMeasuredCommand(argv, {
       cwd: options.cwd,
+      cwdIdentity: options.cwdIdentity,
       env: options.env,
       timeoutMs: options.timeoutMs,
       outputBytes: payload.output_bytes,

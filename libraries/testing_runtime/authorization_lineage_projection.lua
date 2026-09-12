@@ -108,7 +108,10 @@ function Projector:write_receipt(name, receipt_id, recorded_at, fields, expected
     recorded_at = recorded_at,
     source_max_uses = 1,
     evidence_role = "audit-only",
+    human_approval_required = false,
     authorization_capability = false,
+    execution_authorized = false,
+    promotion_authorized = false,
     reusable = false,
   }
   for key, item in pairs(fields) do
@@ -158,7 +161,10 @@ function Projector:write_index(recorded_at, artifacts, expected)
     lineage_complete = true,
     source_max_uses = 1,
     evidence_role = "audit-only",
+    human_approval_required = false,
     authorization_capability = false,
+    execution_authorized = false,
+    promotion_authorized = false,
     reusable = false,
   }
   lineage.validate_lineage_index(value, artifacts, expected)

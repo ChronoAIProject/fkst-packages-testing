@@ -256,6 +256,15 @@ local function valid_effect_response(case, response)
     and type(response.headers) == "table"
 end
 
+local function effect_authorization_time(ports, context)
+  return ports.now({
+    artifact_root = context.request.artifact_root,
+    operation_id = context.environment.operation_id,
+    trace_id = context.request.trace_id,
+    dedup_key = context.request.dedup_key,
+  })
+end
+
 local function execute_case(case, grant, ports, context)
   if case.skip_reason ~= nil then
     return {
@@ -311,7 +320,7 @@ local function execute_case(case, grant, ports, context)
       trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
     })
     local receipt_ok = pcall(execution_contract.validate_effect_authorization_receipt,
-      receipt, envelope, context.now)
+      receipt, envelope, effect_authorization_time(ports, context))
     local authorization_path = context.request.artifact_root
       .. "/authorization/" .. case.case_id .. ".json"
     if not receipt_ok or ports.write_artifact(authorization_path, receipt) ~= true then
@@ -366,12 +375,10 @@ local function execute_case(case, grant, ports, context)
       trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
     })
     local receipt_ok = pcall(execution_contract.validate_effect_authorization_receipt,
-      receipt, envelope, context.now)
+      receipt, envelope, effect_authorization_time(ports, context))
     local authorization_path = context.request.artifact_root
       .. "/authorization/" .. case.case_id .. ".json"
-    if not receipt_ok or ports.write_artifact(authorization_path, receipt) ~= true then
-      error("testing-runner: structured-execution: malformed HTTP authorization receipt")
-    end
+    if not receipt_ok or ports.write_artifact(authorization_path, receipt) ~= true then error("testing-runner: structured-execution: malformed HTTP authorization receipt") end
     if receipt.decision ~= "allow" then
       return {
         case_id = case.case_id, kind = case.kind, status = "error",
@@ -667,8 +674,9 @@ function M.run(request, ports)
       trace_id = request.trace_id,
       dedup_key = request.dedup_key,
     })
-    local grant_ok = pcall(execution_contract.validate_grant, grant.value, now)
-    if not grant_ok or grant.value.plan_sha256 ~= request.test_plan_sha256
+    local authorization_window_ok = pcall(execution_contract.validate_grant_authorization_window,
+      preauthorization.value, grant.value, now)
+    if not authorization_window_ok or grant.value.plan_sha256 ~= request.test_plan_sha256
       or grant.value.parent_authorization_sha256 ~= preauthorization.digest
       or grant.value.environment_receipt_sha256 ~= request.environment_receipt_sha256
       or not same_repository(grant.value.repository, request.repository)
@@ -760,7 +768,6 @@ function M.run(request, ports)
       plan = plan,
       grant = grant,
       claim = claim,
-      now = now,
     }
     for index, case in ipairs(plan.value.cases) do
       local started_at = current_time(ports, request, environment.value)

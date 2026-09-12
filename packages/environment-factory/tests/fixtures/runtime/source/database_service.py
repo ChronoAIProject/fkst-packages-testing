@@ -15,7 +15,12 @@ EVIDENCE_ROOT = Path(os.environ["FKST_FIXTURE_EVIDENCE_DIR"])
 
 
 def assert_credential_isolation():
-    for key in ("GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS"):
+    for key in (
+        "GH_TOKEN", "GITHUB_TOKEN", "SSH_AUTH_SOCK", "GIT_ASKPASS", "SSH_ASKPASS",
+        "FKST_WORKER_RUNTIME_ROOT",
+        "FKST_OBJECT_BOUND_ALLOCATION_BROKER", "FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256",
+        "FKST_OBJECT_BOUND_CLEANUP_BROKER", "FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256",
+    ):
         if os.environ.get(key):
             raise RuntimeError(f"worker inherited forbidden authority: {key}")
     home = Path(os.environ.get("HOME", ""))

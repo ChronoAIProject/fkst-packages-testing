@@ -148,6 +148,15 @@ function Context:_environment_runtime()
         }
       end)
     end,
+    initialize_worker_home_ledger = function(request)
+      return replay(request.effect_id, function()
+        return {
+          status = "passed",
+          ledger_id = sha256_bytes(context.run_id .. "\0worker-home-ledger"),
+          cleanup_ref = { kind = "resource-cleanup", ref = context.run_id .. "-worker-homes" },
+        }
+      end)
+    end,
     checkout = function(request)
       return replay(request.effect_id, function()
         remove_tree(context.workspace_root, context.temp_root .. "/")
@@ -240,6 +249,8 @@ function Context:_environment_runtime()
         elseif cleanup.kind == "workspace-cleanup" then
           remove_tree(context.workspace_root, context.temp_root .. "/")
           workspaces[context.run_id .. "-workspace"] = nil
+        elseif cleanup.kind == "resource-cleanup" and cleanup.ref == context.run_id .. "-worker-homes" then
+          -- This in-memory contract fixture never creates a worker HOME.
         end
         return { status = "cleaned" }
       end)
@@ -1008,6 +1019,7 @@ function Context:framework_environment(label, arm_failpoint)
   local runtime_cli = self.project_root .. "/packages/generic-host/bin/generic-host-runtime.js"
   local environment = {
     FKST_RUNTIME_ROOT = self.host_root .. "/framework-runtime-" .. label,
+    FKST_WORKER_RUNTIME_ROOT = self.host_root .. "/fixture-worker-runtime",
     FKST_DURABLE_ROOT = self.host_root .. "/framework-durable-" .. label,
     FKST_GENERIC_HOST_DURABLE_ROOT = self.durable_root,
     FKST_GENERIC_HOST_PROJECT_ROOT = self.project_root,
@@ -1023,6 +1035,16 @@ function Context:framework_environment(label, arm_failpoint)
     FKST_WORKFLOW_QA_ADAPTER_RUNTIME_CONFIG_REF = self.runtime_config_ref,
     FKST_MODULE_TEST_LOOP_TEST_RUNTIME = "0",
   }
+  local broker = self.project_root
+    .. "/packages/environment-factory/bin/object-bound-cleanup-broker.py"
+  local source = read_file(broker)
+  if source == nil then error("canonical workflow allocation broker is unavailable") end
+  environment.FKST_OBJECT_BOUND_ALLOCATION_BROKER = broker
+  environment.FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256 = sha256_bytes(source)
+  if self.object_bound_cleanup_broker ~= false then
+    environment.FKST_OBJECT_BOUND_CLEANUP_BROKER = broker
+    environment.FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256 = sha256_bytes(source)
+  end
   if arm_failpoint == true and type(self.completed_replay_failpoint) == "table" then
     environment.FKST_DURABLE_COMPLETED_REPLAY_FAILPOINT = self.completed_replay_failpoint.token
   elseif type(arm_failpoint) == "string" and type(self.crash_barrier) == "table"
@@ -1112,6 +1134,12 @@ function M.new(options)
   local host_root = temp_root .. "/host"
   require_exec({ "rm", "-rf", temp_root, absolute(artifact_root) })
   require_exec({ "mkdir", "-p", source_root, host_root })
+  require_exec({
+    "node", "-e",
+    "const fs=require('fs');fs.chmodSync(process.argv[1],0o700);"
+      .. "if((fs.statSync(process.argv[1]).mode&0o077)!==0)process.exit(44);",
+    temp_root,
+  })
   local durable_enabled = options.durable == true or options.durable_root ~= nil
   local supervisor_project_root = project_root
   if durable_enabled then
@@ -1671,6 +1699,7 @@ function M.new(options)
     completed_replay_failpoint = completed_replay_failpoint,
     crash_barrier = crash_barrier,
     runtime_pep_denial = runtime_pep_denial,
+    object_bound_cleanup_broker = options.object_bound_cleanup_broker ~= false,
     pep_mutate_plan_binding = options.pep_mutate_plan_binding == true,
     fixture_name = fixture_name,
     fixture_source_root = absolute("examples/generic-host/fixtures/" .. fixture_name),

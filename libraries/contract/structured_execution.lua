@@ -1,4 +1,6 @@
 local error_facts = require("contract.error_facts")
+local canonical_json = require("contract.canonical_json")
+local sha256 = require("contract.sha256")
 local strings = require("contract.strings")
 local time = require("contract.time")
 
@@ -430,6 +432,19 @@ function M.validate_grant(value, now)
   return value
 end
 
+function M.validate_grant_authorization_window(preauthorization, grant, now)
+  M.validate_preauthorization(preauthorization, now)
+  M.validate_grant(grant, now)
+  local parent_issued = time.iso_timestamp_epoch_seconds(preauthorization.issued_at)
+  local parent_expires = time.iso_timestamp_epoch_seconds(preauthorization.expires_at)
+  local grant_issued = time.iso_timestamp_epoch_seconds(grant.issued_at)
+  local grant_expires = time.iso_timestamp_epoch_seconds(grant.expires_at)
+  if grant_issued < parent_issued or grant_expires > parent_expires then
+    fail("authorization-window-escalation", "grant validity must be contained by its parent preauthorization")
+  end
+  return grant
+end
+
 function M.validate_cli_action_envelope(value)
   only_fields(value, {
     schema = true, effect_kind = true, capability = true, profile_ref = true,
@@ -507,9 +522,7 @@ function M.validate_http_action_envelope(value)
     fail("malformed-envelope", "HTTP action identity, target, expiry, attempt, or fence is invalid")
   end
   validate_case(value.case, {}, false)
-  if value.case.kind ~= "http" or value.case.skip_reason ~= nil then
-    fail("unsupported-effect", "the action envelope must contain one executable HTTP case")
-  end
+  if value.case.kind ~= "http" or value.case.skip_reason ~= nil then fail("unsupported-effect", "the action envelope must contain one executable HTTP case") end
   only_fields(value.resource_bounds, { output_bytes = true }, "resource-bounds")
   if type(value.resource_bounds.output_bytes) ~= "number"
     or value.resource_bounds.output_bytes ~= math.floor(value.resource_bounds.output_bytes)
@@ -558,7 +571,8 @@ function M.validate_effect_authorization_receipt(value, envelope, now)
   end
   if envelope ~= nil then
     M.validate_action_envelope(envelope)
-    if value.fence_id ~= envelope.fence_id or value.trace_id ~= envelope.trace_id
+    if value.envelope_sha256 ~= sha256.hex(canonical_json.encode(envelope))
+      or value.fence_id ~= envelope.fence_id or value.trace_id ~= envelope.trace_id
       or value.dedup_key ~= envelope.dedup_key or value.expires_at ~= envelope.expires_at then
       fail("foreign-receipt", "authorization receipt differs from the action envelope")
     end
@@ -646,7 +660,7 @@ function M.derive_grant(preauthorization, preauthorization_sha256, plan, plan_sh
     trace_id = request.trace_id,
     dedup_key = request.dedup_key,
   }
-  return M.validate_grant(grant, values.now)
+  return M.validate_grant_authorization_window(preauthorization, grant, values.now)
 end
 
 local plan_request_fields = {

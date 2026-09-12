@@ -20,11 +20,18 @@ function environmentRuntimeHelper(name) {
 }
 
 const {
-  minimalEnvironment, pathIdentity, releaseWorkerEnvironment,
-  releaseWorkerEnvironmentLease, removeOwnedDirectory, samePathIdentity, sleep,
-  verifyWorkerEnvironment, verifyWorkerEnvironmentLease,
+  OBJECT_BOUND_CLEANUP_UNAVAILABLE, minimalEnvironment, pathEntryExists, pathIdentity,
+  ownedDirectoryReleaseProven,
+  releaseWorkerEnvironmentLease, releaseWorkerEnvironmentReservation,
+  removeOwnedDirectory, requireOwnedDirectory, reservationMatchesLease, samePathIdentity, sleep,
+  verifyWorkerEnvironment, verifyWorkerEnvironmentLease, workerEnvironmentReleaseProven,
+  workerEnvironmentReservation,
 } = environmentRuntimeHelper('common');
 const { validateTargetExecutionBoundary } = environmentRuntimeHelper('target-execution-boundary');
+const { prepareReservedWorkspace } = environmentRuntimeHelper('workspace-reservation');
+const {
+  closeDirectoryAnchor, objectBoundExec, openDirectoryAnchor,
+} = environmentRuntimeHelper('object-bound-exec');
 const { startOrRecoverSupervisedProcess } = environmentRuntimeHelper('supervised-process');
 const {
   listenerOwners, listenersOwnedByProcessGroup, listenersReleased, processGroupState, terminateProcessGroup,
@@ -36,13 +43,6 @@ function fail(message) {
 
 function sha256(value) {
   return crypto.createHash('sha256').update(String(value)).digest('hex');
-}
-
-function childProcessEnvironment(cwd, reservation = null) {
-  return minimalEnvironment({}, {
-    schema: 'generic-host.worker-isolation.v1',
-    cwd_sha256: sha256(path.resolve(cwd)),
-  }, reservation && reservation.reservation_id);
 }
 
 function durableRoot() {
@@ -414,7 +414,9 @@ function lineageEnvelope(config, schema, status, receiptId, recordedAt, fields) 
     repository: { url: config.repository.url, commit_sha: config.repository.commit_sha },
     run_id: config.run_id, trace_id: config.request.trace_id, dedup_key: config.request.dedup_key,
     recorded_at: recordedAt, source_max_uses: 1, evidence_role: 'audit-only',
-    authorization_capability: false, reusable: false, ...fields,
+    human_approval_required: false,
+    authorization_capability: false, execution_authorized: false,
+    promotion_authorized: false, reusable: false, ...fields,
   };
 }
 
@@ -567,6 +569,8 @@ function writeProfileClaimReceipt(projectRoot, config, durableClaim) {
   const validation = boundLineageArtifact(projectRoot, start.validation_receipt_ref.ref, null, 'profile validation');
   if (profile.value.revision !== validation.value.profile_revision
     || approval.value.approval_id !== validation.value.approval_id
+    || sha256(stable(profile.value)) !== validation.value.profile_sha256
+    || sha256(stable(approval.value)) !== validation.value.approval_sha256
     || validation.value.profile_sha256 !== config.validation_receipt.profile_sha256
     || validation.value.approval_sha256 !== config.validation_receipt.approval_sha256) {
     fail('profile claim source artifacts differ');
@@ -794,7 +798,9 @@ function writeLineageIndex(projectRoot, config, recordedAt, completionReceipt) {
     repository: { url: config.repository.url, commit_sha: config.repository.commit_sha },
     run_id: config.run_id, trace_id: config.request.trace_id, dedup_key: config.request.dedup_key,
     recorded_at: recordedAt, receipts, lineage_complete: true, source_max_uses: 1,
-    evidence_role: 'audit-only', authorization_capability: false, reusable: false,
+    evidence_role: 'audit-only', human_approval_required: false,
+    authorization_capability: false, execution_authorized: false,
+    promotion_authorized: false, reusable: false,
   };
   lineageContract.validateLineageIndex(value, artifacts, expected);
   const path = `${lineageRoot(config)}/authorization-lineage/index.json`;
@@ -899,29 +905,37 @@ function publicationResult(projectRoot, payload) {
   return result;
 }
 
-function directExec(argv, cwd, timeoutSeconds, outputBytes) {
+function directExec(argv, cwd, timeoutSeconds, outputBytes, environment, cwdIdentity) {
   if (!Array.isArray(argv) || argv.length === 0 || argv.some((item) => typeof item !== 'string')) {
     fail('argv must be a non-empty string list');
   }
-  const environment = childProcessEnvironment(cwd);
+  if (!environment) fail('direct execution requires a durable worker environment');
+  verifyWorkerEnvironment(environment);
+  let anchor;
+  let result;
   try {
-    verifyWorkerEnvironment(environment);
+    anchor = openDirectoryAnchor(cwd, cwdIdentity);
+    const launch = objectBoundExec(anchor, argv, 3);
     const options = {
-      cwd,
+      cwd: '/',
       encoding: 'utf8',
       timeout: Math.max(1, Number(timeoutSeconds) || 30) * 1000,
       env: environment,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe', anchor.descriptor],
     };
     if (Number.isInteger(outputBytes) && outputBytes >= 1024) options.maxBuffer = outputBytes;
-    const result = spawnSync(argv[0], argv.slice(1), options);
-    return {
-      exit_code: result.status == null ? -1 : result.status,
-      stdout: result.stdout || '',
-      stderr: result.stderr || (result.error ? String(result.error.message || result.error) : ''),
-    };
+    result = spawnSync(launch.command, launch.argv, options);
+  } catch (error) {
+    return { exit_code: -1, stdout: '', stderr: String(error.message || error) };
   } finally {
-    releaseWorkerEnvironment(environment);
+    closeDirectoryAnchor(anchor);
   }
+  return {
+    exit_code: result.status == null ? -1 : result.status,
+    stdout: result.stdout || '',
+    stderr: result.stderr || (result.error ? String(result.error.message || result.error) : ''),
+  };
 }
 
 function environmentStateKey(ref) {
@@ -931,6 +945,23 @@ function environmentStateKey(ref) {
 
 function environmentResourceKey(ref) {
   return `environment-factory/resources/${sha256(stable(ref))}`;
+}
+
+const workerHomeLedger = require('./worker-home-ledger').create({
+  artifactWrite, fail, minimalEnvironment, recordCas, recordImmutable, recordRead,
+  releaseWorkerEnvironmentLease, releaseWorkerEnvironmentReservation,
+  reservationMatchesLease, resourceKey: environmentResourceKey, sha256, stable,
+  verifyWorkerEnvironmentLease, workerEnvironmentReleaseProven, workerEnvironmentReservation,
+  workerEnvironmentLease: environmentRuntimeHelper('common').workerEnvironmentLease,
+});
+
+function ledgerWorkerRequest(config, payload, effectId) {
+  return {
+    operation_id: config.run_id,
+    effect_id: effectId || payload.effect_id,
+    repository: config.profile.repository,
+    worker_home_ledger_ref: payload.worker_home_ledger_ref,
+  };
 }
 
 function exactRuntimePorts(value) {
@@ -969,18 +1000,32 @@ function workspaceResource(root, ref) {
   return resource;
 }
 
-function verifyWorkspace(config, resource) {
+function verifyWorkspace(config, resource, options = {}) {
   if (resource.operation_id !== config.run_id || resource.path !== config.workspace_root
     || typeof resource.ownership_token !== 'string' || resource.ownership_token === '') {
     fail('workspace ownership binding differs');
   }
-  if (!fs.existsSync(resource.path)) return { owned: false, reason: 'workspace-missing' };
+  if (!pathEntryExists(resource.path)) {
+    return options.allowMissingForCleanup === true
+      ? { owned: true, absent: true }
+      : { owned: false, reason: 'workspace-missing' };
+  }
   const identity = pathIdentity(resource.path);
   if (!samePathIdentity(identity, resource.path_identity)) return { owned: false, reason: 'workspace-identity-changed' };
   return { owned: true, identity };
 }
 
-function registerWorkspace(projectRoot, payload) {
+function releaseWorkspaceResource(config, resource) {
+  const workspaceState = verifyWorkspace(config, resource, { allowMissingForCleanup: true });
+  if (!workspaceState.owned) {
+    fail(`workspace cleanup ownership cannot be verified: ${workspaceState.reason}`);
+  }
+  return removeOwnedDirectory(
+    resource.path, resource.path_identity, config.temp_root, resource.cleanup_capture_id,
+  );
+}
+
+function registerWorkspace(projectRoot, payload, reservation = null, identityOverride = null) {
   const runId = runIdFor(payload);
   const root = runRoot(runId);
   const config = loadConfig(projectRoot, runId);
@@ -989,18 +1034,103 @@ function registerWorkspace(projectRoot, payload) {
     || payload.path !== config.workspace_root || payload.repository.commit_sha !== config.commit_sha) {
     fail('workspace registration binding differs');
   }
-  const identity = pathIdentity(payload.path);
+  const identity = identityOverride || pathIdentity(payload.path);
+  if (reservation && (!samePathIdentity(reservation.path_identity, identity)
+    || reservation.path !== payload.path || reservation.operation_id !== runId
+    || reservation.repository.url !== payload.repository.url
+    || reservation.repository.commit_sha !== payload.repository.commit_sha)) {
+    fail('workspace reservation binding differs at registration');
+  }
   const resource = {
-    schema: 'generic-host.environment-resource.v1', kind: 'workspace', operation_id: runId,
+        schema: 'generic-host.environment-resource.v1', kind: 'workspace', operation_id: runId,
     workspace_ref: payload.workspace_ref, cleanup_ref: payload.cleanup_ref, path: payload.path,
     path_identity: identity, repository: payload.repository,
-    ownership_token: crypto.randomBytes(16).toString('hex'),
+    ownership_token: reservation ? reservation.ownership_token : crypto.randomBytes(16).toString('hex'),
+    cleanup_capture_id: reservation ? reservation.cleanup_capture_id : crypto.randomBytes(32).toString('hex'),
+    ...(reservation ? { reservation_id: reservation.reservation_id } : {}),
   };
   for (const ref of [payload.workspace_ref, payload.cleanup_ref]) {
     const stored = recordImmutable(root, environmentResourceKey(ref), resource);
     if (!stored.written && !stored.replayed) fail('workspace resource binding differs');
   }
   return { registered: true, path_identity: identity };
+}
+
+function workspaceReservationKey(runId) {
+  return `environment-factory/workspace-reservations/${sha256(stable(`${runId}-workspace`))}`;
+}
+
+function durableWorkspaceReservation(root, config) {
+  const workspaceRoot = path.resolve(config.workspace_root);
+  const requestedTempRoot = path.resolve(config.temp_root);
+  if (workspaceRoot === requestedTempRoot || path.dirname(workspaceRoot) !== requestedTempRoot
+    || !workspaceRoot.startsWith(`${requestedTempRoot}${path.sep}`)) {
+    fail('environment checkout workspace escaped the durable temp root');
+  }
+  fs.mkdirSync(requestedTempRoot, { recursive: true, mode: 0o700 });
+  requireOwnedDirectory(requestedTempRoot, { privateDirectory: true });
+  const tempRoot = requestedTempRoot;
+  const binding = {
+    reservation_schema: 'environment-factory.workspace-reservation.v1',
+    reservation_id: `${config.run_id}-workspace`,
+    operation_id: config.run_id,
+    path: workspaceRoot,
+    containment_root: tempRoot,
+    containment_root_identity: pathIdentity(tempRoot),
+    repository: { url: config.repository.url, commit_sha: config.repository.commit_sha },
+  };
+  const key = workspaceReservationKey(config.run_id);
+  let current = recordRead(root, key);
+  let created = false;
+  if (!current) {
+    if (pathEntryExists(workspaceRoot)) {
+      fail('environment checkout workspace exists before durable reservation');
+    }
+    const initial = {
+      ...binding,
+      version: 1,
+      reservation_state: 'reserved',
+      path_identity: null,
+      ownership_token: crypto.randomBytes(32).toString('hex'),
+      cleanup_capture_id: crypto.randomBytes(32).toString('hex'),
+    };
+    const saved = recordCas(root, key, initial, 0);
+    current = saved.value;
+    created = saved.saved === true;
+  }
+  const observed = { ...current };
+  for (const field of [
+    'version', 'reservation_state', 'path_identity', 'ownership_token', 'cleanup_capture_id',
+  ]) delete observed[field];
+  if (stable(observed) !== stable(binding)
+    || !Number.isInteger(current.version) || current.version < 1
+    || !['reserved', 'allocated'].includes(current.reservation_state)
+    || (current.reservation_state === 'reserved' && current.path_identity !== null)
+    || (current.reservation_state === 'allocated' && !current.path_identity)
+    || !/^[0-9a-f]{64}$/.test(String(current.ownership_token || ''))
+    || !/^[0-9a-f]{64}$/.test(String(current.cleanup_capture_id || ''))) {
+    fail('durable workspace reservation binding differs');
+  }
+  return { key, record: current, created };
+}
+
+function recoverRegisteredCheckout(projectRoot, config, payload, workspaceRef, cleanupRef) {
+  const root = runRoot(config.run_id);
+  const existing = recordRead(root, environmentResourceKey(workspaceRef));
+  if (!existing) return null;
+  const state = verifyWorkspace(config, existing);
+  if (!state.owned || existing.reservation_id !== `${config.run_id}-workspace`
+    || stable(existing.repository) !== stable(config.repository)) {
+    fail(`registered checkout recovery failed: ${state.reason || 'binding-differs'}`);
+  }
+  const cleanupStored = recordImmutable(root, environmentResourceKey(cleanupRef), existing);
+  if (!cleanupStored.written && !cleanupStored.replayed) {
+    fail('registered checkout cleanup resource binding differs');
+  }
+  return {
+    status: 'passed', resolved_commit: config.commit_sha,
+    workspace_ref: workspaceRef, cleanup_ref: cleanupRef,
+  };
 }
 
 function startApplication(projectRoot, payload) {
@@ -1017,6 +1147,9 @@ function startApplication(projectRoot, payload) {
   const workspace = workspaceResource(root, payload.workspace_ref);
   const workspaceState = verifyWorkspace(config, workspace);
   if (!workspaceState.owned) fail(`workspace ownership failed: ${workspaceState.reason}`);
+  const purpose = `supervised:${payload.effect_id}`;
+  const commandEnvironment = config.command_environment || {};
+  const workerRequest = ledgerWorkerRequest(config, payload);
   const binding = {
     schema: 'generic-host.environment-resource.v1', kind: 'process', operation_id: runId,
     effect_id: payload.effect_id, cleanup_ref: payload.cleanup_ref, workspace_ref: payload.workspace_ref,
@@ -1032,14 +1165,16 @@ function startApplication(projectRoot, payload) {
   if (existing) {
     const volatile = new Set([
       'startup_state', 'startup_token_sha256', 'pid', 'pgid',
-      'process_start_identity', 'worker_environment_lease',
+      'process_start_identity', 'worker_environment_lease', 'worker_home_ledger_ref',
+      'worker_home_slot_id',
     ]);
     const existingBinding = Object.fromEntries(
       Object.entries(existing).filter(([key]) => !volatile.has(key)),
     );
     if (stable(existingBinding) !== stable(binding)) fail('application replay binding differs');
     try {
-      verifyWorkerEnvironmentLease(existing.worker_environment_lease);
+      workerHomeLedger.verifyPersisted(root, workerRequest, purpose, commandEnvironment,
+        existing.worker_home_slot_id, existing.worker_environment_lease);
     } catch (_error) {
       fail('application replay worker environment binding changed');
     }
@@ -1059,14 +1194,29 @@ function startApplication(projectRoot, payload) {
       claimPath: startupClaimPath,
       argv: payload.argv,
       cwd: workspace.path,
-      createEnvironment: (reservation) => childProcessEnvironment(workspace.path, reservation),
+      cwdIdentity: workspace.path_identity,
+      createEnvironment: (reservation) => {
+        const allocation = workerHomeLedger.allocate(root, workerRequest, purpose,
+          commandEnvironment, reservation && reservation.reservation_id);
+        return { environment: allocation.environment, worker_home_slot_id: allocation.slot_id };
+      },
       binding,
   });
-  if (launch.interrupted || !launch.resource) fail('application startup was interrupted before registration');
+  if (launch.interrupted || !launch.resource) {
+    fail('application startup was interrupted before worker-home registration');
+  }
   const resource = launch.resource;
-  if (launch.state !== 'running') {
+  resource.worker_home_ledger_ref = workerRequest.worker_home_ledger_ref;
+  workerHomeLedger.verifyPersisted(root, workerRequest, purpose, commandEnvironment,
+    resource.worker_home_slot_id, resource.worker_environment_lease);
+  try {
     const stored = recordImmutable(root, environmentResourceKey(payload.cleanup_ref), resource);
     if (!stored.written && !stored.replayed) fail('application resource binding differs');
+  } catch (error) {
+    terminateProcessGroup(resource, 500);
+    throw error;
+  }
+  if (launch.state !== 'running') {
     return { status: 'blocked', cleanup_ref: payload.cleanup_ref, early_exit: true, runtime_ports: ports };
   }
   const deadline = Date.now() + 5_000;
@@ -1078,13 +1228,8 @@ function startApplication(projectRoot, payload) {
   }
   if (!listenerState || !listenerState.supported || !listenerState.owned) {
     terminateProcessGroup(resource, 500);
-    releaseWorkerEnvironmentLease(resource.worker_environment_lease);
-    const stored = recordImmutable(root, environmentResourceKey(payload.cleanup_ref), resource);
-    if (!stored.written && !stored.replayed) fail('application resource binding differs');
     fail(`application ownership could not be verified: ${listenerState && listenerState.reason || 'process-start-failed'}`);
   }
-  const stored = recordImmutable(root, environmentResourceKey(payload.cleanup_ref), resource);
-  if (!stored.written && !stored.replayed) fail('application resource binding differs');
   return { status: 'running', cleanup_ref: payload.cleanup_ref, early_exit: false, runtime_ports: ports };
 }
 
@@ -1124,14 +1269,23 @@ function releasedResources(projectRoot, payload) {
   const root = runRoot(runId);
   const config = loadConfig(projectRoot, runId);
   const process = resourceRecord(root, { kind: 'process-cleanup', ref: `${runId}-application` });
+  const workspace = workspaceResource(root, { kind: 'workspace', ref: `${runId}-workspace` });
   const group = processGroupState(process);
   const listeners = listenersReleased(process.runtime_ports);
+  const workspaceReleased = ownedDirectoryReleaseProven(
+    workspace.path, workspace.path_identity, config.temp_root, workspace.cleanup_capture_id,
+  );
+  const workerEnvironmentReleased = !process.worker_environment_lease
+    || workerHomeLedger.releaseProven(root, {
+      operation_id: runId,
+      repository: process.repository,
+      worker_home_ledger_ref: process.worker_home_ledger_ref,
+    }, process.worker_home_slot_id, process.worker_environment_lease);
   return {
     process_group_absent: group.supported === true && group.alive === false,
     listeners_closed: listeners.supported === true && listeners.released === true,
-    workspace_absent: !fs.existsSync(config.workspace_root),
-    worker_environment_absent: !process.worker_environment_lease
-      || !fs.existsSync(process.worker_environment_lease.home),
+    workspace_absent: workspaceReleased,
+    worker_environment_absent: workerEnvironmentReleased,
   };
 }
 
@@ -1146,10 +1300,22 @@ function releaseOwnedProcessResource(resource, timeoutMs) {
   }
   const listeners = listenersReleased(resource.runtime_ports);
   if (!listeners.supported || !listeners.released) fail('process listeners remain after cleanup');
-  if (!releaseWorkerEnvironmentLease(resource.worker_environment_lease)) {
-    fail('process worker environment cleanup failed');
-  }
   return true;
+}
+
+function blockedCleanupResult(projectRoot, payload, resourceKind, detail = {}) {
+  const diagnosticRef = `${payload.artifact_root}/diagnostics/cleanup-${sha256(stable(payload.cleanup_ref)).slice(0, 16)}.json`;
+  artifactWrite(projectRoot, diagnosticRef, {
+    schema: 'generic-host.cleanup-diagnostic.v1',
+    status: 'blocked',
+    resource_kind: resourceKind,
+    reason: OBJECT_BOUND_CLEANUP_UNAVAILABLE,
+  });
+  return {
+    status: 'blocked',
+    diagnostic_ref: { kind: 'artifact', ref: diagnosticRef },
+    ...detail,
+  };
 }
 
 function cleanupResource(projectRoot, payload) {
@@ -1169,16 +1335,30 @@ function cleanupResource(projectRoot, payload) {
       fail('process cleanup workspace ownership differs');
     }
     releaseOwnedProcessResource(resource, Math.max(1, Number(payload.timeout_seconds) || 5) * 1000);
+    if (!workerHomeLedger.recordPersistedRelease(root, {
+      ...payload,
+      repository: resource.repository,
+      worker_home_ledger_ref: resource.worker_home_ledger_ref,
+    }, resource.worker_home_slot_id, resource.worker_environment_lease, 'supervised-process-stopped')) {
+      return blockedCleanupResult(projectRoot, payload, resource.kind);
+    }
   } else if (resource.kind === 'workspace') {
     const process = resourceRecord(root, { kind: 'process-cleanup', ref: `${runId}-application` });
     const group = processGroupState(process);
     if (!group.supported || group.alive) fail('workspace cleanup requires a released process group');
     const listeners = listenersReleased(process.runtime_ports);
     if (!listeners.supported || !listeners.released) fail('workspace cleanup requires released listeners');
-    const workspaceState = verifyWorkspace(config, resource);
-    if (!workspaceState.owned) fail(`workspace cleanup ownership cannot be verified: ${workspaceState.reason}`);
-    if (!removeOwnedDirectory(resource.path, resource.path_identity, config.temp_root)) {
-      fail('workspace cleanup did not remove the owned workspace');
+    if (!releaseWorkspaceResource(config, resource)) {
+      return blockedCleanupResult(projectRoot, payload, resource.kind);
+    }
+  } else if (resource.kind === 'worker-home-ledger') {
+    const result = workerHomeLedger.cleanup(root, projectRoot, payload, resource);
+    if (!result.cleaned) {
+      return blockedCleanupResult(projectRoot, payload, resource.kind, {
+        resource_detail_ref: result.resource_detail_ref,
+        resource_detail_sha256: result.resource_detail_sha256,
+        remaining_count: result.remaining_count,
+      });
     }
   } else if (resource.kind === 'ports') {
     const listeners = listenersReleased(resource.runtime_ports);
@@ -1208,13 +1388,14 @@ function environmentEffect(projectRoot, payload, produce) {
   return result;
 }
 
-function waitForHttp(url, timeoutSeconds) {
+function waitForHttp(url, timeoutSeconds, environment) {
   const script = [
     "const http=require('http'),https=require('https'),url=process.argv[1],end=Date.now()+Number(process.argv[2])*1000;",
     "function poll(){const client=url.startsWith('https:')?https:http;const req=client.get(url,res=>{res.resume();process.exit(res.statusCode>=200&&res.statusCode<500?0:1)});",
     "req.on('error',()=>{if(Date.now()>=end)process.exit(1);setTimeout(poll,20)});req.setTimeout(500,()=>req.destroy())}poll();",
   ].join('');
-  return directExec([process.execPath, '-e', script, url, String(timeoutSeconds || 30)], process.cwd(), timeoutSeconds).exit_code === 0;
+  return directExec([process.execPath, '-e', script, url, String(timeoutSeconds || 30)],
+    process.cwd(), timeoutSeconds, undefined, environment).exit_code === 0;
 }
 
 function structuredReplayKey(grantId) {
@@ -1234,7 +1415,7 @@ function structuredConsumptionKey(receiptId) {
   return `testing-runner/effect-consumptions/${sha256(stable(receiptId))}`;
 }
 
-function localHttpRequest(request, timeoutSeconds) {
+function localHttpRequest(request, timeoutSeconds, environment) {
   const script = [
     "const http=require('http'),url=process.argv[1],method=process.argv[2],timeout=Number(process.argv[3])*1000;",
     "const req=http.request(url,{method},res=>{const chunks=[];res.on('data',chunk=>chunks.push(chunk));",
@@ -1243,7 +1424,7 @@ function localHttpRequest(request, timeoutSeconds) {
     "req.setTimeout(timeout,()=>req.destroy(new Error('request-timeout')));req.end();",
   ].join('');
   const executed = directExec([process.execPath, '-e', script, request.url, request.method,
-    String(timeoutSeconds || 30)], process.cwd(), timeoutSeconds);
+    String(timeoutSeconds || 30)], process.cwd(), timeoutSeconds, undefined, environment);
   if (executed.exit_code !== 0) fail('structured HTTP request failed');
   try { return JSON.parse(executed.stdout); } catch (_error) { fail('structured HTTP response is malformed'); }
 }
@@ -1802,7 +1983,8 @@ function authorizeEffect(projectRoot, payload, expectedKind) {
   }
 }
 
-function dispatch(name, payload, projectRoot) {
+function dispatch(name, payload, projectRoot, hooks = {}) {
+  process.env.FKST_OBJECT_BOUND_CLEANUP_STATE_ROOT = durableRoot();
   switch (name) {
     case 'sha256-bytes':
       return sha256Bytes(payload);
@@ -2061,6 +2243,18 @@ function dispatch(name, payload, projectRoot) {
     case 'remaining-budget':
       loadConfig(projectRoot, runIdFor(payload));
       return { remaining_seconds: 120 };
+    case 'initialize-worker-home-ledger': {
+      const runId = runIdFor(payload);
+      const root = runRoot(runId);
+      const config = loadConfig(projectRoot, runId);
+      return environmentEffect(projectRoot, payload, () => {
+        if (payload.operation_id !== runId
+          || stable(payload.repository) !== stable(config.profile.repository)) {
+          fail('worker-home ledger initialization binding differs');
+        }
+        return workerHomeLedger.initialize(root, payload);
+      });
+    }
     case 'checkout': {
       const runId = runIdFor(payload);
       const root = runRoot(runId);
@@ -2070,26 +2264,85 @@ function dispatch(name, payload, projectRoot) {
           || payload.working_directory !== config.profile.working_directory) {
           fail('environment checkout binding differs');
         }
-        const workspaceRoot = path.resolve(config.workspace_root);
-        const tempRoot = path.resolve(config.temp_root);
-        if (workspaceRoot === tempRoot || !workspaceRoot.startsWith(`${tempRoot}${path.sep}`)) {
-          fail('environment checkout workspace escaped the durable temp root');
-        }
-        fs.rmSync(config.workspace_root, { recursive: true, force: true });
-        const cloned = directExec(['git', 'clone', '--quiet', config.source_root, config.workspace_root], config.temp_root,
-          payload.timeout_seconds);
-        if (cloned.exit_code !== 0) fail('environment checkout clone failed');
-        const checkedOut = directExec(['git', 'checkout', '--quiet', config.commit_sha], config.workspace_root,
-          payload.timeout_seconds);
-        if (checkedOut.exit_code !== 0) fail('environment checkout revision failed');
-        const resolved = directExec(['git', 'rev-parse', 'HEAD'], config.workspace_root, payload.timeout_seconds);
-        const commit = String(resolved.stdout || '').trim();
-        if (resolved.exit_code !== 0 || commit !== config.commit_sha) fail('environment checkout resolved commit differs');
         const workspaceRef = { kind: 'workspace', ref: `${runId}-workspace` };
         const cleanupRef = { kind: 'workspace-cleanup', ref: `${runId}-workspace` };
+        const reservation = durableWorkspaceReservation(root, config);
+        const recovered = recoverRegisteredCheckout(
+          projectRoot, config, payload, workspaceRef, cleanupRef,
+        );
+        if (recovered) return recovered;
+        const workspaceIdentity = prepareReservedWorkspace(
+          reservation.record, reservation.record.path_identity, {
+            reservationWasCreated: reservation.created,
+            hooks: {
+              afterWorkspaceDirectoryCreated(details) {
+                if (typeof hooks.afterWorkspaceDirectoryCreated === 'function') {
+                  hooks.afterWorkspaceDirectoryCreated(details);
+                }
+                crashBarrier(projectRoot, runId, 'checkout-after-workspace-directory-created', {
+                  reservation_id: reservation.record.reservation_id,
+                });
+              },
+              afterWorkspaceResourceRegistered(details) {
+                if (typeof hooks.afterWorkspaceResourceRegistered === 'function') {
+                  hooks.afterWorkspaceResourceRegistered(details);
+                }
+                crashBarrier(projectRoot, runId, 'checkout-after-workspace-allocation-registered', {
+                  reservation_id: reservation.record.reservation_id,
+                  path_identity: details.path_identity,
+                });
+              },
+            },
+            persistIdentity(identity) {
+              const next = {
+                ...reservation.record,
+                version: reservation.record.version + 1,
+                reservation_state: 'allocated',
+                path_identity: identity,
+              };
+              const saved = recordCas(root, reservation.key, next, reservation.record.version);
+              if (!saved.saved || stable(saved.value) !== stable(next)) {
+                fail('workspace allocation identity commit conflict');
+              }
+              reservation.record = saved.value;
+            },
+          },
+        );
+        const commit = workerHomeLedger.withEnvironment(root,
+          ledgerWorkerRequest(config, payload), 'checkout', config.command_environment || {}, (environment) => {
+            const cloned = directExec(['git', 'clone', '--quiet', config.source_root, '.'],
+              config.workspace_root, payload.timeout_seconds, undefined, environment, workspaceIdentity);
+            if (cloned.exit_code !== 0) fail('environment checkout clone failed');
+            const checkedOut = directExec(['git', 'checkout', '--quiet', config.commit_sha],
+              config.workspace_root, payload.timeout_seconds, undefined, environment, workspaceIdentity);
+            if (checkedOut.exit_code !== 0) fail('environment checkout revision failed');
+            const resolved = directExec(['git', 'rev-parse', 'HEAD'], config.workspace_root,
+              payload.timeout_seconds, undefined, environment, workspaceIdentity);
+            const observed = String(resolved.stdout || '').trim();
+            if (resolved.exit_code !== 0 || observed !== config.commit_sha) {
+              fail('environment checkout resolved commit differs');
+            }
+            return observed;
+          });
+        if (typeof hooks.afterSuccessfulCheckout === 'function') {
+          hooks.afterSuccessfulCheckout({
+            reservation: { ...reservation.record }, resolved_commit: commit,
+          });
+        }
+        crashBarrier(projectRoot, runId, 'checkout-after-successful-checkout', {
+          reservation_id: reservation.record.reservation_id, resolved_commit: commit,
+        });
         registerWorkspace(projectRoot, {
           run_id: runId, operation_id: runId, workspace_ref: workspaceRef, cleanup_ref: cleanupRef,
           path: config.workspace_root, repository: config.repository,
+        }, reservation.record, workspaceIdentity);
+        if (typeof hooks.afterFinalWorkspaceResourceRegistered === 'function') {
+          hooks.afterFinalWorkspaceResourceRegistered({
+            reservation: { ...reservation.record }, resolved_commit: commit,
+          });
+        }
+        crashBarrier(projectRoot, runId, 'checkout-after-workspace-resource-registered', {
+          reservation_id: reservation.record.reservation_id, resolved_commit: commit,
         });
         return { status: 'passed', resolved_commit: commit, workspace_ref: workspaceRef, cleanup_ref: cleanupRef };
       });
@@ -2126,27 +2379,39 @@ function dispatch(name, payload, projectRoot) {
     case 'run-argv':
       return environmentEffect(projectRoot, payload, (runId, root) => {
         const workspace = workspaceResource(root, payload.workspace_ref);
+        const config = loadConfig(projectRoot, runId);
         if (payload.mode === 'supervised') {
           return startApplication(projectRoot, {
             ...payload, run_id: runId,
             cleanup_ref: { kind: 'process-cleanup', ref: `${runId}-application` },
           });
         }
-        const executed = directExec(payload.argv, workspace.path, payload.timeout_seconds);
+        const executed = workerHomeLedger.withEnvironment(root,
+          ledgerWorkerRequest(config, payload), `oneshot:${payload.effect_id}`,
+          config.command_environment || {}, (environment) =>
+            directExec(payload.argv, workspace.path, payload.timeout_seconds, undefined,
+              environment, workspace.path_identity));
         const result = { status: executed.exit_code === 0 ? 'passed' : 'blocked' };
         if (payload.requires_frozen_dependencies) result.frozen_dependencies_enforced = true;
         return result;
       });
     case 'wait-readiness':
-      return environmentEffect(projectRoot, payload, (_runId, root) => {
-        for (const check of payload.checks || []) {
+      return environmentEffect(projectRoot, payload, (runId, root) => {
+        const config = loadConfig(projectRoot, runId);
+        for (const [index, check] of (payload.checks || []).entries()) {
+          const purpose = `readiness:${index + 1}:${String(check.type || 'unknown')}`;
           if (check.type === 'http') {
-            if (!waitForHttp(check.url, payload.timeout_seconds)) return { status: 'blocked' };
+            const ready = workerHomeLedger.withEnvironment(root,
+              ledgerWorkerRequest(config, payload), purpose, config.command_environment || {},
+              (environment) => waitForHttp(check.url, payload.timeout_seconds, environment));
+            if (!ready) return { status: 'blocked' };
           } else if (check.type === 'argv') {
             const workspace = workspaceResource(root, payload.workspace_ref);
-            if (directExec(check.argv, workspace.path, payload.timeout_seconds).exit_code !== 0) {
-              return { status: 'blocked' };
-            }
+            const result = workerHomeLedger.withEnvironment(root,
+              ledgerWorkerRequest(config, payload), purpose, config.command_environment || {},
+              (environment) => directExec(check.argv, workspace.path, payload.timeout_seconds,
+                undefined, environment, workspace.path_identity));
+            if (result.exit_code !== 0) return { status: 'blocked' };
           } else {
             return { status: 'blocked' };
           }
@@ -2263,8 +2528,13 @@ function dispatch(name, payload, projectRoot) {
           config, 'structured-execution-consumption', envelope.fence_id,
         ),
       });
-      const result = directExec(envelope.case.argv, workspace.path, envelope.case.timeout_seconds,
-        envelope.resource_bounds.output_bytes);
+      const result = workerHomeLedger.withEnvironment(root, {
+        operation_id: runId,
+        effect_id: `target-cli:${receipt.receipt_id}`,
+        repository: config.profile.repository,
+      }, `target-cli:${envelope.case.case_id}`, config.command_environment || {}, (environment) =>
+        directExec(envelope.case.argv, workspace.path, envelope.case.timeout_seconds,
+          envelope.resource_bounds.output_bytes, environment, workspace.path_identity));
       const sequence = structuredCaseSequence(projectRoot, request, envelope.case.case_id);
       const stored = recordImmutable(root, `testing-runner/target-effects/${sha256(stable(payload))}`, {
         sequence, binding: payload, result,
@@ -2323,7 +2593,12 @@ function dispatch(name, payload, projectRoot) {
           config, 'structured-execution-consumption', envelope.fence_id,
         ),
       });
-      const result = localHttpRequest(envelope.case.request, envelope.case.timeout_seconds);
+      const result = workerHomeLedger.withEnvironment(runRoot(runId), {
+        operation_id: runId,
+        effect_id: `target-http:${receipt.receipt_id}`,
+        repository: config.profile.repository,
+      }, `target-http:${envelope.case.case_id}`, config.command_environment || {}, (environment) =>
+        localHttpRequest(envelope.case.request, envelope.case.timeout_seconds, environment));
       const sequence = structuredCaseSequence(projectRoot, request, envelope.case.case_id);
       const stored = recordImmutable(runRoot(runId), `testing-runner/target-effects/${sha256(stable(payload))}`, {
         sequence, binding: payload, result,
@@ -2510,11 +2785,11 @@ if (require.main === module) main();
 module.exports = {
   assertStructuredGrantDerivation,
   assertExecutionMatchesClaim,
-  childProcessEnvironment,
   hostStructuredGrantValues,
+  dispatch,
   materializeImmutableNoReplace,
   preauthorizationBindingMatches,
-  releaseOwnedProcessResource,
+  releaseWorkspaceResource,
   trustedPreauthorizationRefs,
   verifyMaterializedImmutable,
 };

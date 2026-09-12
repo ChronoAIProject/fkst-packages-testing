@@ -296,8 +296,14 @@ local function profile_claim_receipt(config, store, projector, durable_claim)
   local profile = bound_artifact(store, start.profile_ref.ref, nil, "profile")
   local approval = bound_artifact(store, start.approval_ref.ref, nil, "profile approval")
   local validation = bound_artifact(store, start.validation_receipt_ref.ref, nil, "profile validation")
+  local observed_profile_sha256 = project_profile.profile_sha256(
+    profile.value, function(body) return store.records:digest(body) end)
+  local observed_approval_sha256 = project_profile.approval_sha256(
+    approval.value, function(body) return store.records:digest(body) end)
   if profile.value.revision ~= config.validation_receipt.profile_revision
     or approval.value.approval_id ~= config.validation_receipt.approval_id
+    or observed_profile_sha256 ~= validation.value.profile_sha256
+    or observed_approval_sha256 ~= validation.value.approval_sha256
     or validation.value.profile_sha256 ~= config.validation_receipt.profile_sha256
     or validation.value.approval_sha256 ~= config.validation_receipt.approval_sha256 then
     error("generic-host durable profile claim source artifacts differ")
@@ -442,11 +448,26 @@ function Context:_fixture_effect(name, payload, timeout_seconds)
   payload.request_id = request_id
   payload.runtime_config_ref = { kind = "artifact", ref = ".testing/generic-host-runtime.json" }
   write_file(request_path, json_codec.encode(payload) .. "\n")
-  local result = direct_exec({
-    "env", "FKST_DURABLE_ROOT=" .. self.durable_root,
+  local command = {
+    "env",
+    "FKST_DURABLE_ROOT=" .. self.durable_root,
+    "FKST_WORKER_RUNTIME_ROOT=" .. self.host_root .. "/fixture-worker-runtime",
+  }
+  local broker = self.project_root
+    .. "/packages/environment-factory/bin/object-bound-cleanup-broker.py"
+  local source = read_file(broker)
+  if source == nil then error("generic-host durable allocation broker is unavailable", 0) end
+  table.insert(command, "FKST_OBJECT_BOUND_ALLOCATION_BROKER=" .. broker)
+  table.insert(command, "FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256=" .. self.records:digest(source))
+  if self.object_bound_cleanup_broker ~= false then
+    table.insert(command, "FKST_OBJECT_BOUND_CLEANUP_BROKER=" .. broker)
+    table.insert(command, "FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256=" .. self.records:digest(source))
+  end
+  for _, item in ipairs({
     "node", self.project_root .. "/packages/generic-host/bin/generic-host-runtime.js",
     "effect", "--name", name, "--request", request_path, "--response", response_path,
-  }, self.project_root)
+  }) do table.insert(command, item) end
+  local result = direct_exec(command, self.project_root)
   local response_body = read_file(response_path)
   local decoded_ok, response = pcall(function() return json.decode(response_body) end)
   if decoded_ok and type(response) == "table" then
@@ -526,6 +547,10 @@ function Context:_environment_runtime()
         }
       end)
     end,
+    initialize_worker_home_ledger = function(request)
+      return context:_fixture_effect("initialize-worker-home-ledger", request,
+        request.timeout_seconds)
+    end,
     checkout = function(request)
       return context:_effect("environment-factory", request.effect_id, request, function()
         remove_tree(context.workspace_root, context.temp_root .. "/")
@@ -586,6 +611,7 @@ function Context:_environment_runtime()
             argv = copy(request.argv),
             workspace_ref = copy(request.workspace_ref),
             cleanup_ref = cleanup_ref,
+            worker_home_ledger_ref = copy(request.worker_home_ledger_ref),
             runtime_ports = copy(request.runtime_ports),
             artifact_root = request.artifact_root,
             trace_id = request.trace_id,
@@ -652,6 +678,7 @@ function Context:_workflow_runtime()
         local state = request and context.records:read("workflow-qa/state/" .. tostring(request.run_id)) or nil
         local terminal = request and context.records:read("generic-host/terminal/" .. tostring(request.run_id)) or nil
         if type(request) == "table" and type(state) == "table"
+          and state.phase ~= "cleanup-blocked"
           and (state.phase ~= "terminal" or terminal == nil) then
           table.insert(pending, copy(request))
           if #pending >= limit then break end
@@ -1702,8 +1729,10 @@ function M.initialize(context, durable_root)
         kind = "host-policy", ref = "fixtures/" .. context.fixture_name .. "-target-execution-boundary",
       },
       policy_revision = "generic-host-trusted-fixture-exact-v1",
+      human_approval_required = false,
       authorization_capability = false,
       execution_authorized = false,
+      promotion_authorized = false,
     },
     profile = copy(context.profile),
     approval = copy(context.approval),
@@ -1721,6 +1750,7 @@ function M.initialize(context, durable_root)
     completed_replay_failpoint = copy(context.completed_replay_failpoint),
     crash_barrier = copy(context.crash_barrier),
     runtime_pep_denial = copy(context.runtime_pep_denial),
+    object_bound_cleanup_broker = context.object_bound_cleanup_broker ~= false,
     fixture_name = context.fixture_name,
     fixture_source_root = context.fixture_source_root,
     use_local_qa_departments = context.use_local_qa_departments == true,
@@ -1810,6 +1840,7 @@ function M.list_pending(project_root, durable_root, limit)
     local context = M.load(project_root, durable_root, run.run_id)
     local state = context.workflow_runtime.load_state(context.request.state_ref)
     if state == nil or (type(state) == "table"
+      and state.phase ~= "cleanup-blocked"
       and (state.phase ~= "terminal" or context:terminal_record() == nil)) then
       table.insert(pending, context)
       if #pending >= limit then break end

@@ -365,6 +365,22 @@ return {
     t.raises(function() adapter.handle_execution_grant(request, {}) end)
   end,
 
+  test_derived_grants_reject_foreign_environment_and_http_origins = function()
+    local request, materials = fixture()
+    table.insert(materials.preauthorization.capabilities.http, {
+      origin = "http://127.0.0.1:43110", methods = { "GET" }, path_prefixes = { "/" },
+    })
+    t.raises(function() adapter.derive_execution_grant(request, materials, values()) end)
+
+    request, materials = fixture()
+    materials.environment_receipt_sha256 = digest("7")
+    t.raises(function() adapter.derive_execution_grant(request, materials, values()) end)
+
+    request, materials = browser_fixture()
+    materials.environment_receipt_sha256 = digest("7")
+    t.raises(function() adapter.derive_execution_grant(request, materials, browser_values()) end)
+  end,
+
   test_replayed_grant_rejects_foreign_http_origin_and_malformed_artifact = function()
     local request, materials = fixture()
     local ports, artifacts = runtime(request, materials)

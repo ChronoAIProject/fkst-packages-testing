@@ -59,19 +59,23 @@ function assertConfigOutsideOperationArtifacts(runtimeConfigRef, artifactRoot) {
 
 function validateTargetExecutionBoundary(boundary, repository, context = {}) {
   if (boundary && typeof boundary === 'object' && !Array.isArray(boundary)
-    && (boundary.authorization_capability === true || boundary.execution_authorized === true)) {
+    && (boundary.human_approval_required === true || boundary.authorization_capability === true
+      || boundary.execution_authorized === true
+      || boundary.promotion_authorized === true)) {
     throw new Error('target execution boundary must remain a non-authorizing admission prerequisite');
   }
   if (!boundary || typeof boundary !== 'object' || Array.isArray(boundary)
     || Object.keys(boundary).sort().join(',') !== [
       'schema', 'mode', 'target_class', 'repository', 'authority', 'policy_revision',
-      'authorization_capability', 'execution_authorized',
+      'human_approval_required', 'authorization_capability', 'execution_authorized',
+      'promotion_authorized',
     ].sort().join(',')) {
     throw new Error('HOST_RUNTIME_ISOLATION_REQUIRED: target execution boundary is missing or malformed');
   }
   exactKeys(boundary, [
     'schema', 'mode', 'target_class', 'repository', 'authority', 'policy_revision',
-    'authorization_capability', 'execution_authorized',
+    'human_approval_required', 'authorization_capability', 'execution_authorized',
+    'promotion_authorized',
   ],
     'target execution boundary');
   if (boundary.schema !== BOUNDARY_SCHEMA) {
@@ -83,7 +87,9 @@ function validateTargetExecutionBoundary(boundary, repository, context = {}) {
   if (boundary.target_class !== 'host-owned-exact-trusted-fixture') {
     throw new Error('HOST_RUNTIME_ISOLATION_REQUIRED: target is not a Host-owned exact trusted fixture');
   }
-  if (boundary.authorization_capability !== false || boundary.execution_authorized !== false) {
+  if (boundary.human_approval_required !== false || boundary.authorization_capability !== false
+    || boundary.execution_authorized !== false
+    || boundary.promotion_authorized !== false) {
     throw new Error('target execution boundary must remain a non-authorizing admission prerequisite');
   }
   if (!validRepository(boundary.repository)) {

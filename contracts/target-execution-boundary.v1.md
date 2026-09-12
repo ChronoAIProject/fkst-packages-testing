@@ -20,8 +20,10 @@ The current package accepts exactly one mode:
     "ref": "fixtures/reviewed-fixture-boundary"
   },
   "policy_revision": "reviewed-fixture-policy-v1",
+  "human_approval_required": false,
   "authorization_capability": false,
-  "execution_authorized": false
+  "execution_authorized": false,
+  "promotion_authorized": false
 }
 ```
 
@@ -46,3 +48,9 @@ that prevents target code from reading or replacing Host credentials.
 The private HOME lease, disabled Git credential helpers/hooks/fsmonitor, and removed GitHub and SSH
 environment variables are defense-in-depth controls for an admitted fixture. They are not an
 operating-system sandbox and do not make arbitrary code under the Host UID safe.
+
+The trusted Host may set `FKST_WORKER_RUNTIME_ROOT` to keep worker HOME allocation separate from the
+FKST framework's own `FKST_RUNTIME_ROOT`. The worker root must be a Host-owned, non-symlink private
+directory with no group or other permission bits. Existing Hosts that omit it use `FKST_RUNTIME_ROOT`
+for compatibility, but the same private-directory checks still apply and fail closed. Neither root,
+the object-bound allocation/cleanup broker paths, nor their digests are inherited by target workers.

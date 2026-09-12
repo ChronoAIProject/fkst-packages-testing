@@ -10,10 +10,8 @@ const {
   artifactPath,
   boundedText,
   isSafeArtifactPath,
-  minimalEnvironment,
   parseArgs,
   readJson,
-  releaseWorkerEnvironment,
   sha256,
   stableStringify,
   validateArgv,
@@ -21,6 +19,10 @@ const {
   writeJsonAtomic,
   writeJsonImmutable,
 } = require('../../../packages/environment-factory/bin/runtime/common');
+const {
+  allocateDurableWorkerEnvironment,
+  recordWorkerEnvironmentRelease,
+} = require('../../../packages/environment-factory/bin/runtime/worker-home-resource');
 const {
   validateTargetExecutionBoundary,
 } = require('../../../packages/environment-factory/bin/runtime/target-execution-boundary');
@@ -649,15 +651,75 @@ function receiptTag(config, receipt) {
 
 function authorizationReceipt(config, envelope, decision, reasonCode, inputs, now) {
   const envelopeSha256 = sha256(stableStringify(envelope));
+  const boundedIdentity = (value, fallback) => typeof value === 'string'
+    && value.length > 0 && value.length <= 180 ? value : fallback;
+  const requestedExpiry = Date.parse(envelope.expires_at);
+  const expiry = Number.isFinite(requestedExpiry) && requestedExpiry > now.getTime()
+    ? envelope.expires_at : utcTimestamp(new Date(now.getTime() + 1000));
   const receipt = {
     schema: 'testing-effect-authorization-receipt.v1', decision, reason_code: reasonCode,
-    receipt_id: `${envelope.effect_kind || 'invalid'}-effect-${envelopeSha256.slice(0, 40)}`,
+    receipt_id: `${['cli', 'http'].includes(envelope.effect_kind) ? envelope.effect_kind : 'invalid'}-effect-${envelopeSha256.slice(0, 40)}`,
     envelope_sha256: envelopeSha256,
     evaluated_input_digests: inputs,
-    issued_at: utcTimestamp(now), expires_at: envelope.expires_at,
-    fence_id: envelope.fence_id, trace_id: envelope.trace_id, dedup_key: envelope.dedup_key,
+    issued_at: utcTimestamp(now), expires_at: expiry,
+    fence_id: boundedIdentity(envelope.fence_id, 'invalid-fence'),
+    trace_id: boundedIdentity(envelope.trace_id, 'invalid-trace'),
+    dedup_key: boundedIdentity(envelope.dedup_key, 'invalid-dedup'),
   };
   receipt.auth_tag = receiptTag(config, receipt);
+  return receipt;
+}
+
+function persistedDeniedReceipt(config, envelope, reason, inputs, now) {
+  const expected = authorizationReceipt(config, envelope, 'deny', reason, inputs, now);
+  const target = authorizationPath(expected.receipt_id);
+  const release = acquireLock(`${target}.lock`);
+  try {
+    const current = fs.existsSync(target) ? readJson(target) : null;
+    const stored = current && (current.status === 'denied'
+      ? current.receipt : current.denial_receipt);
+    if (stored) {
+      if (stored.schema !== 'testing-effect-authorization-receipt.v1'
+        || stored.decision !== 'deny' || stored.reason_code !== reason
+        || stored.receipt_id !== expected.receipt_id
+        || stored.envelope_sha256 !== expected.envelope_sha256
+        || stableStringify(stored.evaluated_input_digests) !== stableStringify(inputs)
+        || stored.auth_tag !== receiptTag(config, stored)) {
+        throw new Error('durable effect denial receipt binding differs');
+      }
+      return stored;
+    }
+    if (current && !['issued', 'consumed'].includes(current.status)) {
+      throw new Error('durable effect authorization record is malformed');
+    }
+    if (current) {
+      writeJsonAtomic(target, { ...current, denial_receipt: expected });
+    } else {
+      writeJsonAtomic(target, { status: 'denied', receipt: expected });
+    }
+    return expected;
+  } finally {
+    release();
+  }
+}
+
+function reusableIssuedReceipt(config, stored, expected, now) {
+  if (!stored || stored.status !== 'issued' || !stored.receipt) return null;
+  const receipt = stored.receipt;
+  const expectedBinding = { ...expected };
+  const observedBinding = { ...receipt };
+  delete expectedBinding.issued_at;
+  delete expectedBinding.auth_tag;
+  delete observedBinding.issued_at;
+  delete observedBinding.auth_tag;
+  const issuedAt = Date.parse(receipt.issued_at);
+  const expiresAt = Date.parse(receipt.expires_at);
+  if (stableStringify(observedBinding) !== stableStringify(expectedBinding)
+    || receipt.auth_tag !== receiptTag(config, receipt)
+    || !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)
+    || issuedAt > now.getTime() || now.getTime() >= expiresAt) {
+    return null;
+  }
   return receipt;
 }
 
@@ -780,6 +842,25 @@ function evaluateEnvelope(config, envelope, now, expectedKind) {
     || profile.value.resource_budgets.output_bytes !== envelope.resource_bounds.output_bytes) {
     throw new Error('project profile policy denies CLI effect');
   }
+  const parentIssuedAt = Date.parse(preauthorization.value.issued_at);
+  const parentExpiresAt = Date.parse(preauthorization.value.expires_at);
+  const grantIssuedAt = Date.parse(grant.value.issued_at);
+  const grantExpiresAt = Date.parse(grant.value.expires_at);
+  if (![parentIssuedAt, parentExpiresAt, grantIssuedAt, grantExpiresAt].every(Number.isFinite)
+    || parentExpiresAt <= parentIssuedAt || grantExpiresAt <= grantIssuedAt) {
+    throw new Error('execution authorization validity window is malformed');
+  }
+  const nowMs = now.getTime();
+  if (nowMs < parentIssuedAt || nowMs >= parentExpiresAt) {
+    throw new Error('parent preauthorization is expired or not yet valid');
+  }
+  if (grantIssuedAt < parentIssuedAt || grantExpiresAt > parentExpiresAt) {
+    throw new Error('execution grant validity exceeds parent preauthorization');
+  }
+  if (nowMs < grantIssuedAt || nowMs >= grantExpiresAt
+    || nowMs >= Date.parse(envelope.expires_at)) {
+    throw new Error('execution grant or action envelope is expired or not yet valid');
+  }
   const planned = (plan.value.cases || []).find((item) => item.case_id === envelope.case.case_id);
   if (!planned || stableStringify(planned) !== stableStringify(envelope.case)) {
     throw new Error('approved plan scope differs');
@@ -799,7 +880,7 @@ function evaluateEnvelope(config, envelope, now, expectedKind) {
     && sameAuthority(entry.authority, grant.value.authority)
     && entry.policy_revision === grant.value.policy_revision
     && samePointer(entry.evidence_ref, grant.value.evidence_ref));
-  if (!attested || now >= new Date(grant.value.expires_at) || now >= new Date(envelope.expires_at)) {
+  if (!attested) {
     throw new Error('execution grant is unauthenticated or expired');
   }
   const replay = readReplay(config, grant.value.grant_id);
@@ -818,6 +899,7 @@ function authorizeEffect(payload, expectedKind) {
     preauthorization: '0'.repeat(64), environment_receipt: '0'.repeat(64),
     plan: '0'.repeat(64), grant: '0'.repeat(64),
   };
+  let replayDenied = false;
   try {
     validateTargetExecutionBoundary(config.target_execution_boundary, envelope.repository, {
       runtimeConfigRef: payload.runtime_config_ref,
@@ -830,15 +912,21 @@ function authorizeEffect(payload, expectedKind) {
     try {
       if (fs.existsSync(target)) {
         const current = readJson(target);
-        if (current.status !== 'issued' || stableStringify(current.receipt) !== stableStringify(receipt)) {
-          return authorizationReceipt(config, envelope, 'deny', 'replayed', inputs, now);
-        }
-        return current.receipt;
+        const reusable = reusableIssuedReceipt(config, current, receipt, now);
+        if (reusable) return reusable;
+        replayDenied = true;
+      } else {
+        writeJsonAtomic(target, { status: 'issued', receipt });
+        return receipt;
       }
-      writeJsonAtomic(target, { status: 'issued', receipt });
-      return receipt;
     } finally { release(); }
+    if (replayDenied) {
+      return persistedDeniedReceipt(config, envelope, 'replayed', inputs, now);
+    }
+    throw new Error('effect authorization replay state is unavailable');
   } catch (error) {
+    if (replayDenied && String(error && error.message || error)
+      .includes('durable effect denial receipt')) throw error;
     const message = String(error && error.message || error);
     const reason = message.includes('digest') ? 'digest-mismatch'
       : message.includes('expired') ? 'expired'
@@ -847,13 +935,7 @@ function authorizeEffect(payload, expectedKind) {
             : message.includes('profile policy') ? 'profile-policy-denied'
               : message.includes('fields') || message.includes('malformed') ? 'malformed-envelope'
                 : 'foreign-binding';
-    const safeEnvelope = {
-      expires_at: Number.isFinite(Date.parse(envelope.expires_at)) ? envelope.expires_at : utcTimestamp(new Date(now.getTime() + 1000)),
-      fence_id: typeof envelope.fence_id === 'string' ? envelope.fence_id : 'invalid-fence',
-      trace_id: typeof envelope.trace_id === 'string' ? envelope.trace_id : 'invalid-trace',
-      dedup_key: typeof envelope.dedup_key === 'string' ? envelope.dedup_key : 'invalid-dedup',
-    };
-    return authorizationReceipt(config, safeEnvelope, 'deny', reason, inputs, now);
+    return persistedDeniedReceipt(config, envelope, reason, inputs, now);
   }
 }
 
@@ -906,24 +988,22 @@ async function consumeAuthorizedEffect(payload, expectedKind, execute) {
 async function execArgv(payload) {
   return consumeAuthorizedEffect(payload, 'cli', async (envelope, config) => {
     const workspace = resolveWorkspace({
+      effect_id: `structured-workspace:${payload.authorization_receipt.receipt_id}`,
       operation_id: envelope.operation_id, repository: envelope.repository,
       environment_receipt_sha256: envelope.environment_receipt_sha256,
       workspace_ref: envelope.workspace_ref, require_clean: true,
     });
-    const environment = minimalEnvironment(config.command_environment || {}, {
-      schema: 'testing-runtime.structured-cli-isolation.v1',
+    const allocation = allocateDurableWorkerEnvironment({
+      effect_id: `structured-cli:${payload.authorization_receipt.receipt_id}`,
       operation_id: envelope.operation_id,
-      run_id: envelope.run_id,
       repository: envelope.repository,
-      case_id: envelope.case.case_id,
-      attempt: envelope.attempt,
-      purpose: 'structured-cli',
-    });
+    }, `structured-cli:${envelope.case.case_id}`, config.command_environment || {});
     try {
-      verifyWorkerEnvironment(environment);
+      verifyWorkerEnvironment(allocation.environment);
       const result = await runMeasuredCommand(validateArgv(envelope.case.argv), {
         cwd: workspace.cwd,
-        env: environment,
+        cwdIdentity: workspace.cwdIdentity,
+        env: allocation.environment,
         timeoutMs: envelope.case.timeout_seconds * 1000,
         outputBytes: Math.min(boundedOutput(config), envelope.resource_bounds.output_bytes),
       });
@@ -938,7 +1018,7 @@ async function execArgv(payload) {
       }
       return { exit_code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
     } finally {
-      releaseWorkerEnvironment(environment);
+      recordWorkerEnvironmentRelease(allocation);
     }
   });
 }

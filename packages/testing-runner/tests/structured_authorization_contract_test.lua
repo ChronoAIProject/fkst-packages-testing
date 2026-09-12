@@ -123,6 +123,9 @@ return {
     local foreign = fixtures.copy(receipt)
     foreign.fence_id = "claim-foreign"
     t.raises(function() contract.validate_effect_authorization_receipt(foreign, envelope) end)
+    foreign = fixtures.copy(receipt)
+    foreign.envelope_sha256 = string.rep("f", 64)
+    t.raises(function() contract.validate_effect_authorization_receipt(foreign, envelope) end)
   end,
 
   test_http_action_envelope_and_receipt_are_grant_bound = function()
@@ -163,6 +166,18 @@ return {
     local cli_schema = fixtures.copy(envelope)
     cli_schema.schema = contract.schemas.cli_action_envelope
     t.raises(function() contract.validate_action_envelope(cli_schema) end)
+
+    local unsupported = fixtures.copy(envelope)
+    unsupported.capability = "direct-http"
+    t.raises(function() contract.validate_http_action_envelope(unsupported) end)
+
+    local unbounded = fixtures.copy(envelope)
+    unbounded.resource_bounds.output_bytes = 1023
+    t.raises(function() contract.validate_http_action_envelope(unbounded) end)
+
+    local unknown = fixtures.copy(envelope)
+    unknown.schema = "testing-unknown-action-envelope.v1"
+    t.raises(function() contract.validate_action_envelope(unknown) end)
   end,
 
 
@@ -177,6 +192,23 @@ return {
     t.eq(grant.plan_sha256, request.test_plan_sha256)
     t.eq(grant.environment_receipt_sha256, request.environment_receipt_sha256)
     t.eq(grant.max_uses, 1)
+  end,
+
+  test_grant_validity_must_be_contained_by_parent_preauthorization = function()
+    local request = fixtures.request()
+    local plan = fixtures.plan(request)
+    for _, mutate in ipairs({
+      function(value) value.issued_at = "2026-07-19T23:59:59Z" end,
+      function(value) value.expires_at = "2026-07-20T01:00:01Z" end,
+    }) do
+      local grant_values = values()
+      mutate(grant_values)
+      t.raises(function()
+        contract.derive_grant(preauthorization(request), fixtures.digest_authorization,
+          plan, request.test_plan_sha256, request.environment_receipt_sha256,
+          grant_request(request), grant_values)
+      end)
+    end
   end,
 
   test_rejects_plan_capability_escalation = function()

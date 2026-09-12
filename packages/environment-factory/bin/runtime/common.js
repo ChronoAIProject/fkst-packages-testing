@@ -6,8 +6,12 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 
 const MAX_JSON_BYTES = 2 * 1024 * 1024;
+const MAX_LOCK_METADATA_BYTES = 8 * 1024;
+const MAX_CLEANUP_BROKER_BYTES = 256 * 1024;
 const DEFAULT_OUTPUT_BYTES = 64 * 1024;
 const LOCK_TIMEOUT_MS = 10_000;
+const OBJECT_BOUND_CLEANUP_UNAVAILABLE = 'OBJECT_BOUND_CLEANUP_UNAVAILABLE';
+const CLEANUP_CAPTURE_SCHEMA = 'environment-factory.object-bound-cleanup-capture-state.v1';
 const sleepCell = new Int32Array(new SharedArrayBuffer(4));
 const WORKER_ENVIRONMENT_LEASE = Symbol('fkst.worker-environment-lease');
 
@@ -54,6 +58,51 @@ function parseArgs(argv) {
 
 function boundedText(value, limit = 512) {
   return String(value || '').replace(/[\x00-\x1f\x7f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, limit);
+}
+
+function readBoundedRegularFile(filePath, maximumBytes = MAX_JSON_BYTES) {
+  if (!Number.isInteger(maximumBytes) || maximumBytes < 1 || maximumBytes > MAX_JSON_BYTES) {
+    throw new Error('bounded file limit is invalid');
+  }
+  const flags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW || 0);
+  const fd = fs.openSync(filePath, flags);
+  try {
+    const before = fs.fstatSync(fd, { bigint: true });
+    const linkedBefore = fs.lstatSync(filePath, { bigint: true });
+    if (!before.isFile() || !linkedBefore.isFile() || linkedBefore.isSymbolicLink()
+      || before.dev !== linkedBefore.dev || before.ino !== linkedBefore.ino
+      || before.size > BigInt(maximumBytes)) {
+      throw new Error(`bounded regular file is invalid: ${filePath}`);
+    }
+    const realpath = fs.realpathSync(filePath);
+    const size = Number(before.size);
+    const buffer = Buffer.alloc(size);
+    let offset = 0;
+    while (offset < size) {
+      const count = fs.readSync(fd, buffer, offset, size - offset, offset);
+      if (count === 0) break;
+      offset += count;
+    }
+    const after = fs.fstatSync(fd, { bigint: true });
+    const linkedAfter = fs.lstatSync(filePath, { bigint: true });
+    if (offset !== size || after.dev !== before.dev || after.ino !== before.ino
+      || after.size !== before.size || after.mtimeNs !== before.mtimeNs || after.ctimeNs !== before.ctimeNs
+      || linkedAfter.dev !== before.dev || linkedAfter.ino !== before.ino
+      || linkedAfter.isSymbolicLink() || !linkedAfter.isFile()
+      || fs.realpathSync(filePath) !== realpath) {
+      throw new Error(`bounded regular file changed while reading: ${filePath}`);
+    }
+    return {
+      body: buffer.toString('utf8'),
+      identity: {
+        realpath,
+        device: String(before.dev),
+        inode: String(before.ino),
+      },
+    };
+  } finally {
+    fs.closeSync(fd);
+  }
 }
 
 function readJson(filePath) {
@@ -137,28 +186,348 @@ function samePathIdentity(left, right) {
     && left.device === right.device && left.inode === right.inode);
 }
 
-function removeOwnedDirectory(target, expectedIdentity, containmentRoot) {
+function pathEntryExists(target) {
+  try {
+    fs.lstatSync(target);
+    return true;
+  } catch (error) {
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+}
+
+function configuredObjectBoundBroker(pathKey, digestKey, label) {
+  const sourcePath = process.env[pathKey];
+  const expectedSha256 = process.env[digestKey];
+  if (sourcePath === undefined && expectedSha256 === undefined) return null;
+  if (typeof sourcePath !== 'string' || !path.isAbsolute(sourcePath)
+    || typeof expectedSha256 !== 'string' || !/^[0-9a-f]{64}$/.test(expectedSha256)) {
+    throw new Error(`object-bound ${label} broker configuration is invalid`);
+  }
+  const source = readBoundedRegularFile(sourcePath, MAX_CLEANUP_BROKER_BYTES).body;
+  if (sha256(source) !== expectedSha256) {
+    throw new Error(`object-bound ${label} broker digest differs`);
+  }
+  return source;
+}
+
+function configuredObjectBoundCleanupBroker() {
+  return configuredObjectBoundBroker(
+    'FKST_OBJECT_BOUND_CLEANUP_BROKER', 'FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256', 'cleanup',
+  );
+}
+
+function configuredObjectBoundAllocationBroker() {
+  const configured = configuredObjectBoundBroker(
+    'FKST_OBJECT_BOUND_ALLOCATION_BROKER', 'FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256',
+    'allocation',
+  );
+  return configured === null ? configuredObjectBoundCleanupBroker() : configured;
+}
+
+function invokeObjectBoundCleanupBroker(
+  target, targetIdentity, containmentRoot, rootIdentity, captureId, operation,
+) {
+  const source = configuredObjectBoundCleanupBroker();
+  if (source === null) return null;
+  const python = process.platform === 'win32' ? null : '/usr/bin/python3';
+  if (python === null || !fs.existsSync(python)) return null;
+  const request = {
+    schema: 'environment-factory.object-bound-cleanup-request.v1',
+    operation,
+    capture_id: captureId,
+    target,
+    target_identity: targetIdentity,
+    containment_root: containmentRoot,
+    containment_root_identity: rootIdentity,
+  };
+  const environment = Object.create(null);
+  for (const key of ['LANG', 'LC_ALL']) {
+    if (typeof process.env[key] === 'string') environment[key] = process.env[key];
+  }
+  const result = spawnSync(python, ['-I', '-c', source], {
+    input: `${stableStringify(request)}\n`,
+    env: environment,
+    shell: false,
+    encoding: 'utf8',
+    timeout: 30_000,
+    maxBuffer: MAX_LOCK_METADATA_BYTES,
+  });
+  if (result.status !== 0) return null;
+  let receipt;
+  try { receipt = JSON.parse(String(result.stdout || '')); } catch (_error) { return null; }
+  const expectedStatus = {
+    'capture-delete': 'captured-cleaned',
+    finalize: 'finalized',
+    'release-proof': 'released',
+  }[operation];
+  if (expectedStatus === undefined) return null;
+  return receipt
+    && receipt.schema === 'environment-factory.object-bound-cleanup-receipt.v1'
+    && receipt.status === expectedStatus
+    && receipt.capture_id === captureId
+    && receipt.target_removed === true
+    && String(receipt.target_device) === targetIdentity.device
+    && String(receipt.target_inode) === targetIdentity.inode
+    && String(receipt.containment_root_device) === rootIdentity.device
+    && String(receipt.containment_root_inode) === rootIdentity.inode
+    ? receipt : null;
+}
+
+function allocateOwnedDirectory(
+  target, containmentRoot, rootIdentity, allocationId, markerName, markerBody,
+  childDirectories = [],
+) {
+  if (typeof target !== 'string' || !path.isAbsolute(target)
+    || typeof containmentRoot !== 'string' || !path.isAbsolute(containmentRoot)
+    || path.dirname(target) !== containmentRoot
+    || !samePathIdentity(pathIdentity(containmentRoot), rootIdentity)
+    || !/^[0-9a-f]{64}$/.test(String(allocationId || ''))
+    || typeof markerName !== 'string' || markerName === '' || path.basename(markerName) !== markerName
+    || typeof markerBody !== 'string' || !markerBody.endsWith('\n')
+    || !Array.isArray(childDirectories)) {
+    throw new Error('object-bound directory allocation binding is invalid');
+  }
+  const source = configuredObjectBoundAllocationBroker();
+  const python = process.platform === 'win32' ? null : '/usr/bin/python3';
+  if (source === null || python === null || !fs.existsSync(python)) {
+    throw new Error('OBJECT_BOUND_DIRECTORY_ALLOCATION_UNAVAILABLE');
+  }
+  const request = {
+    schema: 'environment-factory.object-bound-directory-allocation-request.v1',
+    operation: 'allocate-directory',
+    allocation_id: allocationId,
+    target: path.join(rootIdentity.realpath, path.basename(target)),
+    containment_root: rootIdentity.realpath,
+    containment_root_identity: rootIdentity,
+    marker_name: markerName,
+    marker_body: markerBody,
+    child_directories: childDirectories,
+  };
+  const environment = Object.create(null);
+  for (const key of ['LANG', 'LC_ALL']) {
+    if (typeof process.env[key] === 'string') environment[key] = process.env[key];
+  }
+  const result = spawnSync(python, ['-I', '-c', source], {
+    input: `${stableStringify(request)}\n`,
+    env: environment,
+    shell: false,
+    encoding: 'utf8',
+    timeout: 30_000,
+    maxBuffer: MAX_LOCK_METADATA_BYTES,
+  });
+  if (result.status !== 0) throw new Error('OBJECT_BOUND_DIRECTORY_ALLOCATION_FAILED');
+  let receipt;
+  try { receipt = JSON.parse(String(result.stdout || '')); } catch (_error) {
+    throw new Error('OBJECT_BOUND_DIRECTORY_ALLOCATION_FAILED');
+  }
+  const identity = receipt && {
+    realpath: receipt.target_realpath,
+    device: String(receipt.target_device),
+    inode: String(receipt.target_inode),
+  };
+  if (!receipt
+    || receipt.schema !== 'environment-factory.object-bound-directory-allocation-receipt.v1'
+    || receipt.status !== 'allocated' || receipt.allocation_id !== allocationId
+    || receipt.target_realpath !== request.target
+    || String(receipt.containment_root_device) !== rootIdentity.device
+    || String(receipt.containment_root_inode) !== rootIdentity.inode
+    || !samePathIdentity(pathIdentity(target), identity)
+    || !samePathIdentity(pathIdentity(containmentRoot), rootIdentity)) {
+    throw new Error('OBJECT_BOUND_DIRECTORY_ALLOCATION_FAILED');
+  }
+  return identity;
+}
+
+function retireOwnedDirectoryMarker(
+  target, targetIdentity, containmentRoot, rootIdentity, allocationId, markerName, markerBody,
+) {
+  if (!samePathIdentity(pathIdentity(target), targetIdentity)
+    || !samePathIdentity(pathIdentity(containmentRoot), rootIdentity)) {
+    throw new Error('object-bound marker retirement identity changed');
+  }
+  const source = configuredObjectBoundAllocationBroker();
+  const python = process.platform === 'win32' ? null : '/usr/bin/python3';
+  if (source === null || python === null || !fs.existsSync(python)) {
+    throw new Error('OBJECT_BOUND_MARKER_RETIREMENT_UNAVAILABLE');
+  }
+  const request = {
+    schema: 'environment-factory.object-bound-marker-retirement-request.v1',
+    operation: 'retire-marker',
+    allocation_id: allocationId,
+    target: targetIdentity.realpath,
+    target_identity: targetIdentity,
+    containment_root: rootIdentity.realpath,
+    containment_root_identity: rootIdentity,
+    marker_name: markerName,
+    marker_body: markerBody,
+  };
+  const environment = Object.create(null);
+  for (const key of ['LANG', 'LC_ALL']) {
+    if (typeof process.env[key] === 'string') environment[key] = process.env[key];
+  }
+  const result = spawnSync(python, ['-I', '-c', source], {
+    input: stableStringify(request) + '\n',
+    env: environment,
+    shell: false,
+    encoding: 'utf8',
+    timeout: 30_000,
+    maxBuffer: MAX_LOCK_METADATA_BYTES,
+  });
+  if (result.status !== 0) throw new Error('OBJECT_BOUND_MARKER_RETIREMENT_FAILED');
+  let receipt;
+  try { receipt = JSON.parse(String(result.stdout || '')); } catch (_error) {
+    throw new Error('OBJECT_BOUND_MARKER_RETIREMENT_FAILED');
+  }
+  if (!receipt || receipt.schema !== 'environment-factory.object-bound-marker-retirement-receipt.v1'
+    || receipt.status !== 'retired' || receipt.allocation_id !== allocationId
+    || String(receipt.target_device) !== targetIdentity.device
+    || String(receipt.target_inode) !== targetIdentity.inode
+    || String(receipt.containment_root_device) !== rootIdentity.device
+    || String(receipt.containment_root_inode) !== rootIdentity.inode
+    || !samePathIdentity(pathIdentity(target), targetIdentity)
+    || !samePathIdentity(pathIdentity(containmentRoot), rootIdentity)) {
+    throw new Error('OBJECT_BOUND_MARKER_RETIREMENT_FAILED');
+  }
+}
+
+function cleanupCaptureStatePath(captureId) {
+  const durableRoot = requireOwnedDirectory(path.resolve(
+    process.env.FKST_OBJECT_BOUND_CLEANUP_STATE_ROOT
+      || process.env.FKST_DURABLE_ROOT
+      || path.join('.testing', 'durable'),
+  ));
+  const stateRoot = requireOwnedDirectory(
+    path.join(durableRoot, 'cleanup-captures'),
+    { privateDirectory: true },
+  );
+  return path.join(stateRoot, `${captureId}.json`);
+}
+
+function cleanupCaptureBinding(target, expectedIdentity, containmentRoot, rootIdentity, captureId) {
+  return {
+    schema: CLEANUP_CAPTURE_SCHEMA,
+    capture_id: captureId,
+    target,
+    target_identity: expectedIdentity,
+    containment_root: containmentRoot,
+    containment_root_identity: rootIdentity,
+  };
+}
+
+function ownedDirectoryReleaseProven(target, expectedIdentity, containmentRoot, captureId) {
+  if (typeof target !== 'string' || typeof containmentRoot !== 'string'
+    || !/^[0-9a-f]{64}$/.test(String(captureId || ''))) return false;
+  try {
+    const root = fs.realpathSync(containmentRoot);
+    const requestedTarget = path.resolve(target);
+    const targetParent = fs.realpathSync(path.dirname(requestedTarget));
+    const canonicalTarget = path.join(targetParent, path.basename(requestedTarget));
+    if (!expectedIdentity || targetParent !== root || expectedIdentity.realpath !== canonicalTarget
+      || canonicalTarget === root || !canonicalTarget.startsWith(`${root}${path.sep}`)) return false;
+    const binding = cleanupCaptureBinding(
+      canonicalTarget, expectedIdentity, root, pathIdentity(root), captureId,
+    );
+    const state = readOptionalJson(cleanupCaptureStatePath(captureId));
+    return state !== null
+      && stableStringify(state) === stableStringify({ ...binding, state: 'released' })
+      && !pathEntryExists(canonicalTarget);
+  } catch (_error) {
+    return false;
+  }
+}
+
+function readOptionalJson(filePath) {
+  try {
+    return readJson(filePath);
+  } catch (error) {
+    if (error.code === 'ENOENT') return null;
+    throw error;
+  }
+}
+
+function removeOwnedDirectory(target, expectedIdentity, containmentRoot, captureId) {
   if (typeof target !== 'string' || typeof containmentRoot !== 'string') {
     throw new Error('owned directory paths are invalid');
   }
+  if (!/^[0-9a-f]{64}$/.test(String(captureId || ''))) {
+    throw new Error('owned directory cleanup capture identity is invalid');
+  }
   const root = fs.realpathSync(containmentRoot);
-  const identity = pathIdentity(target);
-  if (!samePathIdentity(identity, expectedIdentity)) throw new Error('owned directory identity changed');
-  if (identity.realpath === root || !identity.realpath.startsWith(`${root}${path.sep}`)) {
+  const requestedTarget = path.resolve(target);
+  const targetParent = fs.realpathSync(path.dirname(requestedTarget));
+  const targetName = path.basename(requestedTarget);
+  const canonicalTarget = path.join(targetParent, targetName);
+  if (!expectedIdentity || targetParent !== root || expectedIdentity.realpath !== canonicalTarget) {
+    throw new Error('owned directory cleanup identity is malformed');
+  }
+  if (expectedIdentity.realpath === root || !expectedIdentity.realpath.startsWith(`${root}${path.sep}`)) {
     throw new Error('owned directory escaped containment root');
   }
-  fs.rmSync(identity.realpath, { recursive: true, force: false });
-  return !fs.existsSync(identity.realpath);
+  const rootIdentity = pathIdentity(root);
+  target = canonicalTarget;
+  const binding = cleanupCaptureBinding(target, expectedIdentity, root, rootIdentity, captureId);
+  const statePath = cleanupCaptureStatePath(captureId);
+  const release = acquireLock(`${statePath}.lock`);
+  try {
+    let state = readOptionalJson(statePath);
+    if (state === null) {
+      if (!pathEntryExists(target)) return false;
+      const identity = pathIdentity(target);
+      if (!samePathIdentity(identity, expectedIdentity)) {
+        throw new Error('owned directory identity changed');
+      }
+      state = { ...binding, state: 'pending' };
+      writeJsonAtomic(statePath, state);
+    } else {
+      const expected = { ...binding, state: state.state };
+      if (stableStringify(state) !== stableStringify(expected)
+        || !['pending', 'captured-cleaned', 'finalized', 'released'].includes(state.state)) {
+        throw new Error('owned directory cleanup capture binding differs');
+      }
+    }
+    if (state.state === 'pending') {
+      const captured = invokeObjectBoundCleanupBroker(
+        binding.target, binding.target_identity, binding.containment_root,
+        binding.containment_root_identity, captureId, 'capture-delete',
+      );
+      if (captured === null) return false;
+      state = { ...binding, state: 'captured-cleaned' };
+      writeJsonAtomic(statePath, state);
+    }
+    if (state.state === 'captured-cleaned') {
+      const finalized = invokeObjectBoundCleanupBroker(
+        binding.target, binding.target_identity, binding.containment_root,
+        binding.containment_root_identity, captureId, 'finalize',
+      );
+      if (finalized === null) return false;
+      state = { ...binding, state: 'finalized' };
+      writeJsonAtomic(statePath, state);
+    }
+    if (state.state === 'finalized') {
+      const released = invokeObjectBoundCleanupBroker(
+        binding.target, binding.target_identity, binding.containment_root,
+        binding.containment_root_identity, captureId, 'release-proof',
+      );
+      if (released === null) return false;
+      state = { ...binding, state: 'released' };
+      writeJsonAtomic(statePath, state);
+    }
+    return state.state === 'released' && !pathEntryExists(target);
+  } finally {
+    release();
+  }
 }
 
 function readLockOwner(lockPath) {
   try {
+    const lockIdentity = lockPathIdentity(lockPath);
     const lockStat = fs.lstatSync(lockPath);
-    if (lockStat.isSymbolicLink()) return null;
     const ownerPath = lockStat.isDirectory() ? path.join(lockPath, 'owner.json') : lockPath;
-    const stat = fs.lstatSync(ownerPath);
-    if (!stat.isFile() || stat.isSymbolicLink() || stat.size > MAX_JSON_BYTES) return null;
-    const owner = JSON.parse(fs.readFileSync(ownerPath, 'utf8'));
+    const metadata = readBoundedRegularFile(ownerPath, MAX_LOCK_METADATA_BYTES);
+    if (!lockPathStillMatches(lockPath, lockIdentity)
+      || (!lockStat.isDirectory() && !samePathIdentity(lockIdentity, metadata.identity))) return null;
+    const owner = JSON.parse(metadata.body);
     if (!owner || owner.schema !== 'environment-factory.lock-owner.v1'
       || !Number.isInteger(owner.pid) || owner.pid < 1
       || typeof owner.process_start_identity !== 'string' || owner.process_start_identity === ''
@@ -197,13 +566,82 @@ function lockPathStillMatches(lockPath, expectedIdentity) {
   }
 }
 
-function removeLockPath(lockPath, expectedIdentity) {
-  if (!samePathIdentity(lockPathIdentity(lockPath), expectedIdentity)) {
-    throw new Error(`lock path identity changed: ${lockPath}`);
+function sameObjectIdentity(left, right) {
+  return Boolean(left && right && left.device === right.device && left.inode === right.inode);
+}
+
+function createLockQuarantine(filePath) {
+  for (let attempt = 0; attempt < 8; attempt += 1) {
+    const root = `${filePath}.retired-${process.pid}-${crypto.randomBytes(16).toString('hex')}`;
+    try {
+      fs.mkdirSync(root, { mode: 0o700 });
+      return { root, entry: path.join(root, 'entry') };
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+    }
   }
+  throw new Error(`could not allocate private lock quarantine: ${filePath}`);
+}
+
+function restoreQuarantinedLockEntry(filePath, quarantine) {
+  const movedStat = fs.lstatSync(quarantine.entry);
+  if (!movedStat.isFile() || movedStat.isSymbolicLink()) {
+    throw new Error(`lock replacement retained in quarantine: ${quarantine.entry}`);
+  }
+  try {
+    fs.linkSync(quarantine.entry, filePath);
+  } catch (error) {
+    if (error.code === 'EEXIST') {
+      throw new Error(`lock replacement could not be restored; retained in quarantine: ${quarantine.entry}`);
+    }
+    throw error;
+  }
+  const restored = pathIdentity(filePath);
+  const moved = pathIdentity(quarantine.entry);
+  if (!sameObjectIdentity(restored, moved)) {
+    throw new Error(`restored lock replacement identity differs; retained in quarantine: ${quarantine.entry}`);
+  }
+  fs.unlinkSync(quarantine.entry);
+  fs.rmdirSync(quarantine.root);
+}
+
+function retireObservedLockFile(filePath, observed) {
+  const quarantine = createLockQuarantine(filePath);
+  try {
+    fs.renameSync(filePath, quarantine.entry);
+  } catch (error) {
+    fs.rmdirSync(quarantine.root);
+    if (error.code === 'ENOENT') return false;
+    throw error;
+  }
+
+  let moved;
+  try {
+    moved = readBoundedRegularFile(quarantine.entry, MAX_LOCK_METADATA_BYTES);
+  } catch (_error) {
+    restoreQuarantinedLockEntry(filePath, quarantine);
+    return false;
+  }
+  if (!sameObjectIdentity(moved.identity, observed.identity) || moved.body !== observed.body) {
+    restoreQuarantinedLockEntry(filePath, quarantine);
+    return false;
+  }
+  fs.unlinkSync(quarantine.entry);
+  fs.rmdirSync(quarantine.root);
+  return true;
+}
+
+function removeLockPath(lockPath, expectedIdentity, expectedOwner) {
   const stat = fs.lstatSync(lockPath);
-  if (stat.isDirectory()) fs.rmSync(expectedIdentity.realpath, { recursive: true, force: true });
-  else fs.unlinkSync(expectedIdentity.realpath);
+  if (stat.isDirectory()) {
+    const error = new Error(`legacy lock directory cleanup requires an object-bound broker: ${lockPath}`);
+    error.code = 'OBJECT_BOUND_CLEANUP_UNAVAILABLE';
+    throw error;
+  }
+  const observed = readBoundedRegularFile(lockPath, MAX_LOCK_METADATA_BYTES);
+  if (!sameObjectIdentity(observed.identity, expectedIdentity)
+    || observed.body !== lockOwnerBody(expectedOwner)) return false;
+  return retireObservedLockFile(lockPath, observed);
 }
 
 function lockOwnerBody(owner) {
@@ -217,11 +655,10 @@ function pendingLockOwnerPath(lockPath, owner) {
 function removeMatchingPendingLockOwner(lockPath, owner) {
   const pendingPath = pendingLockOwnerPath(lockPath, owner);
   try {
-    const stat = fs.lstatSync(pendingPath);
-    if (!stat.isFile() || stat.isSymbolicLink()
-      || fs.readFileSync(pendingPath, 'utf8') !== lockOwnerBody(owner)) return false;
-    fs.unlinkSync(pendingPath);
-    return true;
+    const metadata = readBoundedRegularFile(pendingPath, MAX_LOCK_METADATA_BYTES);
+    if (metadata.body !== lockOwnerBody(owner)
+      || !samePathIdentity(pathIdentity(pendingPath), metadata.identity)) return false;
+    return retireObservedLockFile(pendingPath, metadata);
   } catch (error) {
     if (error.code === 'ENOENT') return false;
     throw error;
@@ -246,14 +683,14 @@ function createAtomicLock(lockPath, identity) {
   }
   const lockIdentity = lockPathIdentity(lockPath);
   if (readLockOwner(lockPath) === null || fs.readFileSync(lockPath, 'utf8') !== ownerBody) {
-    try { removeLockPath(lockPath, lockIdentity); } catch (_cleanupError) {}
+    try { removeLockPath(lockPath, lockIdentity, owner); } catch (_cleanupError) {}
     try { fs.unlinkSync(pendingPath); } catch (_cleanupError) {}
     throw new Error(`atomic lock publication failed: ${lockPath}`);
   }
   try {
     fs.unlinkSync(pendingPath);
   } catch (error) {
-    try { removeLockPath(lockPath, lockIdentity); } catch (_cleanupError) {}
+    try { removeLockPath(lockPath, lockIdentity, owner); } catch (_cleanupError) {}
     throw error;
   }
   let released = false;
@@ -265,7 +702,7 @@ function createAtomicLock(lockPath, identity) {
       const recorded = readLockOwner(lockPath);
       if (sameLockOwner(recorded, owner)
         && samePathIdentity(lockPathIdentity(lockPath), lockIdentity)) {
-        removeLockPath(lockPath, lockIdentity);
+        removeLockPath(lockPath, lockIdentity, owner);
       }
       released = true;
     },
@@ -294,6 +731,12 @@ function acquireTakeoverGuard(lockPath, timeoutMs) {
   for (const key of ['LANG', 'LC_ALL', 'PATH', 'SystemRoot', 'WINDIR']) {
     if (typeof process.env[key] === 'string') environment[key] = process.env[key];
   }
+  for (const key of [
+    'FKST_OBJECT_BOUND_CLEANUP_BROKER',
+    'FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256',
+  ]) {
+    if (typeof process.env[key] === 'string') environment[key] = process.env[key];
+  }
   let argv;
   if (process.platform === 'linux') {
     const flock = executablePath(['/usr/bin/flock', '/bin/flock']);
@@ -315,7 +758,7 @@ function acquireTakeoverGuard(lockPath, timeoutMs) {
     const currentIdentity = processStartIdentity(child.pid);
     if (currentIdentity === null) return false;
     try {
-      const marker = JSON.parse(fs.readFileSync(markerPath, 'utf8'));
+      const marker = JSON.parse(readBoundedRegularFile(markerPath, MAX_LOCK_METADATA_BYTES).body);
       if (marker.pid !== child.pid || marker.token !== token) return false;
       if (holderIdentity === null) holderIdentity = currentIdentity;
       return currentIdentity === holderIdentity;
@@ -383,8 +826,14 @@ function acquireLock(lockPath, timeoutMs = LOCK_TIMEOUT_MS, options = {}) {
       if (error.code === 'ENOENT') continue;
       throw error;
     }
-    const observedOwner = readLockOwner(lockPath);
+    let observedOwner = readLockOwner(lockPath);
     if (observedOwner === null) {
+      if (!lockPathStillMatches(lockPath, observedIdentity)) continue;
+      sleep(10);
+      if (!lockPathStillMatches(lockPath, observedIdentity)) continue;
+      observedOwner = readLockOwner(lockPath);
+      if (observedOwner !== null) continue;
+      if (!lockPathStillMatches(lockPath, observedIdentity)) continue;
       throw new Error(`ownerless or malformed lock cannot be recovered safely: ${lockPath}`);
     }
     if (lockOwnerIsStale(observedOwner)) {
@@ -402,7 +851,7 @@ function acquireLock(lockPath, timeoutMs = LOCK_TIMEOUT_MS, options = {}) {
           if (sameLockOwner(confirmedOwner, observedOwner)
             && lockPathStillMatches(lockPath, observedIdentity)
             && lockOwnerIsStale(confirmedOwner)) {
-            removeLockPath(lockPath, observedIdentity);
+            if (!removeLockPath(lockPath, observedIdentity, confirmedOwner)) continue;
             removeMatchingPendingLockOwner(lockPath, confirmedOwner);
             while (true) {
               try {
@@ -500,6 +949,9 @@ function forbiddenWorkerEnvironmentKey(key) {
   const exact = new Set([
     'HOME', 'USERPROFILE', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
     'XDG_CONFIG_HOME', 'XDG_DATA_HOME', 'XDG_STATE_HOME', 'GH_CONFIG_DIR',
+    'FKST_WORKER_RUNTIME_ROOT',
+    'FKST_OBJECT_BOUND_ALLOCATION_BROKER', 'FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256',
+    'FKST_OBJECT_BOUND_CLEANUP_BROKER', 'FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256',
   ]);
   return exact.has(upper) || upper.startsWith('GH_') || upper.startsWith('GITHUB_')
     || upper.startsWith('GIT_') || upper.startsWith('SSH_')
@@ -530,7 +982,7 @@ function requireOwnedDirectory(directory, { privateDirectory = false } = {}) {
   return fs.realpathSync(directory);
 }
 
-function minimalEnvironment(extra = {}, isolationKey = 'shared-runtime-command', reservationId = null) {
+function workerEnvironmentInputs(extra, isolationKey) {
   if (!extra || typeof extra !== 'object' || Array.isArray(extra)) {
     throw new Error('command environment must be an object');
   }
@@ -550,66 +1002,143 @@ function minimalEnvironment(extra = {}, isolationKey = 'shared-runtime-command',
   if (!identity || typeof identity !== 'object' || Array.isArray(identity)) {
     throw new Error('worker isolation identity is invalid');
   }
-  const identityBody = stableStringify(identity);
-  if (reservationId !== null && !/^[0-9a-f]{32}$/.test(String(reservationId))) {
-    throw new Error('worker environment reservation is invalid');
-  }
+  return { env, identityBody: stableStringify(identity) };
+}
+
+function workerEnvironmentRoots() {
   const configuredRuntimeRoot = path.resolve(
-    process.env.FKST_RUNTIME_ROOT || path.join('.testing', 'runtime'),
+    process.env.FKST_WORKER_RUNTIME_ROOT
+      || process.env.FKST_RUNTIME_ROOT
+      || path.join('.testing', 'runtime'),
   );
-  fs.mkdirSync(configuredRuntimeRoot, { recursive: true });
-  const runtimeRoot = requireOwnedDirectory(configuredRuntimeRoot);
+  fs.mkdirSync(configuredRuntimeRoot, { recursive: true, mode: 0o700 });
+  const runtimeRoot = requireOwnedDirectory(configuredRuntimeRoot, { privateDirectory: true });
   const homesRoot = requireOwnedDirectory(path.join(runtimeRoot, 'worker-homes'), { privateDirectory: true });
-  const identitySha256 = sha256(identityBody);
-  const leaseId = reservationId || crypto.randomBytes(16).toString('hex');
-  const home = reservationId === null
-    ? fs.mkdtempSync(path.join(homesRoot, `${identitySha256.slice(0, 24)}-`))
-    : path.join(homesRoot, `reserved-${reservationId}`);
-  let homeCreated = reservationId === null;
-  if (reservationId !== null) {
-    try {
-      fs.mkdirSync(home, { mode: 0o700 });
-      homeCreated = true;
-    } catch (error) {
-      if (error.code !== 'EEXIST') throw error;
-      requireOwnedDirectory(home, { privateDirectory: true });
-    }
-  }
-  if (process.platform !== 'win32') fs.chmodSync(home, 0o700);
-  const marker = `${stableStringify({
+  return { runtimeRoot, homesRoot };
+}
+
+function workerHomeMarker(identitySha256, leaseId) {
+  return `${stableStringify({
     schema: 'fkst.worker-home-identity.v1',
     identity_sha256: identitySha256,
     lease_id: leaseId,
   })}\n`;
-  const markerPath = path.join(home, '.fkst-worker-home.json');
-  const pendingMarkerPath = `${markerPath}.pending`;
-  if (!homeCreated) {
-    if (fs.existsSync(markerPath)) {
-      const stat = fs.lstatSync(markerPath);
-      if (!stat.isFile() || stat.isSymbolicLink() || fs.readFileSync(markerPath, 'utf8') !== marker) {
-        throw new Error('worker environment reservation binding changed');
-      }
-    } else {
-      const entries = fs.readdirSync(home);
-      if (entries.some((entry) => entry !== path.basename(pendingMarkerPath))) {
-        throw new Error('worker environment reservation is not recoverable');
-      }
-      if (fs.existsSync(pendingMarkerPath)) {
-        const pending = fs.lstatSync(pendingMarkerPath);
-        if (!pending.isFile() || pending.isSymbolicLink()) {
-          throw new Error('worker environment reservation marker is invalid');
-        }
-        fs.unlinkSync(pendingMarkerPath);
-      }
-    }
+}
+
+function buildWorkerEnvironmentReservation(identityBody, homesRoot, reservationId) {
+  if (reservationId !== null && !/^[0-9a-f]{32}$/.test(String(reservationId))) {
+    throw new Error('worker environment reservation is invalid');
   }
-  if (!fs.existsSync(markerPath)) {
-    fs.writeFileSync(pendingMarkerPath, marker, { flag: 'wx', mode: 0o600 });
-    fs.renameSync(pendingMarkerPath, markerPath);
+  const identitySha256 = sha256(identityBody);
+  const leaseId = reservationId || crypto.randomBytes(16).toString('hex');
+  const home = path.join(homesRoot, `reserved-${leaseId}`);
+  const marker = workerHomeMarker(identitySha256, leaseId);
+  return {
+    schema: 'fkst.worker-home-reservation.v1',
+    lease_id: leaseId,
+    home,
+    homes_root: homesRoot,
+    homes_root_identity: pathIdentity(homesRoot),
+    marker_sha256: sha256(marker),
+    identity_sha256: identitySha256,
+    cleanup_capture_id: sha256(`worker-home-cleanup\0${marker}`),
+  };
+}
+
+function workerEnvironmentReservation(extra, isolationKey, reservationId) {
+  if (!/^[0-9a-f]{32}$/.test(String(reservationId || ''))) {
+    throw new Error('durable worker environment reservation is invalid');
+  }
+  const { identityBody } = workerEnvironmentInputs(extra, isolationKey);
+  const { homesRoot } = workerEnvironmentRoots();
+  return buildWorkerEnvironmentReservation(identityBody, homesRoot, reservationId);
+}
+
+function reservationMatchesLease(reservation, lease) {
+  return Boolean(reservation && lease
+    && reservation.schema === 'fkst.worker-home-reservation.v1'
+    && lease.schema === 'fkst.worker-home-lease.v1'
+    && reservation.lease_id === lease.lease_id
+    && reservation.home === lease.home
+    && reservation.homes_root === lease.homes_root
+    && samePathIdentity(reservation.homes_root_identity, lease.homes_root_identity)
+    && reservation.marker_sha256 === lease.marker_sha256
+    && reservation.identity_sha256 === lease.identity_sha256
+    && reservation.cleanup_capture_id === lease.cleanup_capture_id);
+}
+
+function verifyWorkerEnvironmentReservation(reservation) {
+  if (!reservation || reservation.schema !== 'fkst.worker-home-reservation.v1'
+    || !/^[0-9a-f]{32}$/.test(String(reservation.lease_id || ''))
+    || typeof reservation.home !== 'string' || !path.isAbsolute(reservation.home)
+    || typeof reservation.homes_root !== 'string' || !path.isAbsolute(reservation.homes_root)
+    || !/^[0-9a-f]{64}$/.test(String(reservation.marker_sha256 || ''))
+    || !/^[0-9a-f]{64}$/.test(String(reservation.identity_sha256 || ''))
+    || !/^[0-9a-f]{64}$/.test(String(reservation.cleanup_capture_id || ''))
+    || path.dirname(reservation.home) !== reservation.homes_root
+    || path.basename(reservation.home) !== `reserved-${reservation.lease_id}`
+    || !samePathIdentity(pathIdentity(reservation.homes_root), reservation.homes_root_identity)) {
+    throw new Error('worker environment reservation binding changed');
+  }
+  const marker = workerHomeMarker(reservation.identity_sha256, reservation.lease_id);
+  if (sha256(marker) !== reservation.marker_sha256
+    || sha256(`worker-home-cleanup\0${marker}`) !== reservation.cleanup_capture_id) {
+    throw new Error('worker environment reservation marker binding changed');
+  }
+  return reservation;
+}
+
+function releaseWorkerEnvironmentReservation(reservation) {
+  verifyWorkerEnvironmentReservation(reservation);
+  // A missing pathname is not proof that allocation never published. The
+  // directory may have been displaced before its inode-bearing lease was
+  // durably recorded, so cleanup must retain the reservation for audit.
+  if (!pathEntryExists(reservation.home)) return false;
+  const marker = workerHomeMarker(reservation.identity_sha256, reservation.lease_id);
+  const markerPath = path.join(reservation.home, '.fkst-worker-home.json');
+  if (!pathEntryExists(markerPath)
+    || readBoundedRegularFile(markerPath, MAX_LOCK_METADATA_BYTES).body !== marker) {
+    throw new Error('worker environment reservation is not recoverable');
+  }
+  const lease = {
+    schema: 'fkst.worker-home-lease.v1',
+    lease_id: reservation.lease_id,
+    home: reservation.home,
+    home_identity: pathIdentity(reservation.home),
+    homes_root: reservation.homes_root,
+    homes_root_identity: reservation.homes_root_identity,
+    marker_sha256: reservation.marker_sha256,
+    identity_sha256: reservation.identity_sha256,
+    cleanup_capture_id: reservation.cleanup_capture_id,
+  };
+  verifyWorkerEnvironmentLease(lease);
+  return releaseWorkerEnvironmentLease(lease);
+}
+
+function minimalEnvironment(extra = {}, isolationKey = 'shared-runtime-command', reservationId = null, hooks = {}) {
+  const { env, identityBody } = workerEnvironmentInputs(extra, isolationKey);
+  const { homesRoot } = workerEnvironmentRoots();
+  const reservation = buildWorkerEnvironmentReservation(identityBody, homesRoot, reservationId);
+  const identitySha256 = reservation.identity_sha256;
+  const leaseId = reservation.lease_id;
+  const home = reservation.home;
+  const marker = workerHomeMarker(identitySha256, leaseId);
+  const homeIdentity = allocateOwnedDirectory(
+    home,
+    reservation.homes_root,
+    reservation.homes_root_identity,
+    reservation.cleanup_capture_id,
+    '.fkst-worker-home.json',
+    marker,
+    ['.config', '.config/gh'],
+  );
+  if (typeof hooks.afterHomeDirectoryCreated === 'function') {
+    hooks.afterHomeDirectoryCreated({ home, reservation: { ...reservation } });
+  }
+  if (!samePathIdentity(pathIdentity(home), homeIdentity)) {
+    throw new Error('worker environment home identity changed after allocation');
   }
   const configHome = path.join(home, '.config');
-  requireOwnedDirectory(configHome, { privateDirectory: true });
-  requireOwnedDirectory(path.join(configHome, 'gh'), { privateDirectory: true });
   const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
   Object.assign(env, {
     HOME: home,
@@ -640,11 +1169,12 @@ function minimalEnvironment(extra = {}, isolationKey = 'shared-runtime-command',
       schema: 'fkst.worker-home-lease.v1',
       lease_id: leaseId,
       home,
-      home_identity: pathIdentity(home),
+      home_identity: homeIdentity,
       homes_root: homesRoot,
       homes_root_identity: pathIdentity(homesRoot),
       marker_sha256: sha256(marker),
       identity_sha256: identitySha256,
+      cleanup_capture_id: reservation.cleanup_capture_id,
       released: false,
     },
   });
@@ -665,6 +1195,7 @@ function workerEnvironmentLease(environment) {
     homes_root_identity: { ...lease.homes_root_identity },
     marker_sha256: lease.marker_sha256,
     identity_sha256: lease.identity_sha256,
+    cleanup_capture_id: lease.cleanup_capture_id,
   };
 }
 
@@ -672,23 +1203,29 @@ function verifyWorkerEnvironmentLease(lease) {
   if (!lease || lease.schema !== 'fkst.worker-home-lease.v1'
     || typeof lease.lease_id !== 'string' || !/^[0-9a-f]{32}$/.test(lease.lease_id)
     || typeof lease.home !== 'string' || typeof lease.homes_root !== 'string'
-    || !samePathIdentity(pathIdentity(lease.homes_root), lease.homes_root_identity)
-    || !samePathIdentity(pathIdentity(lease.home), lease.home_identity)) {
+    || !/^[0-9a-f]{64}$/.test(String(lease.cleanup_capture_id || ''))) {
     throw new Error('worker environment lease identity changed');
   }
+  let identitiesMatch = false;
+  try {
+    identitiesMatch = samePathIdentity(pathIdentity(lease.homes_root), lease.homes_root_identity)
+      && samePathIdentity(pathIdentity(lease.home), lease.home_identity);
+  } catch (_error) {}
+  if (!identitiesMatch) throw new Error('worker environment lease identity changed');
   const root = fs.realpathSync(lease.homes_root);
   const home = fs.realpathSync(lease.home);
   if (!home.startsWith(`${root}${path.sep}`)) throw new Error('worker environment home escaped its lease root');
   const markerPath = path.join(home, '.fkst-worker-home.json');
-  const markerStat = fs.lstatSync(markerPath);
-  if (!markerStat.isFile() || markerStat.isSymbolicLink()) throw new Error('worker environment marker is invalid');
-  const marker = fs.readFileSync(markerPath, 'utf8');
+  const marker = readBoundedRegularFile(markerPath, MAX_LOCK_METADATA_BYTES).body;
   if (sha256(marker) !== lease.marker_sha256) throw new Error('worker environment marker changed');
   const value = JSON.parse(marker);
   if (value.schema !== 'fkst.worker-home-identity.v1'
     || value.identity_sha256 !== lease.identity_sha256
     || value.lease_id !== lease.lease_id) {
     throw new Error('worker environment marker binding changed');
+  }
+  if (lease.cleanup_capture_id !== sha256(`worker-home-cleanup\0${marker}`)) {
+    throw new Error('worker environment cleanup capture binding changed');
   }
   for (const directory of [path.join(home, '.config'), path.join(home, '.config', 'gh')]) {
     const stat = fs.lstatSync(directory);
@@ -711,9 +1248,17 @@ function releaseWorkerEnvironmentLease(lease) {
   if (!lease || lease.schema !== 'fkst.worker-home-lease.v1') {
     throw new Error('worker environment lease is invalid');
   }
-  if (!fs.existsSync(lease.home)) return true;
-  verifyWorkerEnvironmentLease(lease);
-  return removeOwnedDirectory(lease.home, lease.home_identity, lease.homes_root);
+  if (pathEntryExists(lease.home)) verifyWorkerEnvironmentLease(lease);
+  return removeOwnedDirectory(
+    lease.home, lease.home_identity, lease.homes_root, lease.cleanup_capture_id,
+  );
+}
+
+function workerEnvironmentReleaseProven(lease) {
+  if (!lease || lease.schema !== 'fkst.worker-home-lease.v1') return false;
+  return ownedDirectoryReleaseProven(
+    lease.home, lease.home_identity, lease.homes_root, lease.cleanup_capture_id,
+  );
 }
 
 function releaseWorkerEnvironment(environment) {
@@ -728,27 +1273,18 @@ function releaseWorkerEnvironment(environment) {
 function commandResult(argv, options = {}) {
   validateArgv(argv);
   const outputBytes = Math.max(1, Math.min(Number(options.outputBytes) || DEFAULT_OUTPUT_BYTES, MAX_JSON_BYTES));
-  const ownedEnvironment = options.env === undefined;
-  const environment = options.env || minimalEnvironment();
-  try {
-    verifyWorkerEnvironment(environment);
-    const result = spawnSync(argv[0], argv.slice(1), {
-      cwd: options.cwd,
-      env: environment,
-      shell: false,
-      encoding: 'utf8',
-      timeout: Math.max(1, Number(options.timeoutMs) || 30_000),
-      maxBuffer: outputBytes,
-    });
-    return {
-      exitCode: Number.isInteger(result.status) ? result.status : -1,
-      stdout: String(result.stdout || '').slice(0, outputBytes),
-      stderr: boundedText(result.stderr || (result.error && result.error.message), outputBytes),
-      error: result.error,
-    };
-  } finally {
-    if (ownedEnvironment) releaseWorkerEnvironment(environment);
-  }
+  if (options.env === undefined) throw new Error('commandResult requires a durable worker environment');
+  verifyWorkerEnvironment(options.env);
+  const result = spawnSync(argv[0], argv.slice(1), {
+    cwd: options.cwd, env: options.env, shell: false, encoding: 'utf8',
+    timeout: Math.max(1, Number(options.timeoutMs) || 30_000), maxBuffer: outputBytes,
+  });
+  return {
+    exitCode: Number.isInteger(result.status) ? result.status : -1,
+    stdout: String(result.stdout || '').slice(0, outputBytes),
+    stderr: boundedText(result.stderr || (result.error && result.error.message), outputBytes),
+    error: result.error,
+  };
 }
 
 function sameArray(left, right) {
@@ -758,21 +1294,30 @@ function sameArray(left, right) {
 module.exports = {
   DEFAULT_OUTPUT_BYTES,
   MAX_JSON_BYTES,
+  OBJECT_BOUND_CLEANUP_UNAVAILABLE,
   acquireLock,
+  allocateOwnedDirectory,
   artifactPath,
   authorizationArtifact,
   boundedText,
   commandResult,
   isSafeArtifactPath,
   minimalEnvironment,
+  ownedDirectoryReleaseProven,
   parseArgs,
+  pathEntryExists,
   pathIdentity,
   processAlive,
   processStartIdentity,
   readJson,
+  readBoundedRegularFile,
+  requireOwnedDirectory,
   removeOwnedDirectory,
+  retireOwnedDirectoryMarker,
   releaseWorkerEnvironment,
   releaseWorkerEnvironmentLease,
+  releaseWorkerEnvironmentReservation,
+  reservationMatchesLease,
   runtimeConfig,
   sameArray,
   samePathIdentity,
@@ -783,7 +1328,10 @@ module.exports = {
   validateArgv,
   verifyWorkerEnvironment,
   verifyWorkerEnvironmentLease,
+  verifyWorkerEnvironmentReservation,
+  workerEnvironmentReservation,
   workerEnvironmentLease,
+  workerEnvironmentReleaseProven,
   writeJsonAtomic,
   writeJsonImmutable,
 };

@@ -7,11 +7,6 @@ const path = require('node:path');
 const { stable } = require(path.resolve(__dirname, '../bin/durable-host-store'));
 const lineage = require(path.resolve(__dirname, '../bin/authorization-lineage'));
 const runtime = require(path.resolve(__dirname, '../bin/generic-host-runtime'));
-const {
-  releaseWorkerEnvironment,
-  verifyWorkerEnvironment,
-  workerEnvironmentLease,
-} = require(path.resolve(__dirname, '../../../packages/environment-factory/bin/runtime/common'));
 
 const runId = 'node-lineage-validator';
 const repository = { url: 'https://example.invalid/testing/fixture.git', commit_sha: '1'.repeat(40) };
@@ -22,12 +17,15 @@ const copy = (value) => JSON.parse(JSON.stringify(value));
 const common = (value) => ({
   repository: copy(repository), run_id: runId, trace_id: 'trace-node-lineage', dedup_key: runId,
   recorded_at: '2026-09-10T00:10:00Z', source_max_uses: 1, evidence_role: 'audit-only',
-  authorization_capability: false, reusable: false, ...value,
+  human_approval_required: false,
+  authorization_capability: false, execution_authorized: false,
+  promotion_authorized: false, reusable: false, ...value,
 });
 
 const envelopeFields = new Set([
   'schema', 'status', 'receipt_id', 'recorded_at', 'source_max_uses',
-  'evidence_role', 'authorization_capability', 'reusable',
+  'evidence_role', 'human_approval_required', 'authorization_capability', 'execution_authorized',
+  'promotion_authorized', 'reusable',
 ]);
 const expected = (value) => Object.fromEntries(
   Object.entries(copy(value)).filter(([key]) => !envelopeFields.has(key)),
@@ -135,7 +133,9 @@ function reseal(state) {
       name, { ref: artifact.ref, sha256: artifact.sha256 },
     ])),
     lineage_complete: true, source_max_uses: 1, evidence_role: 'audit-only',
-    authorization_capability: false, reusable: false,
+    human_approval_required: false,
+    authorization_capability: false, execution_authorized: false,
+    promotion_authorized: false, reusable: false,
   };
 }
 
@@ -165,7 +165,10 @@ rejects((values) => {
 });
 rejects((values) => { values.execution_claim.grant_id = 'foreign-grant'; });
 rejects((values) => { values.preauthorization_claim.claimed_at = '2026-09-09T23:59:59Z'; });
+rejects((values) => { values.execution_claim.human_approval_required = true; });
 rejects((values) => { values.execution_claim.authorization_capability = true; });
+rejects((values) => { values.execution_claim.execution_authorized = true; });
+rejects((values) => { values.execution_claim.promotion_authorized = true; });
 for (const invalidTimestamp of [
   '2026-02-30T00:00:00Z',
   '2026-09-10T24:00:00Z',
@@ -332,43 +335,3 @@ assert.doesNotThrow(() => runtime.assertStructuredGrantDerivation(structuredConf
 cliState.grant.value.cli_capabilities[0].argv_prefix = ['fixture-cli'];
 assert.throws(() => runtime.assertStructuredGrantDerivation(structuredConfig, structuredRequest,
   cliState.preauthorization, cliState.plan, cliState.environment, cliState.grant));
-
-for (const key of [
-  'GH_TOKEN', 'GITHUB_TOKEN', 'SSH_AUTH_SOCK', 'GIT_ASKPASS', 'SSH_ASKPASS',
-  'FKST_GENERIC_HOST_DURABLE_ROOT', 'FKST_GENERIC_HOST_PROJECT_ROOT',
-  'FKST_STRUCTURED_EXECUTION_RUNTIME_CLI', 'FKST_STRUCTURED_EXECUTION_RUNTIME_CONFIG_REF',
-  'FKST_DURABLE_COMPLETED_REPLAY_FAILPOINT', 'FKST_GENERIC_HOST_FIXTURE_CLI_DENY_TOKEN',
-]) {
-  process.env[key] = 'must-not-be-inherited';
-}
-const childEnvironment = runtime.childProcessEnvironment(process.cwd());
-for (const key of [
-  'GH_TOKEN', 'GITHUB_TOKEN', 'SSH_AUTH_SOCK', 'GIT_ASKPASS', 'SSH_ASKPASS',
-  'FKST_GENERIC_HOST_DURABLE_ROOT', 'FKST_GENERIC_HOST_PROJECT_ROOT',
-  'FKST_STRUCTURED_EXECUTION_RUNTIME_CLI', 'FKST_STRUCTURED_EXECUTION_RUNTIME_CONFIG_REF',
-  'FKST_DURABLE_COMPLETED_REPLAY_FAILPOINT', 'FKST_GENERIC_HOST_FIXTURE_CLI_DENY_TOKEN',
-]) {
-  assert.equal(Object.prototype.hasOwnProperty.call(childEnvironment, key), false);
-}
-assert.equal(childEnvironment.GIT_TERMINAL_PROMPT, '0');
-assert.equal(childEnvironment.GIT_CONFIG_NOSYSTEM, '1');
-assert.equal(childEnvironment.GIT_CONFIG_COUNT, '4');
-assert.equal(childEnvironment.GIT_CONFIG_KEY_2, 'core.fsmonitor');
-assert.equal(childEnvironment.GIT_CONFIG_VALUE_2, 'false');
-assert.equal(childEnvironment.GIT_CONFIG_KEY_3, 'core.hooksPath');
-assert.equal(verifyWorkerEnvironment(childEnvironment), true);
-const childHome = childEnvironment.HOME;
-assert.equal(releaseWorkerEnvironment(childEnvironment), true);
-assert.equal(fs.existsSync(childHome), false);
-
-const exitedEnvironment = runtime.childProcessEnvironment(process.cwd());
-const exitedLease = workerEnvironmentLease(exitedEnvironment);
-assert.equal(runtime.releaseOwnedProcessResource({
-  pid: 2147483647,
-  pgid: 2147483647,
-  process_start_identity: 'naturally-exited-process',
-  runtime_ports: [],
-  worker_environment_lease: exitedLease,
-}, 100), true);
-assert.equal(fs.existsSync(exitedLease.home), false);
-assert.equal(releaseWorkerEnvironment(exitedEnvironment), true);

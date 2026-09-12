@@ -6,8 +6,10 @@ logs, counters, self-digests, or replay handles into an execution capability.
 
 ## Boundary
 
-Every exported receipt fixes `evidence_role = audit-only`, `authorization_capability = false`,
-`reusable = false`, and `source_max_uses = 1`. It binds one immutable repository commit plus the run,
+Every exported receipt fixes `evidence_role = audit-only`, `human_approval_required = false`,
+`authorization_capability = false`, `execution_authorized = false`,
+`promotion_authorized = false`, `reusable = false`, and
+`source_max_uses = 1`. It binds one immutable repository commit plus the run,
 trace, and dedup identities. Receipt validators require complete source bindings; shape validation or
 partial caller-provided expectations are insufficient.
 

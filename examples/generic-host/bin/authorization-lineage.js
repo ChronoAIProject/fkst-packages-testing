@@ -23,7 +23,9 @@ const paths = Object.freeze({
 const receiptNames = Object.freeze(Object.keys(paths));
 const commonFields = [
   'schema', 'status', 'receipt_id', 'repository', 'run_id', 'trace_id', 'dedup_key',
-  'recorded_at', 'source_max_uses', 'evidence_role', 'authorization_capability', 'reusable',
+  'recorded_at', 'source_max_uses', 'evidence_role', 'human_approval_required',
+  'authorization_capability', 'reusable',
+  'execution_authorized', 'promotion_authorized',
 ];
 
 const definitions = Object.freeze({
@@ -253,7 +255,9 @@ function validateCommon(value, name, definition) {
   timestamp(value.recorded_at, `${name}.recorded_at`);
   repository(value.repository, `${name}.repository`);
   if (value.source_max_uses !== 1 || value.evidence_role !== 'audit-only'
-    || value.authorization_capability !== false || value.reusable !== false) {
+    || value.human_approval_required !== false
+    || value.authorization_capability !== false || value.execution_authorized !== false
+    || value.promotion_authorized !== false || value.reusable !== false) {
     fail(`${name} must remain non-reusable audit evidence`);
   }
   for (const field of definition.pointers) {
@@ -312,12 +316,14 @@ function canonicalDigest(value) {
 function validateLineageIndex(value, artifacts, expected) {
   exactKeys(value, [
     'schema', 'status', 'repository', 'run_id', 'trace_id', 'dedup_key', 'recorded_at',
-    'receipts', 'lineage_complete', 'source_max_uses', 'evidence_role',
-    'authorization_capability', 'reusable',
+    'receipts', 'lineage_complete', 'source_max_uses', 'evidence_role', 'human_approval_required',
+    'authorization_capability', 'execution_authorized', 'promotion_authorized', 'reusable',
   ], 'lineage index');
   if (value.schema !== schemas.lineage_index || value.status !== 'complete'
     || value.lineage_complete !== true || value.source_max_uses !== 1
-    || value.evidence_role !== 'audit-only' || value.authorization_capability !== false
+    || value.evidence_role !== 'audit-only' || value.human_approval_required !== false
+    || value.authorization_capability !== false
+    || value.execution_authorized !== false || value.promotion_authorized !== false
     || value.reusable !== false) fail('lineage index must remain complete non-reusable audit evidence');
   repository(value.repository, 'lineage index.repository');
   identity(value.run_id, 'lineage index.run_id');

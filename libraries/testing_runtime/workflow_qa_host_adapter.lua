@@ -85,17 +85,13 @@ function M.new(options)
       end
       if grant.plan_sha256 ~= request.plan_sha256
         or grant.environment_receipt_sha256 ~= request.environment_receipt_sha256
-        or grant.parent_authorization_sha256 ~= request.preauthorization_sha256 then
-        fail("structured grant binding differs from request")
-      end
+        or grant.parent_authorization_sha256 ~= request.preauthorization_sha256 then fail("structured grant binding differs from request") end
       return grant
     end
     browser_control.validate_grant(grant)
     if grant.reviewed_plan_sha256 ~= request.plan_sha256
       or grant.environment_receipt_sha256 ~= request.environment_receipt_sha256
-      or grant.parent_authorization_sha256 ~= request.preauthorization_sha256 then
-      fail("browser grant binding differs from request")
-    end
+      or grant.parent_authorization_sha256 ~= request.preauthorization_sha256 then fail("browser grant binding differs from request") end
     return grant
   end
 

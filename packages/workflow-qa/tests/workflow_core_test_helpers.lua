@@ -451,7 +451,19 @@ function M.build(deps)
 
   local function finalized(request, put)
     local cleanup_ref = request.environment_start.artifact_root .. "/cleanup-receipt-complete.json"
-    put(cleanup_ref, { schema = "environment-factory.cleanup-receipt.v1" }, digest("e"))
+    put(cleanup_ref, {
+      schema = "environment-factory.cleanup-receipt.v1",
+      operation_id = request.run_id,
+      status = "complete",
+      attempted_resources = { {
+        resource_id = "workspace", resource_kind = "workspace", status = "cleaned",
+      } },
+      verified_removals = { "workspace" },
+      remaining_resources = {},
+      artifact_root = request.environment_start.artifact_root,
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+    }, digest("e"))
     return {
       schema = "environment-factory.result.v1", operation_id = request.run_id, status = "finalized",
       environment_receipt_ref = pointer(request.environment_start.artifact_root .. "/environment-receipt-finalized.json"),
@@ -461,6 +473,60 @@ function M.build(deps)
       source_ref = copy(request.environment_start.operation_state_ref),
       trace_id = request.trace_id, dedup_key = request.dedup_key,
     }
+  end
+
+  local function cleanup_incomplete(request, put)
+    local result = finalized(request, put)
+    local cleanup_ref = request.environment_start.artifact_root .. "/cleanup-receipt-incomplete.json"
+    local retention_ref = request.environment_start.artifact_root .. "/worker-home-retention.json"
+    put(retention_ref, {
+      schema = "environment-factory.worker-home-retention.v1",
+      operation_id = request.run_id,
+      ledger_id = digest("8"),
+      repository = {
+        url = request.repository.url,
+        commit_sha = request.repository.commit_sha,
+      },
+      remaining_count = 1,
+      entries = { {
+        slot_id = digest("7"),
+        lease_id = string.rep("6", 32),
+        effect_id = "effect-checkout",
+        purpose = "checkout",
+        generation = 1,
+        identity_sha256 = digest("5"),
+        marker_sha256 = digest("4"),
+        state = "retained",
+        reason = "OBJECT_BOUND_CLEANUP_UNAVAILABLE",
+      } },
+    }, digest("1"))
+    put(cleanup_ref, {
+      schema = "environment-factory.cleanup-receipt.v2",
+      operation_id = request.run_id,
+      status = "incomplete",
+      attempted_resources = { {
+        resource_id = "worker-homes", resource_kind = "worker-home-ledger", status = "remaining",
+      } },
+      verified_removals = {},
+      remaining_resources = { {
+        resource_id = "worker-homes",
+        resource_kind = "worker-home-ledger",
+        cleanup_ref = { kind = "resource-cleanup", ref = "worker-homes-cleanup" },
+        resource_detail_ref = pointer(retention_ref),
+        resource_detail_sha256 = digest("1"),
+        remaining_count = 1,
+      } },
+      artifact_root = request.environment_start.artifact_root,
+      trace_id = request.trace_id,
+      dedup_key = request.dedup_key,
+    }, digest("f"))
+    result.status = "blocked"
+    result.failure_class = "cleanup-incomplete"
+    result.cleanup_status = "incomplete"
+    result.cleanup_receipt_ref = pointer(cleanup_ref)
+    result.environment_receipt_ref = pointer(
+      request.environment_start.artifact_root .. "/environment-receipt-blocked.json")
+    return result
   end
 
   local function checkpoint_receipt(request, pending)
@@ -487,6 +553,7 @@ function M.build(deps)
     analysis_result = analysis_result,
     artifact_summary = artifact_summary,
     checkpoint_receipt = checkpoint_receipt,
+    cleanup_incomplete = cleanup_incomplete,
     copy = copy,
     digest = digest,
     execution_result = execution_result,

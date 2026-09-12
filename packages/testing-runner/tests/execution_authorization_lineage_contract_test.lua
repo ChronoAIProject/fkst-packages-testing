@@ -15,6 +15,12 @@ end
 
 local function ref(run_id, suffix) return ".testing/runs/" .. run_id .. "/" .. suffix end
 
+local function expect_failure(fragment, fn)
+  local ok, err = pcall(fn)
+  t.eq(ok, false)
+  t.is_true(tostring(err):find(fragment, 1, true) ~= nil)
+end
+
 local run_id = "authorization-lineage-run"
 local repository = {
   url = "https://example.invalid/testing/fixture.git",
@@ -26,7 +32,9 @@ local function envelope(value)
     repository = copy(repository), run_id = run_id,
     trace_id = "trace-authorization-lineage", dedup_key = run_id,
     recorded_at = "2026-09-10T00:10:00Z", source_max_uses = 1,
-    evidence_role = "audit-only", authorization_capability = false, reusable = false,
+    evidence_role = "audit-only", human_approval_required = false,
+    authorization_capability = false,
+    execution_authorized = false, promotion_authorized = false, reusable = false,
   }
   for key, item in pairs(value) do result[key] = copy(item) end
   return result
@@ -36,7 +44,8 @@ local function expected(value)
   local result = copy(value)
   for _, key in ipairs({
     "schema", "status", "receipt_id", "recorded_at", "source_max_uses",
-    "evidence_role", "authorization_capability", "reusable",
+    "evidence_role", "human_approval_required", "authorization_capability", "execution_authorized",
+    "promotion_authorized", "reusable",
   }) do result[key] = nil end
   return result
 end
@@ -170,8 +179,9 @@ local function lineage_fixture()
     schema = lineage.schemas.lineage_index, status = "complete", repository = copy(repository),
     run_id = run_id, trace_id = "trace-authorization-lineage", dedup_key = run_id,
     recorded_at = "2026-09-10T00:10:00Z", receipts = bindings, lineage_complete = true,
-    source_max_uses = 1, evidence_role = "audit-only",
-    authorization_capability = false, reusable = false,
+    source_max_uses = 1, evidence_role = "audit-only", human_approval_required = false,
+    authorization_capability = false, execution_authorized = false,
+    promotion_authorized = false, reusable = false,
   }
   return index, artifacts, expected_values
 end
@@ -213,12 +223,37 @@ return {
     t.eq(lineage.validate_profile_claim_receipt(value, expected(value)), value)
   end,
 
+  test_execution_claim_cannot_be_recorded_before_the_claim_event = function()
+    local value = execution_claim()
+    value.recorded_at = "2026-09-10T00:03:00Z"
+    t.raises(function() lineage.validate_execution_claim_receipt(value, expected(value)) end)
+  end,
+
+  test_profile_claim_cannot_be_recorded_before_the_claim_event = function()
+    local value = profile_claim()
+    value.recorded_at = "2026-09-10T00:00:59Z"
+    expect_failure("malformed-time: profile-approval-claim-receipt cannot be recorded before its claim", function()
+      lineage.validate_profile_claim_receipt(value, expected(value))
+    end)
+  end,
+
+  test_execution_completion_cannot_be_recorded_before_completion = function()
+    local value = execution_completion()
+    value.recorded_at = "2026-09-10T00:04:59Z"
+    expect_failure("malformed-time: execution-completion-receipt cannot be recorded before completion", function()
+      lineage.validate_execution_completion_receipt(value, expected(value))
+    end)
+  end,
+
   test_exported_claim_receipts_reject_raw_claim_handles_and_capability_flags = function()
     local value = execution_claim()
     value.claim_id = "runtime-fence-handle"
     t.raises(function() lineage.validate_execution_claim_receipt(value, expected(value)) end)
     for _, mutate in ipairs({
+      function(item) item.human_approval_required = true end,
       function(item) item.authorization_capability = true end,
+      function(item) item.execution_authorized = true end,
+      function(item) item.promotion_authorized = true end,
       function(item) item.reusable = true end,
       function(item) item.source_max_uses = 2 end,
       function(item) item.evidence_role = "authorization" end,
@@ -362,6 +397,109 @@ return {
   test_index_rejects_resealed_out_of_order_authorization_events = function()
     local index, artifacts, expected_values = lineage_fixture()
     artifacts.preauthorization_claim.value.claimed_at = "2026-09-09T23:59:59Z"
+    reseal_lineage(index, artifacts, expected_values)
+    t.raises(function() lineage.validate_lineage_index(index, artifacts, expected_values) end)
+  end,
+
+  test_receipts_reject_malformed_identity_digest_repository_pointer_and_time = function()
+    local cases = {
+      {
+        factory = profile_claim,
+        validate = lineage.validate_profile_claim_receipt,
+        mutate = function(value) value.receipt_id = "" end,
+      },
+      {
+        factory = profile_claim,
+        validate = lineage.validate_profile_claim_receipt,
+        mutate = function(value) value.profile_sha256 = "bad" end,
+      },
+      {
+        factory = profile_claim,
+        validate = lineage.validate_profile_claim_receipt,
+        mutate = function(value) value.repository.url = "http://example.invalid/repository.git" end,
+      },
+      {
+        factory = profile_claim,
+        validate = lineage.validate_profile_claim_receipt,
+        mutate = function(value) value.repository.commit_sha = "mutable" end,
+      },
+      {
+        factory = profile_claim,
+        validate = lineage.validate_profile_claim_receipt,
+        mutate = function(value) value.profile_artifact_ref = "outside.json" end,
+      },
+      {
+        factory = profile_claim,
+        validate = lineage.validate_profile_claim_receipt,
+        mutate = function(value) value.schema = "unknown-profile-claim" end,
+      },
+      {
+        factory = preauthorization_claim,
+        validate = lineage.validate_preauthorization_claim_receipt,
+        mutate = function(value) value.claimed_at = "2026-09-10T00:10:01Z" end,
+      },
+      {
+        factory = grant_verification,
+        validate = lineage.validate_grant_verification_receipt,
+        mutate = function(value) value.verified_at = "2026-09-10T00:10:01Z" end,
+      },
+      {
+        factory = execution_claim,
+        validate = lineage.validate_execution_claim_receipt,
+        mutate = function(value) value.artifact_root = ref("another-run", "execution") end,
+      },
+    }
+    for _, item in ipairs(cases) do
+      local value = item.factory()
+      item.mutate(value)
+      t.raises(function() item.validate(value, expected(value)) end)
+    end
+  end,
+
+  test_all_receipt_families_reject_execution_authority_capability = function()
+    for _, item in ipairs({
+      { factory = profile_claim, validate = lineage.validate_profile_claim_receipt },
+      { factory = preauthorization_claim, validate = lineage.validate_preauthorization_claim_receipt },
+      { factory = grant_verification, validate = lineage.validate_grant_verification_receipt },
+      { factory = execution_claim, validate = lineage.validate_execution_claim_receipt },
+      { factory = execution_completion, validate = lineage.validate_execution_completion_receipt },
+    }) do
+      local value = item.factory()
+      value.execution_authorized = true
+      t.raises(function() item.validate(value, expected(value)) end)
+    end
+  end,
+
+  test_index_rejects_capability_missing_sources_noncanonical_and_foreign_receipts = function()
+    local index, artifacts, expected_values = lineage_fixture()
+    index.authorization_capability = true
+    t.raises(function() lineage.validate_lineage_index(index, artifacts, expected_values) end)
+
+    index, artifacts, expected_values = lineage_fixture()
+    index.human_approval_required = true
+    t.raises(function() lineage.validate_lineage_index(index, artifacts, expected_values) end)
+
+    index, artifacts, expected_values = lineage_fixture()
+    index.execution_authorized = true
+    t.raises(function() lineage.validate_lineage_index(index, artifacts, expected_values) end)
+
+    index, artifacts, expected_values = lineage_fixture()
+    index.promotion_authorized = true
+    t.raises(function() lineage.validate_lineage_index(index, artifacts, expected_values) end)
+
+    index, artifacts, expected_values = lineage_fixture()
+    t.raises(function() lineage.validate_lineage_index(index, nil, expected_values) end)
+
+    index, artifacts, expected_values = lineage_fixture()
+    index.receipts.profile_claim.ref = ref(run_id, "authorization-lineage/not-canonical.json")
+    t.raises(function() lineage.validate_lineage_index(index, artifacts, expected_values) end)
+
+    index, artifacts, expected_values = lineage_fixture()
+    artifacts.profile_claim = nil
+    t.raises(function() lineage.validate_lineage_index(index, artifacts, expected_values) end)
+
+    index, artifacts, expected_values = lineage_fixture()
+    artifacts.profile_claim.value.repository.commit_sha = string.rep("2", 40)
     reseal_lineage(index, artifacts, expected_values)
     t.raises(function() lineage.validate_lineage_index(index, artifacts, expected_values) end)
   end,

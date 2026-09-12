@@ -3,6 +3,7 @@ local M = {}
 function M.build(deps)
   local artifact_summary = deps.artifact_summary
   local checkpoint_receipt = deps.checkpoint_receipt
+  local cleanup_incomplete = deps.cleanup_incomplete
   local checkpoints = deps.checkpoints
   local contract = deps.contract
   local core = deps.core
@@ -96,10 +97,9 @@ function M.build(deps)
       local cleanup = finalized(request, put)
       cleanup.operation_id = "foreign"
       expect_failure("foreign-cleanup-result", function() core.handle_cleanup_result(cleanup, request, ports) end)
-      cleanup = finalized(request, put)
-      cleanup.cleanup_status = "incomplete"
-      cleanup.cleanup_receipt_ref = pointer(request.environment_start.artifact_root .. "/cleanup-receipt-incomplete.json")
-      expect_failure("cleanup-unverified", function() core.handle_cleanup_result(cleanup, request, ports) end)
+      cleanup = cleanup_incomplete(request, put)
+      t.eq(#core.handle_cleanup_result(cleanup, request, ports), 0)
+      t.eq(state().phase, "cleanup-blocked")
     end
   end
 
@@ -168,17 +168,10 @@ function M.build(deps)
       local ports, state, put = runtime(request)
       core.start(request, ports)
       release_checkpoint(request, ports, state, "environment-factory.environment_start")
-      local blocked = finalized(request, put)
-      blocked.status = "blocked"
-      blocked.failure_class = "provisioning-failed"
-      blocked.environment_receipt_ref = pointer(
-        request.environment_start.artifact_root .. "/environment-receipt-blocked.json")
-      blocked.cleanup_status = "incomplete"
-      blocked.cleanup_receipt_ref = pointer(
-        request.environment_start.artifact_root .. "/cleanup-receipt-incomplete.json")
-      expect_failure("cleanup-unverified", function()
-        core.handle_environment_result(blocked, request, ports)
-      end)
+      local blocked = cleanup_incomplete(request, put)
+      t.eq(#core.handle_environment_result(blocked, request, ports), 0)
+      t.eq(state().phase, "cleanup-blocked")
+      t.eq(state().terminal_status, "blocked")
     end
     do
       local request = fixture()

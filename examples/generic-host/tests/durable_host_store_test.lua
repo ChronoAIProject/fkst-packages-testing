@@ -260,8 +260,19 @@ return {
         runtime_cli = context.project_root .. "/packages/generic-host/bin/generic-host-runtime.js",
         runtime_config_ref = { kind = "artifact", ref = context.runtime_config_ref },
         exec_argv = function(request)
+          local trusted = context:framework_environment("durable-host-store-effect")
           local command = {
             "env", "FKST_GENERIC_HOST_DURABLE_ROOT=" .. context.durable_root,
+            "FKST_RUNTIME_ROOT=" .. trusted.FKST_RUNTIME_ROOT,
+            "FKST_WORKER_RUNTIME_ROOT=" .. trusted.FKST_WORKER_RUNTIME_ROOT,
+            "FKST_OBJECT_BOUND_ALLOCATION_BROKER="
+              .. trusted.FKST_OBJECT_BOUND_ALLOCATION_BROKER,
+            "FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256="
+              .. trusted.FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256,
+            "FKST_OBJECT_BOUND_CLEANUP_BROKER="
+              .. trusted.FKST_OBJECT_BOUND_CLEANUP_BROKER,
+            "FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256="
+              .. trusted.FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256,
             "sh", "-c", 'cd "$1" && shift && exec "$@"', "sh", context.project_root,
           }
           for _, item in ipairs(request.argv or {}) do table.insert(command, item) end

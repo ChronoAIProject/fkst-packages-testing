@@ -34,6 +34,10 @@ function copy(value) {
   return JSON.parse(JSON.stringify(value));
 }
 
+function delay(milliseconds) {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 function persistJson(ref, value) {
   const raw = `${stableStringify(value)}\n`;
   fs.mkdirSync(path.dirname(ref), { recursive: true });
@@ -54,10 +58,17 @@ async function main() {
   const ambientKeys = [
     'HOME', 'GH_TOKEN', 'GITHUB_TOKEN', 'SSH_AUTH_SOCK', 'GIT_ASKPASS', 'SSH_ASKPASS',
     'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_COUNT', 'GIT_CONFIG_KEY_0', 'GIT_CONFIG_VALUE_0',
+    'FKST_OBJECT_BOUND_CLEANUP_BROKER', 'FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256',
   ];
   const previousAmbient = Object.fromEntries(ambientKeys.map((key) => [key, process.env[key]]));
   process.env.FKST_DURABLE_ROOT = path.join(temp, 'durable');
   process.env.FKST_RUNTIME_ROOT = path.join(temp, 'runtime');
+  const cleanupBroker = path.resolve(
+    __dirname, '..', '..', '..', 'packages', 'environment-factory', 'bin',
+    'object-bound-cleanup-broker.py',
+  );
+  process.env.FKST_OBJECT_BOUND_CLEANUP_BROKER = cleanupBroker;
+  process.env.FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256 = sha256(fs.readFileSync(cleanupBroker));
   const runId = `structured-runtime-${process.pid}`;
   const artifactRoot = `.testing/runs/${runId}/execution`;
   const environmentArtifactRoot = `.testing/runs/${runId}/environment`;
@@ -67,6 +78,7 @@ async function main() {
   const source = path.join(temp, 'source');
   let workspace;
   let checkout;
+  let workerHomeLedgerRef;
   const operationId = `${runId}-operation`;
   let workspaceRef;
   const repository = { url: 'https://example.invalid/testing/runtime.git', commit_sha: '' };
@@ -121,14 +133,27 @@ async function main() {
         repository,
         authority: { kind: 'host-policy', ref: 'fixtures/structured-runtime-target-boundary' },
         policy_revision: 'structured-runtime-target-boundary-v1',
+        human_approval_required: false,
         authorization_capability: false,
         execution_authorized: false,
+        promotion_authorized: false,
       },
     })}\n`);
+    const workerHomeLedger = await environmentDispatch('initialize-worker-home-ledger', {
+      effect_id: `${operationId}/worker-home-ledger`,
+      operation_id: operationId,
+      repository,
+      artifact_root: environmentArtifactRoot,
+      runtime_config_ref: { kind: 'artifact', ref: environmentConfigRef },
+      timeout_seconds: 20,
+    });
+    assert.strictEqual(workerHomeLedger.status, 'passed');
+    workerHomeLedgerRef = workerHomeLedger.cleanup_ref;
     checkout = await environmentDispatch('checkout', {
       effect_id: `${operationId}/checkout`,
       operation_id: operationId,
       repository,
+      worker_home_ledger_ref: workerHomeLedgerRef,
       working_directory: '.',
       artifact_root: environmentArtifactRoot,
       runtime_config_ref: { kind: 'artifact', ref: environmentConfigRef },
@@ -169,7 +194,10 @@ async function main() {
 
     const traceId = `${runId}-trace`;
     const dedupKey = `${runId}-dedup`;
+    const issuedAt = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const expiredAt = new Date(Date.now() - 30 * 60 * 1000).toISOString();
     const expiresAt = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    const overlongExpiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString();
     const authorityRoot = `.testing/runs/${runId}/authorization`;
     const writeAuthority = (name, value) => {
       const ref = `${authorityRoot}/${name}.json`;
@@ -193,6 +221,7 @@ async function main() {
         cli: [{ argv_prefix: [process.execPath] }],
         http: [{ origin: `http://127.0.0.1:${address.port}`, methods: ['GET'], path_prefixes: ['/health'] }],
       },
+      issued_at: issuedAt, expires_at: expiresAt,
       trace_id: traceId, dedup_key: dedupKey,
     });
     const environment = writeAuthority('environment', {
@@ -233,7 +262,8 @@ async function main() {
         origin: `http://127.0.0.1:${address.port}`, methods: ['GET'], path_prefixes: ['/health'],
       }], authority,
       policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef,
-      expires_at: expiresAt, max_uses: 1, trace_id: traceId, dedup_key: dedupKey,
+      issued_at: issuedAt, expires_at: expiresAt,
+      max_uses: 1, trace_id: traceId, dedup_key: dedupKey,
     });
     grantSha256 = grant.digest;
     const httpPlan = writeAuthority('http-plan', {
@@ -248,7 +278,21 @@ async function main() {
       cli_capabilities: [], http_capabilities: [{
         origin: `http://127.0.0.1:${address.port}`, methods: ['GET'], path_prefixes: ['/health'],
       }], authority, policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef,
-      expires_at: expiresAt, max_uses: 1, trace_id: traceId, dedup_key: dedupKey,
+      issued_at: issuedAt, expires_at: expiresAt,
+      max_uses: 1, trace_id: traceId, dedup_key: dedupKey,
+    });
+    const expiredPreauthorization = writeAuthority('expired-preauthorization', {
+      ...preauthorization.value, expires_at: expiredAt,
+    });
+    const expiredParentGrant = writeAuthority('expired-parent-grant', {
+      ...grant.value,
+      grant_id: `${runId}-expired-parent-effect-grant`,
+      parent_authorization_sha256: expiredPreauthorization.digest,
+    });
+    const overlongGrant = writeAuthority('overlong-grant', {
+      ...grant.value,
+      grant_id: `${runId}-overlong-effect-grant`,
+      expires_at: overlongExpiresAt,
     });
 
     fs.mkdirSync(path.dirname(configRef), { recursive: true });
@@ -265,13 +309,19 @@ async function main() {
         repository,
         authority: { kind: 'host-policy', ref: 'fixtures/structured-runtime-target-boundary' },
         policy_revision: 'structured-runtime-target-boundary-v1',
+        human_approval_required: false,
         authorization_capability: false,
         execution_authorized: false,
+        promotion_authorized: false,
       },
       grant_attestations: [
         { grant_sha256: grantSha256, authority,
           policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef },
         { grant_sha256: httpGrant.digest, authority,
+          policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef },
+        { grant_sha256: expiredParentGrant.digest, authority,
+          policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef },
+        { grant_sha256: overlongGrant.digest, authority,
           policy_revision: 'runtime-test-policy-v1', evidence_ref: evidenceRef },
       ],
     })}\n`);
@@ -329,8 +379,13 @@ async function main() {
     });
     assert.strictEqual(authorization.decision, 'allow');
     assert.match(authorization.issued_at, /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z$/);
+    await delay(1_100);
+    const redeliveredAuthorization = await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: actionEnvelope,
+    });
+    assert.deepStrictEqual(redeliveredAuthorization, authorization);
     const cli = await dispatch('exec-argv', {
-      ...common, action_envelope: actionEnvelope, authorization_receipt: authorization,
+      ...common, action_envelope: actionEnvelope, authorization_receipt: redeliveredAuthorization,
     });
     assert.strictEqual(cli.exit_code, 0);
     assert.strictEqual(cli.stdout, fs.realpathSync(workspace));
@@ -338,14 +393,81 @@ async function main() {
     await assert.rejects(() => dispatch('exec-argv', {
       ...common, action_envelope: actionEnvelope, authorization_receipt: authorization,
     }), /replayed or is unavailable/);
+    const replayDenial = await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: actionEnvelope,
+    });
+    assert.strictEqual(replayDenial.decision, 'deny');
+    assert.strictEqual(replayDenial.reason_code, 'replayed');
+    await delay(1_100);
+    assert.deepStrictEqual(await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: actionEnvelope,
+    }), replayDenial);
     const foreignEnvelope = { ...actionEnvelope, plan_sha256: '0'.repeat(64) };
     const denied = await dispatch('authorize-cli-effect', {
       ...common, action_envelope: foreignEnvelope,
     });
     assert.strictEqual(denied.decision, 'deny');
+    assert.strictEqual(denied.envelope_sha256, sha256(stableStringify(foreignEnvelope)));
+    await delay(1_100);
+    const redeliveredDenial = await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: foreignEnvelope,
+    });
+    assert.deepStrictEqual(redeliveredDenial, denied);
     await assert.rejects(() => dispatch('exec-argv', {
       ...common, action_envelope: foreignEnvelope, authorization_receipt: denied,
     }), /missing, denied, malformed, expired, or foreign/);
+
+    const expiredParentClaim = await dispatch('replay-guard', {
+      ...common, grant_id: expiredParentGrant.value.grant_id,
+      grant_sha256: expiredParentGrant.digest,
+      parent_authorization_sha256: expiredPreauthorization.digest,
+      plan_sha256: plan.digest,
+      environment_receipt_sha256: environment.digest,
+    });
+    const expiredParentEnvelope = {
+      ...actionEnvelope,
+      preauthorization_ref: expiredPreauthorization.ref,
+      preauthorization_sha256: expiredPreauthorization.digest,
+      grant_ref: expiredParentGrant.ref,
+      grant_sha256: expiredParentGrant.digest,
+      fence_id: expiredParentClaim.claim_id,
+    };
+    const expiredParentAuthorization = await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: expiredParentEnvelope,
+    });
+    assert.strictEqual(expiredParentAuthorization.decision, 'deny');
+    assert.strictEqual(expiredParentAuthorization.reason_code, 'expired');
+    assert.strictEqual(expiredParentAuthorization.envelope_sha256,
+      sha256(stableStringify(expiredParentEnvelope)));
+    await delay(1_100);
+    assert.deepStrictEqual(await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: expiredParentEnvelope,
+    }), expiredParentAuthorization);
+
+    const overlongClaim = await dispatch('replay-guard', {
+      ...common, grant_id: overlongGrant.value.grant_id,
+      grant_sha256: overlongGrant.digest,
+      parent_authorization_sha256: preauthorization.digest,
+      plan_sha256: plan.digest,
+      environment_receipt_sha256: environment.digest,
+    });
+    const overlongEnvelope = {
+      ...actionEnvelope,
+      grant_ref: overlongGrant.ref,
+      grant_sha256: overlongGrant.digest,
+      fence_id: overlongClaim.claim_id,
+    };
+    const overlongAuthorization = await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: overlongEnvelope,
+    });
+    assert.strictEqual(overlongAuthorization.decision, 'deny');
+    assert.strictEqual(overlongAuthorization.reason_code, 'foreign-binding');
+    assert.strictEqual(overlongAuthorization.envelope_sha256,
+      sha256(stableStringify(overlongEnvelope)));
+    await delay(1_100);
+    assert.deepStrictEqual(await dispatch('authorize-cli-effect', {
+      ...common, action_envelope: overlongEnvelope,
+    }), overlongAuthorization);
 
     const httpEffectClaim = await dispatch('replay-guard', {
       ...common, grant_id: httpGrant.value.grant_id, grant_sha256: httpGrant.digest,
@@ -723,18 +845,23 @@ async function main() {
       ...common, result_ref: resultRef, result_sha256: replay.result_sha256,
     }), /digest differs/);
 
+    delete process.env.FKST_OBJECT_BOUND_CLEANUP_BROKER;
+    delete process.env.FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256;
     const cleaned = await environmentDispatch('cleanup', {
       effect_id: `${operationId}/cleanup/workspace`,
       operation_id: operationId,
       artifact_root: environmentArtifactRoot,
       cleanup_ref: checkout.cleanup_ref,
+      worker_home_ledger_ref: workerHomeLedgerRef,
       workspace_ref: workspaceRef,
       working_directory: '.',
       runtime_config_ref: { kind: 'artifact', ref: environmentConfigRef },
       timeout_seconds: 10,
     });
-    assert.strictEqual(cleaned.status, 'cleaned');
-    assert.strictEqual(fs.existsSync(workspace), false);
+    assert.strictEqual(cleaned.status, 'blocked');
+    assert.strictEqual(fs.existsSync(workspace), true);
+    const cleanupDiagnostic = JSON.parse(fs.readFileSync(cleaned.diagnostic_ref.ref, 'utf8'));
+    assert.strictEqual(cleanupDiagnostic.reason, 'OBJECT_BOUND_CLEANUP_UNAVAILABLE');
     await assert.rejects(() => dispatch('exec-argv', {
       ...common,
     }), /fields are invalid|malformed/);

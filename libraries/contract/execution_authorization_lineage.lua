@@ -26,7 +26,8 @@ M.paths = {
 local common_fields = {
   schema = true, status = true, receipt_id = true, repository = true, run_id = true,
   trace_id = true, dedup_key = true, recorded_at = true, source_max_uses = true,
-  evidence_role = true, authorization_capability = true, reusable = true,
+  evidence_role = true, human_approval_required = true, authorization_capability = true,
+  execution_authorized = true, promotion_authorized = true, reusable = true,
 }
 
 local function fail(classification, message)
@@ -171,7 +172,9 @@ local function validate_common(value, schema, status, context)
   timestamp(value.recorded_at, context .. ".recorded_at")
   repository(value.repository, context .. ".repository")
   if value.source_max_uses ~= 1 or value.evidence_role ~= "audit-only"
-    or value.authorization_capability ~= false or value.reusable ~= false then
+    or value.human_approval_required ~= false
+    or value.authorization_capability ~= false or value.execution_authorized ~= false
+    or value.promotion_authorized ~= false or value.reusable ~= false then
     fail("capability-confusion", context .. " must remain non-reusable audit evidence")
   end
 end
@@ -372,12 +375,15 @@ function M.validate_lineage_index(value, artifacts, expected)
   only_fields(value, {
     schema = true, status = true, repository = true, run_id = true, trace_id = true,
     dedup_key = true, recorded_at = true, receipts = true, lineage_complete = true,
-    source_max_uses = true, evidence_role = true, authorization_capability = true,
-    reusable = true,
+    source_max_uses = true, evidence_role = true, human_approval_required = true,
+    authorization_capability = true, execution_authorized = true,
+    promotion_authorized = true, reusable = true,
   }, context)
   if value.schema ~= M.schemas.lineage_index or value.status ~= "complete"
     or value.lineage_complete ~= true or value.evidence_role ~= "audit-only"
+    or value.human_approval_required ~= false
     or value.source_max_uses ~= 1 or value.authorization_capability ~= false
+    or value.execution_authorized ~= false or value.promotion_authorized ~= false
     or value.reusable ~= false then
     fail("capability-confusion", context .. " must be complete non-reusable audit evidence")
   end

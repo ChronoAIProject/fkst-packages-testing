@@ -3,7 +3,12 @@
 const path = require('path');
 
 function assertCredentialIsolation() {
-  for (const key of ['GH_TOKEN', 'GITHUB_TOKEN', 'SSH_AUTH_SOCK', 'GIT_ASKPASS', 'SSH_ASKPASS']) {
+  for (const key of [
+    'GH_TOKEN', 'GITHUB_TOKEN', 'SSH_AUTH_SOCK', 'GIT_ASKPASS', 'SSH_ASKPASS',
+    'FKST_WORKER_RUNTIME_ROOT',
+    'FKST_OBJECT_BOUND_ALLOCATION_BROKER', 'FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256',
+    'FKST_OBJECT_BOUND_CLEANUP_BROKER', 'FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256',
+  ]) {
     if (process.env[key]) throw new Error(`worker inherited forbidden authority: ${key}`);
   }
   const home = process.env.HOME || '';

@@ -7,6 +7,7 @@ const { spawn } = require('child_process');
 const {
   acquireLock,
   boundedText,
+  pathEntryExists,
   processAlive,
   processStartIdentity,
   releaseWorkerEnvironmentLease,
@@ -19,6 +20,12 @@ const {
   workerEnvironmentLease,
   writeJsonAtomic,
 } = require('./common');
+const {
+  closeDirectoryAnchor,
+  objectBoundExec,
+  openDirectoryAnchor,
+  sameObjectIdentity,
+} = require('./object-bound-exec');
 
 const CLAIM_SCHEMA = 'fkst.supervised-process-startup.v1';
 const SPEC_SCHEMA = 'fkst.supervised-process-launch.v1';
@@ -113,8 +120,11 @@ function validClaim(claim, bindingSha256) {
     }))
     && (leasePending
       ? claim.worker_environment_lease === null && claim.worker_environment_lease_sha256 === null
+        && (claim.worker_home_slot_id === null || claim.worker_home_slot_id === undefined)
       : claim.worker_environment_lease
-        && /^[0-9a-f]{64}$/.test(String(claim.worker_environment_lease_sha256 || '')))
+        && /^[0-9a-f]{64}$/.test(String(claim.worker_environment_lease_sha256 || ''))
+        && (claim.worker_home_slot_id == null
+          || /^[0-9a-f]{64}$/.test(String(claim.worker_home_slot_id))))
     && ['allocating', 'preparing', 'prepared', 'registered', 'running', 'exited', 'failed', 'revoked'].includes(state)
     && (state === 'allocating' || state === 'preparing' || sameFileIdentityShape(claim.launch_spec_identity)));
 }
@@ -139,12 +149,6 @@ function sameFileIdentity(left, right) {
   return sameFileIdentityShape(left) && sameFileIdentityShape(right)
     && left.device === right.device && left.inode === right.inode
     && left.size === right.size && left.mode === right.mode;
-}
-
-function sameNodeIdentity(left, right) {
-  return sameFileIdentityShape(left) && sameFileIdentityShape(right)
-    && left.device === right.device && left.inode === right.inode
-    && (left.mode & fs.constants.S_IFMT) === (right.mode & fs.constants.S_IFMT);
 }
 
 function descriptorIdentities(descriptors) {
@@ -227,6 +231,7 @@ function resourceFromClaim(binding, claim) {
     pgid: Number.isInteger(claim.pgid) ? claim.pgid : null,
     process_start_identity: typeof claim.process_start_identity === 'string'
       ? claim.process_start_identity : null,
+    worker_home_slot_id: claim.worker_home_slot_id || null,
     worker_environment_lease: claim.worker_environment_lease,
   };
 }
@@ -244,6 +249,7 @@ function launchInvariantSha256(claim) {
     inherited_fd_count: claim.inherited_fd_count,
     inherited_fd_identities: claim.inherited_fd_identities,
     worker_environment_reservation: claim.worker_environment_reservation,
+    worker_home_slot_id: claim.worker_home_slot_id || null,
     worker_environment_lease_sha256: claim.worker_environment_lease_sha256,
   }));
 }
@@ -257,6 +263,9 @@ function startOrRecoverSupervisedProcess(options) {
     if (!stat.isDirectory()) throw new Error('supervised process cwd is not a directory');
     return fileIdentity(stat);
   })();
+  if (options.cwdIdentity && !sameObjectIdentity(cwdIdentity, options.cwdIdentity)) {
+    throw new Error('supervised process cwd object identity changed');
+  }
   const binding = options.binding;
   if (!binding || typeof binding !== 'object' || Array.isArray(binding)) {
     throw new Error('supervised process binding is invalid');
@@ -319,6 +328,7 @@ function startOrRecoverSupervisedProcess(options) {
         inherited_fd_count: inheritedStdio.length,
         inherited_fd_identities: inheritedFdIdentities,
         worker_environment_reservation: reservation,
+        worker_home_slot_id: null,
         worker_environment_lease: null,
         worker_environment_lease_sha256: null,
         pid: null,
@@ -333,10 +343,21 @@ function startOrRecoverSupervisedProcess(options) {
       if (options.environment || typeof options.createEnvironment !== 'function') {
         throw new Error('recoverable supervised process environment factory is required');
       }
-      environment = options.createEnvironment({
+      const supplied = options.createEnvironment({
         reservation_id: claim.worker_environment_reservation.reservation_id,
         binding_sha256: claim.worker_environment_reservation.binding_sha256,
       });
+      let workerHomeSlotId = null;
+      if (supplied && typeof supplied === 'object' && !Array.isArray(supplied)
+        && Object.prototype.hasOwnProperty.call(supplied, 'environment')) {
+        environment = supplied.environment;
+        workerHomeSlotId = supplied.worker_home_slot_id;
+        if (!/^[0-9a-f]{64}$/.test(String(workerHomeSlotId || ''))) {
+          throw new Error('supervised worker-home slot identity is invalid');
+        }
+      } else {
+        environment = supplied;
+      }
       if (!environment) throw new Error('supervised process environment is required for a new launch');
       verifyWorkerEnvironment(environment);
       suppliedLease = workerEnvironmentLease(environment);
@@ -353,11 +374,13 @@ function startOrRecoverSupervisedProcess(options) {
         claim = {
           ...claim,
           state: 'preparing',
+          worker_home_slot_id: workerHomeSlotId,
           worker_environment_lease: suppliedLease,
           worker_environment_lease_sha256: sha256(stableStringify(suppliedLease)),
         };
         writeClaimAtomic(claimPath, claim);
-      } else if (stableStringify(suppliedLease) !== stableStringify(claim.worker_environment_lease)) {
+      } else if (stableStringify(suppliedLease) !== stableStringify(claim.worker_environment_lease)
+        || (claim.worker_home_slot_id != null && workerHomeSlotId !== claim.worker_home_slot_id)) {
         releaseWorkerEnvironmentLease(suppliedLease);
         suppliedLease = null;
         throw new Error('supervised worker environment lease differs');
@@ -463,11 +486,13 @@ function startOrRecoverSupervisedProcess(options) {
     revoke();
   }
   if (revoked.state === 'revoked') releaseWorkerEnvironmentLease(revoked.worker_environment_lease);
+  const environmentRetained = Boolean(revoked.worker_environment_lease
+    && pathEntryExists(revoked.worker_environment_lease.home));
   return {
     interrupted: false,
     state: revoked.state,
     resource: resourceFromClaim(binding, revoked),
-    environment_retained: false,
+    environment_retained: environmentRetained,
   };
 }
 
@@ -499,7 +524,6 @@ function childMain(specPath, expectedSpecSha256, expectedLaunchInvariantSha256) 
     || sha256(`${stableStringify(spec)}\n`) !== initialClaim.launch_spec_sha256
     || sha256(stableStringify(validateArgv(spec.argv))) !== initialClaim.argv_sha256
     || path.resolve(spec.cwd) !== initialClaim.cwd
-    || !sameNodeIdentity(fileIdentity(fs.statSync(spec.cwd)), initialClaim.cwd_identity)
     || spec.inherited_fd_count !== initialClaim.inherited_fd_count
     || stableStringify(spec.inherited_fd_identities) !== stableStringify(initialClaim.inherited_fd_identities)
     || sha256(stableStringify(initialClaim.worker_environment_lease))
@@ -516,6 +540,7 @@ function childMain(specPath, expectedSpecSha256, expectedLaunchInvariantSha256) 
   const release = acquireLock(`${claimPath}.lock`);
   let child;
   let inherited = [];
+  let cwdAnchor = null;
   const closeInherited = () => {
     for (const fd of inherited) {
       try { fs.closeSync(fd); } catch (_error) {}
@@ -528,6 +553,7 @@ function childMain(specPath, expectedSpecSha256, expectedLaunchInvariantSha256) 
       || claim.startup_token !== spec.startup_token || claim.launch_spec_path !== absoluteSpec) {
       throw new Error('supervised startup claim is unavailable or revoked');
     }
+    cwdAnchor = openDirectoryAnchor(spec.cwd, claim.cwd_identity);
     const identity = processStartIdentity(process.pid);
     if (identity === null) throw new Error('supervised process identity is unavailable');
     writeClaimAtomic(claimPath, {
@@ -539,13 +565,16 @@ function childMain(specPath, expectedSpecSha256, expectedLaunchInvariantSha256) 
       registered_at_epoch_ms: Date.now(),
     });
     inherited = Array.from({ length: spec.inherited_fd_count }, (_item, index) => index + 3);
-    child = spawn(validateArgv(spec.argv)[0], spec.argv.slice(1), {
-      cwd: path.resolve(spec.cwd),
+    const cwdChildDescriptor = 3 + inherited.length;
+    const launch = objectBoundExec(cwdAnchor, validateArgv(spec.argv), cwdChildDescriptor);
+    child = spawn(launch.command, launch.argv, {
+      cwd: '/',
       env: process.env,
       shell: false,
       detached: false,
-      stdio: ['ignore', 'ignore', 'ignore', ...inherited],
+      stdio: ['ignore', 'ignore', 'ignore', ...inherited, cwdAnchor.descriptor],
     });
+    closeDirectoryAnchor(cwdAnchor);
     closeInherited();
     child.once('error', (error) => {
       transitionClaim(claimPath, spec.startup_token, ['registered', 'running'], {
@@ -562,6 +591,7 @@ function childMain(specPath, expectedSpecSha256, expectedLaunchInvariantSha256) 
       started_at_epoch_ms: Date.now(),
     });
   } finally {
+    closeDirectoryAnchor(cwdAnchor);
     closeInherited();
     release();
   }
