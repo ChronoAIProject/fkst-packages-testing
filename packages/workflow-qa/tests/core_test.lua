@@ -17,6 +17,7 @@ local helpers = require("tests.workflow_core_test_helpers").build({
 local analysis_result = helpers.analysis_result
 local artifact_summary = helpers.artifact_summary
 local checkpoint_receipt = helpers.checkpoint_receipt
+local cleanup_incomplete = helpers.cleanup_incomplete
 local copy = helpers.copy
 local digest = helpers.digest
 local execution_result = helpers.execution_result
@@ -897,6 +898,7 @@ local workflow_core_coverage_cases = require("tests.workflow_core_coverage_helpe
   contract = contract, core = core, digest = digest, drive_to_grant = drive_to_grant,
   execution_result = execution_result, expect_failure = expect_failure, finalized = finalized, fixture = fixture,
   grant_result = grant_result, module_terminal = module_terminal, plan_result = plan_result, pointer = pointer,
+  cleanup_incomplete = cleanup_incomplete,
   ready_result = ready_result,
   release_checkpoint = release_checkpoint, runtime = runtime, t = t,
 })
@@ -904,5 +906,15 @@ tests.test_blocked_environment_summary_cleanup_and_publication_fail_closed =
   workflow_core_coverage_cases.blocked_environment_summary_cleanup_and_publication_fail_closed
 tests.test_remaining_workflow_identity_grant_and_publication_boundaries =
   workflow_core_coverage_cases.remaining_workflow_identity_grant_and_publication_boundaries
+
+local workflow_cleanup_retention_cases = require("tests.workflow_cleanup_retention_test_helpers").build({
+  cleanup_incomplete = cleanup_incomplete, core = core, digest = digest,
+  expect_failure = expect_failure, fixture = fixture, ready_result = ready_result,
+  release_checkpoint = release_checkpoint, runtime = runtime, t = t,
+})
+tests.test_incomplete_cleanup_becomes_durable_non_publishable_blocked_state =
+  workflow_cleanup_retention_cases.incomplete_cleanup_becomes_durable_non_publishable_blocked_state
+tests.test_incomplete_cleanup_receipt_binding_and_status_fail_closed =
+  workflow_cleanup_retention_cases.incomplete_cleanup_receipt_binding_and_status_fail_closed
 
 return tests

@@ -22,6 +22,8 @@ local function adapter_marker_counts(context, label)
       "local-qa-host dept=intake tag=ROUTED run_id=" .. context.run_id),
     execution_grant = process.count_child_logs(root, "local-qa-host-adapter.execution_grant-",
       "local-qa-host dept=execution_grant tag=GRANTED"),
+    execution_grant_replay = process.count_child_logs(root,
+      "local-qa-host-adapter.execution_grant-", "REPLAY_SCRATCH_BYPASS=enabled"),
     terminal = process.count_child_logs(root, "local-qa-host-adapter.terminal-",
       "local-qa-host dept=terminal tag=RECORDED run_id=" .. context.run_id),
   }
@@ -56,8 +58,8 @@ local function counts(context)
     profile = #context.records:list("generic-host/profile-approval"),
     preauthorization = #context.records:list("generic-host/preauthorization"),
     replay = #context.records:list("testing-runner/replay"),
-    authorization = #context.records:list("testing-runner/cli-effect-authorizations"),
-    consumption = #context.records:list("testing-runner/cli-effect-consumptions"),
+    authorization = #context.records:list("testing-runner/effect-authorizations"),
+    consumption = #context.records:list("testing-runner/effect-consumptions"),
     effects = #context.records:list("testing-runner/target-effects"),
     publication = #context.records:list("test-publication/effects"),
     terminal = #context.records:list("generic-host/terminal"),
@@ -83,6 +85,7 @@ return {
     process.with_context({
       scenario = "downstream-inventory", durable = true, prepare_execution_grant_pending = false,
       publication_channel = "filesystem-dry-run-v1", arm_completed_replay_failpoint = true,
+      object_bound_cleanup_broker = false,
     }, function(context, live_pids)
       t.eq(#context.commit_sha, 40)
       t.is_true(context.commit_sha:match("^[0-9a-f]+$") ~= nil)
@@ -91,7 +94,7 @@ return {
       t.eq(context.profile.mutation_policy.allowed_operations[1], "update")
       for _, name in ipairs({
         "load_artifact", "write_artifact", "artifact_digest", "claim_preauthorization",
-        "grant_values", "record_terminal",
+        "reconcile_preauthorization_claim", "grant_values", "record_terminal",
       }) do
         t.eq(type(context.generic_host_runtime[name]), "function")
       end
@@ -138,13 +141,26 @@ return {
       t.eq(effects[4].value.result.stdout, "")
       t.eq(effects[4].value.result.stderr, REJECTED)
       t.eq(effects[5].value.result.body, RESERVED)
-      t.eq(#at_barrier.records:list("testing-runner/cli-effect-authorizations"), 2)
-      t.eq(#at_barrier.records:list("testing-runner/cli-effect-consumptions"), 2)
+      t.eq(#at_barrier.records:list("testing-runner/effect-authorizations"), 5)
+      t.eq(#at_barrier.records:list("testing-runner/effect-consumptions"), 5)
       for _, expected in ipairs({ "inventory-reserve-three", "inventory-over-reserve-rejected" }) do
         local consumption = artifact(at_barrier, at_barrier.request.structured_execution.artifact_root
           .. "/authorization/" .. expected .. "-consumption.json")
         t.eq(consumption.schema, "generic-host.cli-effect-consumption.v1")
         t.eq(consumption.case_id, expected)
+        t.eq(consumption.fence_id, nil)
+        t.is_true(type(consumption.consumption_fingerprint_sha256) == "string")
+        t.eq(#consumption.consumption_fingerprint_sha256, 64)
+      end
+      for _, expected in ipairs({
+        "inventory-initial-state", "inventory-state-after-reserve", "inventory-state-after-rejection",
+      }) do
+        local consumption = artifact(at_barrier, at_barrier.request.structured_execution.artifact_root
+          .. "/authorization/" .. expected .. "-consumption.json")
+        t.eq(consumption.schema, "generic-host.http-effect-consumption.v1")
+        t.eq(consumption.case_id, expected)
+        t.is_true(type(consumption.consumption_fingerprint_sha256) == "string")
+        t.eq(#consumption.consumption_fingerprint_sha256, 64)
       end
       t.eq(at_barrier:terminal_record(), nil)
       local ownership = at_barrier:_fixture_effect("fixture-resource-status", {
@@ -160,13 +176,15 @@ return {
       t.eq(surviving.owned, true)
       t.eq(surviving.pgid, ownership.pgid)
       t.eq(surviving.ownership_token, ownership.ownership_token)
-      local adapter_calls = { intake = 0, execution_grant = 0, terminal = 0 }
+      local adapter_calls = {
+        intake = 0, execution_grant = 0, execution_grant_replay = 0, terminal = 0,
+      }
       add_marker_counts(adapter_calls, adapter_marker_counts(context, "inventory-first"))
 
       local second_pid, second_stdout, second_stderr = process.start_supervisor(
         context, "inventory-second", false, live_pids)
-      if not process.wait_for_terminal(context) then
-        error("inventory replacement did not reach terminal\nstdout=" .. tostring(process.read_file(second_stdout))
+      if not process.wait_for_state_phase(context, "cleanup-blocked") then
+        error("inventory replacement did not reach cleanup-blocked\nstdout=" .. tostring(process.read_file(second_stdout))
           .. "\nstderr=" .. tostring(process.read_file(second_stderr)))
       end
       process.stop_live(second_pid, live_pids)
@@ -201,45 +219,38 @@ return {
       t.eq(preauthorization.capabilities.http[1].methods[1], "GET")
       t.eq(preauthorization.capabilities.http[1].path_prefixes[1], "/inventory/")
 
-      local terminal = recovered:terminal_record()
-      t.eq(terminal.schema, "workflow-qa.terminal-request.v2")
-      t.eq(terminal.status, "passed")
-      for name, expected in pairs({
-        planned = 5, executed = 5, passed = 5, failed = 0, skipped = 0, error = 0, blocked = 0,
-      }) do t.eq(terminal.counts[name], expected) end
-      local publication = artifact(recovered, terminal.aggregate_publication_receipt_ref)
-      t.eq(publication.status, "published")
-      t.eq(publication.channel, "filesystem-dry-run-v1")
-      t.eq(publication.remote_url, nil)
-      local aggregate = artifact(recovered, recovered.request.publication.aggregate_report_ref)
-      t.eq(aggregate.status, "passed")
-      t.eq(aggregate.counts.passed, 5)
-      local cleanup = artifact(recovered, terminal.cleanup_receipt_ref)
-      t.eq(cleanup.status, "complete")
-      t.eq(#cleanup.remaining_resources, 0)
-      local report_path = recovered.artifact_root .. "/acceptance-report.md"
-      local report = artifact(recovered, report_path)
-      t.is_true(type(report) == "string")
-      local previous = 0
-      for _, expected in ipairs(CASE_IDS) do
-        local position = assert(report:find(expected, previous + 1, true))
-        t.is_true(position > previous)
-        previous = position
-      end
-      t.eq(report:match("([^\n]+)\n$"), "Verdict: downstream business acceptance passed")
+      local state = recovered.workflow_runtime.load_state(recovered.request.state_ref)
+      t.eq(state.phase, "cleanup-blocked")
+      t.eq(state.terminal_status, "blocked")
+      t.eq(#state.pending_actions, 0)
+      t.eq(recovered:terminal_record(), nil)
+      t.eq(recovered.store:load(recovered.request.publication.aggregate_report_ref), nil)
+      local cleanup = artifact(recovered, state.cleanup_result.cleanup_receipt_ref.ref)
+      t.eq(cleanup.schema, "environment-factory.cleanup-receipt.v2")
+      t.eq(cleanup.status, "incomplete")
+      t.is_true(#cleanup.remaining_resources >= 1)
+      t.eq(state.cleanup_blocked.reason, "cleanup-incomplete")
+      t.is_true(#state.cleanup_blocked.worker_home_retention == 1)
+      local retention = artifact(recovered,
+        state.cleanup_blocked.worker_home_retention[1].resource_detail_ref.ref)
+      t.eq(retention.schema, "environment-factory.worker-home-retention.v1")
+      t.eq(retention.operation_id, context.run_id)
+      t.eq(retention.repository.commit_sha, context.commit_sha)
+      t.eq(retention.remaining_count, #retention.entries)
       local released = recovered:_fixture_effect("fixture-release-status", {
         run_id = context.run_id, artifact_root = context.artifact_root,
       })
       t.eq(released.process_group_absent, true)
       t.eq(released.listeners_closed, true)
-      t.eq(released.workspace_absent, true)
-      t.eq(support.read_file(context.workspace_root .. "/state/inventory.json"), nil)
+      t.eq(released.workspace_absent, false)
+      t.eq(released.worker_environment_absent, false)
+      t.eq(support.read_file(context.workspace_root .. "/state/inventory.json"), RESERVED)
 
       local before = counts(recovered)
       local noop_pid, noop_stdout, noop_stderr = process.start_supervisor(
         context, "inventory-noop", false, live_pids)
       if not process.wait_for_noop(context, "inventory-noop") then
-        error("inventory terminal replay was not a no-op\nstdout=" .. tostring(process.read_file(noop_stdout))
+        error("inventory cleanup-blocked replay was not a no-op\nstdout=" .. tostring(process.read_file(noop_stdout))
           .. "\nstderr=" .. tostring(process.read_file(noop_stderr)))
       end
       process.stop_live(noop_pid, live_pids)
@@ -247,21 +258,23 @@ return {
       t.eq(#durable.load(context.project_root, context.durable_root, context.run_id).records:list(
         "generic-host/local-qa-intake"), 1)
       t.eq(adapter_calls.intake, 1)
-      t.eq(adapter_calls.execution_grant, 1)
-      t.eq(adapter_calls.terminal, 1)
+      t.is_true(adapter_calls.execution_grant >= 1)
+      t.eq(adapter_calls.execution_grant_replay, adapter_calls.execution_grant - 1)
+      t.eq(adapter_calls.terminal, 0)
       assert_same_counts(before, counts(durable.load(context.project_root, context.durable_root, context.run_id)))
       t.eq(before.profile, 1)
       t.eq(before.preauthorization, 1)
       t.eq(before.replay, 1)
-      t.eq(before.authorization, 2)
-      t.eq(before.consumption, 2)
+      t.eq(#recovered.records:list("testing-runner/grant-verifications"), 1)
+      t.eq(before.authorization, 5)
+      t.eq(before.consumption, 5)
       t.eq(before.effects, 5)
-      t.eq(before.publication, 16)
+      t.is_true(before.publication < 16)
       local published = durable.load(context.project_root, context.durable_root, context.run_id)
-      t.eq(publication_stage_count(published, "aggregate-source-case-result-set"), 1)
-      t.eq(publication_stage_count(published, "aggregate-source-evidence-manifest"), 1)
-      t.eq(publication_stage_count(published, "aggregate-report"), 1)
-      t.eq(before.terminal, 1)
+      t.eq(publication_stage_count(published, "aggregate-source-case-result-set"), 0)
+      t.eq(publication_stage_count(published, "aggregate-source-evidence-manifest"), 0)
+      t.eq(publication_stage_count(published, "aggregate-report"), 0)
+      t.eq(before.terminal, 0)
     end)
   end,
 }

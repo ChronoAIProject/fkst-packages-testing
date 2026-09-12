@@ -4,8 +4,9 @@
 const crypto = require('node:crypto');
 const fs = require('node:fs');
 const path = require('node:path');
-const { spawn, spawnSync } = require('node:child_process');
+const { spawnSync } = require('node:child_process');
 const { execute: storeExecute, stable } = require('./durable-host-store');
+const lineageContract = require('./authorization-lineage');
 
 function environmentRuntimeHelper(name) {
   const candidates = [
@@ -19,8 +20,19 @@ function environmentRuntimeHelper(name) {
 }
 
 const {
-  pathIdentity, processAlive, processStartIdentity, removeOwnedDirectory, samePathIdentity, sleep,
+  OBJECT_BOUND_CLEANUP_UNAVAILABLE, minimalEnvironment, pathEntryExists, pathIdentity,
+  ownedDirectoryReleaseProven,
+  releaseWorkerEnvironmentLease, releaseWorkerEnvironmentReservation,
+  removeOwnedDirectory, requireOwnedDirectory, reservationMatchesLease, samePathIdentity, sleep,
+  verifyWorkerEnvironment, verifyWorkerEnvironmentLease, workerEnvironmentReleaseProven,
+  workerEnvironmentReservation,
 } = environmentRuntimeHelper('common');
+const { validateTargetExecutionBoundary } = environmentRuntimeHelper('target-execution-boundary');
+const { prepareReservedWorkspace } = environmentRuntimeHelper('workspace-reservation');
+const {
+  closeDirectoryAnchor, objectBoundExec, openDirectoryAnchor,
+} = environmentRuntimeHelper('object-bound-exec');
+const { startOrRecoverSupervisedProcess } = environmentRuntimeHelper('supervised-process');
 const {
   listenerOwners, listenersOwnedByProcessGroup, listenersReleased, processGroupState, terminateProcessGroup,
 } = environmentRuntimeHelper('platform');
@@ -128,7 +140,33 @@ function loadConfig(projectRoot, runId) {
     || config.run_id !== runId || path.resolve(config.project_root) !== path.resolve(projectRoot)) {
     fail('durable run config is unavailable or foreign');
   }
+  validateTargetExecutionBoundary(config.target_execution_boundary, config.profile.repository);
   return config;
+}
+
+function expectedProfileReplayBinding(config) {
+  const repository = config.profile && config.profile.repository;
+  const approval = config.approval;
+  const receipt = config.validation_receipt;
+  if (!validRepository(repository) || !approval || !receipt
+    || !sameRepository(repository, approval.repository)
+    || approval.approval_id !== receipt.approval_id
+    || !validDigest(receipt.approval_sha256)
+    || !validDigest(receipt.profile_sha256)
+    || approval.max_uses !== 1
+    || approval.trace_id !== receipt.trace_id
+    || approval.dedup_key !== receipt.dedup_key) {
+    fail('trusted Profile replay binding is unavailable');
+  }
+  return {
+    approval_id: approval.approval_id,
+    approval_sha256: receipt.approval_sha256,
+    profile_sha256: receipt.profile_sha256,
+    repository: { url: repository.url, commit_sha: repository.commit_sha },
+    trace_id: receipt.trace_id,
+    dedup_key: receipt.dedup_key,
+    max_uses: approval.max_uses,
+  };
 }
 
 function artifactFile(projectRoot, logicalPath) {
@@ -152,20 +190,168 @@ function atomicWrite(filePath, body) {
   fs.renameSync(temporary, filePath);
 }
 
-function artifactRead(projectRoot, logicalPath) {
+function stableDirectoryIdentity(boundary, directory) {
+  const root = path.resolve(boundary);
+  const target = path.resolve(directory);
+  if (target !== root && !target.startsWith(`${root}${path.sep}`)) {
+    fail('materialized artifact directory escaped its boundary');
+  }
+  let cursor = root;
+  const segments = path.relative(root, target).split(path.sep).filter(Boolean);
+  for (const segment of ['', ...segments]) {
+    if (segment !== '') cursor = path.join(cursor, segment);
+    try {
+      fs.mkdirSync(cursor, { mode: 0o700 });
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') throw error;
+    }
+    const stat = fs.lstatSync(cursor);
+    if (!stat.isDirectory() || stat.isSymbolicLink()) {
+      fail('materialized artifact directory is not a physical directory');
+    }
+  }
+  const stat = fs.lstatSync(target);
+  return { dev: stat.dev, ino: stat.ino };
+}
+
+function sameDirectoryIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+function withAnchoredMaterializedDirectory(boundary, directory, operation) {
+  const expected = stableDirectoryIdentity(boundary, directory);
+  const original = process.cwd();
+  let anchored = false;
+  try {
+    process.chdir(directory);
+    anchored = true;
+    if (!sameDirectoryIdentity(expected, fs.statSync('.'))) {
+      fail('materialized artifact directory identity changed');
+    }
+    const result = operation();
+    if (!sameDirectoryIdentity(expected, fs.statSync('.'))) {
+      fail('materialized artifact directory identity changed');
+    }
+    return result;
+  } finally {
+    if (anchored) process.chdir(original);
+  }
+}
+
+function readAnchoredPhysicalFile(name) {
+  if (path.basename(name) !== name || name === '.' || name === '..') {
+    fail('materialized artifact filename is invalid');
+  }
+  if (typeof fs.constants.O_NOFOLLOW !== 'number') {
+    fail('no-follow materialized artifact reads are unsupported');
+  }
+  let fd;
+  try {
+    fd = fs.openSync(name, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
+  } catch (error) {
+    if (error && error.code === 'ENOENT') return null;
+    throw error;
+  }
+  try {
+    const before = fs.fstatSync(fd);
+    if (!before.isFile() || before.isSymbolicLink()) {
+      fail('materialized artifact is not a physical file');
+    }
+    const body = fs.readFileSync(fd, 'utf8');
+    const after = fs.fstatSync(fd);
+    if (before.dev !== after.dev || before.ino !== after.ino || before.size !== after.size) {
+      fail('materialized artifact identity changed while reading');
+    }
+    return body;
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
+function verifyMaterializedImmutable(filePath, body, boundary = path.dirname(filePath)) {
+  return withAnchoredMaterializedDirectory(boundary, path.dirname(filePath), () => {
+    const materialized = readAnchoredPhysicalFile(path.basename(filePath));
+    if (materialized === null) return false;
+    if (materialized !== body) fail('materialized artifact differs');
+    return true;
+  });
+}
+
+function materializeImmutableNoReplace(filePath, body, boundary = path.dirname(filePath)) {
+  const directory = path.dirname(filePath);
+  const name = path.basename(filePath);
+  return withAnchoredMaterializedDirectory(boundary, directory, () => {
+    const temporary = `.${name}.tmp-${process.pid}-${crypto.randomBytes(8).toString('hex')}`;
+    const fd = fs.openSync(temporary, 'wx', 0o600);
+    try {
+      fs.writeFileSync(fd, body, 'utf8');
+      fs.fsyncSync(fd);
+    } finally {
+      fs.closeSync(fd);
+    }
+    try {
+      fs.linkSync(temporary, name);
+    } catch (error) {
+      if (!error || error.code !== 'EEXIST') throw error;
+      const materialized = readAnchoredPhysicalFile(name);
+      if (materialized !== body) fail('materialized artifact differs');
+      return false;
+    } finally {
+      fs.unlinkSync(temporary);
+    }
+    return true;
+  });
+}
+
+function generatedArtifactDigestPath(config, logicalPath) {
+  const request = config && config.request;
+  const design = request && request.design_module_start;
+  const execution = request && request.structured_execution;
+  const allowed = [];
+  if (design && typeof design.artifact_root === 'string') {
+    allowed.push(`${design.artifact_root}/test-plan.json`);
+  }
+  if (execution && typeof execution.structured_plan_ref === 'string') {
+    allowed.push(execution.structured_plan_ref);
+  }
+  return allowed.includes(logicalPath);
+}
+
+function artifactRead(projectRoot, logicalPath, expectedDigest, options = {}) {
   const runId = runIdFromPath(logicalPath);
   if (!runId) fail('artifact path has no run id');
-  loadConfig(projectRoot, runId);
+  const config = loadConfig(projectRoot, runId);
   let result = storeExecute({ root: runRoot(runId), operation: 'artifact-read', path: logicalPath });
   if (!result.found) {
+    if (options.durableOnly === true) return null;
+    const unboundDigestImport = options.allowGeneratedDigestImport === true
+      && generatedArtifactDigestPath(config, logicalPath);
+    if (!validDigest(expectedDigest) && !unboundDigestImport) {
+      fail(`unbound materialized artifact import is denied: ${logicalPath}`);
+    }
     const target = artifactFile(projectRoot, logicalPath);
-    if (!fs.existsSync(target)) return null;
-    const body = fs.readFileSync(target, 'utf8');
-    storeExecute({ root: runRoot(runId), operation: 'artifact-write', path: logicalPath, body });
-    result = { found: true, body, digest: sha256(body) };
+    const boundary = path.resolve(projectRoot, '.testing');
+    const body = withAnchoredMaterializedDirectory(boundary, path.dirname(target), () =>
+      readAnchoredPhysicalFile(path.basename(target)));
+    if (body === null) return null;
+    const observedDigest = sha256(body);
+    if (expectedDigest && observedDigest !== expectedDigest) {
+      fail('materialized artifact import digest differs');
+    }
+    const imported = storeExecute({
+      root: runRoot(runId), operation: 'artifact-write', path: logicalPath, body,
+    });
+    if (!imported.written || imported.digest !== observedDigest) {
+      fail('materialized artifact import differs');
+    }
+    result = { found: true, body, digest: imported.digest };
   }
+  if (expectedDigest && result.digest !== expectedDigest) fail('artifact digest binding differs');
   const target = artifactFile(projectRoot, logicalPath);
-  if (!fs.existsSync(target)) atomicWrite(target, result.body);
+  const boundary = path.resolve(projectRoot, '.testing');
+  if (!verifyMaterializedImmutable(target, result.body, boundary)) {
+    materializeImmutableNoReplace(target, result.body, boundary);
+  }
   let value;
   try { value = JSON.parse(result.body); } catch (_error) { value = result.body; }
   return { value, raw: result.body, digest: result.digest };
@@ -179,10 +365,9 @@ function artifactWrite(projectRoot, logicalPath, value) {
   const result = storeExecute({ root: runRoot(runId), operation: 'artifact-write', path: logicalPath, body });
   if (!result.written) fail('immutable artifact differs');
   const target = artifactFile(projectRoot, logicalPath);
-  if (fs.existsSync(target)) {
-    if (fs.readFileSync(target, 'utf8') !== body) fail('materialized artifact differs');
-  } else {
-    atomicWrite(target, body);
+  const boundary = path.resolve(projectRoot, '.testing');
+  if (!verifyMaterializedImmutable(target, body, boundary)) {
+    materializeImmutableNoReplace(target, body, boundary);
   }
   return { written: true, replayed: result.replayed === true, digest: result.digest };
 }
@@ -194,12 +379,439 @@ function artifactWriteRaw(projectRoot, logicalPath, body) {
   const result = storeExecute({ root: runRoot(runId), operation: 'artifact-write', path: logicalPath, body });
   if (!result.written) fail('immutable artifact differs');
   const target = artifactFile(projectRoot, logicalPath);
-  if (fs.existsSync(target)) {
-    if (fs.readFileSync(target, 'utf8') !== body) fail('materialized artifact differs');
-  } else {
-    atomicWrite(target, body);
+  const boundary = path.resolve(projectRoot, '.testing');
+  if (!verifyMaterializedImmutable(target, body, boundary)) {
+    materializeImmutableNoReplace(target, body, boundary);
   }
   return { written: true, replayed: result.replayed === true, digest: result.digest };
+}
+
+const lineagePaths = lineageContract.paths;
+const lineageSchemas = lineageContract.schemas;
+
+function lineageRoot(config) {
+  const expected = `.testing/runs/${config.run_id}`;
+  if (config.artifact_root !== expected) fail('authorization lineage requires the canonical run root');
+  return expected;
+}
+
+function lineagePath(config, name) {
+  if (!lineagePaths[name]) fail(`unsupported authorization lineage receipt ${name}`);
+  return `${lineageRoot(config)}/${lineagePaths[name]}`;
+}
+
+function claimFingerprint(config, domain, privateClaimId) {
+  if (typeof privateClaimId !== 'string' || privateClaimId === '') fail('authorization claim id is unavailable');
+  if (typeof config.lineage_projection_secret !== 'string'
+    || config.lineage_projection_secret.length < 32) fail('lineage projection secret is unavailable');
+  const inner = sha256(`${config.lineage_projection_secret}\0${domain}\0${privateClaimId}`);
+  return sha256(`fkst-authorization-lineage.v1\0${domain}\0${inner}`);
+}
+
+function lineageEnvelope(config, schema, status, receiptId, recordedAt, fields) {
+  return {
+    schema, status, receipt_id: receiptId,
+    repository: { url: config.repository.url, commit_sha: config.repository.commit_sha },
+    run_id: config.run_id, trace_id: config.request.trace_id, dedup_key: config.request.dedup_key,
+    recorded_at: recordedAt, source_max_uses: 1, evidence_role: 'audit-only',
+    human_approval_required: false,
+    authorization_capability: false, execution_authorized: false,
+    promotion_authorized: false, reusable: false, ...fields,
+  };
+}
+
+function writeLineageReceipt(projectRoot, config, name, value, expected) {
+  lineageContract.validateReceipt(name, value, expected);
+  const logicalPath = lineagePath(config, name);
+  const body = stable(value);
+  const written = artifactWriteRaw(projectRoot, logicalPath, body);
+  const persisted = artifactRead(projectRoot, logicalPath);
+  if (!persisted || persisted.raw !== body || persisted.digest !== sha256(body)
+    || stable(persisted.value) !== body) fail(`authorization lineage receipt differs: ${name}`);
+  lineageContract.validateReceipt(name, persisted.value, expected);
+  return { ref: logicalPath, sha256: persisted.digest, value: persisted.value,
+    expected, replayed: written.replayed === true };
+}
+
+function boundLineageArtifact(projectRoot, ref, expectedDigest, label) {
+  const artifact = artifactRead(projectRoot, ref, expectedDigest);
+  if (!artifact || (expectedDigest && artifact.digest !== expectedDigest)) {
+    fail(`${label} artifact binding differs`);
+  }
+  return artifact;
+}
+
+function lineageSource(config, fields) {
+  return {
+    repository: { url: config.repository.url, commit_sha: config.repository.commit_sha },
+    run_id: config.run_id,
+    trace_id: config.request.trace_id,
+    dedup_key: config.request.dedup_key,
+    ...fields,
+  };
+}
+
+function legacyPreauthorizationBinding(request) {
+  return {
+    authorization_id: request.authorization_id,
+    preauthorization_sha256: request.preauthorization_sha256,
+    repository: request.repository,
+    plan_sha256: request.plan_sha256,
+    environment_receipt_sha256: request.environment_receipt_sha256,
+    trace_id: request.trace_id,
+    dedup_key: request.dedup_key,
+  };
+}
+
+function canonicalPreauthorizationBinding(request) {
+  return {
+    authorization_id: request.authorization_id,
+    preauthorization_ref: request.preauthorization_ref,
+    preauthorization_sha256: request.preauthorization_sha256,
+    repository: request.repository,
+    plan_ref: request.plan_ref,
+    plan_sha256: request.plan_sha256,
+    environment_receipt_ref: request.environment_receipt_ref,
+    environment_receipt_sha256: request.environment_receipt_sha256,
+    trace_id: request.trace_id,
+    dedup_key: request.dedup_key,
+  };
+}
+
+function trustedPreauthorizationRefs(config) {
+  const request = config && config.request;
+  const structured = request && request.structured_execution;
+  const environment = request && request.environment_start;
+  if (!structured || !environment || typeof structured.preauthorization_ref !== 'string'
+    || typeof structured.structured_plan_ref !== 'string'
+    || typeof environment.artifact_root !== 'string') return null;
+  return {
+    preauthorization_ref: structured.preauthorization_ref,
+    plan_ref: structured.structured_plan_ref,
+    environment_receipt_ref: `${environment.artifact_root}/environment-receipt-ready.json`,
+  };
+}
+
+function compatibleStoredPreauthorizationBinding(stored) {
+  if (!stored || typeof stored !== 'object' || Array.isArray(stored)
+    || !Object.prototype.hasOwnProperty.call(stored, 'runtime_config_ref')) return stored;
+  if (stable(stored.runtime_config_ref) !== stable({
+    kind: 'artifact', ref: '.testing/generic-host-runtime.json',
+  })) return stored;
+  const normalized = { ...stored };
+  delete normalized.runtime_config_ref;
+  return normalized;
+}
+
+function preauthorizationBindingMatches(stored, request, trustedRefs) {
+  if (!trustedRefs || request.preauthorization_ref !== trustedRefs.preauthorization_ref
+    || request.plan_ref !== trustedRefs.plan_ref
+    || request.environment_receipt_ref !== trustedRefs.environment_receipt_ref) return false;
+  const normalized = compatibleStoredPreauthorizationBinding(stored);
+  return stable(normalized) === stable(canonicalPreauthorizationBinding(request))
+    || stable(normalized) === stable(legacyPreauthorizationBinding(request));
+}
+
+function completePreauthorizationRequest(preauthorization, request) {
+  return {
+    authorization_id: preauthorization.value.authorization_id,
+    preauthorization_ref: request.preauthorization_ref,
+    preauthorization_sha256: preauthorization.digest,
+    repository: request.repository,
+    plan_ref: request.plan_ref,
+    plan_sha256: request.plan_sha256,
+    environment_receipt_ref: request.environment_receipt_ref,
+    environment_receipt_sha256: request.environment_receipt_sha256,
+    trace_id: request.trace_id,
+    dedup_key: request.dedup_key,
+  };
+}
+
+function durableProfileClaim(config) {
+  const claim = recordRead(runRoot(config.run_id), `generic-host/profile-approval/${config.run_id}`);
+  if (!claim || typeof claim.claim_id !== 'string') fail('durable Profile claim is unavailable');
+  return claim;
+}
+
+function durablePreauthorizationClaim(config, authorizationId) {
+  const claim = recordRead(runRoot(config.run_id),
+    `generic-host/preauthorization/${sha256(stable(authorizationId))}`);
+  if (!claim || typeof claim.claim_id !== 'string') fail('durable Preauthorization claim is unavailable');
+  return claim;
+}
+
+function durableGrantVerification(config, grantDigest) {
+  const verification = recordRead(runRoot(config.run_id),
+    `testing-runner/grant-verifications/${sha256(grantDigest)}`);
+  if (!verification || !verification.binding) fail('durable Grant verification is unavailable');
+  return verification;
+}
+
+function durableExecutionClaim(config) {
+  const entries = recordList(runRoot(config.run_id), 'testing-runner/replay');
+  if (entries.length !== 1 || !entries[0].value || typeof entries[0].value.claim_id !== 'string') {
+    fail('durable execution claim is unavailable');
+  }
+  return entries[0].value;
+}
+
+function writeProfileClaimReceipt(projectRoot, config, durableClaim) {
+  const claimedAt = durableClaim && (durableClaim.claimed_at || config.authorization_now);
+  if (!durableClaim
+    || stable(durableClaim.binding) !== stable(expectedProfileReplayBinding(config))
+    || typeof durableClaim.claim_id !== 'string' || durableClaim.claim_id === ''
+    || typeof claimedAt !== 'string' || claimedAt === '') {
+    fail('environment authorization approval claim is unavailable');
+  }
+  const start = config.request.environment_start;
+  const profile = boundLineageArtifact(projectRoot, start.profile_ref.ref, null, 'profile');
+  const approval = boundLineageArtifact(projectRoot, start.approval_ref.ref, null, 'profile approval');
+  const validation = boundLineageArtifact(projectRoot, start.validation_receipt_ref.ref, null, 'profile validation');
+  if (profile.value.revision !== validation.value.profile_revision
+    || approval.value.approval_id !== validation.value.approval_id
+    || sha256(stable(profile.value)) !== validation.value.profile_sha256
+    || sha256(stable(approval.value)) !== validation.value.approval_sha256
+    || validation.value.profile_sha256 !== config.validation_receipt.profile_sha256
+    || validation.value.approval_sha256 !== config.validation_receipt.approval_sha256) {
+    fail('profile claim source artifacts differ');
+  }
+  const fingerprint = claimFingerprint(config, 'project-profile-approval-claim', durableClaim.claim_id);
+  const source = lineageSource(config, {
+      profile_source_ref: config.profile_source_ref,
+      profile_artifact_ref: start.profile_ref.ref, profile_artifact_sha256: profile.digest,
+      profile_sha256: validation.value.profile_sha256, profile_revision: profile.value.revision,
+      approval_artifact_ref: start.approval_ref.ref, approval_artifact_sha256: approval.digest,
+      approval_id: approval.value.approval_id, approval_sha256: validation.value.approval_sha256,
+      approval_authority: approval.value.authority, policy_revision: approval.value.policy_revision,
+      evidence_ref: approval.value.evidence_ref,
+      validation_receipt_ref: start.validation_receipt_ref.ref,
+      validation_receipt_sha256: validation.digest,
+      claim_fingerprint_sha256: fingerprint, claimed_at: claimedAt,
+    });
+  const value = lineageEnvelope(config, lineageSchemas.profile_claim, 'claimed',
+    `profile-claim-${fingerprint.slice(0, 32)}`, claimedAt, source);
+  return writeLineageReceipt(projectRoot, config, 'profile_claim', value, source);
+}
+
+function writePreauthorizationClaimReceipt(projectRoot, config, request, durableClaim) {
+  const claimedAt = durableClaim.claimed_at || config.execution_authorization_now;
+  if (!preauthorizationBindingMatches(
+    durableClaim.binding, request, trustedPreauthorizationRefs(config),
+  )) {
+    fail('durable Preauthorization claim binding differs');
+  }
+  const profileReceipt = writeProfileClaimReceipt(projectRoot, config, durableProfileClaim(config));
+  const preauthorization = boundLineageArtifact(projectRoot, request.preauthorization_ref,
+    request.preauthorization_sha256, 'preauthorization');
+  const catalogRef = config.request.structured_execution.case_catalog_ref;
+  const catalog = boundLineageArtifact(projectRoot, catalogRef,
+    config.request.structured_execution.case_catalog_sha256, 'case catalog');
+  const plan = boundLineageArtifact(projectRoot, request.plan_ref, request.plan_sha256, 'structured plan');
+  const environment = boundLineageArtifact(projectRoot, request.environment_receipt_ref,
+    request.environment_receipt_sha256, 'environment receipt');
+  if (preauthorization.value.authorization_id !== request.authorization_id
+    || preauthorization.value.profile_sha256 !== profileReceipt.value.profile_sha256
+    || preauthorization.value.case_catalog_sha256 !== catalog.digest
+    || plan.value.environment_receipt_sha256 !== environment.digest) {
+    fail('preauthorization lineage source differs');
+  }
+  const fingerprint = claimFingerprint(config, 'structured-preauthorization-claim', durableClaim.claim_id);
+  const source = lineageSource(config, {
+      profile_claim_receipt_ref: profileReceipt.ref,
+      profile_claim_receipt_sha256: profileReceipt.sha256,
+      preauthorization_ref: request.preauthorization_ref,
+      preauthorization_sha256: preauthorization.digest,
+      authorization_id: preauthorization.value.authorization_id,
+      profile_sha256: preauthorization.value.profile_sha256,
+      case_catalog_ref: catalogRef, case_catalog_sha256: catalog.digest,
+      plan_ref: request.plan_ref, plan_sha256: plan.digest,
+      environment_receipt_ref: request.environment_receipt_ref,
+      environment_receipt_sha256: environment.digest,
+      authority: preauthorization.value.authority,
+      policy_revision: preauthorization.value.policy_revision,
+      evidence_ref: preauthorization.value.evidence_ref,
+      claim_fingerprint_sha256: fingerprint, claimed_at: claimedAt,
+    });
+  const value = lineageEnvelope(config, lineageSchemas.preauthorization_claim, 'claimed',
+    `preauthorization-claim-${fingerprint.slice(0, 32)}`, claimedAt, source);
+  return writeLineageReceipt(projectRoot, config, 'preauthorization_claim', value, source);
+}
+
+function writeGrantVerificationReceipt(projectRoot, config, request) {
+  const preauthorization = boundLineageArtifact(projectRoot, request.preauthorization_ref,
+    request.preauthorization_sha256, 'preauthorization');
+  const grant = boundLineageArtifact(projectRoot, request.grant_ref, request.grant_sha256, 'execution grant');
+  const plan = boundLineageArtifact(projectRoot, request.plan_ref, request.plan_sha256, 'structured plan');
+  const environment = boundLineageArtifact(projectRoot, request.environment_receipt_ref,
+    request.environment_receipt_sha256, 'environment receipt');
+  if (grant.value.parent_authorization_sha256 !== preauthorization.digest
+    || grant.value.plan_sha256 !== plan.digest
+    || grant.value.environment_receipt_sha256 !== environment.digest
+    || stable(grant.value.repository) !== stable(request.repository)) {
+    fail('grant verification source differs');
+  }
+  assertStructuredGrantDerivation(config, request, preauthorization, plan, environment, grant);
+  const preauthorizationRequest = completePreauthorizationRequest(preauthorization, request);
+  const preauthorizationReceipt = writePreauthorizationClaimReceipt(projectRoot, config,
+    preauthorizationRequest,
+    durablePreauthorizationClaim(config, preauthorization.value.authorization_id));
+  const verificationId = `grant-verification-${grant.digest.slice(0, 32)}`;
+  const root = runRoot(config.run_id);
+  const durable = recordImmutable(root, `testing-runner/grant-verifications/${sha256(grant.digest)}`, {
+    binding: {
+      grant_ref: request.grant_ref, grant_sha256: grant.digest,
+      preauthorization_ref: request.preauthorization_ref, preauthorization_sha256: preauthorization.digest,
+      plan_ref: request.plan_ref, plan_sha256: plan.digest,
+      environment_receipt_ref: request.environment_receipt_ref,
+      environment_receipt_sha256: environment.digest, repository: request.repository,
+      trace_id: request.trace_id, dedup_key: request.dedup_key,
+    },
+    verification_id: verificationId, verified_at: config.execution_authorization_now,
+  });
+  if (!durable.written && !durable.replayed) fail('grant verification durable record differs');
+  const source = lineageSource(config, {
+      preauthorization_claim_receipt_ref: preauthorizationReceipt.ref,
+      preauthorization_claim_receipt_sha256: preauthorizationReceipt.sha256,
+      grant_ref: request.grant_ref, grant_sha256: grant.digest, grant_id: grant.value.grant_id,
+      parent_authorization_ref: request.preauthorization_ref,
+      parent_authorization_sha256: preauthorization.digest,
+      plan_ref: request.plan_ref, plan_sha256: plan.digest,
+      environment_receipt_ref: request.environment_receipt_ref,
+      environment_receipt_sha256: environment.digest,
+      authority: grant.value.authority, policy_revision: grant.value.policy_revision,
+      evidence_ref: grant.value.evidence_ref, verifier_ref: config.grant_verifier_ref,
+      verification_id: verificationId, verified_at: durable.value.verified_at,
+    });
+  const value = lineageEnvelope(config, lineageSchemas.grant_verification, 'authenticated',
+    verificationId, durable.value.verified_at, source);
+  return writeLineageReceipt(projectRoot, config, 'grant_verification', value, source);
+}
+
+function writeExecutionClaimReceipt(projectRoot, config, request, durableClaim) {
+  const claimedAt = durableClaim && (durableClaim.claimed_at || config.execution_authorization_now);
+  if (!durableClaim || stable(durableClaim.binding) !== stable(request)
+    || typeof durableClaim.claim_id !== 'string' || typeof claimedAt !== 'string'
+    || durableClaim.fence_id !== claimFingerprint(
+      config, 'structured-execution-fence', durableClaim.claim_id,
+    )) {
+    fail('execution claim durable binding differs');
+  }
+  const verification = durableGrantVerification(config, request.grant_sha256);
+  const grantReceipt = writeGrantVerificationReceipt(projectRoot, config, verification.binding);
+  const preauthorization = boundLineageArtifact(projectRoot, request.preauthorization_ref,
+    request.preauthorization_sha256, 'preauthorization');
+  const preauthorizationRequest = completePreauthorizationRequest(preauthorization, verification.binding);
+  const preauthorizationReceipt = writePreauthorizationClaimReceipt(projectRoot, config,
+    preauthorizationRequest,
+    durablePreauthorizationClaim(config, preauthorization.value.authorization_id));
+  const fingerprint = claimFingerprint(config, 'structured-execution-claim', durableClaim.claim_id);
+  const source = lineageSource(config, {
+      grant_verification_receipt_ref: grantReceipt.ref,
+      grant_verification_receipt_sha256: grantReceipt.sha256,
+      preauthorization_claim_receipt_ref: preauthorizationReceipt.ref,
+      preauthorization_claim_receipt_sha256: preauthorizationReceipt.sha256,
+      grant_ref: request.grant_ref, grant_sha256: request.grant_sha256,
+      grant_id: request.grant_id, plan_ref: request.plan_ref, plan_sha256: request.plan_sha256,
+      environment_receipt_ref: request.environment_receipt_ref,
+      environment_receipt_sha256: request.environment_receipt_sha256,
+      artifact_root: request.artifact_root, operation_id: request.operation_id,
+      claim_fingerprint_sha256: fingerprint, claimed_at: claimedAt,
+    });
+  const value = lineageEnvelope(config, lineageSchemas.execution_claim, 'claimed',
+    `execution-claim-${fingerprint.slice(0, 32)}`, claimedAt, source);
+  return writeLineageReceipt(projectRoot, config, 'execution_claim', value, source);
+}
+
+function assertExecutionMatchesClaim(execution, claimBinding) {
+  if (!execution || typeof execution !== 'object' || Array.isArray(execution)
+    || !claimBinding || typeof claimBinding !== 'object' || Array.isArray(claimBinding)
+    || !validDigest(execution.plan_sha256) || !validDigest(claimBinding.plan_sha256)
+    || execution.plan_sha256 !== claimBinding.plan_sha256) {
+    fail('completed execution Plan binding differs from the durable claim');
+  }
+  return true;
+}
+
+function writeExecutionCompletionReceipt(projectRoot, config, durableClaim) {
+  const completedAt = durableClaim && durableClaim.completion
+    && (durableClaim.completion.completed_at || config.execution_authorization_now);
+  if (!durableClaim || durableClaim.status !== 'completed' || !durableClaim.completion
+    || typeof completedAt !== 'string') {
+    fail('execution completion durable binding differs');
+  }
+  const executionClaim = writeExecutionClaimReceipt(projectRoot, config,
+    durableClaim.binding, durableClaim);
+  const completion = durableClaim.completion;
+  const artifacts = structuredExecutionArtifacts(projectRoot, completion.result_ref,
+    completion.result_sha256);
+  if (!artifacts.caseResultSet || !artifacts.evidenceManifest
+    || artifacts.execution.digest !== completion.result_sha256) {
+    fail('canonical execution completion artifacts are unavailable');
+  }
+  assertExecutionMatchesClaim(artifacts.execution.value, durableClaim.binding);
+  const source = lineageSource(config, {
+      execution_claim_receipt_ref: executionClaim.ref,
+      execution_claim_receipt_sha256: executionClaim.sha256,
+      result_ref: completion.result_ref, result_sha256: artifacts.execution.digest,
+      case_result_set_ref: artifacts.execution.value.case_result_set_path,
+      case_result_set_artifact_sha256: artifacts.caseResultSet.digest,
+      evidence_manifest_ref: artifacts.execution.value.evidence_manifest_path,
+      evidence_manifest_artifact_sha256: artifacts.evidenceManifest.digest,
+      completed_at: completedAt,
+    });
+  const value = lineageEnvelope(config, lineageSchemas.execution_completion, 'completed',
+    `execution-completion-${artifacts.execution.digest.slice(0, 32)}`, completedAt, source);
+  const receipt = writeLineageReceipt(projectRoot, config, 'execution_completion', value, source);
+  writeLineageIndex(projectRoot, config, completedAt, receipt);
+  return receipt;
+}
+
+function writeLineageIndex(projectRoot, config, recordedAt, completionReceipt) {
+  const preauthorization = boundLineageArtifact(projectRoot,
+    config.request.structured_execution.preauthorization_ref,
+    config.request.structured_execution.preauthorization_sha256, 'preauthorization');
+  const grant = boundLineageArtifact(projectRoot, config.request.structured_execution.grant_ref,
+    null, 'execution grant');
+  const grantVerification = durableGrantVerification(config, grant.digest);
+  const preauthorizationRequest = completePreauthorizationRequest(
+    preauthorization, grantVerification.binding);
+  const executionClaim = durableExecutionClaim(config);
+  if (executionClaim.status !== 'completed') fail('durable completed execution claim is unavailable');
+  const artifacts = {
+    profile_claim: writeProfileClaimReceipt(projectRoot, config, durableProfileClaim(config)),
+    preauthorization_claim: writePreauthorizationClaimReceipt(projectRoot, config,
+      preauthorizationRequest,
+      durablePreauthorizationClaim(config, preauthorization.value.authorization_id)),
+    grant_verification: writeGrantVerificationReceipt(projectRoot, config, grantVerification.binding),
+    execution_claim: writeExecutionClaimReceipt(projectRoot, config,
+      executionClaim.binding, executionClaim),
+    execution_completion: completionReceipt,
+  };
+  const expected = {};
+  const receipts = {};
+  for (const name of lineageContract.receiptNames) {
+    expected[name] = artifacts[name].expected;
+    receipts[name] = { ref: artifacts[name].ref, sha256: artifacts[name].sha256 };
+  }
+  const value = {
+    schema: lineageSchemas.lineage_index, status: 'complete',
+    repository: { url: config.repository.url, commit_sha: config.repository.commit_sha },
+    run_id: config.run_id, trace_id: config.request.trace_id, dedup_key: config.request.dedup_key,
+    recorded_at: recordedAt, receipts, lineage_complete: true, source_max_uses: 1,
+    evidence_role: 'audit-only', human_approval_required: false,
+    authorization_capability: false, execution_authorized: false,
+    promotion_authorized: false, reusable: false,
+  };
+  lineageContract.validateLineageIndex(value, artifacts, expected);
+  const path = `${lineageRoot(config)}/authorization-lineage/index.json`;
+  const body = stable(value);
+  artifactWriteRaw(projectRoot, path, body);
+  const persisted = artifactRead(projectRoot, path);
+  if (!persisted || persisted.raw !== body || persisted.digest !== sha256(body)) {
+    fail('authorization lineage index differs');
+  }
+  lineageContract.validateLineageIndex(persisted.value, artifacts, expected);
+  return { ref: path, sha256: persisted.digest, value: persisted.value };
 }
 
 function listIndexedRuns(projectRoot) {
@@ -293,18 +905,32 @@ function publicationResult(projectRoot, payload) {
   return result;
 }
 
-function directExec(argv, cwd, timeoutSeconds, outputBytes) {
+function directExec(argv, cwd, timeoutSeconds, outputBytes, environment, cwdIdentity) {
   if (!Array.isArray(argv) || argv.length === 0 || argv.some((item) => typeof item !== 'string')) {
     fail('argv must be a non-empty string list');
   }
-  const options = {
-    cwd,
-    encoding: 'utf8',
-    timeout: Math.max(1, Number(timeoutSeconds) || 30) * 1000,
-    env: process.env,
-  };
-  if (Number.isInteger(outputBytes) && outputBytes >= 1024) options.maxBuffer = outputBytes;
-  const result = spawnSync(argv[0], argv.slice(1), options);
+  if (!environment) fail('direct execution requires a durable worker environment');
+  verifyWorkerEnvironment(environment);
+  let anchor;
+  let result;
+  try {
+    anchor = openDirectoryAnchor(cwd, cwdIdentity);
+    const launch = objectBoundExec(anchor, argv, 3);
+    const options = {
+      cwd: '/',
+      encoding: 'utf8',
+      timeout: Math.max(1, Number(timeoutSeconds) || 30) * 1000,
+      env: environment,
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe', anchor.descriptor],
+    };
+    if (Number.isInteger(outputBytes) && outputBytes >= 1024) options.maxBuffer = outputBytes;
+    result = spawnSync(launch.command, launch.argv, options);
+  } catch (error) {
+    return { exit_code: -1, stdout: '', stderr: String(error.message || error) };
+  } finally {
+    closeDirectoryAnchor(anchor);
+  }
   return {
     exit_code: result.status == null ? -1 : result.status,
     stdout: result.stdout || '',
@@ -319,6 +945,23 @@ function environmentStateKey(ref) {
 
 function environmentResourceKey(ref) {
   return `environment-factory/resources/${sha256(stable(ref))}`;
+}
+
+const workerHomeLedger = require('./worker-home-ledger').create({
+  artifactWrite, fail, minimalEnvironment, recordCas, recordImmutable, recordRead,
+  releaseWorkerEnvironmentLease, releaseWorkerEnvironmentReservation,
+  reservationMatchesLease, resourceKey: environmentResourceKey, sha256, stable,
+  verifyWorkerEnvironmentLease, workerEnvironmentReleaseProven, workerEnvironmentReservation,
+  workerEnvironmentLease: environmentRuntimeHelper('common').workerEnvironmentLease,
+});
+
+function ledgerWorkerRequest(config, payload, effectId) {
+  return {
+    operation_id: config.run_id,
+    effect_id: effectId || payload.effect_id,
+    repository: config.profile.repository,
+    worker_home_ledger_ref: payload.worker_home_ledger_ref,
+  };
 }
 
 function exactRuntimePorts(value) {
@@ -357,18 +1000,32 @@ function workspaceResource(root, ref) {
   return resource;
 }
 
-function verifyWorkspace(config, resource) {
+function verifyWorkspace(config, resource, options = {}) {
   if (resource.operation_id !== config.run_id || resource.path !== config.workspace_root
     || typeof resource.ownership_token !== 'string' || resource.ownership_token === '') {
     fail('workspace ownership binding differs');
   }
-  if (!fs.existsSync(resource.path)) return { owned: false, reason: 'workspace-missing' };
+  if (!pathEntryExists(resource.path)) {
+    return options.allowMissingForCleanup === true
+      ? { owned: true, absent: true }
+      : { owned: false, reason: 'workspace-missing' };
+  }
   const identity = pathIdentity(resource.path);
   if (!samePathIdentity(identity, resource.path_identity)) return { owned: false, reason: 'workspace-identity-changed' };
   return { owned: true, identity };
 }
 
-function registerWorkspace(projectRoot, payload) {
+function releaseWorkspaceResource(config, resource) {
+  const workspaceState = verifyWorkspace(config, resource, { allowMissingForCleanup: true });
+  if (!workspaceState.owned) {
+    fail(`workspace cleanup ownership cannot be verified: ${workspaceState.reason}`);
+  }
+  return removeOwnedDirectory(
+    resource.path, resource.path_identity, config.temp_root, resource.cleanup_capture_id,
+  );
+}
+
+function registerWorkspace(projectRoot, payload, reservation = null, identityOverride = null) {
   const runId = runIdFor(payload);
   const root = runRoot(runId);
   const config = loadConfig(projectRoot, runId);
@@ -377,18 +1034,125 @@ function registerWorkspace(projectRoot, payload) {
     || payload.path !== config.workspace_root || payload.repository.commit_sha !== config.commit_sha) {
     fail('workspace registration binding differs');
   }
-  const identity = pathIdentity(payload.path);
+  const identity = identityOverride || pathIdentity(payload.path);
+  if (reservation && (!samePathIdentity(reservation.path_identity, identity)
+    || reservation.path !== payload.path || reservation.operation_id !== runId
+    || reservation.repository.url !== payload.repository.url
+    || reservation.repository.commit_sha !== payload.repository.commit_sha)) {
+    fail('workspace reservation binding differs at registration');
+  }
   const resource = {
-    schema: 'generic-host.environment-resource.v1', kind: 'workspace', operation_id: runId,
+        schema: 'generic-host.environment-resource.v1', kind: 'workspace', operation_id: runId,
     workspace_ref: payload.workspace_ref, cleanup_ref: payload.cleanup_ref, path: payload.path,
     path_identity: identity, repository: payload.repository,
-    ownership_token: crypto.randomBytes(16).toString('hex'),
+    ownership_token: reservation ? reservation.ownership_token : crypto.randomBytes(16).toString('hex'),
+    cleanup_capture_id: reservation ? reservation.cleanup_capture_id : crypto.randomBytes(32).toString('hex'),
+    ...(reservation ? { reservation_id: reservation.reservation_id } : {}),
   };
   for (const ref of [payload.workspace_ref, payload.cleanup_ref]) {
     const stored = recordImmutable(root, environmentResourceKey(ref), resource);
     if (!stored.written && !stored.replayed) fail('workspace resource binding differs');
   }
   return { registered: true, path_identity: identity };
+}
+
+function workspaceReservationKey(runId) {
+  return `environment-factory/workspace-reservations/${sha256(stable(`${runId}-workspace`))}`;
+}
+
+function durableWorkspaceReservation(root, config) {
+  const workspaceRoot = path.resolve(config.workspace_root);
+  const requestedTempRoot = path.resolve(config.temp_root);
+  if (workspaceRoot === requestedTempRoot || path.dirname(workspaceRoot) !== requestedTempRoot
+    || !workspaceRoot.startsWith(`${requestedTempRoot}${path.sep}`)) {
+    fail('environment checkout workspace escaped the durable temp root');
+  }
+  fs.mkdirSync(requestedTempRoot, { recursive: true, mode: 0o700 });
+  requireOwnedDirectory(requestedTempRoot, { privateDirectory: true });
+  const tempRoot = requestedTempRoot;
+  const binding = {
+    reservation_schema: 'environment-factory.workspace-reservation.v1',
+    reservation_id: `${config.run_id}-workspace`,
+    operation_id: config.run_id,
+    path: workspaceRoot,
+    containment_root: tempRoot,
+    containment_root_identity: pathIdentity(tempRoot),
+    repository: { url: config.repository.url, commit_sha: config.repository.commit_sha },
+  };
+  const key = workspaceReservationKey(config.run_id);
+  let current = recordRead(root, key);
+  let created = false;
+  if (!current) {
+    if (pathEntryExists(workspaceRoot)) {
+      fail('environment checkout workspace exists before durable reservation');
+    }
+    const initial = {
+      ...binding,
+      version: 1,
+      reservation_state: 'reserved',
+      path_identity: null,
+      ownership_token: crypto.randomBytes(32).toString('hex'),
+      cleanup_capture_id: crypto.randomBytes(32).toString('hex'),
+    };
+    const saved = recordCas(root, key, initial, 0);
+    current = saved.value;
+    created = saved.saved === true;
+  }
+  const observed = { ...current };
+  for (const field of [
+    'version', 'reservation_state', 'path_identity', 'ownership_token', 'cleanup_capture_id',
+  ]) delete observed[field];
+  if (stable(observed) !== stable(binding)
+    || !Number.isInteger(current.version) || current.version < 1
+    || !['reserved', 'allocated'].includes(current.reservation_state)
+    || (current.reservation_state === 'reserved' && current.path_identity !== null)
+    || (current.reservation_state === 'allocated' && !current.path_identity)
+    || !/^[0-9a-f]{64}$/.test(String(current.ownership_token || ''))
+    || !/^[0-9a-f]{64}$/.test(String(current.cleanup_capture_id || ''))) {
+    fail('durable workspace reservation binding differs');
+  }
+  return { key, record: current, created };
+}
+
+function recoverRegisteredCheckout(projectRoot, config, payload, workspaceRef, cleanupRef) {
+  const root = runRoot(config.run_id);
+  const existing = recordRead(root, environmentResourceKey(workspaceRef));
+  if (!existing) return null;
+  const state = verifyWorkspace(config, existing);
+  if (!state.owned || existing.reservation_id !== `${config.run_id}-workspace`
+    || stable(existing.repository) !== stable(config.repository)) {
+    fail(`registered checkout recovery failed: ${state.reason || 'binding-differs'}`);
+  }
+  const cleanupStored = recordImmutable(root, environmentResourceKey(cleanupRef), existing);
+  if (!cleanupStored.written && !cleanupStored.replayed) {
+    fail('registered checkout cleanup resource binding differs');
+  }
+  const resolvedCommit = verifyCheckoutGitState(config, payload, existing, 'checkout-recovery');
+  return {
+    status: 'passed', resolved_commit: resolvedCommit,
+    workspace_ref: workspaceRef, cleanup_ref: cleanupRef,
+  };
+}
+
+function verifyCheckoutGitState(config, payload, workspace, purpose) {
+  const root = runRoot(config.run_id);
+  const workerRequest = ledgerWorkerRequest(config, payload);
+  return workerHomeLedger.withEnvironment(
+    root, workerRequest, purpose, config.command_environment || {}, (environment) => {
+      const resolved = directExec(['git', 'rev-parse', 'HEAD'], workspace.path,
+        payload.timeout_seconds, undefined, environment, workspace.path_identity);
+      const observed = String(resolved.stdout || '').trim();
+      if (resolved.exit_code !== 0 || observed !== config.commit_sha) {
+        fail('workspace resolved commit differs from its durable binding');
+      }
+      const status = directExec(['git', 'status', '--porcelain', '--untracked-files=no'], workspace.path,
+        payload.timeout_seconds, undefined, environment, workspace.path_identity);
+      if (status.exit_code !== 0 || String(status.stdout || '').trim() !== '') {
+        fail('workspace tracked working tree differs from its durable binding');
+      }
+      return observed;
+    },
+  );
 }
 
 function startApplication(projectRoot, payload) {
@@ -402,50 +1166,92 @@ function startApplication(projectRoot, payload) {
     || payload.argv.length === 0 || !samePorts(ports, [{ name: 'application', port: config.port }])) {
     fail('application start binding differs');
   }
-  const existing = recordRead(root, environmentResourceKey(payload.cleanup_ref));
-  if (existing) {
-    const status = inspectResources(projectRoot, { run_id: runId });
-    if (!status.owned) fail(`application replay ownership failed: ${status.reason}`);
-    return { status: 'running', cleanup_ref: payload.cleanup_ref, early_exit: false, runtime_ports: ports };
-  }
   const workspace = workspaceResource(root, payload.workspace_ref);
   const workspaceState = verifyWorkspace(config, workspace);
   if (!workspaceState.owned) fail(`workspace ownership failed: ${workspaceState.reason}`);
-  const child = spawn(payload.argv[0], payload.argv.slice(1), {
-    cwd: workspace.path,
-    env: process.env,
-    shell: false,
-    detached: true,
-    stdio: 'ignore',
-  });
-  child.once('error', () => {});
-  child.unref();
-  const deadline = Date.now() + 5_000;
-  let processIdentity = null;
-  let listenerState = null;
-  while (Date.now() < deadline) {
-    processIdentity = processStartIdentity(child.pid);
-    if (processIdentity !== null) {
-      listenerState = listenersOwnedByProcessGroup(ports, child.pid);
-      if (listenerState.supported && listenerState.owned) break;
-    }
-    sleep(25);
-  }
-  if (processIdentity === null || !listenerState || !listenerState.supported || !listenerState.owned) {
-    terminateProcessGroup({ pid: child.pid, pgid: child.pid, process_start_identity: processIdentity }, 500);
-    fail(`application ownership could not be verified: ${listenerState && listenerState.reason || 'process-start-failed'}`);
-  }
-  const resource = {
+  verifyCheckoutGitState(config, payload, workspace, `application-start:${payload.effect_id}`);
+  const purpose = `supervised:${payload.effect_id}`;
+  const commandEnvironment = config.command_environment || {};
+  const workerRequest = ledgerWorkerRequest(config, payload);
+  const binding = {
     schema: 'generic-host.environment-resource.v1', kind: 'process', operation_id: runId,
     effect_id: payload.effect_id, cleanup_ref: payload.cleanup_ref, workspace_ref: payload.workspace_ref,
     workspace_path: workspace.path, workspace_identity: workspace.path_identity,
-    argv_sha256: sha256(stable(payload.argv)), ownership_token: crypto.randomBytes(16).toString('hex'),
-    runtime_ports: ports, pid: child.pid, pgid: child.pid, process_start_identity: processIdentity,
+    argv_sha256: sha256(stable(payload.argv)),
+    ownership_token: sha256(stable({
+      schema: 'generic-host.process-ownership.v1', run_id: runId,
+      effect_id: payload.effect_id, cleanup_ref: payload.cleanup_ref,
+    })),
+    runtime_ports: ports, repository: config.profile.repository,
   };
-  const stored = recordImmutable(root, environmentResourceKey(payload.cleanup_ref), resource);
-  if (!stored.written) {
+  const existing = recordRead(root, environmentResourceKey(payload.cleanup_ref));
+  if (existing) {
+    const volatile = new Set([
+      'startup_state', 'startup_token_sha256', 'pid', 'pgid',
+      'process_start_identity', 'worker_environment_lease', 'worker_home_ledger_ref',
+      'worker_home_slot_id',
+    ]);
+    const existingBinding = Object.fromEntries(
+      Object.entries(existing).filter(([key]) => !volatile.has(key)),
+    );
+    if (stable(existingBinding) !== stable(binding)) fail('application replay binding differs');
+    try {
+      workerHomeLedger.verifyPersisted(root, workerRequest, purpose, commandEnvironment,
+        existing.worker_home_slot_id, existing.worker_environment_lease);
+    } catch (_error) {
+      fail('application replay worker environment binding changed');
+    }
+    const group = processGroupState(existing);
+    if (!group.supported || group.foreign) fail('application replay process ownership cannot be verified');
+    if (!group.alive) {
+      return { status: 'blocked', cleanup_ref: payload.cleanup_ref, early_exit: true, runtime_ports: ports };
+    }
+    const listenerState = listenersOwnedByProcessGroup(ports, existing.pgid);
+    if (!listenerState.supported || !listenerState.owned) {
+      fail(`application replay listener ownership failed: ${listenerState.reason}`);
+    }
+    return { status: 'running', cleanup_ref: payload.cleanup_ref, early_exit: false, runtime_ports: ports };
+  }
+  const startupClaimPath = path.join(root, 'private', 'supervised-process-startup.json');
+  const launch = startOrRecoverSupervisedProcess({
+      claimPath: startupClaimPath,
+      argv: payload.argv,
+      cwd: workspace.path,
+      cwdIdentity: workspace.path_identity,
+      createEnvironment: (reservation) => {
+        const allocation = workerHomeLedger.allocate(root, workerRequest, purpose,
+          commandEnvironment, reservation && reservation.reservation_id);
+        return { environment: allocation.environment, worker_home_slot_id: allocation.slot_id };
+      },
+      binding,
+  });
+  if (launch.interrupted || !launch.resource) {
+    fail('application startup was interrupted before worker-home registration');
+  }
+  const resource = launch.resource;
+  resource.worker_home_ledger_ref = workerRequest.worker_home_ledger_ref;
+  workerHomeLedger.verifyPersisted(root, workerRequest, purpose, commandEnvironment,
+    resource.worker_home_slot_id, resource.worker_environment_lease);
+  try {
+    const stored = recordImmutable(root, environmentResourceKey(payload.cleanup_ref), resource);
+    if (!stored.written && !stored.replayed) fail('application resource binding differs');
+  } catch (error) {
     terminateProcessGroup(resource, 500);
-    fail('application resource binding differs');
+    throw error;
+  }
+  if (launch.state !== 'running') {
+    return { status: 'blocked', cleanup_ref: payload.cleanup_ref, early_exit: true, runtime_ports: ports };
+  }
+  const deadline = Date.now() + 5_000;
+  let listenerState = null;
+  while (Date.now() < deadline) {
+    listenerState = listenersOwnedByProcessGroup(ports, resource.pgid);
+    if (listenerState.supported && listenerState.owned) break;
+    sleep(25);
+  }
+  if (!listenerState || !listenerState.supported || !listenerState.owned) {
+    terminateProcessGroup(resource, 500);
+    fail(`application ownership could not be verified: ${listenerState && listenerState.reason || 'process-start-failed'}`);
   }
   return { status: 'running', cleanup_ref: payload.cleanup_ref, early_exit: false, runtime_ports: ports };
 }
@@ -465,6 +1271,11 @@ function inspectResources(projectRoot, payload) {
     || typeof process.ownership_token !== 'string' || process.ownership_token === '') {
     return { owned: false, reason: 'process-binding-changed' };
   }
+  try {
+    verifyWorkerEnvironmentLease(process.worker_environment_lease);
+  } catch (_error) {
+    return { owned: false, reason: 'worker-environment-binding-changed' };
+  }
   const group = processGroupState(process);
   if (!group.supported || !group.alive || group.foreign) return { owned: false, reason: 'process-group-not-owned' };
   const listeners = listenersOwnedByProcessGroup(process.runtime_ports, process.pgid);
@@ -481,12 +1292,52 @@ function releasedResources(projectRoot, payload) {
   const root = runRoot(runId);
   const config = loadConfig(projectRoot, runId);
   const process = resourceRecord(root, { kind: 'process-cleanup', ref: `${runId}-application` });
+  const workspace = workspaceResource(root, { kind: 'workspace', ref: `${runId}-workspace` });
   const group = processGroupState(process);
   const listeners = listenersReleased(process.runtime_ports);
+  const workspaceReleased = ownedDirectoryReleaseProven(
+    workspace.path, workspace.path_identity, config.temp_root, workspace.cleanup_capture_id,
+  );
+  const workerEnvironmentReleased = !process.worker_environment_lease
+    || workerHomeLedger.releaseProven(root, {
+      operation_id: runId,
+      repository: process.repository,
+      worker_home_ledger_ref: process.worker_home_ledger_ref,
+    }, process.worker_home_slot_id, process.worker_environment_lease);
   return {
     process_group_absent: group.supported === true && group.alive === false,
     listeners_closed: listeners.supported === true && listeners.released === true,
-    workspace_absent: !fs.existsSync(config.workspace_root),
+    workspace_absent: workspaceReleased,
+    worker_environment_absent: workerEnvironmentReleased,
+  };
+}
+
+function releaseOwnedProcessResource(resource, timeoutMs) {
+  const group = processGroupState(resource);
+  if (!group.supported || group.foreign) fail('process cleanup ownership cannot be verified');
+  if (group.alive) {
+    const owned = listenersOwnedByProcessGroup(resource.runtime_ports, resource.pgid);
+    if (!owned.supported || !owned.owned) fail(`process listener ownership cannot be verified: ${owned.reason}`);
+    const stopped = terminateProcessGroup(resource, timeoutMs);
+    if (!stopped.released) fail(`process cleanup failed: ${stopped.reason}`);
+  }
+  const listeners = listenersReleased(resource.runtime_ports);
+  if (!listeners.supported || !listeners.released) fail('process listeners remain after cleanup');
+  return true;
+}
+
+function blockedCleanupResult(projectRoot, payload, resourceKind, detail = {}) {
+  const diagnosticRef = `${payload.artifact_root}/diagnostics/cleanup-${sha256(stable(payload.cleanup_ref)).slice(0, 16)}.json`;
+  artifactWrite(projectRoot, diagnosticRef, {
+    schema: 'generic-host.cleanup-diagnostic.v1',
+    status: 'blocked',
+    resource_kind: resourceKind,
+    reason: OBJECT_BOUND_CLEANUP_UNAVAILABLE,
+  });
+  return {
+    status: 'blocked',
+    diagnostic_ref: { kind: 'artifact', ref: diagnosticRef },
+    ...detail,
   };
 }
 
@@ -506,24 +1357,31 @@ function cleanupResource(projectRoot, payload) {
     if (!workspaceState.owned || !samePathIdentity(resource.workspace_identity, workspace.path_identity)) {
       fail('process cleanup workspace ownership differs');
     }
-    const group = processGroupState(resource);
-    if (!group.supported || !group.alive || group.foreign) fail('process cleanup ownership cannot be verified');
-    const owned = listenersOwnedByProcessGroup(resource.runtime_ports, resource.pgid);
-    if (!owned.supported || !owned.owned) fail(`process listener ownership cannot be verified: ${owned.reason}`);
-    const stopped = terminateProcessGroup(resource, Math.max(1, Number(payload.timeout_seconds) || 5) * 1000);
-    if (!stopped.released) fail(`process cleanup failed: ${stopped.reason}`);
-    const listeners = listenersReleased(resource.runtime_ports);
-    if (!listeners.supported || !listeners.released) fail('process listeners remain after cleanup');
+    releaseOwnedProcessResource(resource, Math.max(1, Number(payload.timeout_seconds) || 5) * 1000);
+    if (!workerHomeLedger.recordPersistedRelease(root, {
+      ...payload,
+      repository: resource.repository,
+      worker_home_ledger_ref: resource.worker_home_ledger_ref,
+    }, resource.worker_home_slot_id, resource.worker_environment_lease, 'supervised-process-stopped')) {
+      return blockedCleanupResult(projectRoot, payload, resource.kind);
+    }
   } else if (resource.kind === 'workspace') {
     const process = resourceRecord(root, { kind: 'process-cleanup', ref: `${runId}-application` });
     const group = processGroupState(process);
     if (!group.supported || group.alive) fail('workspace cleanup requires a released process group');
     const listeners = listenersReleased(process.runtime_ports);
     if (!listeners.supported || !listeners.released) fail('workspace cleanup requires released listeners');
-    const workspaceState = verifyWorkspace(config, resource);
-    if (!workspaceState.owned) fail(`workspace cleanup ownership cannot be verified: ${workspaceState.reason}`);
-    if (!removeOwnedDirectory(resource.path, resource.path_identity, config.temp_root)) {
-      fail('workspace cleanup did not remove the owned workspace');
+    if (!releaseWorkspaceResource(config, resource)) {
+      return blockedCleanupResult(projectRoot, payload, resource.kind);
+    }
+  } else if (resource.kind === 'worker-home-ledger') {
+    const result = workerHomeLedger.cleanup(root, projectRoot, payload, resource);
+    if (!result.cleaned) {
+      return blockedCleanupResult(projectRoot, payload, resource.kind, {
+        resource_detail_ref: result.resource_detail_ref,
+        resource_detail_sha256: result.resource_detail_sha256,
+        remaining_count: result.remaining_count,
+      });
     }
   } else if (resource.kind === 'ports') {
     const listeners = listenersReleased(resource.runtime_ports);
@@ -553,13 +1411,14 @@ function environmentEffect(projectRoot, payload, produce) {
   return result;
 }
 
-function waitForHttp(url, timeoutSeconds) {
+function waitForHttp(url, timeoutSeconds, environment) {
   const script = [
     "const http=require('http'),https=require('https'),url=process.argv[1],end=Date.now()+Number(process.argv[2])*1000;",
     "function poll(){const client=url.startsWith('https:')?https:http;const req=client.get(url,res=>{res.resume();process.exit(res.statusCode>=200&&res.statusCode<500?0:1)});",
     "req.on('error',()=>{if(Date.now()>=end)process.exit(1);setTimeout(poll,20)});req.setTimeout(500,()=>req.destroy())}poll();",
   ].join('');
-  return directExec([process.execPath, '-e', script, url, String(timeoutSeconds || 30)], process.cwd(), timeoutSeconds).exit_code === 0;
+  return directExec([process.execPath, '-e', script, url, String(timeoutSeconds || 30)],
+    process.cwd(), timeoutSeconds, undefined, environment).exit_code === 0;
 }
 
 function structuredReplayKey(grantId) {
@@ -572,14 +1431,14 @@ const { structuredExecutionArtifacts } = require('./structured-execution-artifac
 });
 
 function structuredAuthorizationKey(receiptId) {
-  return `testing-runner/cli-effect-authorizations/${sha256(stable(receiptId))}`;
+  return `testing-runner/effect-authorizations/${sha256(stable(receiptId))}`;
 }
 
 function structuredConsumptionKey(receiptId) {
-  return `testing-runner/cli-effect-consumptions/${sha256(stable(receiptId))}`;
+  return `testing-runner/effect-consumptions/${sha256(stable(receiptId))}`;
 }
 
-function localHttpRequest(request, timeoutSeconds) {
+function localHttpRequest(request, timeoutSeconds, environment) {
   const script = [
     "const http=require('http'),url=process.argv[1],method=process.argv[2],timeout=Number(process.argv[3])*1000;",
     "const req=http.request(url,{method},res=>{const chunks=[];res.on('data',chunk=>chunks.push(chunk));",
@@ -588,7 +1447,7 @@ function localHttpRequest(request, timeoutSeconds) {
     "req.setTimeout(timeout,()=>req.destroy(new Error('request-timeout')));req.end();",
   ].join('');
   const executed = directExec([process.execPath, '-e', script, request.url, request.method,
-    String(timeoutSeconds || 30)], process.cwd(), timeoutSeconds);
+    String(timeoutSeconds || 30)], process.cwd(), timeoutSeconds, undefined, environment);
   if (executed.exit_code !== 0) fail('structured HTTP request failed');
   try { return JSON.parse(executed.stdout); } catch (_error) { fail('structured HTTP response is malformed'); }
 }
@@ -598,7 +1457,8 @@ function inventoryAcceptanceReport(projectRoot, config, terminal) {
   const completed = recordList(runRoot(config.run_id), 'testing-runner/replay')
     .filter((entry) => entry.value && entry.value.status === 'completed');
   if (completed.length !== 1) fail('inventory completed replay is unavailable');
-  const artifacts = structuredExecutionArtifacts(projectRoot, completed[0].value.result_ref);
+  const artifacts = structuredExecutionArtifacts(projectRoot, completed[0].value.result_ref,
+    completed[0].value.result_sha256);
   if (artifacts.execution.digest !== completed[0].value.result_sha256) {
     fail('inventory completed replay result differs');
   }
@@ -773,6 +1633,109 @@ function argvAllowed(argv, capabilities) {
       && capability.argv_prefix.every((item, index) => item === argv[index]));
 }
 
+const httpMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
+
+function validHttpCapabilities(value) {
+  return Array.isArray(value) && value.length <= 64 && value.every((capability) =>
+    exactKeys(capability, ['origin', 'methods', 'path_prefixes'])
+      && boundedString(capability.origin, 512)
+      && /^https?:\/\/[^\/@]+$/.test(capability.origin)
+      && Array.isArray(capability.methods) && capability.methods.length > 0
+      && capability.methods.length <= 8 && capability.methods.every((method) => httpMethods.has(method))
+      && Array.isArray(capability.path_prefixes) && capability.path_prefixes.length > 0
+      && capability.path_prefixes.length <= 16
+      && capability.path_prefixes.every((prefix) => boundedString(prefix, 512)
+        && prefix.startsWith('/') && !prefix.includes('?') && !prefix.includes('#')));
+}
+
+function splitHttpUrl(value) {
+  if (!boundedString(value, 2048) || value.includes('?') || value.includes('#')) return null;
+  const match = /^(https?:\/\/[^/]+)(\/.*)?$/.exec(value);
+  if (!match || match[1].includes('@')) return null;
+  return { origin: match[1], path: match[2] || '/' };
+}
+
+function httpAllowed(request, capabilities) {
+  const target = request && splitHttpUrl(request.url);
+  return target !== null && httpMethods.has(request.method) && validHttpCapabilities(capabilities)
+    && capabilities.some((capability) => capability.origin === target.origin
+      && capability.methods.includes(request.method)
+      && capability.path_prefixes.some((prefix) => target.path.startsWith(prefix)));
+}
+
+function planWithinCapabilities(plan, capabilities) {
+  if (!plan || plan.schema !== 'testing-structured-plan.v2'
+    || plan.execution_mode !== 'structured-api-cli'
+    || !exactKeys(capabilities, ['cli', 'http'])
+    || !validCliCapabilities(capabilities.cli) || !validHttpCapabilities(capabilities.http)
+    || !Array.isArray(plan.cases) || plan.cases.length === 0 || plan.cases.length > 64) return false;
+  return plan.cases.every((planned) => planned && (
+    typeof planned.skip_reason === 'string' && boundedString(planned.skip_reason, 512)
+      || planned.kind === 'cli' && argvAllowed(planned.argv, capabilities.cli)
+      || planned.kind === 'http' && httpAllowed(planned.request, capabilities.http)
+  ));
+}
+
+function hostStructuredGrantValues(config) {
+  return {
+    grant_id: `${config.run_id}-grant`,
+    evidence_ref: { kind: 'signed-attestation', ref: `${config.run_id}-execution-grant` },
+    issued_at: '2026-07-22T00:15:00Z',
+    expires_at: '2026-07-22T00:45:00Z',
+    now: '2026-07-22T00:20:00Z',
+  };
+}
+
+function assertStructuredGrantDerivation(config, request, preauthorization, plan, environment, grant) {
+  const authorization = preauthorization && preauthorization.value;
+  const structuredPlan = plan && plan.value;
+  const readyEnvironment = environment && environment.value;
+  const persistedGrant = grant && grant.value;
+  const values = hostStructuredGrantValues(config);
+  if (config.execution_authorization_now !== undefined
+      && config.execution_authorization_now !== values.now
+    || !authorization || authorization.schema !== 'testing-structured-execution-authorization.v1'
+    || authorization.max_uses !== 1 || !validWindow(authorization, values.now)
+    || !sameRepository(authorization.repository, request.repository)
+    || !structuredPlan || !sameRepository(structuredPlan.repository, request.repository)
+    || authorization.case_catalog_sha256 !== structuredPlan.case_catalog_sha256
+    || structuredPlan.environment_receipt_sha256 !== environment.digest
+    || authorization.trace_id !== request.trace_id || authorization.dedup_key !== request.dedup_key
+    || structuredPlan.trace_id !== request.trace_id || structuredPlan.dedup_key !== request.dedup_key
+    || !readyEnvironment || readyEnvironment.status !== 'ready'
+    || !sameRepository(readyEnvironment.repository, request.repository)
+    || readyEnvironment.trace_id !== request.trace_id || readyEnvironment.dedup_key !== request.dedup_key
+    || !planWithinCapabilities(structuredPlan, authorization.capabilities)) {
+    fail('grant derivation source differs');
+  }
+  const expected = {
+    schema: 'testing-structured-execution-grant.v1',
+    grant_id: values.grant_id,
+    parent_authorization_sha256: preauthorization.digest,
+    plan_sha256: plan.digest,
+    environment_receipt_sha256: environment.digest,
+    repository: structuredPlan.repository,
+    cli_capabilities: authorization.capabilities.cli,
+    http_capabilities: authorization.capabilities.http,
+    authority: authorization.authority,
+    policy_revision: authorization.policy_revision,
+    evidence_ref: values.evidence_ref,
+    issued_at: values.issued_at,
+    expires_at: values.expires_at,
+    max_uses: 1,
+    trace_id: request.trace_id,
+    dedup_key: request.dedup_key,
+  };
+  if (!persistedGrant || stable(persistedGrant) !== stable(expected)
+    || request.grant !== undefined && stable(request.grant) !== stable(persistedGrant)
+    || request.grant_raw !== undefined && (typeof request.grant_raw !== 'string'
+      || sha256(request.grant_raw) !== grant.digest)
+    || request.now !== undefined && request.now !== values.now) {
+    fail('grant differs from authenticated derivation');
+  }
+  return expected;
+}
+
 function validWindow(value, now) {
   const issued = Date.parse(value && value.issued_at);
   const expires = Date.parse(value && value.expires_at);
@@ -781,8 +1744,8 @@ function validWindow(value, now) {
     && Number.isFinite(current) && current >= issued && current < expires;
 }
 
-function validCliEnvelope(envelope) {
-  const fields = [
+function validActionEnvelope(envelope, expectedKind) {
+  const commonFields = [
     'schema', 'effect_kind', 'capability', 'profile_ref', 'profile_artifact_sha256',
     'profile_sha256', 'validation_receipt_ref', 'validation_receipt_sha256',
     'preauthorization_ref', 'preauthorization_sha256', 'repository', 'run_id',
@@ -790,6 +1753,8 @@ function validCliEnvelope(envelope) {
     'workspace_ref', 'plan_ref', 'plan_sha256', 'grant_ref', 'grant_sha256', 'case',
     'resource_bounds', 'attempt', 'trace_id', 'dedup_key', 'expires_at', 'fence_id',
   ];
+  const kind = envelope && envelope.effect_kind;
+  const fields = kind === 'http' ? [...commonFields, 'base_url'] : commonFields;
   const digestFields = [
     'profile_artifact_sha256', 'profile_sha256', 'validation_receipt_sha256',
     'preauthorization_sha256', 'environment_receipt_sha256', 'plan_sha256', 'grant_sha256',
@@ -801,8 +1766,11 @@ function validCliEnvelope(envelope) {
   const action = envelope && envelope.case;
   const assertions = action && action.assertions;
   return exactKeys(envelope, fields)
-    && envelope.schema === 'testing-cli-action-envelope.v1'
-    && envelope.effect_kind === 'cli' && envelope.capability === 'direct-argv'
+    && (expectedKind === undefined || kind === expectedKind)
+    && (kind === 'cli' || kind === 'http')
+    && envelope.schema === (kind === 'cli'
+      ? 'testing-cli-action-envelope.v1' : 'testing-http-action-envelope.v1')
+    && envelope.capability === (kind === 'cli' ? 'direct-argv' : 'loopback-http')
     && envelope.run_id === envelope.operation_id && envelope.attempt === 1
     && boundedString(envelope.run_id, 180) && /^[A-Za-z0-9._-]+$/.test(envelope.run_id)
     && boundedString(envelope.trace_id, 180) && boundedString(envelope.dedup_key, 180)
@@ -815,15 +1783,37 @@ function validCliEnvelope(envelope) {
     && Number.isInteger(envelope.resource_bounds.output_bytes)
     && envelope.resource_bounds.output_bytes >= 1024
     && envelope.resource_bounds.output_bytes <= 1024 * 1024
-    && exactKeys(action, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'])
     && boundedString(action.case_id, 180) && /^[A-Za-z0-9._-]+$/.test(action.case_id)
-    && action.kind === 'cli' && validArgv(action.argv)
+    && action.kind === kind
     && Number.isInteger(action.timeout_seconds) && action.timeout_seconds >= 1
     && action.timeout_seconds <= 300 && Array.isArray(assertions)
     && assertions.length > 0 && assertions.length <= 16
-    && assertions.every((assertion) => exactKeys(assertion, ['type', 'expected'])
-      && assertion.type === 'exit-code' && Number.isInteger(assertion.expected)
-      && assertion.expected >= 0 && assertion.expected <= 255);
+    && (kind === 'cli'
+      ? exactKeys(action, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'])
+        && validArgv(action.argv)
+        && assertions.every((assertion) => exactKeys(assertion, ['type', 'expected'])
+          && assertion.type === 'exit-code' && Number.isInteger(assertion.expected)
+          && assertion.expected >= 0 && assertion.expected <= 255)
+      : exactKeys(action, ['case_id', 'kind', 'request', 'timeout_seconds', 'assertions'])
+        && exactKeys(action.request, ['method', 'url', 'headers'])
+        && httpMethods.has(action.request.method) && Array.isArray(action.request.headers)
+        && action.request.headers.length === 0 && splitHttpUrl(envelope.base_url) !== null
+        && splitHttpUrl(action.request.url) !== null
+        && splitHttpUrl(action.request.url).origin === splitHttpUrl(envelope.base_url).origin
+        && assertions.every((assertion) => {
+          if (assertion && assertion.type === 'status-code') {
+            return exactKeys(assertion, ['type', 'expected']) && Number.isInteger(assertion.expected)
+              && assertion.expected >= 100 && assertion.expected <= 599;
+          }
+          if (assertion && assertion.type === 'body-contains') {
+            return exactKeys(assertion, ['type', 'expected']) && boundedString(assertion.expected, 512);
+          }
+          return assertion && assertion.type === 'json-path-equals'
+            && exactKeys(assertion, ['type', 'path', 'expected'])
+            && boundedString(assertion.path, 512)
+            && assertion.path.split('.').every((part) => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(part))
+            && ['string', 'number', 'boolean'].includes(typeof assertion.expected);
+        }));
 }
 
 function activeStructuredRequest(root, runId) {
@@ -834,7 +1824,7 @@ function activeStructuredRequest(root, runId) {
 }
 
 function structuredCaseSequence(projectRoot, request, caseId) {
-  const plan = request && artifactRead(projectRoot, request.test_plan_ref);
+  const plan = request && artifactRead(projectRoot, request.test_plan_ref, request.test_plan_sha256);
   const cases = plan && plan.value && plan.value.cases;
   if (!Array.isArray(cases)) fail('structured test plan is unavailable');
   const index = cases.findIndex((value) => value && value.case_id === caseId);
@@ -869,7 +1859,7 @@ function structuredAuthorizationReceipt(runId, envelope, decision, reasonCode, i
     ? envelope.expires_at : '2026-07-22T00:21:00Z';
   return {
     schema: 'testing-effect-authorization-receipt.v1', decision, reason_code: reasonCode,
-    receipt_id: `durable-cli-effect-${envelopeSha256.slice(0, 32)}`,
+    receipt_id: `durable-${envelope.effect_kind || 'invalid'}-effect-${envelopeSha256.slice(0, 32)}`,
     envelope_sha256: envelopeSha256, evaluated_input_digests: inputs, issued_at: issuedAt,
     expires_at: expiresAt,
     fence_id: typeof envelope.fence_id === 'string' ? envelope.fence_id : 'invalid-fence',
@@ -879,7 +1869,7 @@ function structuredAuthorizationReceipt(runId, envelope, decision, reasonCode, i
   };
 }
 
-function authorizeCliEffect(projectRoot, payload) {
+function authorizeEffect(projectRoot, payload, expectedKind) {
   const runId = runIdFor(payload);
   const root = runRoot(runId);
   const config = loadConfig(projectRoot, runId);
@@ -892,15 +1882,18 @@ function authorizeCliEffect(projectRoot, payload) {
   const deny = (reason, inputs = empty) =>
     structuredAuthorizationReceipt(runId, envelope, 'deny', reason, inputs);
   try {
-    if (!validCliEnvelope(envelope)) return deny('malformed-envelope');
+    if (!validActionEnvelope(envelope, expectedKind)) return deny('malformed-envelope');
     const request = activeStructuredRequest(root, runId);
     if (!envelopeMatchesRequest(envelope, request, payload)) return deny('foreign-binding');
-    const profile = artifactRead(projectRoot, envelope.profile_ref);
-    const validation = artifactRead(projectRoot, envelope.validation_receipt_ref);
-    const preauthorization = artifactRead(projectRoot, envelope.preauthorization_ref);
-    const environment = artifactRead(projectRoot, envelope.environment_receipt_ref);
-    const plan = artifactRead(projectRoot, envelope.plan_ref);
-    const grant = artifactRead(projectRoot, envelope.grant_ref);
+    const profile = artifactRead(projectRoot, envelope.profile_ref, envelope.profile_artifact_sha256);
+    const validation = artifactRead(projectRoot, envelope.validation_receipt_ref,
+      envelope.validation_receipt_sha256);
+    const preauthorization = artifactRead(projectRoot, envelope.preauthorization_ref,
+      envelope.preauthorization_sha256);
+    const environment = artifactRead(projectRoot, envelope.environment_receipt_ref,
+      envelope.environment_receipt_sha256);
+    const plan = artifactRead(projectRoot, envelope.plan_ref, envelope.plan_sha256);
+    const grant = artifactRead(projectRoot, envelope.grant_ref, envelope.grant_sha256);
     const inputs = {
       profile: profile && profile.digest || empty.profile,
       validation_receipt: validation && validation.digest || empty.validation_receipt,
@@ -934,10 +1927,12 @@ function authorizeCliEffect(projectRoot, payload) {
     if (!schemasValid) return deny('malformed-input', inputs);
     const preauthorizationValid = preauthorization.value.max_uses === 1
       && validWindow(preauthorization.value, now)
-      && validCliCapabilities(preauthorization.value.capabilities && preauthorization.value.capabilities.cli);
+      && validCliCapabilities(preauthorization.value.capabilities && preauthorization.value.capabilities.cli)
+      && validHttpCapabilities(preauthorization.value.capabilities && preauthorization.value.capabilities.http);
     if (!preauthorizationValid) return deny('stale-preauthorization', inputs);
     const grantValid = grant.value.max_uses === 1 && validWindow(grant.value, now)
-      && validCliCapabilities(grant.value.cli_capabilities);
+      && validCliCapabilities(grant.value.cli_capabilities)
+      && validHttpCapabilities(grant.value.http_capabilities);
     if (!grantValid) return deny('stale-grant', inputs);
     if (!sameRun(validation.value) || !sameRun(preauthorization.value) || !sameRun(environment.value)
       || !sameRun(plan.value) || !sameRun(grant.value)) return deny('foreign-binding', inputs);
@@ -973,12 +1968,16 @@ function authorizeCliEffect(projectRoot, payload) {
       && grant.value.policy_revision === preauthorization.value.policy_revision
       && samePointer(grant.value.evidence_ref, expectedEvidence);
     if (!authenticated) return deny('foreign-binding', inputs);
-    if (stable(planned) !== stable(envelope.case)
-      || !argvAllowed(envelope.case.argv, preauthorization.value.capabilities.cli)
-      || !argvAllowed(envelope.case.argv, grant.value.cli_capabilities)) {
+    const effectAllowed = envelope.effect_kind === 'cli'
+      ? argvAllowed(envelope.case.argv, preauthorization.value.capabilities.cli)
+        && argvAllowed(envelope.case.argv, grant.value.cli_capabilities)
+      : envelope.base_url === environment.value.base_url
+        && httpAllowed(envelope.case.request, preauthorization.value.capabilities.http)
+        && httpAllowed(envelope.case.request, grant.value.http_capabilities);
+    if (stable(planned) !== stable(envelope.case) || !effectAllowed) {
       return deny('scope-denied', inputs);
     }
-    const replayOwned = replay && replay.status === 'claimed' && replay.claim_id === envelope.fence_id
+    const replayOwned = replay && replay.status === 'claimed' && replay.fence_id === envelope.fence_id
       && replayBinding && replayBinding.grant_id === grant.value.grant_id
       && replayBinding.grant_sha256 === grant.digest
       && replayBinding.plan_sha256 === plan.digest
@@ -989,7 +1988,7 @@ function authorizeCliEffect(projectRoot, payload) {
       && replayBinding.trace_id === envelope.trace_id && replayBinding.dedup_key === envelope.dedup_key;
     if (!replayOwned) return deny('foreign-fence', inputs);
     const fixturePolicy = config.runtime_pep_denial;
-    if (fixturePolicy !== undefined) {
+    if (fixturePolicy !== undefined && envelope.effect_kind === 'cli') {
       const token = process.env.FKST_GENERIC_HOST_FIXTURE_CLI_DENY_TOKEN;
       const fixturePolicyValid = exactKeys(fixturePolicy, ['reason_code', 'token'])
         && fixturePolicy.reason_code === 'profile-policy-denied'
@@ -1000,14 +1999,15 @@ function authorizeCliEffect(projectRoot, payload) {
     const receipt = structuredAuthorizationReceipt(runId, envelope, 'allow', 'authorized', inputs);
     const authorization = { receipt, grant_id: grant.value.grant_id, fence_id: envelope.fence_id };
     const stored = recordImmutable(root, structuredAuthorizationKey(receipt.receipt_id), authorization);
-    if (!stored.written && !stored.replayed) fail('durable CLI authorization receipt conflict');
+    if (!stored.written && !stored.replayed) fail('durable effect authorization receipt conflict');
     return receipt;
   } catch (_error) {
     return deny('malformed-input');
   }
 }
 
-function dispatch(name, payload, projectRoot) {
+function dispatch(name, payload, projectRoot, hooks = {}) {
+  process.env.FKST_OBJECT_BOUND_CLEANUP_STATE_ROOT = durableRoot();
   switch (name) {
     case 'sha256-bytes':
       return sha256Bytes(payload);
@@ -1047,12 +2047,22 @@ function dispatch(name, payload, projectRoot) {
       }
       return saved;
     }
-    case 'artifact-load':
-      return artifactRead(projectRoot, payload.path);
+    case 'artifact-load': {
+      if (payload.expected_digest !== undefined && payload.expected_digest !== null
+        && !validDigest(payload.expected_digest)) fail('artifact expected digest is invalid');
+      if (payload.durable_only !== undefined && typeof payload.durable_only !== 'boolean') {
+        fail('artifact durable-only option is invalid');
+      }
+      return artifactRead(projectRoot, payload.path, payload.expected_digest, {
+        durableOnly: payload.durable_only === true,
+      });
+    }
     case 'artifact-write':
       return artifactWrite(projectRoot, payload.path, payload.value);
     case 'artifact-digest': {
-      const artifact = artifactRead(projectRoot, payload.path);
+      const artifact = artifactRead(projectRoot, payload.path, undefined, {
+        allowGeneratedDigestImport: true,
+      });
       return { digest: artifact && artifact.digest || null };
     }
     case 'publication-load-ledger': {
@@ -1089,22 +2099,42 @@ function dispatch(name, payload, projectRoot) {
     }
     case 'host-claim-preauthorization': {
       const runId = runIdFor(payload);
-      loadConfig(projectRoot, runId);
-      const claimed = recordClaim(runRoot(runId), `generic-host/preauthorization/${sha256(stable(payload.authorization_id))}`, {
-        binding: payload, claim_id: `${runId}-preauthorization`,
+      const config = loadConfig(projectRoot, runId);
+      const root = runRoot(runId);
+      const key = `generic-host/preauthorization/${sha256(stable(payload.authorization_id))}`;
+      const existing = recordRead(root, key);
+      const claimed = existing ? {
+        claimed: preauthorizationBindingMatches(existing.binding, payload, trustedPreauthorizationRefs(config)),
+        replayed: true,
+        value: existing,
+      } : recordClaim(root, key, {
+        binding: canonicalPreauthorizationBinding(payload),
+        claim_id: `private-claim-${crypto.randomBytes(32).toString('hex')}`,
+        claimed_at: config.execution_authorization_now,
       });
       if (!claimed.claimed) return { status: 'blocked' };
+      writePreauthorizationClaimReceipt(projectRoot, config, payload, claimed.value);
       return { status: 'claimed', claim_id: claimed.value.claim_id, replayed: claimed.replayed === true };
+    }
+    case 'host-reconcile-preauthorization-claim': {
+      const runId = runIdFor(payload);
+      const config = loadConfig(projectRoot, runId);
+      const preauthorization = boundLineageArtifact(projectRoot, payload.preauthorization_ref,
+        payload.preauthorization_sha256, 'preauthorization');
+      const request = { ...payload, authorization_id: preauthorization.value.authorization_id };
+      const claimed = recordRead(runRoot(runId),
+        `generic-host/preauthorization/${sha256(stable(request.authorization_id))}`);
+      if (!claimed || !preauthorizationBindingMatches(
+        claimed.binding, request, trustedPreauthorizationRefs(config),
+      )) {
+        return { reconciled: false };
+      }
+      writePreauthorizationClaimReceipt(projectRoot, config, request, claimed);
+      return { reconciled: true };
     }
     case 'host-grant-values': {
       const runId = runIdFor(payload.request || {});
-      loadConfig(projectRoot, runId);
-      return {
-        grant_id: `${runId}-grant`,
-        evidence_ref: { kind: 'signed-attestation', ref: `${runId}-execution-grant` },
-        issued_at: '2026-07-22T00:15:00Z', expires_at: '2026-07-22T00:45:00Z',
-        now: '2026-07-22T00:20:00Z',
-      };
+      return hostStructuredGrantValues(loadConfig(projectRoot, runId));
     }
     case 'host-record-terminal': {
       const runId = runIdFor(payload);
@@ -1176,7 +2206,8 @@ function dispatch(name, payload, projectRoot) {
     case 'authorize-claim-ports': {
       const runId = runIdFor(payload);
       const root = runRoot(runId);
-      loadConfig(projectRoot, runId);
+      const config = loadConfig(projectRoot, runId);
+      const expectedReplayBinding = expectedProfileReplayBinding(config);
       const key = `environment-factory/effects/${sha256(stable(payload.effect_id))}`;
       const existing = recordRead(root, key);
       const binding = payload.lookup_binding || {};
@@ -1187,17 +2218,28 @@ function dispatch(name, payload, projectRoot) {
           || stable(existing.result.profile_snapshot) !== stable(payload.profile_snapshot)) {
           fail('environment authorization claim replay differs');
         }
-        return existing.result;
+        const profileClaim = recordRead(root, `generic-host/profile-approval/${runId}`);
+        if (!profileClaim || stable(profileClaim.binding) !== stable(expectedReplayBinding)
+          || typeof profileClaim.claim_id !== 'string') {
+          fail('environment authorization approval claim is unavailable');
+        }
+        writeProfileClaimReceipt(projectRoot, config, profileClaim);
+        return { ...existing.result, claim_id: profileClaim.claim_id };
       }
-      if (!payload.replay_claim || stable(payload.profile_snapshot) !== stable(loadConfig(projectRoot, runId).profile)) {
+      if (stable(payload.replay_claim) !== stable(expectedReplayBinding)
+        || stable(payload.profile_snapshot) !== stable(config.profile)) {
         fail('environment authorization claim replay differs');
       }
       const approvalClaim = recordClaim(root, `generic-host/profile-approval/${runId}`, {
-        binding: payload.replay_claim, claim_id: `${runId}-profile-claim`,
+        binding: payload.replay_claim,
+        claim_id: `private-claim-${crypto.randomBytes(32).toString('hex')}`,
+        claimed_at: config.authorization_now,
       });
-      if (!approvalClaim.claimed || !approvalClaim.value || approvalClaim.value.claim_id !== `${runId}-profile-claim`) {
+      if (!approvalClaim.claimed || !approvalClaim.value
+        || typeof approvalClaim.value.claim_id !== 'string') {
         fail('environment authorization approval claim was not acquired');
       }
+      writeProfileClaimReceipt(projectRoot, config, approvalClaim.value);
       const runtimePorts = exactRuntimePorts(payload.runtime_ports);
       if (!Array.isArray(payload.listener_claimed_ports) || payload.listener_claimed_ports.length !== 0
         || !samePorts(exactRuntimePorts(payload.listener_already_owned_ports), runtimePorts)) {
@@ -1224,6 +2266,18 @@ function dispatch(name, payload, projectRoot) {
     case 'remaining-budget':
       loadConfig(projectRoot, runIdFor(payload));
       return { remaining_seconds: 120 };
+    case 'initialize-worker-home-ledger': {
+      const runId = runIdFor(payload);
+      const root = runRoot(runId);
+      const config = loadConfig(projectRoot, runId);
+      return environmentEffect(projectRoot, payload, () => {
+        if (payload.operation_id !== runId
+          || stable(payload.repository) !== stable(config.profile.repository)) {
+          fail('worker-home ledger initialization binding differs');
+        }
+        return workerHomeLedger.initialize(root, payload);
+      });
+    }
     case 'checkout': {
       const runId = runIdFor(payload);
       const root = runRoot(runId);
@@ -1233,26 +2287,90 @@ function dispatch(name, payload, projectRoot) {
           || payload.working_directory !== config.profile.working_directory) {
           fail('environment checkout binding differs');
         }
-        const workspaceRoot = path.resolve(config.workspace_root);
-        const tempRoot = path.resolve(config.temp_root);
-        if (workspaceRoot === tempRoot || !workspaceRoot.startsWith(`${tempRoot}${path.sep}`)) {
-          fail('environment checkout workspace escaped the durable temp root');
-        }
-        fs.rmSync(config.workspace_root, { recursive: true, force: true });
-        const cloned = directExec(['git', 'clone', '--quiet', config.source_root, config.workspace_root], config.temp_root,
-          payload.timeout_seconds);
-        if (cloned.exit_code !== 0) fail('environment checkout clone failed');
-        const checkedOut = directExec(['git', 'checkout', '--quiet', config.commit_sha], config.workspace_root,
-          payload.timeout_seconds);
-        if (checkedOut.exit_code !== 0) fail('environment checkout revision failed');
-        const resolved = directExec(['git', 'rev-parse', 'HEAD'], config.workspace_root, payload.timeout_seconds);
-        const commit = String(resolved.stdout || '').trim();
-        if (resolved.exit_code !== 0 || commit !== config.commit_sha) fail('environment checkout resolved commit differs');
         const workspaceRef = { kind: 'workspace', ref: `${runId}-workspace` };
         const cleanupRef = { kind: 'workspace-cleanup', ref: `${runId}-workspace` };
+        const reservation = durableWorkspaceReservation(root, config);
+        const recovered = recoverRegisteredCheckout(
+          projectRoot, config, payload, workspaceRef, cleanupRef,
+        );
+        if (recovered) return recovered;
+        const workspaceIdentity = prepareReservedWorkspace(
+          reservation.record, reservation.record.path_identity, {
+            reservationWasCreated: reservation.created,
+            hooks: {
+              afterWorkspaceRecoveryReleased(details) {
+                if (typeof hooks.afterWorkspaceRecoveryReleased === 'function') {
+                  hooks.afterWorkspaceRecoveryReleased(details);
+                }
+              },
+              afterWorkspaceDirectoryCreated(details) {
+                if (typeof hooks.afterWorkspaceDirectoryCreated === 'function') {
+                  hooks.afterWorkspaceDirectoryCreated(details);
+                }
+                crashBarrier(projectRoot, runId, 'checkout-after-workspace-directory-created', {
+                  reservation_id: reservation.record.reservation_id,
+                });
+              },
+              afterWorkspaceResourceRegistered(details) {
+                if (typeof hooks.afterWorkspaceResourceRegistered === 'function') {
+                  hooks.afterWorkspaceResourceRegistered(details);
+                }
+                crashBarrier(projectRoot, runId, 'checkout-after-workspace-allocation-registered', {
+                  reservation_id: reservation.record.reservation_id,
+                  path_identity: details.path_identity,
+                });
+              },
+            },
+            persistIdentity(identity) {
+              const next = {
+                ...reservation.record,
+                version: reservation.record.version + 1,
+                reservation_state: 'allocated',
+                path_identity: identity,
+              };
+              const saved = recordCas(root, reservation.key, next, reservation.record.version);
+              if (!saved.saved || stable(saved.value) !== stable(next)) {
+                fail('workspace allocation identity commit conflict');
+              }
+              reservation.record = saved.value;
+            },
+          },
+        );
+        const commit = workerHomeLedger.withEnvironment(root,
+          ledgerWorkerRequest(config, payload), 'checkout', config.command_environment || {}, (environment) => {
+            const cloned = directExec(['git', 'clone', '--quiet', config.source_root, '.'],
+              config.workspace_root, payload.timeout_seconds, undefined, environment, workspaceIdentity);
+            if (cloned.exit_code !== 0) fail('environment checkout clone failed');
+            const checkedOut = directExec(['git', 'checkout', '--quiet', config.commit_sha],
+              config.workspace_root, payload.timeout_seconds, undefined, environment, workspaceIdentity);
+            if (checkedOut.exit_code !== 0) fail('environment checkout revision failed');
+            const resolved = directExec(['git', 'rev-parse', 'HEAD'], config.workspace_root,
+              payload.timeout_seconds, undefined, environment, workspaceIdentity);
+            const observed = String(resolved.stdout || '').trim();
+            if (resolved.exit_code !== 0 || observed !== config.commit_sha) {
+              fail('environment checkout resolved commit differs');
+            }
+            return observed;
+          });
+        if (typeof hooks.afterSuccessfulCheckout === 'function') {
+          hooks.afterSuccessfulCheckout({
+            reservation: { ...reservation.record }, resolved_commit: commit,
+          });
+        }
+        crashBarrier(projectRoot, runId, 'checkout-after-successful-checkout', {
+          reservation_id: reservation.record.reservation_id, resolved_commit: commit,
+        });
         registerWorkspace(projectRoot, {
           run_id: runId, operation_id: runId, workspace_ref: workspaceRef, cleanup_ref: cleanupRef,
           path: config.workspace_root, repository: config.repository,
+        }, reservation.record, workspaceIdentity);
+        if (typeof hooks.afterFinalWorkspaceResourceRegistered === 'function') {
+          hooks.afterFinalWorkspaceResourceRegistered({
+            reservation: { ...reservation.record }, resolved_commit: commit,
+          });
+        }
+        crashBarrier(projectRoot, runId, 'checkout-after-workspace-resource-registered', {
+          reservation_id: reservation.record.reservation_id, resolved_commit: commit,
         });
         return { status: 'passed', resolved_commit: commit, workspace_ref: workspaceRef, cleanup_ref: cleanupRef };
       });
@@ -1289,27 +2407,39 @@ function dispatch(name, payload, projectRoot) {
     case 'run-argv':
       return environmentEffect(projectRoot, payload, (runId, root) => {
         const workspace = workspaceResource(root, payload.workspace_ref);
+        const config = loadConfig(projectRoot, runId);
         if (payload.mode === 'supervised') {
           return startApplication(projectRoot, {
             ...payload, run_id: runId,
             cleanup_ref: { kind: 'process-cleanup', ref: `${runId}-application` },
           });
         }
-        const executed = directExec(payload.argv, workspace.path, payload.timeout_seconds);
+        const executed = workerHomeLedger.withEnvironment(root,
+          ledgerWorkerRequest(config, payload), `oneshot:${payload.effect_id}`,
+          config.command_environment || {}, (environment) =>
+            directExec(payload.argv, workspace.path, payload.timeout_seconds, undefined,
+              environment, workspace.path_identity));
         const result = { status: executed.exit_code === 0 ? 'passed' : 'blocked' };
         if (payload.requires_frozen_dependencies) result.frozen_dependencies_enforced = true;
         return result;
       });
     case 'wait-readiness':
-      return environmentEffect(projectRoot, payload, (_runId, root) => {
-        for (const check of payload.checks || []) {
+      return environmentEffect(projectRoot, payload, (runId, root) => {
+        const config = loadConfig(projectRoot, runId);
+        for (const [index, check] of (payload.checks || []).entries()) {
+          const purpose = `readiness:${index + 1}:${String(check.type || 'unknown')}`;
           if (check.type === 'http') {
-            if (!waitForHttp(check.url, payload.timeout_seconds)) return { status: 'blocked' };
+            const ready = workerHomeLedger.withEnvironment(root,
+              ledgerWorkerRequest(config, payload), purpose, config.command_environment || {},
+              (environment) => waitForHttp(check.url, payload.timeout_seconds, environment));
+            if (!ready) return { status: 'blocked' };
           } else if (check.type === 'argv') {
             const workspace = workspaceResource(root, payload.workspace_ref);
-            if (directExec(check.argv, workspace.path, payload.timeout_seconds).exit_code !== 0) {
-              return { status: 'blocked' };
-            }
+            const result = workerHomeLedger.withEnvironment(root,
+              ledgerWorkerRequest(config, payload), purpose, config.command_environment || {},
+              (environment) => directExec(check.argv, workspace.path, payload.timeout_seconds,
+                undefined, environment, workspace.path_identity));
+            if (result.exit_code !== 0) return { status: 'blocked' };
           } else {
             return { status: 'blocked' };
           }
@@ -1338,30 +2468,40 @@ function dispatch(name, payload, projectRoot) {
     case 'now':
       loadConfig(projectRoot, runIdFor(payload));
       return { now: '2026-07-22T00:20:00Z' };
-    case 'verify-grant':
+    case 'verify-grant': {
+      const runId = runIdFor(payload);
+      const config = loadConfig(projectRoot, runId);
+      writeGrantVerificationReceipt(projectRoot, config, payload);
       return {
         grant_sha256: payload.grant_sha256,
         authority: payload.grant.authority,
         policy_revision: payload.grant.policy_revision,
         evidence_ref: payload.grant.evidence_ref,
       };
+    }
     case 'replay-guard': {
       const runId = runIdFor(payload);
-      loadConfig(projectRoot, runId);
-      const claimId = `${runId}-execution-claim`;
+      const config = loadConfig(projectRoot, runId);
+      const claimId = `private-claim-${crypto.randomBytes(32).toString('hex')}`;
+      const fenceId = claimFingerprint(config, 'structured-execution-fence', claimId);
       const claimed = recordClaim(runRoot(runId), structuredReplayKey(payload.grant_id), {
-        status: 'claimed', claim_id: claimId, binding: payload,
+        status: 'claimed', claim_id: claimId, fence_id: fenceId, binding: payload,
+        claimed_at: config.execution_authorization_now,
       });
       if (!claimed.claimed) return null;
+      writeExecutionClaimReceipt(projectRoot, config, payload, claimed.value);
       if (claimed.value.status === 'completed') {
+        writeExecutionCompletionReceipt(projectRoot, config, claimed.value);
         return { status: 'completed', result_ref: claimed.value.result_ref,
           result_sha256: claimed.value.result_sha256 };
       }
       if (claimed.replayed) return { status: 'in-progress' };
-      return { status: 'claimed', claim_id: claimId };
+      return { status: 'claimed', claim_id: fenceId };
     }
     case 'authorize-cli-effect':
-      return authorizeCliEffect(projectRoot, payload);
+      return authorizeEffect(projectRoot, payload, 'cli');
+    case 'authorize-http-effect':
+      return authorizeEffect(projectRoot, payload, 'http');
     case 'exec-argv': {
       const runId = runIdFor(payload);
       const root = runRoot(runId);
@@ -1369,7 +2509,7 @@ function dispatch(name, payload, projectRoot) {
       const envelope = payload.action_envelope;
       const receipt = payload.authorization_receipt;
       const request = activeStructuredRequest(root, runId);
-      const validReceipt = validCliEnvelope(envelope) && envelopeMatchesRequest(envelope, request, payload)
+      const validReceipt = validActionEnvelope(envelope, 'cli') && envelopeMatchesRequest(envelope, request, payload)
         && exactKeys(receipt, [
           'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
           'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
@@ -1389,14 +2529,15 @@ function dispatch(name, payload, projectRoot) {
         && Date.parse(receipt.expires_at) > Date.parse('2026-07-22T00:20:00Z');
       const authorization = validReceipt
         ? recordRead(root, structuredAuthorizationKey(receipt.receipt_id)) : null;
-      const grant = validReceipt ? artifactRead(projectRoot, envelope.grant_ref) : null;
+      const grant = validReceipt
+        ? artifactRead(projectRoot, envelope.grant_ref, envelope.grant_sha256) : null;
       const replay = grant && grant.value
         ? recordRead(root, structuredReplayKey(grant.value.grant_id)) : null;
       if (!validReceipt || !authorization || !grant || !grant.value || typeof grant.value !== 'object'
         || stable(authorization.receipt) !== stable(receipt)
         || authorization.grant_id !== grant.value.grant_id || authorization.fence_id !== envelope.fence_id
         || grant.digest !== envelope.grant_sha256 || !replay || replay.status !== 'claimed'
-        || replay.claim_id !== envelope.fence_id) {
+        || replay.fence_id !== envelope.fence_id) {
         fail('durable structured CLI authorization receipt is unavailable');
       }
       if (envelope.operation_id !== runId || envelope.workspace_ref.ref !== `${runId}-workspace`
@@ -1410,10 +2551,18 @@ function dispatch(name, payload, projectRoot) {
       if (!consumed.claimed || consumed.replayed) fail('durable structured CLI authorization receipt is replayed');
       artifactWrite(projectRoot, `${payload.artifact_root}/authorization/${envelope.case.case_id}-consumption.json`, {
         schema: 'generic-host.cli-effect-consumption.v1', case_id: envelope.case.case_id,
-        receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id, fence_id: envelope.fence_id,
+        receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id,
+        consumption_fingerprint_sha256: claimFingerprint(
+          config, 'structured-execution-consumption', envelope.fence_id,
+        ),
       });
-      const result = directExec(envelope.case.argv, workspace.path, envelope.case.timeout_seconds,
-        envelope.resource_bounds.output_bytes);
+      const result = workerHomeLedger.withEnvironment(root, {
+        operation_id: runId,
+        effect_id: `target-cli:${receipt.receipt_id}`,
+        repository: config.profile.repository,
+      }, `target-cli:${envelope.case.case_id}`, config.command_environment || {}, (environment) =>
+        directExec(envelope.case.argv, workspace.path, envelope.case.timeout_seconds,
+          envelope.resource_bounds.output_bytes, environment, workspace.path_identity));
       const sequence = structuredCaseSequence(projectRoot, request, envelope.case.case_id);
       const stored = recordImmutable(root, `testing-runner/target-effects/${sha256(stable(payload))}`, {
         sequence, binding: payload, result,
@@ -1424,12 +2573,61 @@ function dispatch(name, payload, projectRoot) {
     case 'http-request': {
       const runId = runIdFor(payload);
       const config = loadConfig(projectRoot, runId);
-      if (payload.operation_id !== runId || payload.base_url !== config.base_url
-        || !payload.request || payload.request.method !== 'GET'
-        || payload.request.url !== config.base_url) fail('structured HTTP request binding differs');
-      const result = localHttpRequest(payload.request, payload.timeout_seconds);
       const request = activeStructuredRequest(runRoot(runId), runId);
-      const sequence = structuredCaseSequence(projectRoot, request, payload.case_id);
+      const envelope = payload.action_envelope;
+      const receipt = payload.authorization_receipt;
+      const validReceipt = validActionEnvelope(envelope, 'http')
+        && envelopeMatchesRequest(envelope, request, payload)
+        && exactKeys(receipt, [
+          'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
+          'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
+          'dedup_key', 'auth_tag',
+        ])
+        && exactKeys(receipt.evaluated_input_digests, [
+          'profile', 'validation_receipt', 'preauthorization', 'environment_receipt', 'plan', 'grant',
+        ])
+        && Object.values(receipt.evaluated_input_digests).every(validDigest)
+        && receipt.schema === 'testing-effect-authorization-receipt.v1'
+        && receipt.decision === 'allow' && receipt.reason_code === 'authorized'
+        && receipt.envelope_sha256 === sha256(stable(envelope))
+        && receipt.auth_tag === sha256(`${runId}\0${receipt.envelope_sha256}\0allow`)
+        && receipt.fence_id === envelope.fence_id && receipt.trace_id === envelope.trace_id
+        && receipt.dedup_key === envelope.dedup_key && receipt.expires_at === envelope.expires_at
+        && receipt.issued_at === '2026-07-22T00:20:00Z'
+        && Date.parse(receipt.expires_at) > Date.parse('2026-07-22T00:20:00Z');
+      const authorization = validReceipt
+        ? recordRead(runRoot(runId), structuredAuthorizationKey(receipt.receipt_id)) : null;
+      const grant = validReceipt
+        ? artifactRead(projectRoot, envelope.grant_ref, envelope.grant_sha256) : null;
+      const replay = grant && grant.value
+        ? recordRead(runRoot(runId), structuredReplayKey(grant.value.grant_id)) : null;
+      if (!validReceipt || !authorization || !grant || !grant.value || typeof grant.value !== 'object'
+        || stable(authorization.receipt) !== stable(receipt)
+        || authorization.grant_id !== grant.value.grant_id || authorization.fence_id !== envelope.fence_id
+        || grant.digest !== envelope.grant_sha256 || !replay || replay.status !== 'claimed'
+        || replay.fence_id !== envelope.fence_id) {
+        fail('durable structured HTTP authorization receipt is unavailable');
+      }
+      if (envelope.operation_id !== runId || envelope.base_url !== config.base_url
+        || envelope.case.request.url !== config.base_url) fail('structured HTTP request binding differs');
+      const consumed = recordClaim(runRoot(runId), structuredConsumptionKey(receipt.receipt_id), {
+        binding: receipt, receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id,
+      });
+      if (!consumed.claimed || consumed.replayed) fail('durable structured HTTP authorization receipt is replayed');
+      artifactWrite(projectRoot, `${payload.artifact_root}/authorization/${envelope.case.case_id}-consumption.json`, {
+        schema: 'generic-host.http-effect-consumption.v1', case_id: envelope.case.case_id,
+        receipt_id: receipt.receipt_id, grant_id: grant.value.grant_id,
+        consumption_fingerprint_sha256: claimFingerprint(
+          config, 'structured-execution-consumption', envelope.fence_id,
+        ),
+      });
+      const result = workerHomeLedger.withEnvironment(runRoot(runId), {
+        operation_id: runId,
+        effect_id: `target-http:${receipt.receipt_id}`,
+        repository: config.profile.repository,
+      }, `target-http:${envelope.case.case_id}`, config.command_environment || {}, (environment) =>
+        localHttpRequest(envelope.case.request, envelope.case.timeout_seconds, environment));
+      const sequence = structuredCaseSequence(projectRoot, request, envelope.case.case_id);
       const stored = recordImmutable(runRoot(runId), `testing-runner/target-effects/${sha256(stable(payload))}`, {
         sequence, binding: payload, result,
       });
@@ -1440,11 +2638,14 @@ function dispatch(name, payload, projectRoot) {
       const runId = runIdFor(payload);
       const config = loadConfig(projectRoot, runId);
       if (!validDigest(payload.result_sha256)) fail('completed execution result digest is required');
-      const artifacts = structuredExecutionArtifacts(projectRoot, payload.result_ref);
+      const artifacts = structuredExecutionArtifacts(projectRoot, payload.result_ref,
+        payload.result_sha256);
       if (artifacts.execution.digest !== payload.result_sha256) {
         fail('completed execution result digest differs');
       }
       const value = artifacts.execution.value;
+      const durableClaim = durableExecutionClaim(config);
+      assertExecutionMatchesClaim(value, durableClaim.binding);
       if (payload.result_ref !== `${payload.artifact_root}/execution.json`
         || value.operation_id !== payload.operation_id
         || value.environment_receipt_sha256 !== payload.environment_receipt_sha256
@@ -1479,7 +2680,7 @@ function dispatch(name, payload, projectRoot) {
       loadConfig(projectRoot, runId);
       let current = null;
       for (const entry of recordList(root, 'testing-runner/replay')) {
-        if (entry.value && payload.claim && entry.value.claim_id === payload.claim.claim_id) {
+        if (entry.value && payload.claim && entry.value.fence_id === payload.claim.claim_id) {
           current = entry;
           break;
         }
@@ -1494,6 +2695,7 @@ function dispatch(name, payload, projectRoot) {
       }
       const artifacts = structuredExecutionArtifacts(projectRoot, payload.result_ref);
       const execution = artifacts.execution.value;
+      assertExecutionMatchesClaim(execution, binding);
       if (payload.result_ref !== `${binding.artifact_root}/execution.json`
         || execution.operation_id !== binding.operation_id
         || execution.environment_receipt_sha256 !== binding.environment_receipt_sha256
@@ -1501,12 +2703,15 @@ function dispatch(name, payload, projectRoot) {
         || execution.trace_id !== binding.trace_id || execution.dedup_key !== binding.dedup_key) {
         return { completed: false };
       }
-      const completion = { ...payload, result_sha256: artifacts.execution.digest };
+      const config = loadConfig(projectRoot, runId);
+      const completion = { ...payload, result_sha256: artifacts.execution.digest,
+        completed_at: config.execution_authorization_now };
       delete completion.claim;
       const completed = storeExecute({ root, operation: 'replay-complete', key: current.key,
-        claim_id: payload.claim.claim_id, completion });
+        claim_id: current.value.claim_id, completion });
       if (!completed.completed) return completed;
-      const verified = structuredExecutionArtifacts(projectRoot, payload.result_ref);
+      const verified = structuredExecutionArtifacts(projectRoot, payload.result_ref,
+        artifacts.execution.digest);
       const canonicalChanged = Boolean(verified.caseResultSet) !== Boolean(artifacts.caseResultSet)
         || (artifacts.caseResultSet && (verified.caseResultSet.digest !== artifacts.caseResultSet.digest
           || verified.evidenceManifest.digest !== artifacts.evidenceManifest.digest));
@@ -1518,7 +2723,7 @@ function dispatch(name, payload, projectRoot) {
         || completed.value.result_sha256 !== artifacts.execution.digest) {
         fail('completed replay result artifact is unavailable or changed');
       }
-      const config = loadConfig(projectRoot, runId);
+      writeExecutionCompletionReceipt(projectRoot, config, completed.value);
       const arm = config.completed_replay_failpoint;
       if (completed.replayed !== true && arm && arm.name === 'post-completed-replay'
         && typeof arm.token === 'string'
@@ -1603,4 +2808,16 @@ function main() {
   }
 }
 
-main();
+if (require.main === module) main();
+
+module.exports = {
+  assertStructuredGrantDerivation,
+  assertExecutionMatchesClaim,
+  hostStructuredGrantValues,
+  dispatch,
+  materializeImmutableNoReplace,
+  preauthorizationBindingMatches,
+  releaseWorkspaceResource,
+  trustedPreauthorizationRefs,
+  verifyMaterializedImmutable,
+};

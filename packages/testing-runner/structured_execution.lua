@@ -116,7 +116,7 @@ end
 
 local required_ports = {
   "sha256_bytes", "load_artifact", "now", "verify_grant", "replay_guard", "authorize_cli_effect",
-  "exec_argv", "http_request", "write_artifact", "load_result", "complete_replay",
+  "authorize_http_effect", "exec_argv", "http_request", "write_artifact", "load_result", "complete_replay",
 }
 
 local function decode_json_response(body)
@@ -256,6 +256,15 @@ local function valid_effect_response(case, response)
     and type(response.headers) == "table"
 end
 
+local function effect_authorization_time(ports, context)
+  return ports.now({
+    artifact_root = context.request.artifact_root,
+    operation_id = context.environment.operation_id,
+    trace_id = context.request.trace_id,
+    dedup_key = context.request.dedup_key,
+  })
+end
+
 local function execute_case(case, grant, ports, context)
   if case.skip_reason ~= nil then
     return {
@@ -311,7 +320,7 @@ local function execute_case(case, grant, ports, context)
       trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
     })
     local receipt_ok = pcall(execution_contract.validate_effect_authorization_receipt,
-      receipt, envelope, context.now)
+      receipt, envelope, effect_authorization_time(ports, context))
     local authorization_path = context.request.artifact_root
       .. "/authorization/" .. case.case_id .. ".json"
     if not receipt_ok or ports.write_artifact(authorization_path, receipt) ~= true then
@@ -336,9 +345,55 @@ local function execute_case(case, grant, ports, context)
     if not http_allowed(case.request, grant.http_capabilities, context.environment.base_url) then
       error("testing-runner: structured-execution: unauthorized http capability")
     end
-    effect.base_url = context.environment.base_url
-    effect.request = copy(case.request)
-    ok, response = pcall(ports.http_request, effect)
+    local envelope = {
+      schema = execution_contract.schemas.http_action_envelope,
+      effect_kind = "http", capability = "loopback-http",
+      profile_ref = context.request.project_profile_ref,
+      profile_artifact_sha256 = context.profile.digest,
+      profile_sha256 = context.request.profile_sha256,
+      validation_receipt_ref = context.request.validation_receipt_ref,
+      validation_receipt_sha256 = context.validation.digest,
+      preauthorization_ref = context.request.preauthorization_ref,
+      preauthorization_sha256 = context.preauthorization.digest,
+      repository = copy(context.request.repository),
+      run_id = context.request.source_ref.ref, operation_id = context.environment.operation_id,
+      environment_receipt_ref = context.request.environment_receipt_ref,
+      environment_receipt_sha256 = context.environment_digest,
+      workspace_ref = copy(context.environment.workspace_ref),
+      base_url = context.environment.base_url,
+      plan_ref = context.request.test_plan_ref, plan_sha256 = context.plan.digest,
+      grant_ref = context.request.execution_grant_ref, grant_sha256 = context.grant.digest,
+      case = copy(case),
+      resource_bounds = { output_bytes = context.profile.value.resource_budgets.output_bytes },
+      attempt = 1, trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
+      expires_at = grant.expires_at, fence_id = context.claim.claim_id,
+    }
+    execution_contract.validate_http_action_envelope(envelope)
+    local receipt = ports.authorize_http_effect({
+      action_envelope = envelope, artifact_root = context.request.artifact_root,
+      operation_id = context.environment.operation_id,
+      trace_id = context.request.trace_id, dedup_key = context.request.dedup_key,
+    })
+    local receipt_ok = pcall(execution_contract.validate_effect_authorization_receipt,
+      receipt, envelope, effect_authorization_time(ports, context))
+    local authorization_path = context.request.artifact_root
+      .. "/authorization/" .. case.case_id .. ".json"
+    if not receipt_ok or ports.write_artifact(authorization_path, receipt) ~= true then error("testing-runner: structured-execution: malformed HTTP authorization receipt") end
+    if receipt.decision ~= "allow" then
+      return {
+        case_id = case.case_id, kind = case.kind, status = "error",
+        classification = "harness-tooling-issue", assertions = {},
+        evidence = {
+          authorization_receipt_path = authorization_path,
+          authorization_reason = receipt.reason_code,
+        },
+      }
+    end
+    ok, response = pcall(ports.http_request, {
+      action_envelope = envelope,
+      authorization_receipt = receipt,
+      artifact_root = context.request.artifact_root,
+    })
   end
   local case_result = not ok and effect_error(case, response) or nil
   if case_result == nil then
@@ -378,6 +433,8 @@ local function execute_case(case, grant, ports, context)
           } or {
             status_code = tonumber(response.status) or 0,
             body_excerpt = tostring(response.body or ""):sub(1, 600),
+            authorization_receipt_path = context.request.artifact_root
+              .. "/authorization/" .. case.case_id .. ".json",
           },
         }
       end
@@ -617,8 +674,9 @@ function M.run(request, ports)
       trace_id = request.trace_id,
       dedup_key = request.dedup_key,
     })
-    local grant_ok = pcall(execution_contract.validate_grant, grant.value, now)
-    if not grant_ok or grant.value.plan_sha256 ~= request.test_plan_sha256
+    local authorization_window_ok = pcall(execution_contract.validate_grant_authorization_window,
+      preauthorization.value, grant.value, now)
+    if not authorization_window_ok or grant.value.plan_sha256 ~= request.test_plan_sha256
       or grant.value.parent_authorization_sha256 ~= preauthorization.digest
       or grant.value.environment_receipt_sha256 ~= request.environment_receipt_sha256
       or not same_repository(grant.value.repository, request.repository)
@@ -630,7 +688,15 @@ function M.run(request, ports)
     local verified = ports.verify_grant({
       grant = grant.value,
       grant_raw = grant.raw,
+      grant_ref = request.execution_grant_ref,
       grant_sha256 = grant.digest,
+      preauthorization_ref = request.preauthorization_ref,
+      preauthorization_sha256 = preauthorization.digest,
+      plan_ref = request.test_plan_ref,
+      plan_sha256 = plan.digest,
+      environment_receipt_ref = request.environment_receipt_ref,
+      environment_receipt_sha256 = environment.digest,
+      repository = copy(request.repository),
       now = now,
       artifact_root = request.artifact_root,
       operation_id = environment.value.operation_id,
@@ -642,9 +708,14 @@ function M.run(request, ports)
     end
     local claim = ports.replay_guard({
       grant_id = grant.value.grant_id,
+      grant_ref = request.execution_grant_ref,
       grant_sha256 = grant.digest,
+      preauthorization_ref = request.preauthorization_ref,
+      preauthorization_sha256 = preauthorization.digest,
       parent_authorization_sha256 = grant.value.parent_authorization_sha256,
+      plan_ref = request.test_plan_ref,
       plan_sha256 = plan.digest,
+      environment_receipt_ref = request.environment_receipt_ref,
       environment_receipt_sha256 = environment.digest,
       repository = request.repository,
       artifact_root = request.artifact_root,
@@ -697,7 +768,6 @@ function M.run(request, ports)
       plan = plan,
       grant = grant,
       claim = claim,
-      now = now,
     }
     for index, case in ipairs(plan.value.cases) do
       local started_at = current_time(ports, request, environment.value)

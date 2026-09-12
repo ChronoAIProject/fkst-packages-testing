@@ -10,15 +10,22 @@ const {
   artifactPath,
   boundedText,
   isSafeArtifactPath,
-  minimalEnvironment,
   parseArgs,
   readJson,
   sha256,
   stableStringify,
   validateArgv,
+  verifyWorkerEnvironment,
   writeJsonAtomic,
   writeJsonImmutable,
 } = require('../../../packages/environment-factory/bin/runtime/common');
+const {
+  allocateDurableWorkerEnvironment,
+  recordWorkerEnvironmentRelease,
+} = require('../../../packages/environment-factory/bin/runtime/worker-home-resource');
+const {
+  validateTargetExecutionBoundary,
+} = require('../../../packages/environment-factory/bin/runtime/target-execution-boundary');
 const { runMeasuredCommand } = require('../../../packages/environment-factory/bin/runtime/measured-command');
 const { processGroupUsage } = require('../../../packages/environment-factory/bin/runtime/platform');
 const { resolveWorkspace } = require('../../../packages/environment-factory/bin/runtime/workspace');
@@ -40,6 +47,16 @@ function runtimeConfig(payload) {
     || config.state_mac_generation.length > 180) {
     throw new Error('structured execution config requires state_mac_generation');
   }
+  validateTargetExecutionBoundary(config.target_execution_boundary);
+  return config;
+}
+
+function targetExecutionConfig(payload, repository) {
+  const config = runtimeConfig(payload);
+  validateTargetExecutionBoundary(config.target_execution_boundary, repository, {
+    runtimeConfigRef: payload.runtime_config_ref,
+    artifactRoot: payload.artifact_root,
+  });
   return config;
 }
 
@@ -136,6 +153,36 @@ function writeReplay(config, grantId, value) {
     value,
     mac: replayMac(config, value),
   });
+}
+
+function completedReplayForResult(config, payload) {
+  const directory = path.join(durableRoot(), 'testing-runner', 'structured-execution');
+  if (!fs.existsSync(directory)) throw new Error('authenticated completed replay claim is unavailable');
+  const matches = [];
+  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
+    if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/.test(entry.name)) continue;
+    const envelope = readJson(path.join(directory, entry.name));
+    if (!envelope || envelope.schema !== 'testing-runtime.structured-execution-replay.v1'
+      || envelope.mac !== replayMac(config, envelope.value)) {
+      throw new Error('structured execution replay state authentication failed');
+    }
+    const value = envelope.value;
+    const binding = value && value.binding;
+    if (!binding || entry.name !== `${sha256(binding.grant_id)}.json`) {
+      throw new Error('structured execution replay state identity differs');
+    }
+    if (value.status === 'completed' && value.result_ref === payload.result_ref
+      && value.result_sha256 === payload.result_sha256
+      && binding.artifact_root === payload.artifact_root
+      && binding.operation_id === payload.operation_id
+      && binding.environment_receipt_sha256 === payload.environment_receipt_sha256
+      && sameRepository(binding.repository, payload.repository)
+      && binding.trace_id === payload.trace_id && binding.dedup_key === payload.dedup_key) {
+      matches.push(value);
+    }
+  }
+  if (matches.length !== 1) throw new Error('authenticated completed replay claim is unavailable or ambiguous');
+  return matches[0];
 }
 
 function sameRepository(left, right) {
@@ -455,6 +502,8 @@ function validateExecutionArtifact(payload, binding, expectedDigest) {
     || !statuses.has(value.status) || typeof value.classification !== 'string'
     || !sameRepository(value.repository, binding.repository)
     || value.environment_receipt_sha256 !== binding.environment_receipt_sha256
+    || !/^[0-9a-f]{64}$/.test(String(value.plan_sha256 || ''))
+    || value.plan_sha256 !== binding.plan_sha256
     || value.trace_id !== binding.trace_id || value.dedup_key !== binding.dedup_key
     || value.test_plan_path !== `${binding.artifact_root}/test-plan.json`
     || value.case_results_path !== `${binding.artifact_root}/case-results.json`
@@ -567,55 +616,137 @@ function argvWithin(argv, capabilities) {
     && capability.argv_prefix.every((item, index) => item === argv[index]));
 }
 
+function httpWithin(request, capabilities, baseUrl) {
+  let target;
+  try {
+    target = new URL(request.url);
+  } catch (_error) {
+    return false;
+  }
+  if (target.search || target.hash || localOrigin(target.toString()) !== localOrigin(baseUrl)) return false;
+  return (capabilities || []).some((capability) => {
+    if (!capability || !Array.isArray(capability.methods)
+      || !Array.isArray(capability.path_prefixes)) return false;
+    try {
+      return localOrigin(capability.origin) === localOrigin(baseUrl)
+        && capability.methods.includes(request.method)
+        && capability.path_prefixes.some((prefix) => typeof prefix === 'string'
+          && prefix.startsWith('/') && target.pathname.startsWith(prefix));
+    } catch (_error) {
+      return false;
+    }
+  });
+}
+
 function authorizationPath(receiptId) {
-  return path.join(durableRoot(), 'testing-runner', 'cli-effect-authorization', `${sha256(receiptId)}.json`);
+  return path.join(durableRoot(), 'testing-runner', 'effect-authorization', `${sha256(receiptId)}.json`);
 }
 
 function receiptTag(config, receipt) {
   const unsigned = { ...receipt };
   delete unsigned.auth_tag;
   return crypto.createHmac('sha256', config.state_auth_key)
-    .update(`${config.state_mac_generation}\0cli-effect-receipt\0${stableStringify(unsigned)}`).digest('hex');
+    .update(`${config.state_mac_generation}\0effect-receipt\0${stableStringify(unsigned)}`).digest('hex');
 }
 
 function authorizationReceipt(config, envelope, decision, reasonCode, inputs, now) {
   const envelopeSha256 = sha256(stableStringify(envelope));
+  const boundedIdentity = (value, fallback) => typeof value === 'string'
+    && value.length > 0 && value.length <= 180 ? value : fallback;
+  const requestedExpiry = Date.parse(envelope.expires_at);
+  const expiry = Number.isFinite(requestedExpiry) && requestedExpiry > now.getTime()
+    ? envelope.expires_at : utcTimestamp(new Date(now.getTime() + 1000));
   const receipt = {
     schema: 'testing-effect-authorization-receipt.v1', decision, reason_code: reasonCode,
-    receipt_id: `cli-effect-${envelopeSha256.slice(0, 40)}`,
+    receipt_id: `${['cli', 'http'].includes(envelope.effect_kind) ? envelope.effect_kind : 'invalid'}-effect-${envelopeSha256.slice(0, 40)}`,
     envelope_sha256: envelopeSha256,
     evaluated_input_digests: inputs,
-    issued_at: utcTimestamp(now), expires_at: envelope.expires_at,
-    fence_id: envelope.fence_id, trace_id: envelope.trace_id, dedup_key: envelope.dedup_key,
+    issued_at: utcTimestamp(now), expires_at: expiry,
+    fence_id: boundedIdentity(envelope.fence_id, 'invalid-fence'),
+    trace_id: boundedIdentity(envelope.trace_id, 'invalid-trace'),
+    dedup_key: boundedIdentity(envelope.dedup_key, 'invalid-dedup'),
   };
   receipt.auth_tag = receiptTag(config, receipt);
   return receipt;
 }
 
-function validateEnvelope(envelope) {
-  exactKeys(envelope, [
+function persistedDeniedReceipt(config, envelope, reason, inputs, now) {
+  const expected = authorizationReceipt(config, envelope, 'deny', reason, inputs, now);
+  const target = authorizationPath(expected.receipt_id);
+  const release = acquireLock(`${target}.lock`);
+  try {
+    const current = fs.existsSync(target) ? readJson(target) : null;
+    const stored = current && (current.status === 'denied'
+      ? current.receipt : current.denial_receipt);
+    if (stored) {
+      if (stored.schema !== 'testing-effect-authorization-receipt.v1'
+        || stored.decision !== 'deny' || stored.reason_code !== reason
+        || stored.receipt_id !== expected.receipt_id
+        || stored.envelope_sha256 !== expected.envelope_sha256
+        || stableStringify(stored.evaluated_input_digests) !== stableStringify(inputs)
+        || stored.auth_tag !== receiptTag(config, stored)) {
+        throw new Error('durable effect denial receipt binding differs');
+      }
+      return stored;
+    }
+    if (current && !['issued', 'consumed'].includes(current.status)) {
+      throw new Error('durable effect authorization record is malformed');
+    }
+    if (current) {
+      writeJsonAtomic(target, { ...current, denial_receipt: expected });
+    } else {
+      writeJsonAtomic(target, { status: 'denied', receipt: expected });
+    }
+    return expected;
+  } finally {
+    release();
+  }
+}
+
+function reusableIssuedReceipt(config, stored, expected, now) {
+  if (!stored || stored.status !== 'issued' || !stored.receipt) return null;
+  const receipt = stored.receipt;
+  const expectedBinding = { ...expected };
+  const observedBinding = { ...receipt };
+  delete expectedBinding.issued_at;
+  delete expectedBinding.auth_tag;
+  delete observedBinding.issued_at;
+  delete observedBinding.auth_tag;
+  const issuedAt = Date.parse(receipt.issued_at);
+  const expiresAt = Date.parse(receipt.expires_at);
+  if (stableStringify(observedBinding) !== stableStringify(expectedBinding)
+    || receipt.auth_tag !== receiptTag(config, receipt)
+    || !Number.isFinite(issuedAt) || !Number.isFinite(expiresAt)
+    || issuedAt > now.getTime() || now.getTime() >= expiresAt) {
+    return null;
+  }
+  return receipt;
+}
+
+function validateEnvelope(envelope, expectedKind) {
+  const commonFields = [
     'schema', 'effect_kind', 'capability', 'profile_ref', 'profile_artifact_sha256', 'profile_sha256',
     'validation_receipt_ref', 'validation_receipt_sha256', 'preauthorization_ref',
     'preauthorization_sha256', 'repository', 'run_id', 'operation_id',
     'environment_receipt_ref', 'environment_receipt_sha256', 'workspace_ref',
     'plan_ref', 'plan_sha256', 'grant_ref', 'grant_sha256', 'case', 'resource_bounds',
     'attempt', 'trace_id', 'dedup_key', 'expires_at', 'fence_id',
-  ], 'CLI action envelope');
+  ];
+  const kind = envelope && envelope.effect_kind;
+  exactKeys(envelope, kind === 'http' ? [...commonFields, 'base_url'] : commonFields,
+    'action envelope');
   exactKeys(envelope.repository, ['url', 'commit_sha'], 'action repository');
   exactKeys(envelope.workspace_ref, ['kind', 'ref'], 'action workspace');
   exactKeys(envelope.resource_bounds, ['output_bytes'], 'action resource bounds');
-  exactKeys(envelope.case, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'], 'action case');
-  if (!Array.isArray(envelope.case.assertions) || envelope.case.assertions.length < 1
-    || envelope.case.assertions.length > 16
-    || envelope.case.assertions.some((assertion) => !assertion
-      || Object.keys(assertion).sort().join(',') !== 'expected,type'
-      || assertion.type !== 'exit-code' || !Number.isInteger(assertion.expected)
-      || assertion.expected < 0 || assertion.expected > 255)) {
-    throw new Error('CLI action assertions are malformed');
+  if (expectedKind !== undefined && kind !== expectedKind) {
+    throw new Error('action envelope effect kind differs');
   }
-  if (envelope.schema !== 'testing-cli-action-envelope.v1' || envelope.effect_kind !== 'cli'
-    || envelope.capability !== 'direct-argv' || envelope.attempt !== 1
-    || envelope.run_id !== envelope.operation_id || envelope.case.kind !== 'cli'
+  if (!['cli', 'http'].includes(kind)
+    || envelope.schema !== (kind === 'cli'
+      ? 'testing-cli-action-envelope.v1' : 'testing-http-action-envelope.v1')
+    || envelope.capability !== (kind === 'cli' ? 'direct-argv' : 'loopback-http')
+    || envelope.attempt !== 1 || envelope.run_id !== envelope.operation_id
+    || envelope.case.kind !== kind
     || envelope.workspace_ref.kind !== 'workspace'
     || !Number.isInteger(envelope.case.timeout_seconds) || envelope.case.timeout_seconds < 1
     || envelope.case.timeout_seconds > 300
@@ -624,12 +755,47 @@ function validateEnvelope(envelope) {
     || !Number.isFinite(Date.parse(envelope.expires_at))) {
     throw new Error('CLI action envelope is malformed');
   }
-  validateArgv(envelope.case.argv);
+  if (!Array.isArray(envelope.case.assertions) || envelope.case.assertions.length < 1
+    || envelope.case.assertions.length > 16) throw new Error('action assertions are malformed');
+  if (kind === 'cli') {
+    exactKeys(envelope.case, ['case_id', 'kind', 'argv', 'timeout_seconds', 'assertions'], 'action case');
+    if (envelope.case.assertions.some((assertion) => !assertion
+      || Object.keys(assertion).sort().join(',') !== 'expected,type'
+      || assertion.type !== 'exit-code' || !Number.isInteger(assertion.expected)
+      || assertion.expected < 0 || assertion.expected > 255)) {
+      throw new Error('CLI action assertions are malformed');
+    }
+    validateArgv(envelope.case.argv);
+  } else {
+    exactKeys(envelope.case, ['case_id', 'kind', 'request', 'timeout_seconds', 'assertions'], 'action case');
+    exactKeys(envelope.case.request, ['method', 'url', 'headers'], 'HTTP action request');
+    if (!['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'].includes(envelope.case.request.method)
+      || !Array.isArray(envelope.case.request.headers) || envelope.case.request.headers.length !== 0
+      || envelope.case.assertions.some((assertion) => {
+        if (!assertion || typeof assertion !== 'object' || Array.isArray(assertion)) return true;
+        if (assertion.type === 'status-code') {
+          return Object.keys(assertion).sort().join(',') !== 'expected,type'
+            || !Number.isInteger(assertion.expected) || assertion.expected < 100 || assertion.expected > 599;
+        }
+        if (assertion.type === 'body-contains') {
+          return Object.keys(assertion).sort().join(',') !== 'expected,type'
+            || typeof assertion.expected !== 'string' || assertion.expected.length > 512;
+        }
+        return assertion.type !== 'json-path-equals'
+          || Object.keys(assertion).sort().join(',') !== 'expected,path,type'
+          || typeof assertion.path !== 'string' || assertion.path.length < 1 || assertion.path.length > 512
+          || !assertion.path.split('.').every((item) => /^[A-Za-z_][A-Za-z0-9_-]*$/.test(item))
+          || !['string', 'number', 'boolean'].includes(typeof assertion.expected);
+      })) throw new Error('HTTP action assertions are malformed');
+    if (localOrigin(envelope.case.request.url) !== localOrigin(envelope.base_url)) {
+      throw new Error('HTTP action origin differs from ready environment');
+    }
+  }
   return envelope;
 }
 
-function evaluateCliEnvelope(config, envelope, now) {
-  validateEnvelope(envelope);
+function evaluateEnvelope(config, envelope, now, expectedKind) {
+  validateEnvelope(envelope, expectedKind);
   const profile = boundArtifact(envelope.profile_ref, envelope.profile_artifact_sha256);
   const validation = boundArtifact(envelope.validation_receipt_ref, envelope.validation_receipt_sha256);
   const preauthorization = boundArtifact(envelope.preauthorization_ref, envelope.preauthorization_sha256);
@@ -676,19 +842,45 @@ function evaluateCliEnvelope(config, envelope, now) {
     || profile.value.resource_budgets.output_bytes !== envelope.resource_bounds.output_bytes) {
     throw new Error('project profile policy denies CLI effect');
   }
+  const parentIssuedAt = Date.parse(preauthorization.value.issued_at);
+  const parentExpiresAt = Date.parse(preauthorization.value.expires_at);
+  const grantIssuedAt = Date.parse(grant.value.issued_at);
+  const grantExpiresAt = Date.parse(grant.value.expires_at);
+  if (![parentIssuedAt, parentExpiresAt, grantIssuedAt, grantExpiresAt].every(Number.isFinite)
+    || parentExpiresAt <= parentIssuedAt || grantExpiresAt <= grantIssuedAt) {
+    throw new Error('execution authorization validity window is malformed');
+  }
+  const nowMs = now.getTime();
+  if (nowMs < parentIssuedAt || nowMs >= parentExpiresAt) {
+    throw new Error('parent preauthorization is expired or not yet valid');
+  }
+  if (grantIssuedAt < parentIssuedAt || grantExpiresAt > parentExpiresAt) {
+    throw new Error('execution grant validity exceeds parent preauthorization');
+  }
+  if (nowMs < grantIssuedAt || nowMs >= grantExpiresAt
+    || nowMs >= Date.parse(envelope.expires_at)) {
+    throw new Error('execution grant or action envelope is expired or not yet valid');
+  }
   const planned = (plan.value.cases || []).find((item) => item.case_id === envelope.case.case_id);
   if (!planned || stableStringify(planned) !== stableStringify(envelope.case)) {
     throw new Error('approved plan scope differs');
   }
-  if (!argvWithin(envelope.case.argv, preauthorization.value.capabilities && preauthorization.value.capabilities.cli)
-    || !argvWithin(envelope.case.argv, grant.value.cli_capabilities)) {
-    throw new Error('CLI capability is not authorized');
+  if (envelope.effect_kind === 'cli') {
+    if (!argvWithin(envelope.case.argv, preauthorization.value.capabilities && preauthorization.value.capabilities.cli)
+      || !argvWithin(envelope.case.argv, grant.value.cli_capabilities)) {
+      throw new Error('CLI capability is not authorized');
+    }
+  } else if (environment.value.base_url !== envelope.base_url
+    || !httpWithin(envelope.case.request,
+      preauthorization.value.capabilities && preauthorization.value.capabilities.http, envelope.base_url)
+    || !httpWithin(envelope.case.request, grant.value.http_capabilities, envelope.base_url)) {
+    throw new Error('HTTP capability is not authorized');
   }
   const attested = (config.grant_attestations || []).some((entry) => entry.grant_sha256 === grant.digest
     && sameAuthority(entry.authority, grant.value.authority)
     && entry.policy_revision === grant.value.policy_revision
     && samePointer(entry.evidence_ref, grant.value.evidence_ref));
-  if (!attested || now >= new Date(grant.value.expires_at) || now >= new Date(envelope.expires_at)) {
+  if (!attested) {
     throw new Error('execution grant is unauthenticated or expired');
   }
   const replay = readReplay(config, grant.value.grant_id);
@@ -698,32 +890,43 @@ function evaluateCliEnvelope(config, envelope, now) {
   return inputs;
 }
 
-function authorizeCliEffect(payload) {
-  const config = runtimeConfig(payload);
+function authorizeEffect(payload, expectedKind) {
   const envelope = payload.action_envelope || {};
+  const config = runtimeConfig(payload);
   const now = new Date();
   let inputs = {
     profile: '0'.repeat(64), validation_receipt: '0'.repeat(64),
     preauthorization: '0'.repeat(64), environment_receipt: '0'.repeat(64),
     plan: '0'.repeat(64), grant: '0'.repeat(64),
   };
+  let replayDenied = false;
   try {
-    inputs = evaluateCliEnvelope(config, envelope, now);
+    validateTargetExecutionBoundary(config.target_execution_boundary, envelope.repository, {
+      runtimeConfigRef: payload.runtime_config_ref,
+      artifactRoot: payload.artifact_root,
+    });
+    inputs = evaluateEnvelope(config, envelope, now, expectedKind);
     const receipt = authorizationReceipt(config, envelope, 'allow', 'authorized', inputs, now);
     const target = authorizationPath(receipt.receipt_id);
     const release = acquireLock(`${target}.lock`);
     try {
       if (fs.existsSync(target)) {
         const current = readJson(target);
-        if (current.status !== 'issued' || stableStringify(current.receipt) !== stableStringify(receipt)) {
-          return authorizationReceipt(config, envelope, 'deny', 'replayed', inputs, now);
-        }
-        return current.receipt;
+        const reusable = reusableIssuedReceipt(config, current, receipt, now);
+        if (reusable) return reusable;
+        replayDenied = true;
+      } else {
+        writeJsonAtomic(target, { status: 'issued', receipt });
+        return receipt;
       }
-      writeJsonAtomic(target, { status: 'issued', receipt });
-      return receipt;
     } finally { release(); }
+    if (replayDenied) {
+      return persistedDeniedReceipt(config, envelope, 'replayed', inputs, now);
+    }
+    throw new Error('effect authorization replay state is unavailable');
   } catch (error) {
+    if (replayDenied && String(error && error.message || error)
+      .includes('durable effect denial receipt')) throw error;
     const message = String(error && error.message || error);
     const reason = message.includes('digest') ? 'digest-mismatch'
       : message.includes('expired') ? 'expired'
@@ -732,25 +935,27 @@ function authorizeCliEffect(payload) {
             : message.includes('profile policy') ? 'profile-policy-denied'
               : message.includes('fields') || message.includes('malformed') ? 'malformed-envelope'
                 : 'foreign-binding';
-    const safeEnvelope = {
-      expires_at: Number.isFinite(Date.parse(envelope.expires_at)) ? envelope.expires_at : utcTimestamp(new Date(now.getTime() + 1000)),
-      fence_id: typeof envelope.fence_id === 'string' ? envelope.fence_id : 'invalid-fence',
-      trace_id: typeof envelope.trace_id === 'string' ? envelope.trace_id : 'invalid-trace',
-      dedup_key: typeof envelope.dedup_key === 'string' ? envelope.dedup_key : 'invalid-dedup',
-    };
-    return authorizationReceipt(config, safeEnvelope, 'deny', reason, inputs, now);
+    return persistedDeniedReceipt(config, envelope, reason, inputs, now);
   }
 }
 
-async function execArgv(payload) {
-  const config = runtimeConfig(payload);
-  const envelope = validateEnvelope(payload.action_envelope);
+function authorizeCliEffect(payload) {
+  return authorizeEffect(payload, 'cli');
+}
+
+function authorizeHttpEffect(payload) {
+  return authorizeEffect(payload, 'http');
+}
+
+async function consumeAuthorizedEffect(payload, expectedKind, execute) {
+  const envelope = validateEnvelope(payload.action_envelope, expectedKind);
+  const config = targetExecutionConfig(payload, envelope.repository);
   const receipt = payload.authorization_receipt;
   exactKeys(receipt, [
     'schema', 'decision', 'reason_code', 'receipt_id', 'envelope_sha256',
     'evaluated_input_digests', 'issued_at', 'expires_at', 'fence_id', 'trace_id',
     'dedup_key', 'auth_tag',
-  ], 'CLI authorization receipt');
+  ], 'effect authorization receipt');
   exactKeys(receipt.evaluated_input_digests, [
     'profile', 'validation_receipt', 'preauthorization', 'environment_receipt', 'plan', 'grant',
   ], 'evaluated authorization inputs');
@@ -763,7 +968,7 @@ async function execArgv(payload) {
     || receipt.auth_tag !== receiptTag(config, receipt) || receipt.fence_id !== envelope.fence_id
     || receipt.trace_id !== envelope.trace_id || receipt.dedup_key !== envelope.dedup_key
     || Date.now() >= Date.parse(receipt.expires_at)) {
-    throw new Error('CLI authorization receipt is missing, denied, malformed, expired, or foreign');
+    throw new Error('effect authorization receipt is missing, denied, malformed, expired, or foreign');
   }
   const target = authorizationPath(receipt.receipt_id);
   const release = acquireLock(`${target}.lock`);
@@ -771,31 +976,51 @@ async function execArgv(payload) {
     const current = fs.existsSync(target) ? readJson(target) : null;
     if (!current || current.status !== 'issued'
       || stableStringify(current.receipt) !== stableStringify(receipt)) {
-      throw new Error('CLI authorization receipt was replayed or is unavailable');
+      throw new Error('effect authorization receipt was replayed or is unavailable');
     }
     writeJsonAtomic(target, { status: 'consumed', receipt });
+    return await execute(envelope, config);
+  } finally {
+    release();
+  }
+}
+
+async function execArgv(payload) {
+  return consumeAuthorizedEffect(payload, 'cli', async (envelope, config) => {
     const workspace = resolveWorkspace({
+      effect_id: `structured-workspace:${payload.authorization_receipt.receipt_id}`,
       operation_id: envelope.operation_id, repository: envelope.repository,
       environment_receipt_sha256: envelope.environment_receipt_sha256,
       workspace_ref: envelope.workspace_ref, require_clean: true,
     });
-    const result = await runMeasuredCommand(validateArgv(envelope.case.argv), {
-    cwd: workspace.cwd,
-    env: minimalEnvironment(config.command_environment || {}),
-      timeoutMs: envelope.case.timeout_seconds * 1000,
-      outputBytes: Math.min(boundedOutput(config), envelope.resource_bounds.output_bytes),
-    });
-    if (result.timedOut) throw new Error('structured CLI effect timed out');
-    if (result.outputExceeded) throw new Error('structured CLI effect exceeded output bound');
-    if (result.error) throw result.error;
-    const remaining = processGroupUsage([result.pgid]);
-    if (!remaining.supported) throw new Error('structured CLI process cleanup verification is unavailable');
-    if (remaining.processes > 0) {
-      try { process.kill(-result.pgid, 'SIGKILL'); } catch (_error) {}
-      throw new Error('structured CLI effect left a surviving process group');
+    const allocation = allocateDurableWorkerEnvironment({
+      effect_id: `structured-cli:${payload.authorization_receipt.receipt_id}`,
+      operation_id: envelope.operation_id,
+      repository: envelope.repository,
+    }, `structured-cli:${envelope.case.case_id}`, config.command_environment || {});
+    try {
+      verifyWorkerEnvironment(allocation.environment);
+      const result = await runMeasuredCommand(validateArgv(envelope.case.argv), {
+        cwd: workspace.cwd,
+        cwdIdentity: workspace.cwdIdentity,
+        env: allocation.environment,
+        timeoutMs: envelope.case.timeout_seconds * 1000,
+        outputBytes: Math.min(boundedOutput(config), envelope.resource_bounds.output_bytes),
+      });
+      if (result.timedOut) throw new Error('structured CLI effect timed out');
+      if (result.outputExceeded) throw new Error('structured CLI effect exceeded output bound');
+      if (result.error) throw result.error;
+      const remaining = processGroupUsage([result.pgid]);
+      if (!remaining.supported) throw new Error('structured CLI process cleanup verification is unavailable');
+      if (remaining.processes > 0) {
+        try { process.kill(-result.pgid, 'SIGKILL'); } catch (_error) {}
+        throw new Error('structured CLI effect left a surviving process group');
+      }
+      return { exit_code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
+    } finally {
+      recordWorkerEnvironmentRelease(allocation);
     }
-    return { exit_code: result.exitCode, stdout: result.stdout, stderr: result.stderr };
-  } finally { release(); }
+  });
 }
 
 function localOrigin(value) {
@@ -808,26 +1033,19 @@ function localOrigin(value) {
 }
 
 function httpRequest(payload) {
-  const config = runtimeConfig(payload);
-  const allowedMethods = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
-  if (!payload.request || !allowedMethods.has(payload.request.method)
-    || !Array.isArray(payload.request.headers) || payload.request.headers.length !== 0) {
-    throw new Error('HTTP effect request is invalid');
-  }
-  const target = new URL(payload.request.url);
-  if (target.search || target.hash) throw new Error('HTTP effect URL must not contain query or fragment');
-  if (localOrigin(target.toString()) !== localOrigin(payload.base_url)) {
-    throw new Error('HTTP effect origin differs from ready environment');
-  }
-  const maximum = Math.max(1024, Math.min(Number(config.http_response_bytes) || 256 * 1024, 1024 * 1024));
-  return new Promise((resolve, reject) => {
+  return consumeAuthorizedEffect(payload, 'http', (envelope, config) => new Promise((resolve, reject) => {
+    const target = new URL(envelope.case.request.url);
+    const maximum = Math.min(
+      Math.max(1024, Math.min(Number(config.http_response_bytes) || 256 * 1024, 1024 * 1024)),
+      envelope.resource_bounds.output_bytes,
+    );
     const request = http.request({
       hostname: target.hostname,
       port: target.port,
       path: `${target.pathname}${target.search}`,
-      method: payload.request.method,
+      method: envelope.case.request.method,
       headers: {},
-      timeout: Math.max(1, Number(payload.timeout_seconds) || 1) * 1000,
+      timeout: envelope.case.timeout_seconds * 1000,
     }, (response) => {
       const chunks = [];
       let size = 0;
@@ -845,22 +1063,16 @@ function httpRequest(payload) {
     request.on('timeout', () => request.destroy(new Error('HTTP effect timed out')));
     request.on('error', reject);
     request.end();
-  });
+  }));
 }
 
 function loadResult(payload) {
   if (!/^[0-9a-f]{64}$/.test(String(payload.result_sha256 || ''))) {
     throw new Error('completed execution result digest is required');
   }
-  const binding = {
-    artifact_root: payload.artifact_root,
-    operation_id: payload.operation_id,
-    repository: payload.repository,
-    environment_receipt_sha256: payload.environment_receipt_sha256,
-    trace_id: payload.trace_id,
-    dedup_key: payload.dedup_key,
-  };
-  const artifact = validateExecutionArtifact(payload, binding, payload.result_sha256);
+  const config = runtimeConfig(payload);
+  const replay = completedReplayForResult(config, payload);
+  const artifact = validateExecutionArtifact(payload, replay.binding, payload.result_sha256);
   const execution = artifact.value;
   const result = {
     schema: 'testing-runner.structured-execution-summary.v1',
@@ -897,6 +1109,7 @@ async function dispatch(name, payload) {
   if (name === 'verify-grant') return verifyGrant(payload);
   if (name === 'replay-guard') return replayGuard(payload);
   if (name === 'authorize-cli-effect') return authorizeCliEffect(payload);
+  if (name === 'authorize-http-effect') return authorizeHttpEffect(payload);
   if (name === 'complete-replay') return completeReplay(payload);
   if (name === 'exec-argv') return execArgv(payload);
   if (name === 'http-request') return httpRequest(payload);

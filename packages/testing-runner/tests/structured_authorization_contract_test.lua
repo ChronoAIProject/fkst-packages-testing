@@ -123,6 +123,61 @@ return {
     local foreign = fixtures.copy(receipt)
     foreign.fence_id = "claim-foreign"
     t.raises(function() contract.validate_effect_authorization_receipt(foreign, envelope) end)
+    foreign = fixtures.copy(receipt)
+    foreign.envelope_sha256 = string.rep("f", 64)
+    t.raises(function() contract.validate_effect_authorization_receipt(foreign, envelope) end)
+  end,
+
+  test_http_action_envelope_and_receipt_are_grant_bound = function()
+    local request = fixtures.request()
+    local case = {
+      case_id = "health", kind = "http", timeout_seconds = 10,
+      request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+      assertions = { { type = "status-code", expected = 200 } },
+    }
+    local envelope = {
+      schema = contract.schemas.http_action_envelope, effect_kind = "http",
+      capability = "loopback-http", profile_ref = request.project_profile_ref,
+      profile_artifact_sha256 = request.project_profile_artifact_sha256,
+      profile_sha256 = request.profile_sha256,
+      validation_receipt_ref = request.validation_receipt_ref,
+      validation_receipt_sha256 = request.validation_receipt_sha256,
+      preauthorization_ref = request.preauthorization_ref,
+      preauthorization_sha256 = request.preauthorization_sha256,
+      repository = fixtures.copy(request.repository), run_id = request.source_ref.ref,
+      operation_id = request.source_ref.ref, environment_receipt_ref = request.environment_receipt_ref,
+      environment_receipt_sha256 = request.environment_receipt_sha256,
+      workspace_ref = { kind = "workspace", ref = "run-110-workspace" },
+      base_url = "http://127.0.0.1:4173/health",
+      plan_ref = request.test_plan_ref, plan_sha256 = request.test_plan_sha256,
+      grant_ref = request.execution_grant_ref, grant_sha256 = request.execution_grant_sha256,
+      case = case, resource_bounds = { output_bytes = 32768 }, attempt = 1,
+      trace_id = request.trace_id, dedup_key = request.dedup_key,
+      expires_at = "2026-07-20T01:00:00Z", fence_id = "claim-110",
+    }
+    t.eq(contract.validate_http_action_envelope(envelope), envelope)
+    t.eq(contract.validate_action_envelope(envelope), envelope)
+    local receipt = fixtures.authorization_receipt(envelope)
+    t.eq(contract.validate_effect_authorization_receipt(receipt, envelope,
+      "2026-07-20T00:30:00Z"), receipt)
+    local foreign = fixtures.copy(envelope)
+    foreign.base_url = "http://127.0.0.1:4174/health"
+    t.raises(function() contract.validate_http_action_envelope(foreign) end)
+    local cli_schema = fixtures.copy(envelope)
+    cli_schema.schema = contract.schemas.cli_action_envelope
+    t.raises(function() contract.validate_action_envelope(cli_schema) end)
+
+    local unsupported = fixtures.copy(envelope)
+    unsupported.capability = "direct-http"
+    t.raises(function() contract.validate_http_action_envelope(unsupported) end)
+
+    local unbounded = fixtures.copy(envelope)
+    unbounded.resource_bounds.output_bytes = 1023
+    t.raises(function() contract.validate_http_action_envelope(unbounded) end)
+
+    local unknown = fixtures.copy(envelope)
+    unknown.schema = "testing-unknown-action-envelope.v1"
+    t.raises(function() contract.validate_action_envelope(unknown) end)
   end,
 
 
@@ -137,6 +192,23 @@ return {
     t.eq(grant.plan_sha256, request.test_plan_sha256)
     t.eq(grant.environment_receipt_sha256, request.environment_receipt_sha256)
     t.eq(grant.max_uses, 1)
+  end,
+
+  test_grant_validity_must_be_contained_by_parent_preauthorization = function()
+    local request = fixtures.request()
+    local plan = fixtures.plan(request)
+    for _, mutate in ipairs({
+      function(value) value.issued_at = "2026-07-19T23:59:59Z" end,
+      function(value) value.expires_at = "2026-07-20T01:00:01Z" end,
+    }) do
+      local grant_values = values()
+      mutate(grant_values)
+      t.raises(function()
+        contract.derive_grant(preauthorization(request), fixtures.digest_authorization,
+          plan, request.test_plan_sha256, request.environment_receipt_sha256,
+          grant_request(request), grant_values)
+      end)
+    end
   end,
 
   test_rejects_plan_capability_escalation = function()

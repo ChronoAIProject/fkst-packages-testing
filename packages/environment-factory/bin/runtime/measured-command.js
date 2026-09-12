@@ -5,6 +5,11 @@ const fs = require('fs');
 const os = require('os');
 const path = require('path');
 const { spawn } = require('child_process');
+const {
+  closeDirectoryAnchor,
+  objectBoundExec,
+  openDirectoryAnchor,
+} = require('./object-bound-exec');
 const { processGroupUsage } = require('./platform');
 
 function parseMetrics(stderr) {
@@ -54,13 +59,27 @@ function runMeasuredCommand(argv, options = {}) {
     let timedOut = false;
     let settled = false;
     let maxProcesses = 0;
-    const child = spawn(timed[0], timed[1], {
-      cwd: options.cwd,
-      env: options.env,
-      shell: false,
-      detached: true,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
+    let anchor;
+    let child;
+    try {
+      anchor = openDirectoryAnchor(options.cwd, options.cwdIdentity);
+      if (typeof options.afterCwdAnchored === 'function') options.afterCwdAnchored(anchor);
+      const launch = objectBoundExec(anchor, [timed[0], ...timed[1]], 3);
+      child = spawn(launch.command, launch.argv, {
+        cwd: '/',
+        env: options.env,
+        shell: false,
+        detached: true,
+        stdio: ['ignore', 'pipe', 'pipe', anchor.descriptor],
+      });
+      closeDirectoryAnchor(anchor);
+    } catch (error) {
+      closeDirectoryAnchor(anchor);
+      fs.rmSync(metricsPath, { force: true });
+      resolve({ exitCode: -1, metricsSupported: false, processMetricsSupported: false,
+        stdout: '', stderr: String(error.message || error), error });
+      return;
+    }
     const stop = () => {
       if (!Number.isInteger(child.pid)) return;
       try { process.kill(-child.pid, 'SIGKILL'); } catch (_error) {

@@ -3,6 +3,7 @@ local checkpoints = require("checkpoints")
 local browser_contract = require("contract.browser_control")
 local browser_readiness_contract = require("contract.browser_readiness")
 local environment_contract = require("contract.environment_factory")
+local cleanup_state = require("cleanup_state")
 local design_contract = require("contract.testing_design")
 local project_profile = require("contract.project_profile")
 local execution_contract = require("contract.structured_execution")
@@ -34,7 +35,7 @@ local function digest(ports, pointer)
 end
 
 local function load_bound(ports, pointer, expected_digest, label)
-  local artifact = ports.load_artifact(pointer)
+  local artifact = ports.load_artifact(pointer, expected_digest)
   if type(artifact) ~= "table" or artifact.digest ~= expected_digest or type(artifact.value) ~= "table" then
     error("workflow-qa: artifact-binding-unavailable: " .. label .. " immutable binding failed")
   end
@@ -288,7 +289,7 @@ function M.start(request, supplied_ports)
     }, ports)
 end
 
-local cleanup_action, begin_cleanup, prepare_finalization
+local cleanup_action, begin_cleanup, prepare_finalization, accept_cleanup_result
 
 function M.handle_environment_result(payload, request, supplied_ports)
   local ports = ports_module.resolve(supplied_ports)
@@ -333,14 +334,9 @@ function M.handle_environment_result(payload, request, supplied_ports)
       }, ports)
   end
 
-  if payload.cleanup_status ~= "complete" or payload.cleanup_receipt_ref == nil then
-    error("workflow-qa: cleanup-unverified: blocked environment cleanup is incomplete")
-  end
-  state.cleanup_result = copy(payload)
-  state.digests[payload.cleanup_receipt_ref.ref] = digest(ports, payload.cleanup_receipt_ref.ref)
   state.counts = { planned = 0, executed = 0, passed = 0, failed = 0, skipped = 0, error = 0, blocked = 1 }
   state.terminal_status = state.interruption_requested or payload.status
-  return prepare_finalization(state, ports)
+  return accept_cleanup_result(state, payload, ports)
 end
 
 function M.handle_analysis_result(payload, request, supplied_ports)
@@ -840,6 +836,14 @@ prepare_finalization = function(state, ports)
     }, ports)
 end
 
+accept_cleanup_result = function(state, payload, ports)
+  return cleanup_state.accept(state, payload, ports, {
+    copy = copy, digest = digest, load_bound = load_bound, save = save,
+    environment_contract = environment_contract,
+    prepare_finalization = prepare_finalization,
+  })
+end
+
 function M.handle_cleanup_result(payload, request, supplied_ports)
   local ports = ports_module.resolve(supplied_ports)
   request = resolve_request(payload, request, ports)
@@ -853,12 +857,7 @@ function M.handle_cleanup_result(payload, request, supplied_ports)
     error("workflow-qa: foreign-cleanup-result: operation or source identity differs")
   end
   if state.phase ~= "cleanup-pending" then return copy(state.pending_actions or {}) end
-  if payload.cleanup_status ~= "complete" or payload.cleanup_receipt_ref == nil then
-    error("workflow-qa: cleanup-unverified: terminal cleanup receipt is incomplete")
-  end
-  state.cleanup_result = copy(payload)
-  state.digests[payload.cleanup_receipt_ref.ref] = digest(ports, payload.cleanup_receipt_ref.ref)
-  return prepare_finalization(state, ports)
+  return accept_cleanup_result(state, payload, ports)
 end
 
 function M.handle_environment_event(payload, supplied_ports)
@@ -876,7 +875,8 @@ function M.handle_interrupt(payload, supplied_ports)
   local request = resolve_request(payload, nil, ports)
   local state = load_for(request, ports)
   if state == nil then error("workflow-qa: interruption-unavailable: durable run is missing") end
-  if state.phase == "cleanup-pending" or state.phase == "publication-pending" or state.phase == "terminal" then
+  if state.phase == "cleanup-pending" or state.phase == "cleanup-blocked"
+    or state.phase == "publication-pending" or state.phase == "terminal" then
     return copy(state.pending_actions or {})
   end
   state.interruption_requested = payload.interruption

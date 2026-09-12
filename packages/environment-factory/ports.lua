@@ -4,6 +4,7 @@ local runtime = require("runtime")
 local runtime_names = {
   "load_authorization_bundle",
   "authorize_claim_ports",
+  "initialize_worker_home_ledger",
   "checkout",
   "remaining_budget",
   "create_readiness_attempt",
@@ -87,6 +88,7 @@ function P.resolve(value)
     "save_state",
     "load_authorization_bundle",
     "authorize_claim_ports",
+    "initialize_worker_home_ledger",
     "checkout",
     "remaining_budget",
     "create_readiness_attempt",

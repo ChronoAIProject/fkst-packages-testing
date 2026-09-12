@@ -39,6 +39,10 @@ local function runtime(artifacts, options)
       if options.authorize_cli_effect then return options.authorize_cli_effect(input) end
       return fixtures.authorization_receipt(input.action_envelope)
     end,
+    authorize_http_effect = function(input)
+      if options.authorize_http_effect then return options.authorize_http_effect(input) end
+      return fixtures.authorization_receipt(input.action_envelope)
+    end,
     exec_argv = function(input)
       table.insert(effects, { kind = "cli", request = input })
       if options.exec_error then error("cli unavailable") end
@@ -154,6 +158,58 @@ return {
     t.eq(writes[receipt_path].decision, "deny")
   end,
 
+  test_http_pep_denial_records_receipt_and_performs_zero_http_effects = function()
+    local request = fixtures.request()
+    local plan = fixtures.plan(request, { {
+      case_id = "health-api", kind = "http",
+      request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+      timeout_seconds = 10,
+      assertions = { { type = "status-code", expected = 200 } },
+    } })
+    local grant = fixtures.grant(request, {
+      cli = {},
+      http = { {
+        origin = "http://127.0.0.1:4173", methods = { "GET" }, path_prefixes = { "/health" },
+      } },
+    })
+    local ports, effects, writes = runtime(fixtures.artifacts(request, plan, grant), {
+      authorize_http_effect = function(input)
+        return fixtures.authorization_receipt(input.action_envelope, "deny", "scope-denied")
+      end,
+    })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "blocked")
+    t.eq(result.error_count, 1)
+    t.eq(#effects, 0)
+    local receipt_path = request.artifact_root .. "/authorization/health-api.json"
+    t.eq(writes[receipt_path].decision, "deny")
+    t.eq(writes[receipt_path].reason_code, "scope-denied")
+  end,
+
+  test_malformed_http_pep_receipt_blocks_before_http_effect = function()
+    local request = fixtures.request()
+    local plan = fixtures.plan(request, { {
+      case_id = "health-api", kind = "http",
+      request = { method = "GET", url = "http://127.0.0.1:4173/health", headers = {} },
+      timeout_seconds = 10,
+      assertions = { { type = "status-code", expected = 200 } },
+    } })
+    local grant = fixtures.grant(request, {
+      cli = {},
+      http = { {
+        origin = "http://127.0.0.1:4173", methods = { "GET" }, path_prefixes = { "/health" },
+      } },
+    })
+    local ports, effects = runtime(fixtures.artifacts(request, plan, grant), {
+      authorize_http_effect = function() return { decision = "allow" } end,
+    })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "blocked")
+    t.eq(result.classification, "harness-tooling-issue")
+    t.is_true(result.message:find("malformed HTTP authorization receipt", 1, true) ~= nil)
+    t.eq(#effects, 0)
+  end,
+
   test_unpersisted_local_pep_receipt_blocks_before_cli_effect = function()
     local request = fixtures.request()
     local ports, effects = runtime(fixtures.artifacts(request), {
@@ -220,8 +276,19 @@ return {
     local ports, effects, writes = runtime(artifacts, {
       now = {
         "2026-07-20T00:30:00Z", "2026-07-20T00:30:01Z", "2026-07-20T00:30:02Z",
-        "2026-07-20T00:30:03Z", "2026-07-20T00:30:05Z",
+        "2026-07-20T00:30:02Z", "2026-07-20T00:30:03Z", "2026-07-20T00:30:04Z",
+        "2026-07-20T00:30:05Z",
       },
+      authorize_cli_effect = function(input)
+        local receipt = fixtures.authorization_receipt(input.action_envelope)
+        receipt.issued_at = "2026-07-20T00:30:02Z"
+        return receipt
+      end,
+      authorize_http_effect = function(input)
+        local receipt = fixtures.authorization_receipt(input.action_envelope)
+        receipt.issued_at = "2026-07-20T00:30:04Z"
+        return receipt
+      end,
       verify_grant = function(input)
         t.eq(input.grant_sha256, fixtures.digest_grant)
         t.eq(input.grant.authority.ref, "testing-authority")
@@ -247,8 +314,9 @@ return {
     t.eq(effects[1].request.action_envelope.repository.commit_sha, request.repository.commit_sha)
     t.eq(effects[1].request.action_envelope.case.argv[2], "--version")
     t.eq(effects[2].kind, "http")
-    t.eq(effects[2].request.base_url, "http://127.0.0.1:4173/health")
-    t.eq(effects[2].request.request.url, "http://127.0.0.1:4173/health")
+    t.eq(effects[2].request.action_envelope.base_url, "http://127.0.0.1:4173/health")
+    t.eq(effects[2].request.action_envelope.case.request.url, "http://127.0.0.1:4173/health")
+    t.eq(effects[2].request.authorization_receipt.decision, "allow")
     local set = writes[result.case_result_set_path]
     local manifest = writes[result.evidence_manifest_path]
     local legacy = writes[result.case_results_path]
@@ -558,6 +626,28 @@ return {
     t.eq(#legacy.cases[1].assertions, 0)
   end,
 
+  test_assertion_facts_fail_closed_if_the_bound_plan_changes_during_projection = function()
+    local request = fixtures.request()
+    local plan = fixtures.plan(request)
+    local artifacts = fixtures.artifacts(request, plan)
+    local ports, effects = runtime(artifacts, {
+      write_artifact = function(path, value, writes, stored)
+        fixtures.persist_write(stored, writes, path, value)
+        if path == request.artifact_root .. "/evidence/cli-version.json" then
+          plan.cases[1].assertions[1].type = "stdout-contains"
+        end
+        return true
+      end,
+    })
+
+    local result = structured_execution.run(request, ports)
+
+    t.eq(result.status, "blocked")
+    t.eq(result.classification, "harness-tooling-issue")
+    t.is_true(result.message:find("assertion execution facts differ from plan", 1, true) ~= nil)
+    t.eq(#effects, 1)
+  end,
+
   test_malformed_table_effect_responses_cannot_pass_or_report_product_defects = function()
     local request = fixtures.request()
     local ports, _, writes = runtime(fixtures.artifacts(request), { exec_result = {} })
@@ -604,6 +694,23 @@ return {
       replay_guard = function()
         claims = claims + 1
         return { status = "claimed", claim_id = "late" }
+      end,
+    })
+    local result = structured_execution.run(request, ports)
+    t.eq(result.status, "blocked")
+    t.eq(claims, 0)
+    t.eq(#effects, 0)
+  end,
+
+  test_expired_parent_preauthorization_fails_before_replay_claim_or_effect = function()
+    local request = fixtures.request()
+    local artifacts = fixtures.artifacts(request)
+    artifacts[request.preauthorization_ref].value.expires_at = "2026-07-20T00:10:00Z"
+    local claims = 0
+    local ports, effects = runtime(artifacts, {
+      replay_guard = function()
+        claims = claims + 1
+        return { status = "claimed", claim_id = "late-parent" }
       end,
     })
     local result = structured_execution.run(request, ports)

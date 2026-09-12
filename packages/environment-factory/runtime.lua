@@ -419,6 +419,7 @@ function R.production(options)
         release_listener_claims(request.operation_id)
       end
       if not ok then error(verified, 0) end
+      verified.claim_id = nil
       return verified
     end
 
@@ -435,6 +436,9 @@ function R.production(options)
     return pending.outcome
   end
 
+  ports.initialize_worker_home_ledger = function(request)
+    return invoke("initialize-worker-home-ledger", request, cli_timeout(request.timeout_seconds))
+  end
   ports.checkout = function(request) return invoke("checkout", request, cli_timeout(request.timeout_seconds)) end
   ports.remaining_budget = function(request)
     local result = invoke("remaining-budget", request, 15)
