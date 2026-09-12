@@ -164,14 +164,24 @@ function findSlot(ledger, slotId) {
   return ledger.entries.find((entry) => entry.slot_id === slotId) || null;
 }
 
+function generationReservationId(baseReservationId, generation) {
+  if (generation === 1) return baseReservationId;
+  return sha256(stableStringify({
+    schema: 'environment-factory.worker-home-generation-reservation.v1',
+    base_reservation_id: baseReservationId,
+    generation,
+  })).slice(0, 32);
+}
+
 function allocateDurableWorkerEnvironment(
   request, purpose, extra = {}, reservationOverride = null, hooks = {},
 ) {
   const identity = requireLedgerContext(request);
   const binding = slotBinding(request, purpose, extra);
   const slotId = sha256(stableStringify(binding));
-  const reservationId = reservationOverride === null ? slotId.slice(0, 32) : String(reservationOverride);
-  if (!/^[0-9a-f]{32}$/.test(reservationId)) {
+  const baseReservationId = reservationOverride === null
+    ? slotId.slice(0, 32) : String(reservationOverride);
+  if (!/^[0-9a-f]{32}$/.test(baseReservationId)) {
     throw new Error('worker-home slot reservation is invalid');
   }
   const isolation = {
@@ -183,7 +193,9 @@ function allocateDurableWorkerEnvironment(
     purpose,
     repository: identity.repository,
   };
-  const reservation = workerEnvironmentReservation(extra, isolation, reservationId);
+  let reservation;
+  let reservationId;
+  let generation;
   let release = acquireLock(`${identity.ledgerPath}.lock`);
   try {
     const ledger = verifyLedger(readJson(identity.ledgerPath), identity);
@@ -191,12 +203,9 @@ function allocateDurableWorkerEnvironment(
     if (existing && stableStringify(existing.binding) !== stableStringify(binding)) {
       throw new Error('worker-home slot binding differs');
     }
-    if (existing && existing.reservation_id !== reservationId) {
-      throw new Error('worker-home slot reservation differs');
-    }
-    if (existing && (!existing.worker_environment_reservation
-      || stableStringify(existing.worker_environment_reservation) !== stableStringify(reservation))) {
-      throw new Error('worker-home slot reservation binding differs');
+    if (existing && (!Number.isInteger(existing.generation) || existing.generation < 1
+      || !['reserved', 'allocated', 'retained', 'released'].includes(existing.state))) {
+      throw new Error('worker-home slot lifecycle differs');
     }
     if (!existing) {
       if (ledger.entries.length >= ledger.max_entries) {
@@ -204,10 +213,13 @@ function allocateDurableWorkerEnvironment(
         error.code = 'WORKER_HOME_LEDGER_CAPACITY_EXCEEDED';
         throw error;
       }
+      generation = 1;
+      reservationId = generationReservationId(baseReservationId, generation);
+      reservation = workerEnvironmentReservation(extra, isolation, reservationId);
       ledger.entries.push({
         slot_id: slotId,
         reservation_id: reservationId,
-        generation: 1,
+        generation,
         binding,
         state: 'reserved',
         release_reason: null,
@@ -217,13 +229,34 @@ function allocateDurableWorkerEnvironment(
       ledger.revision += 1;
       writeLedger(identity.ledgerPath, ledger);
     } else if (existing.state === 'released') {
-      existing.generation += 1;
+      if (reservationOverride !== null) {
+        throw new Error('released worker-home slot cannot reuse a supervised reservation');
+      }
+      generation = existing.generation + 1;
+      reservationId = generationReservationId(baseReservationId, generation);
+      reservation = workerEnvironmentReservation(extra, isolation, reservationId);
+      existing.generation = generation;
+      existing.reservation_id = reservationId;
       existing.state = 'reserved';
       existing.release_reason = null;
       existing.worker_environment_reservation = reservation;
       existing.worker_environment_lease = null;
       ledger.revision += 1;
       writeLedger(identity.ledgerPath, ledger);
+    } else {
+      generation = existing.generation;
+      reservationId = generationReservationId(baseReservationId, generation);
+      reservation = workerEnvironmentReservation(extra, isolation, reservationId);
+      if (existing.reservation_id !== reservationId
+        || !existing.worker_environment_reservation
+        || stableStringify(existing.worker_environment_reservation) !== stableStringify(reservation)) {
+        throw new Error('worker-home slot reservation binding differs');
+      }
+      if (existing.worker_environment_lease) {
+        verifyWorkerEnvironmentLease(existing.worker_environment_lease);
+      } else {
+        throw new Error('worker-home allocation has no durable lease or release proof');
+      }
     }
   } finally {
     release();
@@ -240,6 +273,7 @@ function allocateDurableWorkerEnvironment(
     const ledger = verifyLedger(readJson(identity.ledgerPath), identity);
     const entry = findSlot(ledger, slotId);
     if (!entry || stableStringify(entry.binding) !== stableStringify(binding)
+      || entry.generation !== generation || entry.reservation_id !== reservationId
       || stableStringify(entry.worker_environment_reservation) !== stableStringify(reservation)) {
       throw new Error('worker-home slot reservation is unavailable');
     }

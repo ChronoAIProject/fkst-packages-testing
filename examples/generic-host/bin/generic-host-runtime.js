@@ -1127,10 +1127,32 @@ function recoverRegisteredCheckout(projectRoot, config, payload, workspaceRef, c
   if (!cleanupStored.written && !cleanupStored.replayed) {
     fail('registered checkout cleanup resource binding differs');
   }
+  const resolvedCommit = verifyCheckoutGitState(config, payload, existing, 'checkout-recovery');
   return {
-    status: 'passed', resolved_commit: config.commit_sha,
+    status: 'passed', resolved_commit: resolvedCommit,
     workspace_ref: workspaceRef, cleanup_ref: cleanupRef,
   };
+}
+
+function verifyCheckoutGitState(config, payload, workspace, purpose) {
+  const root = runRoot(config.run_id);
+  const workerRequest = ledgerWorkerRequest(config, payload);
+  return workerHomeLedger.withEnvironment(
+    root, workerRequest, purpose, config.command_environment || {}, (environment) => {
+      const resolved = directExec(['git', 'rev-parse', 'HEAD'], workspace.path,
+        payload.timeout_seconds, undefined, environment, workspace.path_identity);
+      const observed = String(resolved.stdout || '').trim();
+      if (resolved.exit_code !== 0 || observed !== config.commit_sha) {
+        fail('workspace resolved commit differs from its durable binding');
+      }
+      const status = directExec(['git', 'status', '--porcelain', '--untracked-files=no'], workspace.path,
+        payload.timeout_seconds, undefined, environment, workspace.path_identity);
+      if (status.exit_code !== 0 || String(status.stdout || '').trim() !== '') {
+        fail('workspace tracked working tree differs from its durable binding');
+      }
+      return observed;
+    },
+  );
 }
 
 function startApplication(projectRoot, payload) {
@@ -1147,6 +1169,7 @@ function startApplication(projectRoot, payload) {
   const workspace = workspaceResource(root, payload.workspace_ref);
   const workspaceState = verifyWorkspace(config, workspace);
   if (!workspaceState.owned) fail(`workspace ownership failed: ${workspaceState.reason}`);
+  verifyCheckoutGitState(config, payload, workspace, `application-start:${payload.effect_id}`);
   const purpose = `supervised:${payload.effect_id}`;
   const commandEnvironment = config.command_environment || {};
   const workerRequest = ledgerWorkerRequest(config, payload);
@@ -2275,6 +2298,11 @@ function dispatch(name, payload, projectRoot, hooks = {}) {
           reservation.record, reservation.record.path_identity, {
             reservationWasCreated: reservation.created,
             hooks: {
+              afterWorkspaceRecoveryReleased(details) {
+                if (typeof hooks.afterWorkspaceRecoveryReleased === 'function') {
+                  hooks.afterWorkspaceRecoveryReleased(details);
+                }
+              },
               afterWorkspaceDirectoryCreated(details) {
                 if (typeof hooks.afterWorkspaceDirectoryCreated === 'function') {
                   hooks.afterWorkspaceDirectoryCreated(details);

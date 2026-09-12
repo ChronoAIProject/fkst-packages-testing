@@ -97,6 +97,9 @@ assert.throws(() => ledger.allocate(durable, {
   },
 }), /simulated crash/);
 assert.equal(fs.existsSync(interruptedWorkerHome), true);
+assert.throws(() => ledger.allocate(durable, {
+  ...base, effect_id: 'interrupted-allocation', worker_home_ledger_ref: initialized.cleanup_ref,
+}, 'interrupted-allocation', {}), /worker-home allocation has no durable lease or release proof/);
 const externalWorkerHome = path.join(root, 'external-worker-home');
 fs.mkdirSync(path.join(externalWorkerHome, '.config', 'gh'), { recursive: true, mode: 0o700 });
 const externalCredential = path.join(externalWorkerHome, '.config', 'gh', 'hosts.yml');
@@ -128,6 +131,30 @@ const current = read('environment-factory/worker-home-ledger');
 assert.equal(current.entries.length, 4);
 assert.equal(current.entries.filter((entry) => entry.state === 'allocated').length, 2);
 assert.equal(current.entries.filter((entry) => entry.state === 'reserved').length, 2);
+
+const generationRequest = {
+  ...base, effect_id: 'generation-retry', worker_home_ledger_ref: initialized.cleanup_ref,
+};
+const generationOne = ledger.allocate(durable, generationRequest, 'generation-retry', {});
+assert.equal(ledger.recordRelease(durable, generationOne), true);
+const generationTwo = ledger.allocate(durable, generationRequest, 'generation-retry', {});
+assert.notEqual(generationTwo.environment.HOME, generationOne.environment.HOME);
+assert.notEqual(generationTwo.lease.cleanup_capture_id, generationOne.lease.cleanup_capture_id);
+assert.equal(ledger.recordRelease(durable, generationTwo), true);
+const supervisedRequest = {
+  ...base, effect_id: 'supervised-reservation', worker_home_ledger_ref: initialized.cleanup_ref,
+};
+const supervisedReservationId = 'b'.repeat(32);
+const supervised = ledger.allocate(
+  durable, supervisedRequest, 'supervised-reservation', {}, supervisedReservationId,
+);
+assert.equal(ledger.recordRelease(durable, supervised), true);
+assert.throws(
+  () => ledger.allocate(
+    durable, supervisedRequest, 'supervised-reservation', {}, supervisedReservationId,
+  ),
+  /released worker-home slot cannot reuse a supervised reservation/,
+);
 
 const resource = read(resourceKey(initialized.cleanup_ref));
 assert.equal(ledger.releaseProven(
@@ -167,6 +194,33 @@ assert.equal(fs.readFileSync(externalCredential, 'utf8'), 'external-credential-s
 assert.equal(ledger.releaseProven(
   durable, checkoutRequest, checkout.slot_id, checkout.lease,
 ), true);
+
+let missingReservedHome = null;
+const missingReservationRequest = {
+  ...base, effect_id: 'missing-reservation', worker_home_ledger_ref: initialized.cleanup_ref,
+};
+assert.throws(() => ledger.allocate(
+  durable, missingReservationRequest, 'missing-reservation', {}, null, {
+    afterEnvironmentCreated(environment) {
+      missingReservedHome = environment.HOME;
+      throw new Error('simulated crash before worker HOME lease persistence');
+    },
+  },
+), /simulated crash before worker HOME lease persistence/);
+fs.rmSync(missingReservedHome, { recursive: true });
+const retainedCleanup = ledger.cleanup(durable, root, {
+  ...base,
+  artifact_root: '.testing/runs/worker-ledger-test/environment',
+  cleanup_ref: initialized.cleanup_ref,
+}, resource);
+assert.equal(retainedCleanup.cleaned, false);
+assert.equal(read('environment-factory/worker-home-ledger').entries.find(
+  (entry) => entry.binding.effect_id === missingReservationRequest.effect_id,
+).state, 'retained');
+assert.throws(
+  () => ledger.allocate(durable, missingReservationRequest, 'missing-reservation', {}),
+  /worker-home allocation has no durable lease or release proof/,
+);
 const workspaceRoot = path.join(root, 'workspaces');
 const workspace = path.join(workspaceRoot, 'run-workspace');
 fs.mkdirSync(workspace, { recursive: true });

@@ -3,6 +3,7 @@
 const path = require('path');
 const {
   allocateOwnedDirectory,
+  ownedDirectoryReleaseProven,
   pathEntryExists,
   pathIdentity,
   removeOwnedDirectory,
@@ -55,20 +56,29 @@ function prepareReservedWorkspace(reservation, persistedIdentity, options = {}) 
   verifyReservation(reservation);
   const hooks = options.hooks || {};
   if (persistedIdentity) {
-    if (pathEntryExists(reservation.path)) {
+    const recoveryCaptureId = sha256(stableStringify({
+      schema: 'environment-factory.workspace-recovery-cleanup.v1',
+      reservation_id: reservation.reservation_id,
+      path_identity: persistedIdentity,
+      cleanup_capture_id: reservation.cleanup_capture_id,
+    }));
+    if (!pathEntryExists(reservation.path)) {
+      if (!ownedDirectoryReleaseProven(
+        reservation.path, persistedIdentity, reservation.containment_root, recoveryCaptureId,
+      )) throw new Error('workspace reserved object is missing without release proof');
+    } else {
       if (!samePathIdentity(pathIdentity(reservation.path), persistedIdentity)) {
         throw new Error('workspace reserved object identity changed');
       }
-      const recoveryCaptureId = sha256(stableStringify({
-        schema: 'environment-factory.workspace-recovery-cleanup.v1',
-        reservation_id: reservation.reservation_id,
-        path_identity: persistedIdentity,
-        cleanup_capture_id: reservation.cleanup_capture_id,
-      }));
       if (!removeOwnedDirectory(
         reservation.path, persistedIdentity, reservation.containment_root,
         recoveryCaptureId,
       )) throw new Error('workspace reserved object cleanup is unavailable');
+    }
+    if (typeof hooks.afterWorkspaceRecoveryReleased === 'function') {
+      hooks.afterWorkspaceRecoveryReleased({
+        reservation: { ...reservation }, recovery_capture_id: recoveryCaptureId,
+      });
     }
   } else if (options.reservationWasCreated === true && pathEntryExists(reservation.path)) {
     throw new Error('workspace path already exists without recoverable reservation ownership');

@@ -563,9 +563,41 @@ async function main() {
       },
     }), /simulated crash/);
     assert.strictEqual(fs.existsSync(interruptedWorkerHome), true);
+    assert.throws(() => allocateDurableWorkerEnvironment({
+      ...workerRequest,
+      effect_id: `node-operation-${process.pid}/interrupted-allocation`,
+      worker_home_ledger_ref: ledger.cleanup_ref,
+    }, 'interrupted-allocation'), /worker-home allocation has no durable lease or release proof/);
     assert.strictEqual(operationWorker.environment.HOME, operationWorkerReplay.environment.HOME);
     assert.strictEqual(operationWorker.slot_id, operationWorkerReplay.slot_id);
     assert.notStrictEqual(operationWorker.environment.HOME, readinessWorker.environment.HOME);
+    const generationRequest = {
+      ...workerRequest,
+      effect_id: `node-operation-${process.pid}/generation-retry`,
+      worker_home_ledger_ref: ledger.cleanup_ref,
+    };
+    const generationOne = allocateDurableWorkerEnvironment(generationRequest, 'generation-retry');
+    assert.strictEqual(recordWorkerEnvironmentRelease(generationOne), true);
+    const generationTwo = allocateDurableWorkerEnvironment(generationRequest, 'generation-retry');
+    assert.notStrictEqual(generationTwo.environment.HOME, generationOne.environment.HOME);
+    assert.notStrictEqual(generationTwo.lease.cleanup_capture_id, generationOne.lease.cleanup_capture_id);
+    assert.strictEqual(recordWorkerEnvironmentRelease(generationTwo), true);
+    const supervisedRequest = {
+      ...workerRequest,
+      effect_id: `node-operation-${process.pid}/supervised-reservation`,
+      worker_home_ledger_ref: ledger.cleanup_ref,
+    };
+    const supervisedReservationId = 'b'.repeat(32);
+    const supervised = allocateDurableWorkerEnvironment(
+      supervisedRequest, 'supervised-reservation', {}, supervisedReservationId,
+    );
+    assert.strictEqual(recordWorkerEnvironmentRelease(supervised), true);
+    assert.throws(
+      () => allocateDurableWorkerEnvironment(
+        supervisedRequest, 'supervised-reservation', {}, supervisedReservationId,
+      ),
+      /released worker-home slot cannot reuse a supervised reservation/,
+    );
     delete process.env.FKST_OBJECT_BOUND_CLEANUP_BROKER;
     delete process.env.FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256;
     assert.strictEqual(recordWorkerEnvironmentRelease(operationWorker), false);
@@ -669,6 +701,42 @@ async function main() {
     assert.strictEqual(replacementCleanup.remaining_count, 1);
     assert.strictEqual(fs.existsSync(displacedWorkerHome), true);
     assert.strictEqual(fs.readFileSync(externalCredential, 'utf8'), 'external-credential-sentinel\n');
+
+    const missingReservationRequest = {
+      operation_id: `node-worker-home-missing-${process.pid}`,
+      repository: workerRequest.repository,
+      artifact_root: artifactRoot,
+    };
+    const missingReservationLedger = initializeWorkerHomeLedger(missingReservationRequest);
+    let missingReservedHome = null;
+    const missingAllocation = {
+      ...missingReservationRequest,
+      effect_id: `${missingReservationRequest.operation_id}/checkout`,
+      worker_home_ledger_ref: missingReservationLedger.cleanup_ref,
+    };
+    assert.throws(() => allocateDurableWorkerEnvironment(
+      missingAllocation, 'checkout', {}, null, {
+        afterEnvironmentCreated(environment) {
+          missingReservedHome = environment.HOME;
+          throw new Error('simulated crash before worker HOME lease persistence');
+        },
+      },
+    ), /simulated crash before worker HOME lease persistence/);
+    fs.rmSync(missingReservedHome, { recursive: true });
+    const missingReservationCleanup = await dispatch('cleanup', {
+      effect_id: `${missingReservationRequest.operation_id}/cleanup/worker-homes`,
+      operation_id: missingReservationRequest.operation_id,
+      artifact_root: artifactRoot,
+      cleanup_ref: missingReservationLedger.cleanup_ref,
+      worker_home_ledger_ref: missingReservationLedger.cleanup_ref,
+      timeout_seconds: 1,
+    });
+    assert.strictEqual(missingReservationCleanup.status, 'blocked');
+    assert.strictEqual(missingReservationCleanup.remaining_count, 1);
+    assert.throws(
+      () => allocateDurableWorkerEnvironment(missingAllocation, 'checkout'),
+      /worker-home allocation has no durable lease or release proof/,
+    );
 
     const retainedProcessResource = {
       kind: 'process', pid: 2147483647, pgid: 2147483647,

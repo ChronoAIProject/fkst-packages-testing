@@ -140,12 +140,22 @@ function create(deps) {
     return ledger.entries.find((entry) => entry.slot_id === slotId) || null;
   }
 
+  function generationReservationId(baseReservationId, generation) {
+    if (generation === 1) return baseReservationId;
+    return sha256(stable({
+      schema: 'environment-factory.worker-home-generation-reservation.v1',
+      base_reservation_id: baseReservationId,
+      generation,
+    })).slice(0, 32);
+  }
+
   function allocate(root, request, purpose, extra = {}, reservationOverride = null, hooks = {}) {
     const expected = requireContext(root, request);
     const binding = slotBinding(request, purpose, extra);
     const slotId = sha256(stable(binding));
-    const reservationId = reservationOverride === null ? slotId.slice(0, 32) : String(reservationOverride);
-    if (!/^[0-9a-f]{32}$/.test(reservationId)) fail('worker-home slot reservation is invalid');
+    const baseReservationId = reservationOverride === null
+      ? slotId.slice(0, 32) : String(reservationOverride);
+    if (!/^[0-9a-f]{32}$/.test(baseReservationId)) fail('worker-home slot reservation is invalid');
     const isolation = {
       schema: 'environment-factory.ledger-worker-isolation.v1',
       ledger_id: expected.ledgerId,
@@ -155,20 +165,27 @@ function create(deps) {
       purpose,
       repository: expected.repository,
     };
-    const reservation = workerEnvironmentReservation(extra, isolation, reservationId);
+    let reservation;
+    let reservationId;
+    let generation;
     updateLedger(root, expected, (ledger) => {
       let entry = findSlot(ledger, slotId);
-      if (entry && (stable(entry.binding) !== stable(binding)
-        || entry.reservation_id !== reservationId
-        || stable(entry.worker_environment_reservation) !== stable(reservation))) {
+      if (entry && stable(entry.binding) !== stable(binding)) {
         fail('worker-home slot binding differs');
+      }
+      if (entry && (!Number.isInteger(entry.generation) || entry.generation < 1
+        || !['reserved', 'allocated', 'retained', 'released'].includes(entry.state))) {
+        fail('worker-home slot lifecycle differs');
       }
       if (!entry) {
         if (ledger.entries.length >= ledger.max_entries) fail('WORKER_HOME_LEDGER_CAPACITY_EXCEEDED');
+        generation = 1;
+        reservationId = generationReservationId(baseReservationId, generation);
+        reservation = workerEnvironmentReservation(extra, isolation, reservationId);
         entry = {
           slot_id: slotId,
           reservation_id: reservationId,
-          generation: 1,
+          generation,
           binding,
           state: 'reserved',
           release_reason: null,
@@ -177,11 +194,31 @@ function create(deps) {
         };
         ledger.entries.push(entry);
       } else if (entry.state === 'released') {
-        entry.generation += 1;
+        if (reservationOverride !== null) {
+          fail('released worker-home slot cannot reuse a supervised reservation');
+        }
+        generation = entry.generation + 1;
+        reservationId = generationReservationId(baseReservationId, generation);
+        reservation = workerEnvironmentReservation(extra, isolation, reservationId);
+        entry.generation = generation;
+        entry.reservation_id = reservationId;
         entry.state = 'reserved';
         entry.release_reason = null;
         entry.worker_environment_reservation = reservation;
         entry.worker_environment_lease = null;
+      } else {
+        generation = entry.generation;
+        reservationId = generationReservationId(baseReservationId, generation);
+        reservation = workerEnvironmentReservation(extra, isolation, reservationId);
+        if (entry.reservation_id !== reservationId
+          || stable(entry.worker_environment_reservation) !== stable(reservation)) {
+          fail('worker-home slot reservation binding differs');
+        }
+        if (entry.worker_environment_lease) {
+          verifyWorkerEnvironmentLease(entry.worker_environment_lease);
+        } else {
+          fail('worker-home allocation has no durable lease or release proof');
+        }
       }
     });
 
@@ -194,7 +231,7 @@ function create(deps) {
     updateLedger(root, expected, (ledger) => {
       const entry = findSlot(ledger, slotId);
       if (!entry || stable(entry.binding) !== stable(binding)
-        || entry.reservation_id !== reservationId
+        || entry.generation !== generation || entry.reservation_id !== reservationId
         || stable(entry.worker_environment_reservation) !== stable(reservation)) {
         fail('worker-home slot reservation is unavailable');
       }
