@@ -25,6 +25,7 @@ process.env.FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256 = common.sha256(fs.readFileS
 const stable = store.stable;
 const sha256 = (value) => crypto.createHash('sha256').update(String(value)).digest('hex');
 const records = new Map();
+let failReleasedCasForEffect = null;
 const copy = (value) => value == null ? value : JSON.parse(stable(value));
 const read = (key) => copy(records.get(key) || null);
 const cas = (key, value, version) => {
@@ -32,6 +33,11 @@ const cas = (key, value, version) => {
   const currentVersion = current ? current.version : 0;
   if (currentVersion !== version) {
     return { saved: false, stale: true, version: currentVersion, value: copy(current) };
+  }
+  if (failReleasedCasForEffect && value.entries.some((entry) =>
+    entry.binding.effect_id === failReleasedCasForEffect && entry.state === 'released')) {
+    failReleasedCasForEffect = null;
+    throw new Error('simulated crash after worker HOME release before ledger CAS');
   }
   records.set(key, copy(value));
   return { saved: true, stale: false, version: value.version, value: copy(value) };
@@ -221,6 +227,34 @@ assert.throws(
   () => ledger.allocate(durable, missingReservationRequest, 'missing-reservation', {}),
   /worker-home allocation has no durable lease or release proof/,
 );
+
+let replayReleasedHome = null;
+const replayReleaseRequest = {
+  ...base, effect_id: 'replay-reservation-release', worker_home_ledger_ref: initialized.cleanup_ref,
+};
+assert.throws(() => ledger.allocate(
+  durable, replayReleaseRequest, 'replay-reservation-release', {}, null, {
+    afterEnvironmentCreated(environment) {
+      replayReleasedHome = environment.HOME;
+      throw new Error('simulated crash before replayable worker HOME lease persistence');
+    },
+  },
+), /simulated crash before replayable worker HOME lease persistence/);
+failReleasedCasForEffect = replayReleaseRequest.effect_id;
+assert.throws(() => ledger.cleanup(durable, root, {
+  ...base,
+  artifact_root: '.testing/runs/worker-ledger-test/environment',
+  cleanup_ref: initialized.cleanup_ref,
+}, resource), /simulated crash after worker HOME release before ledger CAS/);
+assert.equal(fs.existsSync(replayReleasedHome), false);
+ledger.cleanup(durable, root, {
+  ...base,
+  artifact_root: '.testing/runs/worker-ledger-test/environment',
+  cleanup_ref: initialized.cleanup_ref,
+}, resource);
+assert.equal(read('environment-factory/worker-home-ledger').entries.find(
+  (entry) => entry.binding.effect_id === replayReleaseRequest.effect_id,
+).state, 'released');
 const workspaceRoot = path.join(root, 'workspaces');
 const workspace = path.join(workspaceRoot, 'run-workspace');
 fs.mkdirSync(workspace, { recursive: true });

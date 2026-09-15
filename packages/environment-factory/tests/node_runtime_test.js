@@ -14,6 +14,7 @@ const {
   pathIdentity,
   readBoundedRegularFile,
   removeOwnedDirectory,
+  releaseWorkerEnvironmentReservation,
   releaseWorkerEnvironment,
   releaseWorkerEnvironmentLease,
   stableStringify,
@@ -358,6 +359,16 @@ async function main() {
     assert.strictEqual(releaseWorkerEnvironment(secondIsolated), true);
     assert.strictEqual(fs.existsSync(isolatedHome), false);
     assert.strictEqual(fs.existsSync(secondIsolatedHome), false);
+    let replayableReservation;
+    const reservationOnly = minimalEnvironment({}, 'reservation-only-release-replay', null, {
+      afterHomeDirectoryCreated({ reservation }) {
+        replayableReservation = reservation;
+      },
+    });
+    assert.ok(replayableReservation);
+    assert.strictEqual(releaseWorkerEnvironmentReservation(replayableReservation), true);
+    assert.strictEqual(fs.existsSync(reservationOnly.HOME), false);
+    assert.strictEqual(releaseWorkerEnvironmentReservation(replayableReservation), true);
     const brokerEnvironment = minimalEnvironment({}, 'node-runtime-broker-cleanup');
     const externalDirectory = path.join(temp, 'external-cleanup-sentinel');
     fs.mkdirSync(externalDirectory);

@@ -727,6 +727,7 @@ function M.run(request, ports)
     if claim.status == "completed" then
       local replayed = ports.load_result({
         artifact_root = request.artifact_root,
+        grant_id = grant.value.grant_id,
         result_ref = claim.result_ref,
         result_sha256 = claim.result_sha256,
         operation_id = environment.value.operation_id,

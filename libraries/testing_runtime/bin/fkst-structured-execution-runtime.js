@@ -156,33 +156,21 @@ function writeReplay(config, grantId, value) {
 }
 
 function completedReplayForResult(config, payload) {
-  const directory = path.join(durableRoot(), 'testing-runner', 'structured-execution');
-  if (!fs.existsSync(directory)) throw new Error('authenticated completed replay claim is unavailable');
-  const matches = [];
-  for (const entry of fs.readdirSync(directory, { withFileTypes: true })) {
-    if (!entry.isFile() || !/^[0-9a-f]{64}\.json$/.test(entry.name)) continue;
-    const envelope = readJson(path.join(directory, entry.name));
-    if (!envelope || envelope.schema !== 'testing-runtime.structured-execution-replay.v1'
-      || envelope.mac !== replayMac(config, envelope.value)) {
-      throw new Error('structured execution replay state authentication failed');
-    }
-    const value = envelope.value;
-    const binding = value && value.binding;
-    if (!binding || entry.name !== `${sha256(binding.grant_id)}.json`) {
-      throw new Error('structured execution replay state identity differs');
-    }
-    if (value.status === 'completed' && value.result_ref === payload.result_ref
-      && value.result_sha256 === payload.result_sha256
-      && binding.artifact_root === payload.artifact_root
-      && binding.operation_id === payload.operation_id
-      && binding.environment_receipt_sha256 === payload.environment_receipt_sha256
-      && sameRepository(binding.repository, payload.repository)
-      && binding.trace_id === payload.trace_id && binding.dedup_key === payload.dedup_key) {
-      matches.push(value);
-    }
+  const value = readReplay(config, payload.grant_id);
+  const binding = value && value.binding;
+  if (!binding || binding.grant_id !== payload.grant_id) {
+    throw new Error('structured execution replay state identity differs');
   }
-  if (matches.length !== 1) throw new Error('authenticated completed replay claim is unavailable or ambiguous');
-  return matches[0];
+  if (value.status !== 'completed' || value.result_ref !== payload.result_ref
+    || value.result_sha256 !== payload.result_sha256
+    || binding.artifact_root !== payload.artifact_root
+    || binding.operation_id !== payload.operation_id
+    || binding.environment_receipt_sha256 !== payload.environment_receipt_sha256
+    || !sameRepository(binding.repository, payload.repository)
+    || binding.trace_id !== payload.trace_id || binding.dedup_key !== payload.dedup_key) {
+    throw new Error('authenticated completed replay claim is unavailable');
+  }
+  return value;
 }
 
 function sameRepository(left, right) {
@@ -1067,6 +1055,9 @@ function httpRequest(payload) {
 }
 
 function loadResult(payload) {
+  if (!validString(payload.grant_id, 180)) {
+    throw new Error('completed execution grant identity is required');
+  }
   if (!/^[0-9a-f]{64}$/.test(String(payload.result_sha256 || ''))) {
     throw new Error('completed execution result digest is required');
   }

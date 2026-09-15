@@ -2,8 +2,10 @@
 """Backend-selection tests for atomic object-bound cleanup capture."""
 
 import importlib.util
+import os
 import pathlib
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -71,6 +73,62 @@ class BackendSelectionTest(unittest.TestCase):
             with self.assertRaisesRegex(BROKER.CleanupBlocked, "atomic-capture-unsupported"):
                 self.call("win32", library)
         self.assertEqual(library.rename.calls, [])
+
+
+class ProofRetirementRecoveryTest(unittest.TestCase):
+    def test_release_proof_replays_after_first_marker_unlink(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            containment_root = pathlib.Path(temporary) / "containment"
+            target = containment_root / "target"
+            target.mkdir(parents=True)
+            (target / "owned.txt").write_text("owned\n", encoding="utf-8")
+
+            def identity(candidate):
+                linked = os.stat(candidate, follow_symlinks=False)
+                return {
+                    "realpath": os.path.realpath(candidate),
+                    "device": str(linked.st_dev),
+                    "inode": str(linked.st_ino),
+                }
+
+            request = {
+                "schema": BROKER.REQUEST_SCHEMA,
+                "operation": "capture-delete",
+                "capture_id": "a" * 64,
+                "target": os.path.realpath(target),
+                "target_identity": identity(target),
+                "containment_root": os.path.realpath(containment_root),
+                "containment_root_identity": identity(containment_root),
+            }
+            self.assertEqual(BROKER.cleanup(request)["status"], "captured-cleaned")
+            self.assertEqual(
+                BROKER.cleanup({**request, "operation": "finalize"})["status"],
+                "finalized",
+            )
+
+            real_unlink = BROKER.os.unlink
+            interrupted = False
+
+            def interrupt_after_first_unlink(name, *args, **kwargs):
+                nonlocal interrupted
+                real_unlink(name, *args, **kwargs)
+                if not interrupted:
+                    interrupted = True
+                    raise RuntimeError("simulated proof retirement interruption")
+
+            with mock.patch.object(BROKER.os, "unlink", side_effect=interrupt_after_first_unlink):
+                with self.assertRaisesRegex(RuntimeError, "simulated proof retirement interruption"):
+                    BROKER.cleanup({**request, "operation": "release-proof"})
+
+            proof = pathlib.Path(temporary) / f"{BROKER.QUARANTINE_PREFIX}{request['capture_id']}"
+            releasing = proof / BROKER.CAPTURE_RELEASING_MARKER
+            releasing.write_bytes(b"releasing:tampered\n")
+            with self.assertRaisesRegex(BROKER.CleanupBlocked, "capture-proof-marker-invalid"):
+                BROKER.cleanup({**request, "operation": "release-proof"})
+            releasing.write_bytes(BROKER.releasing_marker_body(request))
+            released = BROKER.cleanup({**request, "operation": "release-proof"})
+            self.assertEqual(released["status"], "released")
+            self.assertFalse(proof.exists())
 
 
 if __name__ == "__main__":

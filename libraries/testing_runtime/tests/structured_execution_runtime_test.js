@@ -73,6 +73,7 @@ async function main() {
   const artifactRoot = `.testing/runs/${runId}/execution`;
   const environmentArtifactRoot = `.testing/runs/${runId}/environment`;
   const configRef = `.testing/host/structured-execution/${runId}.json`;
+  const foreignConfigRef = `.testing/host/structured-execution/${runId}-foreign.json`;
   const environmentConfigRef = `.testing/host/environment-factory/${runId}.json`;
   const linkPath = `.testing/${runId}-link`;
   const source = path.join(temp, 'source');
@@ -571,8 +572,70 @@ async function main() {
     assert.strictEqual(historicalCompletion.completed, true);
     const historicalReplay = await dispatch('replay-guard', historicalClaimRequest);
     assert.strictEqual(historicalReplay.status, 'completed');
+
+    const foreignGrantId = `${runId}-foreign-config-grant`;
+    const foreignArtifactRoot = `${artifactRoot}/foreign`;
+    const foreignOperationId = `${operationId}-foreign`;
+    const foreignTraceId = `${traceId}-foreign`;
+    const foreignDedupKey = `${dedupKey}-foreign`;
+    const foreignResultRef = `${foreignArtifactRoot}/execution.json`;
+    const foreignExecution = {
+      ...historicalExecution,
+      operation_id: foreignOperationId,
+      trace_id: foreignTraceId,
+      dedup_key: foreignDedupKey,
+      test_plan_path: `${foreignArtifactRoot}/test-plan.json`,
+      case_results_path: `${foreignArtifactRoot}/case-results.json`,
+      execution_path: foreignResultRef,
+    };
+    const foreignExecutionArtifact = persistJson(foreignResultRef, foreignExecution);
+    const foreignReplayValue = {
+      status: 'completed',
+      claim_id: 'foreign-config-claim',
+      binding: {
+        grant_id: foreignGrantId,
+        grant_sha256: '1'.repeat(64),
+        parent_authorization_sha256: '2'.repeat(64),
+        plan_sha256: historicalExecution.plan_sha256,
+        environment_receipt_sha256: common.environment_receipt_sha256,
+        repository,
+        operation_id: foreignOperationId,
+        artifact_root: foreignArtifactRoot,
+        trace_id: foreignTraceId,
+        dedup_key: foreignDedupKey,
+      },
+      result_ref: foreignResultRef,
+      result_sha256: foreignExecutionArtifact.digest,
+    };
+    const foreignReplayEnvelope = {
+      schema: 'testing-runtime.structured-execution-replay.v1',
+      value: foreignReplayValue,
+      mac: crypto.createHmac('sha256', 'foreign-runtime-state-key-000000000000000000000')
+        .update(`foreign-runtime-v1\0${stableStringify(foreignReplayValue)}`).digest('hex'),
+    };
+    const foreignReplayPath = path.join(process.env.FKST_DURABLE_ROOT, 'testing-runner',
+      'structured-execution', `${sha256(foreignGrantId)}.json`);
+    fs.writeFileSync(foreignReplayPath, `${stableStringify(foreignReplayEnvelope)}\n`, { flag: 'wx' });
+    const foreignConfig = JSON.parse(fs.readFileSync(configRef, 'utf8'));
+    foreignConfig.state_auth_key = 'foreign-runtime-state-key-000000000000000000000';
+    foreignConfig.state_mac_generation = 'foreign-runtime-v1';
+    fs.writeFileSync(foreignConfigRef, `${stableStringify(foreignConfig)}\n`, { flag: 'wx' });
+    const foreignSummary = await dispatch('load-result', {
+      artifact_root: foreignArtifactRoot,
+      grant_id: foreignGrantId,
+      result_ref: foreignResultRef,
+      result_sha256: foreignExecutionArtifact.digest,
+      operation_id: foreignOperationId,
+      repository,
+      environment_receipt_sha256: common.environment_receipt_sha256,
+      trace_id: foreignTraceId,
+      dedup_key: foreignDedupKey,
+      runtime_config_ref: { kind: 'artifact', ref: foreignConfigRef },
+    });
+    assert.strictEqual(foreignSummary.status, 'passed');
     const historicalSummary = await dispatch('load-result', {
-      ...common, result_ref: resultRef, result_sha256: historicalReplay.result_sha256,
+      ...common, grant_id: historicalClaimRequest.grant_id,
+      result_ref: resultRef, result_sha256: historicalReplay.result_sha256,
     });
     assert.strictEqual(historicalSummary.passed_count, 1);
     assert.strictEqual(Object.prototype.hasOwnProperty.call(
@@ -799,7 +862,8 @@ async function main() {
     assert.strictEqual(replay.result_ref, resultRef);
     assert.strictEqual(replay.result_sha256, completion.result_sha256);
     const summary = await dispatch('load-result', {
-      ...common, result_ref: resultRef, result_sha256: replay.result_sha256,
+      ...common, grant_id: `${runId}-canonical-grant`,
+      result_ref: resultRef, result_sha256: replay.result_sha256,
     });
     assert.strictEqual(summary.passed_count, 1);
     assert.strictEqual(summary.case_result_set_path, caseResultSetPath);
@@ -824,7 +888,8 @@ async function main() {
       .update(`runtime-test-v1\0${stableStringify(replayEnvelope.value)}`).digest('hex');
     fs.writeFileSync(replayPath, `${stableStringify(replayEnvelope)}\n`);
     await assert.rejects(() => dispatch('load-result', {
-      ...common, result_ref: resultRef, result_sha256: foreignPlanExecutionArtifact.digest,
+      ...common, grant_id: `${runId}-canonical-grant`,
+      result_ref: resultRef, result_sha256: foreignPlanExecutionArtifact.digest,
       plan_sha256: 'f'.repeat(64),
     }), /execution result binding is invalid/);
     fs.writeFileSync(replayPath, replayEnvelopeRaw);
@@ -832,17 +897,20 @@ async function main() {
 
     persistJson(caseResultSetPath, { ...resultSet, set_id: 'tampered-after-completion' });
     await assert.rejects(() => dispatch('load-result', {
-      ...common, result_ref: resultRef, result_sha256: replay.result_sha256,
+      ...common, grant_id: `${runId}-canonical-grant`,
+      result_ref: resultRef, result_sha256: replay.result_sha256,
     }), /case result set artifact digest differs/);
     persistJson(caseResultSetPath, resultSet);
     persistJson(evidenceManifestPath, { ...manifest, manifest_id: 'tampered-after-completion' });
     await assert.rejects(() => dispatch('load-result', {
-      ...common, result_ref: resultRef, result_sha256: replay.result_sha256,
+      ...common, grant_id: `${runId}-canonical-grant`,
+      result_ref: resultRef, result_sha256: replay.result_sha256,
     }), /evidence manifest artifact digest differs/);
     persistJson(evidenceManifestPath, manifest);
     fs.writeFileSync(resultRef, '{}\n');
     await assert.rejects(() => dispatch('load-result', {
-      ...common, result_ref: resultRef, result_sha256: replay.result_sha256,
+      ...common, grant_id: `${runId}-canonical-grant`,
+      result_ref: resultRef, result_sha256: replay.result_sha256,
     }), /digest differs/);
 
     delete process.env.FKST_OBJECT_BOUND_CLEANUP_BROKER;
@@ -878,6 +946,7 @@ async function main() {
     fs.rmSync(`.testing/runs/${runId}`, { recursive: true, force: true });
     fs.rmSync(linkPath, { force: true });
     fs.rmSync(configRef, { force: true });
+    fs.rmSync(foreignConfigRef, { force: true });
     fs.rmSync(environmentConfigRef, { force: true });
     fs.rmSync(temp, { recursive: true, force: true });
   }

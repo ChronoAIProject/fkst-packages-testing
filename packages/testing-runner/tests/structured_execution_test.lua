@@ -785,12 +785,13 @@ return {
 
   test_completed_replay_reuses_result_without_effects_or_writes = function()
     local request = fixtures.request()
-    local writes = 0
+    local writes, load_request = 0, nil
     local ports, effects = runtime(fixtures.artifacts(request), {
       replay_guard = function()
         return { status = "completed", result_ref = request.artifact_root .. "/execution.json" }
       end,
-      load_result = function()
+      load_result = function(input)
+        load_request = input
         return {
           status = "passed", classification = "passed", case_count = 1, passed_count = 1,
           failed_count = 0, skipped_count = 0, error_count = 0,
@@ -816,6 +817,7 @@ return {
     t.eq(result.case_result_set_artifact_sha256, string.rep("a", 64))
     t.eq(result.evidence_manifest_path, request.artifact_root .. "/evidence-manifest.json")
     t.eq(result.evidence_manifest_artifact_sha256, string.rep("b", 64))
+    t.eq(load_request.grant_id, "grant-110")
     t.eq(#effects, 0)
     t.eq(writes, 0)
   end,

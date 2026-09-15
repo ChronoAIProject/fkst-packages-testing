@@ -1090,28 +1090,56 @@ function verifyWorkerEnvironmentReservation(reservation) {
 
 function releaseWorkerEnvironmentReservation(reservation) {
   verifyWorkerEnvironmentReservation(reservation);
-  // A missing pathname is not proof that allocation never published. The
-  // directory may have been displaced before its inode-bearing lease was
-  // durably recorded, so cleanup must retain the reservation for audit.
-  if (!pathEntryExists(reservation.home)) return false;
   const marker = workerHomeMarker(reservation.identity_sha256, reservation.lease_id);
-  const markerPath = path.join(reservation.home, '.fkst-worker-home.json');
-  if (!pathEntryExists(markerPath)
-    || readBoundedRegularFile(markerPath, MAX_LOCK_METADATA_BYTES).body !== marker) {
-    throw new Error('worker environment reservation is not recoverable');
+  let homeIdentity;
+  if (pathEntryExists(reservation.home)) {
+    const markerPath = path.join(reservation.home, '.fkst-worker-home.json');
+    if (!pathEntryExists(markerPath)
+      || readBoundedRegularFile(markerPath, MAX_LOCK_METADATA_BYTES).body !== marker) {
+      throw new Error('worker environment reservation is not recoverable');
+    }
+    homeIdentity = pathIdentity(reservation.home);
+  } else {
+    const state = readOptionalJson(cleanupCaptureStatePath(reservation.cleanup_capture_id));
+    const stateName = state && state.state;
+    const targetIdentity = state && state.target_identity;
+    if (state === null) return false;
+    if (!['pending', 'captured-cleaned', 'finalized', 'released'].includes(stateName)
+      || !targetIdentity || targetIdentity.realpath !== reservation.home
+      || typeof targetIdentity.device !== 'string' || targetIdentity.device === ''
+      || typeof targetIdentity.inode !== 'string' || targetIdentity.inode === '') {
+      throw new Error('worker environment reservation release proof is invalid');
+    }
+    const expectedState = {
+      ...cleanupCaptureBinding(
+        reservation.home,
+        targetIdentity,
+        reservation.homes_root,
+        reservation.homes_root_identity,
+        reservation.cleanup_capture_id,
+      ),
+      state: stateName,
+    };
+    if (stableStringify(state) !== stableStringify(expectedState)) {
+      throw new Error('worker environment reservation release proof binding differs');
+    }
+    homeIdentity = targetIdentity;
   }
   const lease = {
     schema: 'fkst.worker-home-lease.v1',
     lease_id: reservation.lease_id,
     home: reservation.home,
-    home_identity: pathIdentity(reservation.home),
+    home_identity: homeIdentity,
     homes_root: reservation.homes_root,
     homes_root_identity: reservation.homes_root_identity,
     marker_sha256: reservation.marker_sha256,
     identity_sha256: reservation.identity_sha256,
     cleanup_capture_id: reservation.cleanup_capture_id,
   };
-  verifyWorkerEnvironmentLease(lease);
+  if (!reservationMatchesLease(reservation, lease)) {
+    throw new Error('worker environment reservation lease binding differs');
+  }
+  if (pathEntryExists(reservation.home)) verifyWorkerEnvironmentLease(lease);
   return releaseWorkerEnvironmentLease(lease);
 }
 
