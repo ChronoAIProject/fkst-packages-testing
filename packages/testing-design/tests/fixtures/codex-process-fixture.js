@@ -5,7 +5,10 @@ const fs = require('fs');
 const behavior = process.argv[2];
 process.stdin.resume();
 process.stdin.on('end', () => {
-  if (behavior === 'success') {
+  if (behavior === 'success' || behavior === 'success-wrong-model' || behavior === 'success-no-model') {
+    if (behavior !== 'success-no-model') {
+      process.stderr.write(`model: ${behavior === 'success' ? 'pinned-test-model' : 'other-model'}\n`);
+    }
     process.stdout.write(fs.readFileSync(process.argv[3], 'utf8'));
   } else if (behavior === 'refusal') {
     process.stdout.write('{"failure":"refusal"}\n');
