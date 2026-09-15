@@ -95,4 +95,31 @@ return {
       t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("SECRET") == nil, true)
     end)
   end,
+
+  test_generation_runtime_cancellation_returns_typed_failure_without_effect = function()
+    local called = false
+    with_globals({
+      exec_argv = function()
+        called = true
+        return { exit_code = 0, stdout = '{"ok":true,"result":{"ok":false,"failure":{"code":"refusal"}}}' }
+      end,
+    }, function()
+      local result = ports.production().generate(load("valid-request"), { cancelled = true })
+      t.eq(result.ok, false)
+      t.eq(result.failure.code, "cancellation")
+      t.eq(called, false)
+    end)
+  end,
+
+  test_generation_runtime_malformed_envelope_returns_typed_failure = function()
+    with_globals({
+      exec_argv = function()
+        return { exit_code = 0, stdout = "{}" }
+      end,
+    }, function()
+      local result = ports.production().generate(load("valid-request"))
+      t.eq(result.ok, false)
+      t.eq(result.failure.code, "malformed-output")
+    end)
+  end,
 }

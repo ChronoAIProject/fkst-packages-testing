@@ -43,6 +43,33 @@ return {
     t.eq(outcome.candidate_set, nil)
   end,
 
+  test_candidate_validation_failures_return_schema_mismatch = function()
+    local request = load("valid-request")
+    local candidate_set = load("valid-candidate-set")
+    candidate_set.candidates = json.decode("[]")
+    local outcome = generation.generate(request, {
+      generate = function()
+        return complete(request, candidate_set)
+      end,
+    })
+    t.eq(outcome.ok, false)
+    t.eq(outcome.failure.code, "schema-mismatch")
+    t.eq(outcome.candidate_set, nil)
+  end,
+
+  test_invalid_provider_metadata_fails_closed = function()
+    local request = load("valid-request")
+    local outcome = complete(request, load("valid-candidate-set"))
+    outcome.provider.adapter_version = "not-semver"
+    t.raises(function() generation.generate(request, fake.new(outcome)) end)
+  end,
+
+  test_generation_control_rejects_non_boolean_cancelled = function()
+    t.raises(function()
+      generation.generate(load("valid-request"), fake.new({ ok = false, failure = { code = "refusal" } }), { cancelled = "true" })
+    end)
+  end,
+
   test_closed_adapter_failure_union_is_preserved_without_diagnostics = function()
     for _, code in ipairs({
       "refusal", "malformed-output", "schema-mismatch", "timeout", "cancellation",
