@@ -57,6 +57,12 @@ return {
     t.eq(called, false)
   end,
 
+  test_malformed_cancellation_control_fails_closed = function()
+    t.raises(function()
+      generation.generate(load("valid-request"), fake.new(false), { cancelled = "yes" })
+    end)
+  end,
+
   test_closed_provider_neutral_failure_union_is_preserved = function()
     for code in pairs(contract.generation_failure_codes) do
       local outcome = generation.generate(load("valid-request"), fake.new({
@@ -107,6 +113,13 @@ return {
       template_version = request.prompt_template.template_version,
       template_digest = string.rep("f", 64),
     }
+    t.raises(function() generation.generate(request, fake.new(outcome)) end)
+  end,
+
+  test_invalid_provider_identity_fails_closed = function()
+    local request = load("valid-request")
+    local outcome = complete(request, load("valid-candidate-set"))
+    outcome.provider.adapter_version = "latest"
     t.raises(function() generation.generate(request, fake.new(outcome)) end)
   end,
 
