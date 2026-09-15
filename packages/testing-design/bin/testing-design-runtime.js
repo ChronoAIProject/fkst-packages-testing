@@ -955,7 +955,7 @@ async function main(argv) {
       throw new Error('testing-design: generation-request-environment-required');
     }
     const payload = JSON.parse(process.env.FKST_TESTING_DESIGN_GENERATION_JSON);
-    const result = await generateCandidateSet(payload.request, payload.options);
+    const result = await generateCandidateSet(payload.input);
     process.stdout.write(`${JSON.stringify({ ok: true, result })}\n`);
     return;
   }

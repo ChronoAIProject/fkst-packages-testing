@@ -1,5 +1,13 @@
 local ports = require("ports")
 local t = fkst.test
+local fixture_root = "packages/testing-design/tests/fixtures/generation/v1/"
+
+local function load(name)
+  local handle = assert(io.open(fixture_root .. name .. ".json", "rb"))
+  local body = handle:read("*a")
+  handle:close()
+  return json.decode(body)
+end
 
 local function with_runtime(value, body)
   local previous = rawget(_G, "testing_design_runtime")
@@ -30,10 +38,10 @@ return {
   test_host_runtime_is_preferred = function()
     with_runtime({
       analyze = function() return "host" end,
-      generate_candidates = function() return "generated" end,
+      generate = function() return "generated" end,
     }, function()
       t.eq(ports.production().analyze(), "host")
-      t.eq(ports.production().generate_candidates(), "generated")
+      t.eq(ports.production().generate(), "generated")
     end)
   end,
 
@@ -72,21 +80,22 @@ return {
   test_generation_runtime_uses_request_budgets_and_sanitized_envelopes = function()
     local observed
     with_globals({
-      testing_design_codex = { binary = "codex", model = "pinned-model", worktree = "/approved/worktree" },
+      testing_design_codex = { model_id = "pinned-model" },
       exec_argv = function(request)
         observed = request
         return { exit_code = 0, stdout = '{"ok":true,"result":{"ok":false,"failure":{"code":"refusal"}}}' }
       end,
     }, function()
-      local result = ports.production().generate_candidates({ policy = { timeout_ms = 30000 } })
+      local result = ports.production().generate(load("valid-request"))
       t.eq(result.failure.code, "refusal")
       t.eq(observed.timeout, 35)
       t.eq(observed.argv[3], "generate-codex-env")
       t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("pinned%-model") ~= nil, true)
+      t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("cb410d00e97011ba14e43996037e4fac6ad4b9aee29ae83058697dd8ba48cf6e") ~= nil, true)
       t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("SECRET") == nil, true)
     end)
     with_globals({ testing_design_codex = {} }, function()
-      t.raises(function() ports.production().generate_candidates({ policy = { timeout_ms = 30000 } }) end)
+      t.raises(function() ports.production().generate(load("valid-request")) end)
     end)
   end,
 }

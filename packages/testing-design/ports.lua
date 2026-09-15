@@ -13,7 +13,7 @@ function P.production()
   if type(host) == "table" then
     return {
       analyze = type(host.analyze) == "function" and host.analyze or unavailable("analyze"),
-      generate_candidates = type(host.generate_candidates) == "function" and host.generate_candidates or unavailable("generate_candidates"),
+      generate = type(host.generate) == "function" and host.generate or unavailable("generate"),
     }
   end
   return runtime.production()
@@ -29,8 +29,8 @@ end
 
 function P.resolve_generation(value)
   local ports = value or P.production()
-  if type(ports) ~= "table" or type(ports.generate_candidates) ~= "function" then
-    error("testing-design: invalid-generation-port: missing generate_candidates")
+  if type(ports) ~= "table" or type(ports.generate) ~= "function" then
+    error("testing-design: invalid-generation-port: missing generate")
   end
   return ports
 end

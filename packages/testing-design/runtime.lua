@@ -1,4 +1,5 @@
 local json_codec = require("testing_runtime.json")
+local generation_contract = require("contract.testing_design_generation")
 
 local R = {}
 local default_runtime_cli = "packages/testing-design/bin/testing-design-runtime.js"
@@ -30,10 +31,12 @@ local function codex_options()
   end
   configured = configured or {}
   local options = {
-    binary = configured.binary or "codex",
-    model = configured.model,
-    worktree = configured.worktree or ".",
+    model_id = configured.model_id,
   }
+  if type(options.model_id) ~= "string" or options.model_id == "" or #options.model_id > 4096
+      or options.model_id:find("[%z\1-\31\127]") ~= nil then
+    error("testing-design: codex-config-invalid: model_id is invalid")
+  end
   for key, value in pairs(options) do
     if type(value) ~= "string" or value == "" or #value > 4096 or value:find("[%z\1-\31\127]") ~= nil then
       error("testing-design: codex-config-invalid: " .. key .. " is invalid")
@@ -65,12 +68,26 @@ function R.production()
       end
       return response.result
     end,
-    generate_candidates = function(request, control)
+    generate = function(request, control)
       require_capabilities()
       if type(control) == "table" and control.cancelled == true then
         return { ok = false, failure = { code = "cancellation" } }
       end
-      local payload = { request = request, options = codex_options() }
+      generation_contract.validate_request(request)
+      local options = codex_options()
+      local payload = {
+        input = {
+          canonical_request = generation_contract.canonical_bytes(request),
+          request_digest = generation_contract.canonical_digest(request),
+          policy = request.policy,
+          prompt_template = request.prompt_template,
+          provider = {
+            adapter_id = "codex-cli",
+            adapter_version = "1.0.0",
+            model_id = options.model_id,
+          },
+        },
+      }
       local result = exec_argv({
         argv = { "node", runtime_cli(), "generate-codex-env" },
         env = { FKST_TESTING_DESIGN_GENERATION_JSON = json_codec.encode(payload) },

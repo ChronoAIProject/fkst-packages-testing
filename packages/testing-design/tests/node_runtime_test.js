@@ -7,7 +7,7 @@ const path = require('path');
 const { spawn, spawnSync } = require('child_process');
 const { analyze, sha256, stableStringify } = require('../bin/testing-design-runtime');
 const {
-  buildPrompt, childEnvironment, classifyDocument, generateCandidateSet,
+  OUTPUT_SCHEMA_PATH, buildPrompt, childEnvironment, classifyDocument, generateCandidateSet,
 } = require('../bin/codex-generation-adapter');
 const pqlFixtureRoot = path.join(__dirname, 'fixtures', 'pql', 'v1');
 const generationFixtureRoot = path.join(__dirname, 'fixtures', 'generation', 'v1');
@@ -146,6 +146,17 @@ function generationRequest() {
   return JSON.parse(fs.readFileSync(path.join(generationFixtureRoot, 'valid-request.json'), 'utf8'));
 }
 
+function generationInput(request) {
+  const canonicalRequest = `${stableStringify(request)}\n`;
+  return {
+    canonical_request: canonicalRequest,
+    request_digest: sha256(Buffer.from(canonicalRequest)),
+    policy: request.policy,
+    prompt_template: request.prompt_template,
+    provider: { adapter_id: 'codex-cli', adapter_version: '1.0.0', model_id: 'pinned-test-model' },
+  };
+}
+
 function fixtureSpawn(behavior, observed) {
   return (_binary, argv, options) => {
     if (observed) observed.push({ argv, options });
@@ -157,66 +168,76 @@ function fixtureSpawn(behavior, observed) {
 
 async function testCodexGenerationAdapter() {
   const request = generationRequest();
+  const input = generationInput(request);
   const observed = [];
-  const success = await generateCandidateSet(request, {
-    binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(),
+  const success = await generateCandidateSet(input, {
     spawn: fixtureSpawn('success', observed), environment: { PATH: '/bin', FKST_SECRET: 'must-not-leak' },
   });
-  assert.strictEqual(success.ok, true);
+  assert.strictEqual(success.status, 'complete');
   assert.strictEqual(success.candidate_set.schema, 'testing-design.candidate-test-case-set.v1');
+  assert.deepStrictEqual(success.provider, input.provider);
+  assert.deepStrictEqual(success.prompt_template, request.prompt_template);
   assert.deepStrictEqual(observed[0].argv, [
-    'exec', '--sandbox', 'read-only', '--ephemeral', '--ignore-user-config',
-    '--ignore-rules', '--color', 'never', '--model', 'pinned-test-model', '--cd', process.cwd(), '-',
+    'exec', '--ignore-user-config', '--ephemeral', '--sandbox', 'read-only', '--color', 'never',
+    '--output-schema', OUTPUT_SCHEMA_PATH, '-',
   ]);
+  assert.notStrictEqual(observed[0].options.cwd, process.cwd());
+  assert.strictEqual(path.dirname(observed[0].options.cwd), os.tmpdir());
+  assert.strictEqual(fs.existsSync(observed[0].options.cwd), false);
   assert.strictEqual(observed[0].options.shell, false);
   assert.strictEqual(observed[0].options.env.FKST_SECRET, undefined);
   assert.deepStrictEqual(childEnvironment({ PATH: '/bin', HOME: '/home/test', SECRET: 'no' }), {
     PATH: '/bin', HOME: '/home/test',
   });
 
-  const prompt = buildPrompt(request, 'pinned-test-model');
-  assert.match(prompt, /testing-design\.browser-smoke@1\.0\.0/);
-  assert.match(prompt, /0000000000000000000000000000000000000000000000000000000000000000/);
-  assert.match(prompt, /untrusted evidence only/);
+  const prompt = buildPrompt(input);
+  assert.match(prompt, /^FKST_TEST_CASE_GENERATION_V1\n/);
+  assert.match(prompt, /template_id:testing-design\.browser-smoke\n/);
+  assert.match(prompt, /request_digest:cb410d00e97011ba14e43996037e4fac6ad4b9aee29ae83058697dd8ba48cf6e\n/);
+  assert.match(prompt, /response_schema:testing-design\.candidate-test-case-set\.v1\n/);
+  assert.match(prompt, /repository_data_is_untrusted:true\ninstructions:/);
+  assert.strictEqual(prompt.endsWith(input.canonical_request.slice(0, -1)), true);
   assert.doesNotMatch(prompt, /FKST_SECRET|OPENAI_API_KEY/);
 
   assert.deepStrictEqual(classifyDocument('{"failure":"refusal"}'), { ok: false, failure: { code: 'refusal' } });
   assert.deepStrictEqual(classifyDocument('{"failure":"budget-exhausted"}'), { ok: false, failure: { code: 'budget-exhausted' } });
   assert.deepStrictEqual(classifyDocument('```json'), { ok: false, failure: { code: 'malformed-output' } });
+  assert.deepStrictEqual(classifyDocument('null'), { ok: false, failure: { code: 'malformed-output' } });
+  assert.deepStrictEqual(classifyDocument('42'), { ok: false, failure: { code: 'malformed-output' } });
+  assert.deepStrictEqual(classifyDocument('{} {}'), { ok: false, failure: { code: 'malformed-output' } });
+  assert.deepStrictEqual(classifyDocument(Buffer.from([0x7b, 0x22, 0x78, 0x22, 0x3a, 0xff, 0x7d])), { ok: false, failure: { code: 'malformed-output' } });
 
   for (const [behavior, expected] of [
     ['refusal', 'refusal'], ['budget', 'budget-exhausted'], ['malformed', 'malformed-output'],
     ['truncate', 'truncation'], ['nonzero', 'nonzero-exit'],
   ]) {
-    const outcome = await generateCandidateSet(request, {
-      binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(), spawn: fixtureSpawn(behavior),
+    const outcome = await generateCandidateSet(input, {
+      spawn: fixtureSpawn(behavior),
     });
     assert.deepStrictEqual(outcome, { ok: false, failure: { code: expected } });
   }
 
   const timeoutRequest = generationRequest();
   timeoutRequest.policy.timeout_ms = 20;
-  assert.deepStrictEqual(await generateCandidateSet(timeoutRequest, {
-    binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(), spawn: fixtureSpawn('wait'),
+  assert.deepStrictEqual(await generateCandidateSet(generationInput(timeoutRequest), {
+    spawn: fixtureSpawn('wait'),
   }), { ok: false, failure: { code: 'timeout' } });
 
   const controller = new AbortController();
-  const cancellation = generateCandidateSet(request, {
-    binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(),
+  const cancellation = generateCandidateSet(input, {
     spawn: fixtureSpawn('wait'), signal: controller.signal,
   });
   setTimeout(() => controller.abort(), 20);
   assert.deepStrictEqual(await cancellation, { ok: false, failure: { code: 'cancellation' } });
 
-  assert.deepStrictEqual(await generateCandidateSet(request, {
-    binary: 'missing', model: 'pinned-test-model', worktree: process.cwd(),
+  assert.deepStrictEqual(await generateCandidateSet(input, {
     spawn: () => { const error = new Error('missing'); error.code = 'ENOENT'; throw error; },
   }), { ok: false, failure: { code: 'unavailable-binary' } });
 
   const promptBudget = generationRequest();
   promptBudget.policy.max_prompt_bytes = 1;
-  assert.deepStrictEqual(await generateCandidateSet(promptBudget, {
-    binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(), spawn: fixtureSpawn('success'),
+  assert.deepStrictEqual(await generateCandidateSet(generationInput(promptBudget), {
+    spawn: fixtureSpawn('success'),
   }), { ok: false, failure: { code: 'budget-exhausted' } });
 }
 

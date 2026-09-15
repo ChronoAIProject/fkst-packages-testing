@@ -14,7 +14,7 @@ end
 function F.new(outcome)
   local snapshot = copy(outcome)
   return {
-    generate_candidates = function()
+    generate = function()
       return copy(snapshot)
     end,
   }

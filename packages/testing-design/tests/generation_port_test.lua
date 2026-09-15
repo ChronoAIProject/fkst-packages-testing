@@ -11,12 +11,23 @@ local function load(name)
   return json.decode(body)
 end
 
+local function complete(request, candidate_set)
+  return {
+    status = "complete",
+    candidate_set = candidate_set,
+    provider = { adapter_id = "codex-cli", adapter_version = "1.0.0", model_id = "test-model" },
+    prompt_template = request.prompt_template,
+  }
+end
+
 return {
   test_fake_port_returns_a_valid_detached_candidate_set = function()
     local request = load("valid-request")
     local candidate_set = load("valid-candidate-set")
-    local outcome = generation.generate(request, fake.new({ ok = true, candidate_set = candidate_set }))
-    t.eq(outcome.ok, true)
+    local outcome = generation.generate(request, fake.new(complete(request, candidate_set)))
+    t.eq(outcome.status, "complete")
+    t.eq(outcome.provider.model_id, "test-model")
+    t.eq(outcome.prompt_template.template_id, request.prompt_template.template_id)
     t.eq(outcome.candidate_set.candidate_set_id, "candidate-set-browser-title-v1")
     outcome.candidate_set.candidate_set_id = "changed"
     t.eq(candidate_set.candidate_set_id, "candidate-set-browser-title-v1")
@@ -26,7 +37,7 @@ return {
     local request = load("valid-request")
     local candidate_set = load("valid-candidate-set")
     candidate_set.request_digest = string.rep("f", 64)
-    local outcome = generation.generate(request, fake.new({ ok = true, candidate_set = candidate_set }))
+    local outcome = generation.generate(request, fake.new(complete(request, candidate_set)))
     t.eq(outcome.ok, false)
     t.eq(outcome.failure.code, "schema-mismatch")
     t.eq(outcome.candidate_set, nil)
@@ -47,7 +58,7 @@ return {
   test_cancellation_prevents_the_generation_effect = function()
     local called = false
     local outcome = generation.generate(load("valid-request"), {
-      generate_candidates = function() called = true end,
+      generate = function() called = true end,
     }, { cancelled = true })
     t.eq(outcome.failure.code, "cancellation")
     t.eq(called, false)
@@ -57,11 +68,16 @@ return {
     local request = load("valid-request")
     for _, outcome in ipairs({
       {},
-      { ok = true },
+      { status = "complete" },
+      { status = "complete", candidate_set = load("valid-candidate-set") },
+      complete(request, load("valid-candidate-set")),
       { ok = false, failure = { code = "provider-error" } },
       { ok = false, failure = { code = "timeout", detail = "secret" } },
       { ok = false, failure = { code = "timeout" }, stderr = "secret" },
     }) do
+      if outcome.status == "complete" and outcome.provider ~= nil then
+        outcome.prompt_template = { template_id = "foreign", template_version = "1.0.0", template_digest = string.rep("0", 64) }
+      end
       t.raises(function() generation.generate(request, fake.new(outcome)) end)
     end
   end,
