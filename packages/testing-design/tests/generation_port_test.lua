@@ -57,6 +57,20 @@ return {
     t.eq(outcome.candidate_set, nil)
   end,
 
+  test_candidate_canonicalization_failures_return_schema_mismatch = function()
+    local request = load("valid-request")
+    local candidate_set = load("valid-candidate-set")
+    setmetatable(candidate_set, {})
+    local outcome = generation.generate(request, {
+      generate = function()
+        return complete(request, candidate_set)
+      end,
+    })
+    t.eq(outcome.ok, false)
+    t.eq(outcome.failure.code, "schema-mismatch")
+    t.eq(outcome.candidate_set, nil)
+  end,
+
   test_invalid_provider_metadata_fails_closed = function()
     local request = load("valid-request")
     local outcome = complete(request, load("valid-candidate-set"))
