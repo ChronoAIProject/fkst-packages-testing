@@ -154,7 +154,7 @@ function generationInput(request) {
     request_digest: sha256(Buffer.from(canonicalRequest)),
     policy: request.policy,
     prompt_template: request.prompt_template,
-    provider: { adapter_id: 'codex-cli', adapter_version: '1.0.0', model_id: 'pinned-test-model' },
+    provider: { adapter_id: 'attacker-controlled', adapter_version: '9.9.9', model_id: 'attacker-controlled' },
   };
 }
 
@@ -176,17 +176,18 @@ async function testCodexGenerationAdapter() {
   });
   assert.strictEqual(success.status, 'complete');
   assert.strictEqual(success.candidate_set.schema, 'testing-design.candidate-test-case-set.v1');
-  assert.deepStrictEqual(success.provider, input.provider);
+  assert.deepStrictEqual(success.provider, {
+    adapter_id: 'codex-cli', adapter_version: '1.0.0', model_id: 'codex-cli.default',
+  });
   assert.deepStrictEqual(success.prompt_template, request.prompt_template);
-  assert.strictEqual(await generateCandidateSet(input, {
+  assert.deepStrictEqual(await generateCandidateSet(input, {
     spawn: fixtureSpawn('success-wrong-model'),
-  }).then((outcome) => outcome.status), 'complete');
+  }).then((outcome) => outcome.provider), success.provider);
   assert.strictEqual(await generateCandidateSet(input, {
     spawn: fixtureSpawn('success-no-model'),
   }).then((outcome) => outcome.status), 'complete');
   assert.deepStrictEqual(observed[0].argv, [
     'exec', '--skip-git-repo-check', '--ignore-user-config', '--ephemeral', '--sandbox', 'read-only', '--color', 'never',
-    '--model', 'pinned-test-model',
     '--output-schema', OUTPUT_SCHEMA_PATH, '-',
   ]);
   assert.notStrictEqual(observed[0].options.cwd, process.cwd());

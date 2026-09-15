@@ -90,12 +90,9 @@ return {
       t.eq(result.failure.code, "refusal")
       t.eq(observed.timeout, 35)
       t.eq(observed.argv[3], "generate-codex-env")
-      t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("pinned%-model") ~= nil, true)
+      t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("pinned%-model") == nil, true)
       t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("cb410d00e97011ba14e43996037e4fac6ad4b9aee29ae83058697dd8ba48cf6e") ~= nil, true)
       t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("SECRET") == nil, true)
-    end)
-    with_globals({ testing_design_codex = {} }, function()
-      t.raises(function() ports.production().generate(load("valid-request")) end)
     end)
   end,
 }

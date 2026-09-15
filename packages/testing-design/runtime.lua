@@ -24,27 +24,6 @@ local function require_capabilities()
   end
 end
 
-local function codex_options()
-  local configured = rawget(_G, "testing_design_codex")
-  if configured ~= nil and type(configured) ~= "table" then
-    error("testing-design: codex-config-invalid: expected table")
-  end
-  configured = configured or {}
-  local options = {
-    model_id = configured.model_id,
-  }
-  if type(options.model_id) ~= "string" or options.model_id == "" or #options.model_id > 4096
-      or options.model_id:find("[%z\1-\31\127]") ~= nil then
-    error("testing-design: codex-config-invalid: model_id is invalid")
-  end
-  for key, value in pairs(options) do
-    if type(value) ~= "string" or value == "" or #value > 4096 or value:find("[%z\1-\31\127]") ~= nil then
-      error("testing-design: codex-config-invalid: " .. key .. " is invalid")
-    end
-  end
-  return options
-end
-
 function R.production()
   return {
     analyze = function(request)
@@ -74,18 +53,12 @@ function R.production()
         return { ok = false, failure = { code = "cancellation" } }
       end
       generation_contract.validate_request(request)
-      local options = codex_options()
       local payload = {
         input = {
           canonical_request = generation_contract.canonical_bytes(request),
           request_digest = generation_contract.canonical_digest(request),
           policy = request.policy,
           prompt_template = request.prompt_template,
-          provider = {
-            adapter_id = "codex-cli",
-            adapter_version = "1.0.0",
-            model_id = options.model_id,
-          },
         },
       }
       local result = exec_argv({

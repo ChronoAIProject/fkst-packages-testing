@@ -10,6 +10,7 @@ const { TextDecoder } = require('util');
 const ADAPTER_REVISION = 'testing-design.codex-cli-adapter.v1';
 const ADAPTER_ID = 'codex-cli';
 const ADAPTER_VERSION = '1.0.0';
+const MODEL_ID = 'codex-cli.default';
 const RESPONSE_SCHEMA = 'testing-design.candidate-test-case-set.v1';
 const OUTPUT_SCHEMA_PATH = path.resolve(
   __dirname, '../../../schemas-next-release/testing-design.candidate-test-case-set.v1.schema.json',
@@ -30,14 +31,9 @@ function failure(code) {
   return { ok: false, failure: { code } };
 }
 
-function validString(value, limit = 4096) {
-  return typeof value === 'string' && value.length > 0 && value.length <= limit && !/[\0-\x1f\x7f]/.test(value);
-}
-
 function validInput(input) {
   const policy = input && input.policy;
   const prompt = input && input.prompt_template;
-  const provider = input && input.provider;
   return input && typeof input === 'object'
     && typeof input.canonical_request === 'string' && input.canonical_request.endsWith('\n')
     && /^[0-9a-f]{64}$/.test(input.request_digest || '')
@@ -45,9 +41,7 @@ function validInput(input) {
     && Number.isInteger(policy.max_response_bytes) && Number.isInteger(policy.timeout_ms)
     && prompt && prompt.template_id === PROMPT_TEMPLATE.template_id
     && prompt.template_version === PROMPT_TEMPLATE.template_version
-    && prompt.template_digest === PROMPT_TEMPLATE.template_digest
-    && provider && provider.adapter_id === ADAPTER_ID && provider.adapter_version === ADAPTER_VERSION
-    && validString(provider.model_id, 180);
+    && prompt.template_digest === PROMPT_TEMPLATE.template_digest;
 }
 
 function buildPrompt(input) {
@@ -116,7 +110,6 @@ async function generateCandidateSet(input, options = {}) {
   const spawnImpl = options.spawn || spawn;
   const argv = [
     'exec', '--skip-git-repo-check', '--ignore-user-config', '--ephemeral', '--sandbox', 'read-only', '--color', 'never',
-    '--model', input.provider.model_id,
     '--output-schema', OUTPUT_SCHEMA_PATH, '-',
   ];
   return new Promise((resolve) => {
@@ -186,7 +179,7 @@ async function generateCandidateSet(input, options = {}) {
       return finish({
         status: 'complete',
         candidate_set: classified.candidate_set,
-        provider: { adapter_id: ADAPTER_ID, adapter_version: ADAPTER_VERSION, model_id: input.provider.model_id },
+        provider: { adapter_id: ADAPTER_ID, adapter_version: ADAPTER_VERSION, model_id: MODEL_ID },
         prompt_template: PROMPT_TEMPLATE,
       });
     });
