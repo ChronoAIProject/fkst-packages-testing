@@ -21,7 +21,6 @@ QUARANTINE_SLOT, CAPTURE_MARKER = "entry", "capture.json"
 CAPTURE_CLEANED_MARKER = "captured-cleaned"
 CAPTURE_RETAINED_MARKER = "captured-retained"
 CAPTURE_FINALIZED_MARKER = "finalized"
-CAPTURE_RELEASING_MARKER = "releasing"
 CAPTURE_MARKER_SCHEMA = "environment-factory.object-bound-cleanup-capture.v1"
 RENAME_NOREPLACE, RENAME_EXCL = 1, 0x00000004
 
@@ -274,10 +273,6 @@ def capture_marker_body(request):
     )
 
 
-def releasing_marker_body(request):
-    return b"releasing:" + capture_marker_body(request)
-
-
 def write_exclusive_file(directory_fd, name, body):
     flags = os.O_WRONLY | os.O_CREAT | os.O_EXCL
     if hasattr(os, "O_NOFOLLOW"):
@@ -339,7 +334,7 @@ def capture_quarantine_name(request):
     return QUARANTINE_PREFIX + request["capture_id"]
 
 
-def open_capture_quarantine(bound, request, create, allow_releasing=False):
+def open_capture_quarantine(bound, request, create, require_capture_marker=True):
     name = capture_quarantine_name(request)
     created = False
     if create:
@@ -370,10 +365,11 @@ def open_capture_quarantine(bound, request, create, allow_releasing=False):
         if created:
             write_exclusive_file(directory_fd, CAPTURE_MARKER, expected_marker)
             os.fsync(directory_fd)
-        if marker_exists(directory_fd, CAPTURE_MARKER):
-            if read_bound_file(directory_fd, CAPTURE_MARKER) != expected_marker:
-                raise CleanupBlocked("capture-marker-binding-mismatch")
-        elif not allow_releasing:
+        if marker_exists(directory_fd, CAPTURE_MARKER) and read_bound_file(
+            directory_fd, CAPTURE_MARKER
+        ) != expected_marker:
+            raise CleanupBlocked("capture-marker-binding-mismatch")
+        if require_capture_marker and not marker_exists(directory_fd, CAPTURE_MARKER):
             raise CleanupBlocked("capture-marker-binding-mismatch")
         return {"name": name, "fd": directory_fd, "stat": opened}
     except Exception:
@@ -802,7 +798,6 @@ def validate_capture_entries(quarantine_fd):
         CAPTURE_CLEANED_MARKER,
         CAPTURE_RETAINED_MARKER,
         CAPTURE_FINALIZED_MARKER,
-        CAPTURE_RELEASING_MARKER,
         QUARANTINE_SLOT,
     }
     if not names.issubset(allowed):
@@ -917,17 +912,10 @@ def finalize_capture(request):
         ):
             raise CleanupBlocked("capture-cleaned-marker-invalid")
         if CAPTURE_FINALIZED_MARKER in names:
-            if (
-                read_bound_file(quarantine["fd"], CAPTURE_FINALIZED_MARKER)
-                != marker_token(request, "finalized")
-            ):
+            if read_bound_file(quarantine["fd"], CAPTURE_FINALIZED_MARKER) != capture_marker_body(request):
                 raise CleanupBlocked("capture-finalized-marker-invalid")
         else:
-            write_exclusive_file(
-                quarantine["fd"],
-                CAPTURE_FINALIZED_MARKER,
-                marker_token(request, "finalized"),
-            )
+            write_exclusive_file(quarantine["fd"], CAPTURE_FINALIZED_MARKER, capture_marker_body(request))
         os.fsync(quarantine["fd"])
         return capture_receipt(request, bound, "finalized")
     finally:
@@ -941,57 +929,24 @@ def release_capture_proof(request):
     bound = open_bound_root(request)
     quarantine = None
     try:
-        quarantine = open_capture_quarantine(bound, request, False, allow_releasing=True)
+        quarantine = open_capture_quarantine(bound, request, False, require_capture_marker=False)
         if quarantine is None:
             return capture_receipt(request, bound, "released")
         names = validate_capture_entries(quarantine["fd"])
-        initial = {CAPTURE_MARKER, CAPTURE_CLEANED_MARKER, CAPTURE_FINALIZED_MARKER}
-        replayable = {
-            frozenset(initial | {CAPTURE_RELEASING_MARKER}),
-            frozenset({CAPTURE_MARKER, CAPTURE_CLEANED_MARKER, CAPTURE_RELEASING_MARKER}),
-            frozenset({CAPTURE_MARKER, CAPTURE_RELEASING_MARKER}),
-            frozenset({CAPTURE_RELEASING_MARKER}),
-            frozenset(),
-        }
-        if names == initial:
-            if (
-                read_bound_file(quarantine["fd"], CAPTURE_CLEANED_MARKER)
-                != marker_token(request, "cleaned")
-                or read_bound_file(quarantine["fd"], CAPTURE_FINALIZED_MARKER)
-                != marker_token(request, "finalized")
-            ):
-                raise CleanupBlocked("capture-proof-marker-invalid")
-            write_exclusive_file(
-                quarantine["fd"],
-                CAPTURE_RELEASING_MARKER,
-                releasing_marker_body(request),
-            )
-            os.fsync(quarantine["fd"])
-            names.add(CAPTURE_RELEASING_MARKER)
-        elif frozenset(names) not in replayable:
+        allowed = {CAPTURE_MARKER, CAPTURE_CLEANED_MARKER, CAPTURE_FINALIZED_MARKER}
+        if (not names.issubset(allowed)
+            or (CAPTURE_MARKER in names and CAPTURE_CLEANED_MARKER not in names)
+            or (CAPTURE_CLEANED_MARKER in names and CAPTURE_FINALIZED_MARKER not in names)):
             raise CleanupBlocked("capture-proof-not-releasable")
-        if CAPTURE_RELEASING_MARKER in names and (
-            read_bound_file(quarantine["fd"], CAPTURE_RELEASING_MARKER)
-            != releasing_marker_body(request)
-        ):
+        markers = ((CAPTURE_CLEANED_MARKER, marker_token(request, "cleaned")),
+                   (CAPTURE_FINALIZED_MARKER, capture_marker_body(request)))
+        if any(name in names and read_bound_file(quarantine["fd"], name) != body
+               for name, body in markers):
             raise CleanupBlocked("capture-proof-marker-invalid")
-        if CAPTURE_CLEANED_MARKER in names and (
-            read_bound_file(quarantine["fd"], CAPTURE_CLEANED_MARKER)
-            != marker_token(request, "cleaned")
-        ):
-            raise CleanupBlocked("capture-proof-marker-invalid")
-        if CAPTURE_FINALIZED_MARKER in names and (
-            read_bound_file(quarantine["fd"], CAPTURE_FINALIZED_MARKER)
-            != marker_token(request, "finalized")
-        ):
-            raise CleanupBlocked("capture-proof-marker-invalid")
-        for name in (CAPTURE_FINALIZED_MARKER, CAPTURE_CLEANED_MARKER, CAPTURE_MARKER):
+        for name in (CAPTURE_MARKER, CAPTURE_CLEANED_MARKER, CAPTURE_FINALIZED_MARKER):
             if name in names:
                 os.unlink(name, dir_fd=quarantine["fd"])
                 os.fsync(quarantine["fd"])
-        if CAPTURE_RELEASING_MARKER in names:
-            os.unlink(CAPTURE_RELEASING_MARKER, dir_fd=quarantine["fd"])
-            os.fsync(quarantine["fd"])
         linked = stat_entry(bound["parent_fd"], quarantine["name"])
         if not same_object(linked, quarantine["stat"]):
             raise CleanupBlocked("capture-quarantine-changed")

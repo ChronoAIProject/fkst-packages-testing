@@ -121,11 +121,11 @@ class ProofRetirementRecoveryTest(unittest.TestCase):
                     BROKER.cleanup({**request, "operation": "release-proof"})
 
             proof = pathlib.Path(temporary) / f"{BROKER.QUARANTINE_PREFIX}{request['capture_id']}"
-            releasing = proof / BROKER.CAPTURE_RELEASING_MARKER
-            releasing.write_bytes(b"releasing:tampered\n")
+            finalized = proof / BROKER.CAPTURE_FINALIZED_MARKER
+            finalized.write_bytes(b"finalized:tampered\n")
             with self.assertRaisesRegex(BROKER.CleanupBlocked, "capture-proof-marker-invalid"):
                 BROKER.cleanup({**request, "operation": "release-proof"})
-            releasing.write_bytes(BROKER.releasing_marker_body(request))
+            finalized.write_bytes(BROKER.capture_marker_body(request))
             released = BROKER.cleanup({**request, "operation": "release-proof"})
             self.assertEqual(released["status"], "released")
             self.assertFalse(proof.exists())
