@@ -2,15 +2,11 @@ local contract = require("contract.testing_design_generation")
 
 local F = {}
 
-local function copy(value)
-  return json.decode(contract.canonical_bytes(value))
-end
-
 function F.new(outcome)
-  local snapshot = copy(outcome)
+  local snapshot = contract.canonical_copy(outcome)
   return {
     generate = function()
-      return copy(snapshot)
+      return contract.canonical_copy(snapshot)
     end,
   }
 end

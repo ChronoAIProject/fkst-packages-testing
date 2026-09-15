@@ -53,6 +53,13 @@ return {
     t.raises(function() ports.resolve_generation({}) end)
   end,
 
+  test_generation_port_requires_exact_generate_operation = function()
+    local port = { generate = function() return "generated" end }
+    t.eq(ports.resolve_generation(port), port)
+    t.raises(function() ports.resolve_generation(nil) end)
+    t.raises(function() ports.resolve_generation({ generate_candidates = function() end }) end)
+  end,
+
   test_production_runtime_rejects_invalid_cli_and_missing_json_decoder = function()
     with_globals({ testing_design_runtime_cli = "bad\npath" }, function()
       t.raises(function() ports.production().analyze({}) end)
