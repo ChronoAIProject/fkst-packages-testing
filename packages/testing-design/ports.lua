@@ -22,4 +22,11 @@ function P.resolve(value)
   return ports
 end
 
+function P.resolve_generation(value)
+  if type(value) ~= "table" or type(value.generate) ~= "function" then
+    error("testing-design: invalid-generation-port: missing generate")
+  end
+  return value
+end
+
 return P

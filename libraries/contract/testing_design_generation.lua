@@ -123,8 +123,12 @@ local function canonical_copy(value, active)
   return copy
 end
 
+function G.canonical_copy(value)
+  return canonical_copy(value, {})
+end
+
 function G.canonical_bytes(value)
-  return canonical_json.encode(canonical_copy(value, {})) .. "\n"
+  return canonical_json.encode(G.canonical_copy(value)) .. "\n"
 end
 
 function G.canonical_digest(value)
