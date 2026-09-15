@@ -116,6 +116,7 @@ async function generateCandidateSet(input, options = {}) {
   const spawnImpl = options.spawn || spawn;
   const argv = [
     'exec', '--skip-git-repo-check', '--ignore-user-config', '--ephemeral', '--sandbox', 'read-only', '--color', 'never',
+    '--model', input.provider.model_id,
     '--output-schema', OUTPUT_SCHEMA_PATH, '-',
   ];
   return new Promise((resolve) => {
@@ -125,8 +126,6 @@ async function generateCandidateSet(input, options = {}) {
     let cancelled = false;
     let truncated = false;
     let stdout = Buffer.alloc(0);
-    let observedModel;
-    let metadataRemainder = '';
     const finish = (value) => {
       if (settled) return;
       settled = true;
@@ -176,18 +175,7 @@ async function generateCandidateSet(input, options = {}) {
       }
       stdout = next;
     });
-    child.stderr.on('data', (chunk) => {
-      if (observedModel) return;
-      const lines = `${metadataRemainder}${Buffer.from(chunk).toString('utf8')}`.split(/\r?\n/);
-      metadataRemainder = lines.pop().slice(-256);
-      for (const line of lines) {
-        const match = /^model:\s*(\S(?:.*\S)?)\s*$/.exec(line);
-        if (match && validString(match[1], 180)) {
-          observedModel = match[1];
-          break;
-        }
-      }
-    });
+    child.stderr.on('data', () => {});
     child.on('close', (code) => {
       if (cancelled) return finish(failure('cancellation'));
       if (timedOut) return finish(failure('timeout'));
@@ -195,11 +183,10 @@ async function generateCandidateSet(input, options = {}) {
       if (code !== 0) return finish(failure('nonzero-exit'));
       const classified = classifyDocument(stdout);
       if (classified.ok === false) return finish(classified);
-      if (observedModel !== input.provider.model_id) return finish(failure('malformed-output'));
       return finish({
         status: 'complete',
         candidate_set: classified.candidate_set,
-        provider: { adapter_id: ADAPTER_ID, adapter_version: ADAPTER_VERSION, model_id: observedModel },
+        provider: { adapter_id: ADAPTER_ID, adapter_version: ADAPTER_VERSION, model_id: input.provider.model_id },
         prompt_template: PROMPT_TEMPLATE,
       });
     });

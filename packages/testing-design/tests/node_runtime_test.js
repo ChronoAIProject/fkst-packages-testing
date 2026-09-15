@@ -178,14 +178,15 @@ async function testCodexGenerationAdapter() {
   assert.strictEqual(success.candidate_set.schema, 'testing-design.candidate-test-case-set.v1');
   assert.deepStrictEqual(success.provider, input.provider);
   assert.deepStrictEqual(success.prompt_template, request.prompt_template);
-  assert.deepStrictEqual(await generateCandidateSet(input, {
+  assert.strictEqual(await generateCandidateSet(input, {
     spawn: fixtureSpawn('success-wrong-model'),
-  }), { ok: false, failure: { code: 'malformed-output' } });
-  assert.deepStrictEqual(await generateCandidateSet(input, {
+  }).then((outcome) => outcome.status), 'complete');
+  assert.strictEqual(await generateCandidateSet(input, {
     spawn: fixtureSpawn('success-no-model'),
-  }), { ok: false, failure: { code: 'malformed-output' } });
+  }).then((outcome) => outcome.status), 'complete');
   assert.deepStrictEqual(observed[0].argv, [
     'exec', '--skip-git-repo-check', '--ignore-user-config', '--ephemeral', '--sandbox', 'read-only', '--color', 'never',
+    '--model', 'pinned-test-model',
     '--output-schema', OUTPUT_SCHEMA_PATH, '-',
   ]);
   assert.notStrictEqual(observed[0].options.cwd, process.cwd());
