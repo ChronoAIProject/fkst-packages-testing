@@ -28,6 +28,16 @@ local receipt_outcomes = {
   ["provider-error"] = true,
 }
 
+G.generation_failure_codes = {
+  refusal = true,
+  ["malformed-output"] = true,
+  ["schema-mismatch"] = true,
+  timeout = true,
+  cancellation = true,
+  truncation = true,
+  ["budget-exhausted"] = true,
+}
+
 local function fail(code, message)
   error(error_facts.error_message("contract.testing-design-generation", code, message), 0)
 end
@@ -123,8 +133,12 @@ local function canonical_copy(value, active)
   return copy
 end
 
+function G.canonical_copy(value)
+  return canonical_copy(value, {})
+end
+
 function G.canonical_bytes(value)
-  return canonical_json.encode(canonical_copy(value, {})) .. "\n"
+  return canonical_json.encode(G.canonical_copy(value)) .. "\n"
 end
 
 function G.canonical_digest(value)
