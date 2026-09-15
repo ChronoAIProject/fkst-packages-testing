@@ -28,6 +28,16 @@ local receipt_outcomes = {
   ["provider-error"] = true,
 }
 
+G.generation_failure_codes = {
+  refusal = true,
+  ["malformed-output"] = true,
+  ["schema-mismatch"] = true,
+  timeout = true,
+  cancellation = true,
+  truncation = true,
+  ["budget-exhausted"] = true,
+}
+
 local function fail(code, message)
   error(error_facts.error_message("contract.testing-design-generation", code, message), 0)
 end

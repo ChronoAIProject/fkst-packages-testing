@@ -58,15 +58,7 @@ return {
   end,
 
   test_closed_provider_neutral_failure_union_is_preserved = function()
-    for _, code in ipairs({
-      "refusal",
-      "malformed-output",
-      "schema-mismatch",
-      "timeout",
-      "cancellation",
-      "truncation",
-      "budget-exhausted",
-    }) do
+    for code in pairs(contract.generation_failure_codes) do
       local outcome = generation.generate(load("valid-request"), fake.new({
         ok = false,
         failure = { code = code },

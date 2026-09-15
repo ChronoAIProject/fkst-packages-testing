@@ -3,16 +3,6 @@ local ports_module = require("ports")
 
 local G = {}
 
-local failure_codes = {
-  refusal = true,
-  ["malformed-output"] = true,
-  ["schema-mismatch"] = true,
-  timeout = true,
-  cancellation = true,
-  truncation = true,
-  ["budget-exhausted"] = true,
-}
-
 local function malformed(message)
   error("testing-design: malformed-generation-outcome: " .. message)
 end
@@ -32,7 +22,7 @@ end
 
 local function validate_failure(value)
   only_fields(value, { code = true }, "failure")
-  if not failure_codes[value.code] then malformed("unsupported failure code") end
+  if not contract.generation_failure_codes[value.code] then malformed("unsupported failure code") end
   return failure(value.code)
 end
 
