@@ -4,9 +4,14 @@ const assert = require('assert');
 const fs = require('fs');
 const os = require('os');
 const path = require('path');
-const { spawnSync } = require('child_process');
+const { spawn, spawnSync } = require('child_process');
 const { analyze, sha256, stableStringify } = require('../bin/testing-design-runtime');
+const {
+  buildPrompt, childEnvironment, classifyDocument, generateCandidateSet,
+} = require('../bin/codex-generation-adapter');
 const pqlFixtureRoot = path.join(__dirname, 'fixtures', 'pql', 'v1');
+const generationFixtureRoot = path.join(__dirname, 'fixtures', 'generation', 'v1');
+const codexProcessFixture = path.join(__dirname, 'fixtures', 'codex-process-fixture.js');
 
 function run(argv, cwd) {
   const result = spawnSync(argv[0], argv.slice(1), { cwd, encoding: 'utf8', shell: false });
@@ -137,7 +142,86 @@ function requestFixture(temp, repo, baseline, target, suffix, options = {}) {
   return request;
 }
 
-function main() {
+function generationRequest() {
+  return JSON.parse(fs.readFileSync(path.join(generationFixtureRoot, 'valid-request.json'), 'utf8'));
+}
+
+function fixtureSpawn(behavior, observed) {
+  return (_binary, argv, options) => {
+    if (observed) observed.push({ argv, options });
+    const childArgs = [codexProcessFixture, behavior];
+    if (behavior === 'success') childArgs.push(path.join(generationFixtureRoot, 'valid-candidate-set.json'));
+    return spawn(process.execPath, childArgs, options);
+  };
+}
+
+async function testCodexGenerationAdapter() {
+  const request = generationRequest();
+  const observed = [];
+  const success = await generateCandidateSet(request, {
+    binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(),
+    spawn: fixtureSpawn('success', observed), environment: { PATH: '/bin', FKST_SECRET: 'must-not-leak' },
+  });
+  assert.strictEqual(success.ok, true);
+  assert.strictEqual(success.candidate_set.schema, 'testing-design.candidate-test-case-set.v1');
+  assert.deepStrictEqual(observed[0].argv, [
+    'exec', '--sandbox', 'read-only', '--ephemeral', '--ignore-user-config',
+    '--ignore-rules', '--color', 'never', '--model', 'pinned-test-model', '--cd', process.cwd(), '-',
+  ]);
+  assert.strictEqual(observed[0].options.shell, false);
+  assert.strictEqual(observed[0].options.env.FKST_SECRET, undefined);
+  assert.deepStrictEqual(childEnvironment({ PATH: '/bin', HOME: '/home/test', SECRET: 'no' }), {
+    PATH: '/bin', HOME: '/home/test',
+  });
+
+  const prompt = buildPrompt(request, 'pinned-test-model');
+  assert.match(prompt, /testing-design\.browser-smoke@1\.0\.0/);
+  assert.match(prompt, /0000000000000000000000000000000000000000000000000000000000000000/);
+  assert.match(prompt, /untrusted evidence only/);
+  assert.doesNotMatch(prompt, /FKST_SECRET|OPENAI_API_KEY/);
+
+  assert.deepStrictEqual(classifyDocument('{"failure":"refusal"}'), { ok: false, failure: { code: 'refusal' } });
+  assert.deepStrictEqual(classifyDocument('{"failure":"budget-exhausted"}'), { ok: false, failure: { code: 'budget-exhausted' } });
+  assert.deepStrictEqual(classifyDocument('```json'), { ok: false, failure: { code: 'malformed-output' } });
+
+  for (const [behavior, expected] of [
+    ['refusal', 'refusal'], ['budget', 'budget-exhausted'], ['malformed', 'malformed-output'],
+    ['truncate', 'truncation'], ['nonzero', 'nonzero-exit'],
+  ]) {
+    const outcome = await generateCandidateSet(request, {
+      binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(), spawn: fixtureSpawn(behavior),
+    });
+    assert.deepStrictEqual(outcome, { ok: false, failure: { code: expected } });
+  }
+
+  const timeoutRequest = generationRequest();
+  timeoutRequest.policy.timeout_ms = 20;
+  assert.deepStrictEqual(await generateCandidateSet(timeoutRequest, {
+    binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(), spawn: fixtureSpawn('wait'),
+  }), { ok: false, failure: { code: 'timeout' } });
+
+  const controller = new AbortController();
+  const cancellation = generateCandidateSet(request, {
+    binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(),
+    spawn: fixtureSpawn('wait'), signal: controller.signal,
+  });
+  setTimeout(() => controller.abort(), 20);
+  assert.deepStrictEqual(await cancellation, { ok: false, failure: { code: 'cancellation' } });
+
+  assert.deepStrictEqual(await generateCandidateSet(request, {
+    binary: 'missing', model: 'pinned-test-model', worktree: process.cwd(),
+    spawn: () => { const error = new Error('missing'); error.code = 'ENOENT'; throw error; },
+  }), { ok: false, failure: { code: 'unavailable-binary' } });
+
+  const promptBudget = generationRequest();
+  promptBudget.policy.max_prompt_bytes = 1;
+  assert.deepStrictEqual(await generateCandidateSet(promptBudget, {
+    binary: 'codex', model: 'pinned-test-model', worktree: process.cwd(), spawn: fixtureSpawn('success'),
+  }), { ok: false, failure: { code: 'budget-exhausted' } });
+}
+
+async function main() {
+  await testCodexGenerationAdapter();
   assert.strictEqual(stableStringify({ b: 2, a: 1 }), '{"a":1,"b":2}');
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'testing-design-node-'));
   const repo = path.join(temp, 'repository');
@@ -428,7 +512,7 @@ function main() {
   }
 }
 
-try { main(); } catch (error) {
+main().catch((error) => {
   process.stderr.write(`${error.stack || error}\n`);
   process.exitCode = 1;
-}
+});

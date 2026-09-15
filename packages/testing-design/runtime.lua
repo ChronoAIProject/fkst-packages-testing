@@ -23,6 +23,25 @@ local function require_capabilities()
   end
 end
 
+local function codex_options()
+  local configured = rawget(_G, "testing_design_codex")
+  if configured ~= nil and type(configured) ~= "table" then
+    error("testing-design: codex-config-invalid: expected table")
+  end
+  configured = configured or {}
+  local options = {
+    binary = configured.binary or "codex",
+    model = configured.model,
+    worktree = configured.worktree or ".",
+  }
+  for key, value in pairs(options) do
+    if type(value) ~= "string" or value == "" or #value > 4096 or value:find("[%z\1-\31\127]") ~= nil then
+      error("testing-design: codex-config-invalid: " .. key .. " is invalid")
+    end
+  end
+  return options
+end
+
 function R.production()
   return {
     analyze = function(request)
@@ -43,6 +62,27 @@ function R.production()
       end)
       if not ok or type(response) ~= "table" or response.ok ~= true or type(response.result) ~= "table" then
         error("testing-design: runtime-effect-invalid: response envelope is invalid")
+      end
+      return response.result
+    end,
+    generate_candidates = function(request, control)
+      require_capabilities()
+      if type(control) == "table" and control.cancelled == true then
+        return { ok = false, failure = { code = "cancellation" } }
+      end
+      local payload = { request = request, options = codex_options() }
+      local result = exec_argv({
+        argv = { "node", runtime_cli(), "generate-codex-env" },
+        env = { FKST_TESTING_DESIGN_GENERATION_JSON = json_codec.encode(payload) },
+        timeout = math.ceil(request.policy.timeout_ms / 1000) + 5,
+      })
+      local exit_code = type(result) == "table" and tonumber(result.exit_code) or nil
+      if exit_code ~= 0 then return { ok = false, failure = { code = "nonzero-exit" } } end
+      local ok, response = pcall(function()
+        return json.decode(type(result) == "table" and result.stdout or "")
+      end)
+      if not ok or type(response) ~= "table" or response.ok ~= true or type(response.result) ~= "table" then
+        return { ok = false, failure = { code = "malformed-output" } }
       end
       return response.result
     end,

@@ -28,8 +28,12 @@ end
 
 return {
   test_host_runtime_is_preferred = function()
-    with_runtime({ analyze = function() return "host" end }, function()
+    with_runtime({
+      analyze = function() return "host" end,
+      generate_candidates = function() return "generated" end,
+    }, function()
       t.eq(ports.production().analyze(), "host")
+      t.eq(ports.production().generate_candidates(), "generated")
     end)
   end,
 
@@ -38,6 +42,7 @@ return {
       t.raises(function() ports.production().analyze() end)
     end)
     t.raises(function() ports.resolve({}) end)
+    t.raises(function() ports.resolve_generation({}) end)
   end,
 
   test_production_runtime_rejects_invalid_cli_and_missing_json_decoder = function()
@@ -61,6 +66,27 @@ return {
       exec_argv = function() return { exit_code = 0, stdout = "{}" } end,
     }, function()
       t.raises(function() ports.production().analyze({ schema = "fixture" }) end)
+    end)
+  end,
+
+  test_generation_runtime_uses_request_budgets_and_sanitized_envelopes = function()
+    local observed
+    with_globals({
+      testing_design_codex = { binary = "codex", model = "pinned-model", worktree = "/approved/worktree" },
+      exec_argv = function(request)
+        observed = request
+        return { exit_code = 0, stdout = '{"ok":true,"result":{"ok":false,"failure":{"code":"refusal"}}}' }
+      end,
+    }, function()
+      local result = ports.production().generate_candidates({ policy = { timeout_ms = 30000 } })
+      t.eq(result.failure.code, "refusal")
+      t.eq(observed.timeout, 35)
+      t.eq(observed.argv[3], "generate-codex-env")
+      t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("pinned%-model") ~= nil, true)
+      t.eq(observed.env.FKST_TESTING_DESIGN_GENERATION_JSON:find("SECRET") == nil, true)
+    end)
+    with_globals({ testing_design_codex = {} }, function()
+      t.raises(function() ports.production().generate_candidates({ policy = { timeout_ms = 30000 } }) end)
     end)
   end,
 }
