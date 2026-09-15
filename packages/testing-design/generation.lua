@@ -18,7 +18,7 @@ local failure_codes = {
 local function copy(value, active)
   if type(value) ~= "table" then return value end
   active = active or {}
-  if active[value] then error("testing-design: generation-outcome-cycle") end
+  if active[value] then error("testing-design: generation-outcome-cycle: cycle detected") end
   active[value] = true
   local result = {}
   for key, item in next, value do result[copy(key, active)] = copy(item, active) end
