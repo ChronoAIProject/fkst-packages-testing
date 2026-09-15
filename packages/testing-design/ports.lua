@@ -2,14 +2,19 @@ local runtime = require("runtime")
 
 local P = {}
 
-local function unavailable()
-  error("testing-design: runtime-port-unavailable: analyze")
+local function unavailable(name)
+  return function()
+    error("testing-design: runtime-port-unavailable: " .. name)
+  end
 end
 
 function P.production()
   local host = rawget(_G, "testing_design_runtime")
   if type(host) == "table" then
-    return { analyze = type(host.analyze) == "function" and host.analyze or unavailable }
+    return {
+      analyze = type(host.analyze) == "function" and host.analyze or unavailable("analyze"),
+      generate = type(host.generate) == "function" and host.generate or unavailable("generate"),
+    }
   end
   return runtime.production()
 end

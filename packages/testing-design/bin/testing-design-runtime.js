@@ -4,6 +4,7 @@ const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+const { generateCandidateSet } = require('./codex-generation-adapter');
 
 const SCHEMAS = {
   repositoryAnalysis: 'testing-design.repository-analysis.v1',
@@ -948,7 +949,16 @@ function analyze(request) {
   };
 }
 
-function main(argv) {
+async function main(argv) {
+  if (argv[0] === 'generate-codex-env') {
+    if (!process.env.FKST_TESTING_DESIGN_GENERATION_JSON) {
+      throw new Error('testing-design: generation-request-environment-required');
+    }
+    const payload = JSON.parse(process.env.FKST_TESTING_DESIGN_GENERATION_JSON);
+    const result = await generateCandidateSet(payload.input);
+    process.stdout.write(`${JSON.stringify({ ok: true, result })}\n`);
+    return;
+  }
   if (argv[0] === 'analyze-env') {
     if (!process.env.FKST_TESTING_DESIGN_REQUEST_JSON) {
       throw new Error('testing-design: runtime-request-environment-required');
@@ -970,10 +980,10 @@ function main(argv) {
 }
 
 if (require.main === module) {
-  try { main(process.argv.slice(2)); } catch (error) {
+  main(process.argv.slice(2)).catch((error) => {
     process.stderr.write(`${error.stack || error}\n`);
     process.exitCode = 1;
-  }
+  });
 }
 
 module.exports = { ANALYZER_REVISION, analyze, artifactBody, sha256, stableStringify };

@@ -82,7 +82,6 @@ return {
       { status = "complete", candidate_set = load("valid-candidate-set") },
       { ok = true, candidate_set = load("valid-candidate-set") },
       { ok = false, failure = { code = "provider-error" } },
-      { ok = false, failure = { code = "nonzero-exit" } },
       { ok = false, failure = { code = "timeout", detail = "secret" } },
       { ok = false, failure = { code = "timeout" }, diagnostics = "secret" },
     }
@@ -96,6 +95,21 @@ return {
     local candidate_set = load("valid-candidate-set")
     candidate_set.candidates[1].steps = json.decode("[]")
     assert_failure(generation.generate(request, fake.new(complete(request, candidate_set))), "schema-mismatch")
+  end,
+
+  test_uncanonicalizable_candidate_set_is_classified_as_schema_mismatch = function()
+    local request = load("valid-request")
+    local candidate_set = load("valid-candidate-set")
+    candidate_set.candidates = setmetatable({ candidate_set.candidates[1] }, {})
+    contract.validate_candidate_set(candidate_set, request)
+    local canonical_ok = pcall(function() contract.canonical_copy(candidate_set) end)
+    if canonical_ok then error("expected candidate_set canonicalization to fail") end
+    local outcome = generation.generate(request, {
+      generate = function()
+        return complete(request, candidate_set)
+      end,
+    })
+    assert_failure(outcome, "schema-mismatch")
   end,
 
   test_foreign_request_digest_is_classified_as_schema_mismatch = function()

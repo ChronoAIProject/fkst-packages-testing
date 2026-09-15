@@ -34,6 +34,8 @@ G.generation_failure_codes = {
   ["schema-mismatch"] = true,
   timeout = true,
   cancellation = true,
+  ["nonzero-exit"] = true,
+  ["unavailable-binary"] = true,
   truncation = true,
   ["budget-exhausted"] = true,
 }
