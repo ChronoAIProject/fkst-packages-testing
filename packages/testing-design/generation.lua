@@ -87,18 +87,14 @@ function G.generate(request, supplied_port, control)
     contract.validate_candidate_set(snapshot, request)
     return snapshot
   end)
-  local result
-  if valid then
-    result = {
-      status = "complete",
-      candidate_set = candidate_set,
-      provider = validate_provider(outcome.provider),
-      prompt_template = validate_prompt_template(outcome.prompt_template, request),
-    }
-  else
-    result = failure("schema-mismatch")
-  end
-  return result
+  if not valid then return failure("schema-mismatch") end
+
+  return {
+    status = "complete",
+    candidate_set = candidate_set,
+    provider = validate_provider(outcome.provider),
+    prompt_template = validate_prompt_template(outcome.prompt_template, request),
+  }
 end
 
 return G
