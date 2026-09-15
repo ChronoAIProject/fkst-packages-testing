@@ -90,8 +90,11 @@ function G.generate(request, supplied_ports, control)
       or outcome.candidate_set == nil or outcome.provider == nil or outcome.prompt_template == nil then
     error("testing-design: malformed-generation-outcome: invalid success/failure union")
   end
-  local candidate_set = copy(outcome.candidate_set)
-  if not pcall(contract.validate_candidate_set, candidate_set, request) then
+  local valid, candidate_set = pcall(function()
+    contract.validate_candidate_set(outcome.candidate_set, request)
+    return json.decode(contract.canonical_bytes(outcome.candidate_set))
+  end)
+  if not valid then
     return { ok = false, failure = { code = "schema-mismatch" } }
   end
   return {
