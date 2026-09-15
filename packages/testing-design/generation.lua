@@ -94,15 +94,18 @@ function G.generate(request, supplied_ports, control)
     contract.validate_candidate_set(outcome.candidate_set, request)
     return json.decode(contract.canonical_bytes(outcome.candidate_set))
   end)
-  if not valid then
-    return { ok = false, failure = { code = "schema-mismatch" } }
+  local result
+  if valid then
+    result = {
+      status = "complete",
+      candidate_set = candidate_set,
+      provider = validate_provider(outcome.provider),
+      prompt_template = validate_prompt_template(outcome.prompt_template, request),
+    }
+  else
+    result = { ok = false, failure = { code = "schema-mismatch" } }
   end
-  return {
-    status = "complete",
-    candidate_set = candidate_set,
-    provider = validate_provider(outcome.provider),
-    prompt_template = validate_prompt_template(outcome.prompt_template, request),
-  }
+  return result
 end
 
 return G

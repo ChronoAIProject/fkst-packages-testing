@@ -1,5 +1,6 @@
 local generation = require("generation")
 local fake = require("generation_fake")
+local contract = require("contract.testing_design_generation")
 local t = fkst.test
 
 local fixture_root = "packages/testing-design/tests/fixtures/generation/v1/"
@@ -60,15 +61,19 @@ return {
   test_candidate_canonicalization_failures_return_schema_mismatch = function()
     local request = load("valid-request")
     local candidate_set = load("valid-candidate-set")
-    setmetatable(candidate_set, {})
+    setmetatable(candidate_set.candidates, {})
+    contract.validate_candidate_set(candidate_set, request)
+    local canonical_ok = pcall(function() contract.canonical_bytes(candidate_set) end)
+    if canonical_ok then error("expected candidate_set canonicalization to fail") end
     local outcome = generation.generate(request, {
       generate = function()
         return complete(request, candidate_set)
       end,
     })
-    t.eq(outcome.ok, false)
-    t.eq(outcome.failure.code, "schema-mismatch")
-    t.eq(outcome.candidate_set, nil)
+    if outcome.ok ~= false or type(outcome.failure) ~= "table"
+        or outcome.failure.code ~= "schema-mismatch" or outcome.candidate_set ~= nil then
+      error("expected schema-mismatch failure for uncanonicalizable candidate_set")
+    end
   end,
 
   test_invalid_provider_metadata_fails_closed = function()
