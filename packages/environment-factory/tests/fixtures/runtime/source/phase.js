@@ -3,12 +3,14 @@
 const fs = require('fs');
 const path = require('path');
 const protocol = require('fixture-protocol');
+const { assertCredentialIsolation } = require('./credential-isolation');
 
 const phase = process.argv[2];
 const targetPort = Number(process.argv[3]);
 const fixtureRoot = path.join(process.cwd(), '.fixture');
 
 async function main() {
+  assertCredentialIsolation();
   if (phase === 'build') {
     fs.mkdirSync(fixtureRoot, { recursive: true });
     fs.writeFileSync(path.join(fixtureRoot, 'build'), `${protocol.packageName}\n`);

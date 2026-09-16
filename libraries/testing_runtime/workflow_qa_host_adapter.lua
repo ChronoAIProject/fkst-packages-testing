@@ -7,7 +7,7 @@ local M = {}
 
 local required_ports = {
   "load_artifact", "write_artifact", "artifact_digest", "claim_preauthorization",
-  "grant_values", "record_terminal",
+  "reconcile_preauthorization_claim", "grant_values", "record_terminal",
 }
 
 local function copy(value)
@@ -52,7 +52,7 @@ function M.new(options)
   end
 
   local function load_bound(ports, ref, expected_digest, label)
-    local artifact = ports.load_artifact(ref)
+    local artifact = ports.load_artifact(ref, expected_digest)
     if type(artifact) ~= "table" or type(artifact.value) ~= "table"
       or artifact.digest ~= expected_digest then
       fail(label .. " immutable binding failed")
@@ -85,17 +85,13 @@ function M.new(options)
       end
       if grant.plan_sha256 ~= request.plan_sha256
         or grant.environment_receipt_sha256 ~= request.environment_receipt_sha256
-        or grant.parent_authorization_sha256 ~= request.preauthorization_sha256 then
-        fail("structured grant binding differs from request")
-      end
+        or grant.parent_authorization_sha256 ~= request.preauthorization_sha256 then fail("structured grant binding differs from request") end
       return grant
     end
     browser_control.validate_grant(grant)
     if grant.reviewed_plan_sha256 ~= request.plan_sha256
       or grant.environment_receipt_sha256 ~= request.environment_receipt_sha256
-      or grant.parent_authorization_sha256 ~= request.preauthorization_sha256 then
-      fail("browser grant binding differs from request")
-    end
+      or grant.parent_authorization_sha256 ~= request.preauthorization_sha256 then fail("browser grant binding differs from request") end
     return grant
   end
 
@@ -159,32 +155,52 @@ function M.new(options)
   function adapter.handle_execution_grant(request, supplied_ports)
     structured_execution.validate_grant_request(request)
     local ports = resolve_ports(supplied_ports)
-    local environment = validate_environment_binding(request, load_bound(ports,
-      request.environment_receipt_ref, request.environment_receipt_sha256, "environment receipt"))
-    local existing = ports.load_artifact(request.grant_ref)
-    if existing ~= nil then
-      if type(existing) ~= "table" or type(existing.value) ~= "table" then
-        fail("replayed grant artifact is malformed")
-      end
-      local existing_digest = digest(existing.digest, "existing grant digest")
-      validate_grant_binding(request, existing.value, environment)
-      return adapter.execution_grant_result_event(request, existing_digest)
-    end
-
     local materials = {
       preauthorization = load_bound(ports, request.preauthorization_ref,
         request.preauthorization_sha256, "preauthorization"),
       preauthorization_sha256 = request.preauthorization_sha256,
       plan = load_bound(ports, request.plan_ref, request.plan_sha256, "plan"),
       plan_sha256 = request.plan_sha256,
-      environment = environment,
+      environment = validate_environment_binding(request, load_bound(ports,
+        request.environment_receipt_ref, request.environment_receipt_sha256, "environment receipt")),
       environment_receipt_sha256 = request.environment_receipt_sha256,
     }
+    local existing = ports.load_artifact(request.grant_ref, nil, { durable_only = true })
+    if existing ~= nil then
+      if ports.reconcile_preauthorization_claim({
+          preauthorization_ref = request.preauthorization_ref,
+          preauthorization_sha256 = request.preauthorization_sha256,
+          plan_ref = request.plan_ref,
+          plan_sha256 = request.plan_sha256,
+          environment_receipt_ref = request.environment_receipt_ref,
+          environment_receipt_sha256 = request.environment_receipt_sha256,
+          repository = copy(request.repository),
+          trace_id = request.trace_id,
+          dedup_key = request.dedup_key,
+        }) ~= true then
+        fail("persisted grant has no authenticated preauthorization claim")
+      end
+      if type(existing) ~= "table" or type(existing.value) ~= "table" then
+        fail("replayed grant artifact is malformed")
+      end
+      local expected = adapter.derive_execution_grant(request, materials,
+        ports.grant_values(copy(request), copy(materials)))
+      if not structured_execution.equal(existing.value, expected) then
+        fail("persisted grant differs from authenticated derivation")
+      end
+      local existing_digest = digest(existing.digest, "existing grant digest")
+      validate_grant_binding(request, existing.value, materials.environment)
+      return adapter.execution_grant_result_event(request, existing_digest)
+    end
+
     local claim = ports.claim_preauthorization({
       authorization_id = materials.preauthorization.authorization_id,
+      preauthorization_ref = request.preauthorization_ref,
       preauthorization_sha256 = request.preauthorization_sha256,
       repository = copy(request.repository),
+      plan_ref = request.plan_ref,
       plan_sha256 = request.plan_sha256,
+      environment_receipt_ref = request.environment_receipt_ref,
       environment_receipt_sha256 = request.environment_receipt_sha256,
       trace_id = request.trace_id,
       dedup_key = request.dedup_key,
@@ -200,7 +216,7 @@ function M.new(options)
     end
     local grant_sha256 = digest(ports.artifact_digest(request.grant_ref), "grant_sha256")
     local persisted = load_bound(ports, request.grant_ref, grant_sha256, "persisted grant")
-    validate_grant_binding(request, persisted, environment)
+    validate_grant_binding(request, persisted, materials.environment)
     return adapter.execution_grant_result_event(request, grant_sha256)
   end
 

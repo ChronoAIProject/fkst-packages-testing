@@ -107,11 +107,16 @@ function M.production(options)
     authorize_cli_effect = function(request)
       return call_cli("authorize-cli-effect", request, 15, options)
     end,
+    authorize_http_effect = function(request)
+      return call_cli("authorize-http-effect", request, 15, options)
+    end,
     exec_argv = function(request)
       return call_cli("exec-argv", request, (request.timeout_seconds or 30) + 3, options)
     end,
     http_request = function(request)
-      return call_cli("http-request", request, (request.timeout_seconds or 30) + 3, options)
+      local envelope = request.action_envelope or {}
+      local case = envelope.case or {}
+      return call_cli("http-request", request, (case.timeout_seconds or 30) + 3, options)
     end,
     write_artifact = function(path, value)
       local result = call_cli("write-artifact", {

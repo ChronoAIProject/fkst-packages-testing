@@ -210,6 +210,19 @@ function M.wait_for_terminal(context)
   return false
 end
 
+function M.wait_for_state_phase(context, expected_phase, timeout_seconds)
+  local state_path = context.durable_run_root .. "/records/workflow-qa/state/"
+    .. context.run_id .. ".json"
+  local script = table.concat({
+    "const fs=require('fs'),path=process.argv[1],expected=process.argv[2],end=Date.now()+Number(process.argv[3])*1000;",
+    "function poll(){try{const envelope=JSON.parse(fs.readFileSync(path,'utf8'));",
+    "const state=envelope&&envelope.value||envelope;if(state&&state.phase===expected)process.exit(0)}catch(_error){}",
+    "if(Date.now()>=end)process.exit(49);setTimeout(poll,20)}poll();",
+  })
+  return M.exec({ "node", "-e", script, state_path, expected_phase,
+    tostring(timeout_seconds or 180) }).exit_code == 0
+end
+
 function M.wait_for_noop(context, label)
   local root = context.host_root .. "/framework-runtime-" .. label .. "/logs/framework-child"
   for attempt = 1, 4 do

@@ -123,7 +123,7 @@ return {
       t.eq(context.store:load(compatibility_path), nil)
 
       local cleanup = artifact(context, context.terminal.cleanup_receipt_ref).value
-      t.eq(cleanup.schema, "environment-factory.cleanup-receipt.v1")
+      t.eq(cleanup.schema, "environment-factory.cleanup-receipt.v2")
       t.eq(cleanup.status, "complete")
       t.eq(#cleanup.remaining_resources, 0)
       local aggregate = artifact(context, context.request.publication.aggregate_report_ref).value

@@ -2,6 +2,9 @@
 
 const http = require('http');
 const protocol = require('fixture-protocol');
+const { assertCredentialIsolation } = require('./credential-isolation');
+
+assertCredentialIsolation();
 
 const databasePort = Number(process.argv[2]);
 

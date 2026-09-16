@@ -148,6 +148,15 @@ function Context:_environment_runtime()
         }
       end)
     end,
+    initialize_worker_home_ledger = function(request)
+      return replay(request.effect_id, function()
+        return {
+          status = "passed",
+          ledger_id = sha256_bytes(context.run_id .. "\0worker-home-ledger"),
+          cleanup_ref = { kind = "resource-cleanup", ref = context.run_id .. "-worker-homes" },
+        }
+      end)
+    end,
     checkout = function(request)
       return replay(request.effect_id, function()
         remove_tree(context.workspace_root, context.temp_root .. "/")
@@ -240,6 +249,8 @@ function Context:_environment_runtime()
         elseif cleanup.kind == "workspace-cleanup" then
           remove_tree(context.workspace_root, context.temp_root .. "/")
           workspaces[context.run_id .. "-workspace"] = nil
+        elseif cleanup.kind == "resource-cleanup" and cleanup.ref == context.run_id .. "-worker-homes" then
+          -- This in-memory contract fixture never creates a worker HOME.
         end
         return { status = "cleaned" }
       end)
@@ -479,13 +490,32 @@ function Context:_structured_runtime()
     end
     return false
   end
+  local function http_allowed(request, capabilities, base_url)
+    local base_origin = execution.local_http_origin(base_url)
+    local origin, request_path = execution.local_http_origin(request and request.url)
+    if base_origin == nil or origin ~= base_origin then return false end
+    for _, capability in ipairs(capabilities or {}) do
+      local capability_origin = execution.local_http_origin(capability.origin)
+      local method_allowed = false
+      for _, method in ipairs(capability.methods or {}) do
+        if method == request.method then method_allowed = true end
+      end
+      if capability_origin == base_origin and method_allowed then
+        for _, prefix in ipairs(capability.path_prefixes or {}) do
+          if request_path:sub(1, #prefix) == prefix then return true end
+        end
+      end
+    end
+    return false
+  end
   local function decision(envelope, value, reason, inputs)
     local envelope_sha256 = sha256_bytes(json_codec.encode(envelope))
     local receipt = {
       schema = execution.schemas.effect_authorization_receipt,
       decision = value,
       reason_code = reason,
-      receipt_id = "canonical-cli-effect-" .. envelope_sha256:sub(1, 32),
+      receipt_id = "canonical-" .. tostring(envelope.effect_kind or "invalid")
+        .. "-effect-" .. envelope_sha256:sub(1, 32),
       envelope_sha256 = envelope_sha256,
       evaluated_input_digests = inputs,
       issued_at = "2026-07-22T00:20:00Z",
@@ -498,7 +528,7 @@ function Context:_structured_runtime()
     if value == "allow" then authorizations[receipt.receipt_id] = copy(receipt) end
     return receipt
   end
-  return {
+  local runtime = {
     sha256_bytes = function(bytes) return sha256_bytes(bytes) end,
     load_artifact = function(path) return context.store:load(path) end,
     now = function(request)
@@ -528,14 +558,20 @@ function Context:_structured_runtime()
         end
         return { status = "in-progress" }
       end
-      claim = { claim_id = context.run_id .. "-execution-claim", binding = copy(request) }
+      local private_claim_id = context.run_id .. "-execution-claim"
+      claim = {
+        claim_id = private_claim_id,
+        fence_id = sha256_bytes(context.lineage_projection_secret
+          .. "\0structured-execution-fence\0" .. private_claim_id),
+        binding = copy(request),
+      }
       claims[request.grant_id] = claim
       context.execution_claims = context.execution_claims + 1
-      return { status = "claimed", claim_id = claim.claim_id }
+      return { status = "claimed", claim_id = claim.fence_id }
     end,
     authorize_cli_effect = function(request)
       local envelope = request.action_envelope
-      local ok = pcall(execution.validate_cli_action_envelope, envelope)
+      local ok = pcall(execution.validate_action_envelope, envelope)
       local empty = {
         profile = string.rep("0", 64), validation_receipt = string.rep("0", 64),
         preauthorization = string.rep("0", 64), environment_receipt = string.rep("0", 64),
@@ -574,6 +610,13 @@ function Context:_structured_runtime()
       for _, item in ipairs(evaluated_plan.cases or {}) do
         if item.case_id == envelope.case.case_id then planned_case = item end
       end
+      local replay = claims[grant.value.grant_id]
+      local effect_allowed = envelope.effect_kind == "cli"
+        and argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
+        and argv_allowed(envelope.case.argv, grant.value.cli_capabilities)
+        or envelope.effect_kind == "http" and envelope.base_url == environment.value.base_url
+          and http_allowed(envelope.case.request, preauthorization.value.capabilities.http, envelope.base_url)
+          and http_allowed(envelope.case.request, grant.value.http_capabilities, envelope.base_url)
       if not valid or profile.digest ~= envelope.profile_artifact_sha256
         or project_profile.profile_sha256(profile.value, sha256_bytes) ~= envelope.profile_sha256
         or validation.digest ~= envelope.validation_receipt_sha256
@@ -588,8 +631,8 @@ function Context:_structured_runtime()
         or grant.value.environment_receipt_sha256 ~= environment.digest
         or not equal(environment.value.workspace_ref, envelope.workspace_ref)
         or not equal(planned_case, envelope.case)
-        or not argv_allowed(envelope.case.argv, preauthorization.value.capabilities.cli)
-        or not argv_allowed(envelope.case.argv, grant.value.cli_capabilities) then
+        or not effect_allowed
+        or type(replay) ~= "table" or replay.fence_id ~= envelope.fence_id then
         return decision(envelope, "deny", "foreign-binding", inputs)
       end
       return decision(envelope, "allow", "authorized", inputs)
@@ -613,14 +656,23 @@ function Context:_structured_runtime()
       return direct_exec(envelope.case.argv, context.workspace_root)
     end,
     http_request = function(input)
-      if input.operation_id ~= context.run_id or input.base_url ~= context.base_url
-        or input.request.url ~= context.base_url then
+      local envelope = input.action_envelope
+      local receipt = input.authorization_receipt
+      execution.validate_http_action_envelope(envelope)
+      execution.validate_effect_authorization_receipt(receipt, envelope, "2026-07-22T00:20:00Z")
+      local issued = authorizations[receipt.receipt_id]
+      if receipt.decision ~= "allow" or issued == nil or not equal(issued, receipt) then
+        error("canonical structured HTTP authorization receipt is unavailable or replayed")
+      end
+      authorizations[receipt.receipt_id] = nil
+      if envelope.operation_id ~= context.run_id or envelope.base_url ~= context.base_url
+        or envelope.case.request.url ~= context.base_url then
         error("canonical structured HTTP request is not bound to the ready environment")
       end
       table.insert(context.target_effects, {
-        kind = "http", method = input.request.method, url = input.request.url,
+        kind = "http", method = envelope.case.request.method, url = envelope.case.request.url,
       })
-      return http_request(input.request, input.timeout_seconds)
+      return http_request(envelope.case.request, envelope.case.timeout_seconds)
     end,
     write_artifact = function(path, value) return context.store:write(path, value) end,
     load_result = function(request)
@@ -655,7 +707,7 @@ function Context:_structured_runtime()
     end,
     complete_replay = function(request)
       for _, stored in pairs(claims) do
-        if stored.claim_id == request.claim.claim_id then
+        if stored.fence_id == request.claim.claim_id then
           local artifact, canonical = structured_execution_artifacts(context, request.result_ref)
           local value = artifact and artifact.value or nil
           if value == nil or value.operation_id ~= request.operation_id
@@ -681,6 +733,8 @@ function Context:_structured_runtime()
       return false
     end,
   }
+  runtime.authorize_http_effect = runtime.authorize_cli_effect
+  return runtime
 end
 
 function Context:_ai_browser_runtime()
@@ -911,6 +965,13 @@ function Context:_generic_host_runtime()
       context.preauthorization_claims = context.preauthorization_claims + 1
       return { status = "claimed", claim_id = preauthorization_claim.claim_id }
     end,
+    reconcile_preauthorization_claim = function(value)
+      if preauthorization_claim == nil then return false end
+      for key, item in pairs(value) do
+        if not equal(preauthorization_claim.value[key], item) then return false end
+      end
+      return true
+    end,
     grant_values = function(_, materials)
       if context.browser_walking_skeleton then
         local correlation = materials.environment.browser_readiness.correlation
@@ -958,6 +1019,7 @@ function Context:framework_environment(label, arm_failpoint)
   local runtime_cli = self.project_root .. "/packages/generic-host/bin/generic-host-runtime.js"
   local environment = {
     FKST_RUNTIME_ROOT = self.host_root .. "/framework-runtime-" .. label,
+    FKST_WORKER_RUNTIME_ROOT = self.host_root .. "/fixture-worker-runtime",
     FKST_DURABLE_ROOT = self.host_root .. "/framework-durable-" .. label,
     FKST_GENERIC_HOST_DURABLE_ROOT = self.durable_root,
     FKST_GENERIC_HOST_PROJECT_ROOT = self.project_root,
@@ -973,6 +1035,16 @@ function Context:framework_environment(label, arm_failpoint)
     FKST_WORKFLOW_QA_ADAPTER_RUNTIME_CONFIG_REF = self.runtime_config_ref,
     FKST_MODULE_TEST_LOOP_TEST_RUNTIME = "0",
   }
+  local broker = self.project_root
+    .. "/packages/environment-factory/bin/object-bound-cleanup-broker.py"
+  local source = read_file(broker)
+  if source == nil then error("canonical workflow allocation broker is unavailable") end
+  environment.FKST_OBJECT_BOUND_ALLOCATION_BROKER = broker
+  environment.FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256 = sha256_bytes(source)
+  if self.object_bound_cleanup_broker ~= false then
+    environment.FKST_OBJECT_BOUND_CLEANUP_BROKER = broker
+    environment.FKST_OBJECT_BOUND_CLEANUP_BROKER_SHA256 = sha256_bytes(source)
+  end
   if arm_failpoint == true and type(self.completed_replay_failpoint) == "table" then
     environment.FKST_DURABLE_COMPLETED_REPLAY_FAILPOINT = self.completed_replay_failpoint.token
   elseif type(arm_failpoint) == "string" and type(self.crash_barrier) == "table"
@@ -1062,6 +1134,12 @@ function M.new(options)
   local host_root = temp_root .. "/host"
   require_exec({ "rm", "-rf", temp_root, absolute(artifact_root) })
   require_exec({ "mkdir", "-p", source_root, host_root })
+  require_exec({
+    "node", "-e",
+    "const fs=require('fs');fs.chmodSync(process.argv[1],0o700);"
+      .. "if((fs.statSync(process.argv[1]).mode&0o077)!==0)process.exit(44);",
+    temp_root,
+  })
   local durable_enabled = options.durable == true or options.durable_root ~= nil
   local supervisor_project_root = project_root
   if durable_enabled then
@@ -1584,6 +1662,10 @@ function M.new(options)
   }
   workflow_qa.validate_request(request)
 
+  local lineage_projection_secret = require_exec({
+    "node", "-e", "process.stdout.write(require('crypto').randomBytes(32).toString('hex'))",
+  })
+
   local context = setmetatable({
     project_root = supervisor_project_root,
     port = port,
@@ -1617,6 +1699,7 @@ function M.new(options)
     completed_replay_failpoint = completed_replay_failpoint,
     crash_barrier = crash_barrier,
     runtime_pep_denial = runtime_pep_denial,
+    object_bound_cleanup_broker = options.object_bound_cleanup_broker ~= false,
     pep_mutate_plan_binding = options.pep_mutate_plan_binding == true,
     fixture_name = fixture_name,
     fixture_source_root = absolute("examples/generic-host/fixtures/" .. fixture_name),
@@ -1635,6 +1718,7 @@ function M.new(options)
     browser_clock = 0,
     browser_failpoint = options.browser_failpoint,
     browser_failpoint_fired = false,
+    lineage_projection_secret = lineage_projection_secret,
     browser_crash = options.browser_crash == true,
     cleanup_effects = 0,
     publication_ack_loss = options.publication_ack_loss == true,
@@ -1651,16 +1735,22 @@ function M.new(options)
   local durable_root = options.durable_root
   if durable_root == nil and options.durable == true then durable_root = temp_root .. "/framework-durable" end
   if durable_root ~= nil then
-    local durable = require("host_durable_workflow_qa")
-    durable.initialize(context, durable_root)
-    context.runtime_config_ref = ".testing/generic-host-runtime.json"
-    write_file(context.project_root .. "/" .. context.runtime_config_ref, json_codec.encode({
-      schema = "generic-host.runtime-config.v1",
-      project_root = context.project_root,
-    }) .. "\n")
-    if options.prepare_execution_grant_pending ~= false then
-      local prepared_context = durable.load(context.project_root, durable_root, context.run_id)
-      require("test_support.host_workflow_qa_supervisor").prepare(prepared_context, context.project_root)
+    local ok, failure = pcall(function()
+      local durable = require("host_durable_workflow_qa")
+      durable.initialize(context, durable_root)
+      context.runtime_config_ref = ".testing/generic-host-runtime.json"
+      write_file(context.project_root .. "/" .. context.runtime_config_ref, json_codec.encode({
+        schema = "generic-host.runtime-config.v1",
+        project_root = context.project_root,
+      }) .. "\n")
+      if options.prepare_execution_grant_pending ~= false then
+        local prepared_context = durable.load(context.project_root, durable_root, context.run_id)
+        require("test_support.host_workflow_qa_supervisor").prepare(prepared_context, context.project_root)
+      end
+    end)
+    if not ok then
+      pcall(function() context:cleanup() end)
+      error(failure, 0)
     end
   end
   return context

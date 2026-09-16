@@ -51,6 +51,9 @@ local function run_edge(mutate, options)
     authorize_cli_effect = function(input)
       return fixtures.authorization_receipt(input.action_envelope)
     end,
+    authorize_http_effect = function(input)
+      return fixtures.authorization_receipt(input.action_envelope)
+    end,
     exec_argv = function()
       if options.exec_error then error("cli unavailable") end
       if options.exec_result == false then return nil end
@@ -125,7 +128,7 @@ return {
     local ports = {}
     for _, name in ipairs({
       "sha256_bytes", "load_artifact", "now", "verify_grant", "replay_guard",
-      "authorize_cli_effect", "exec_argv", "http_request", "write_artifact", "load_result",
+      "authorize_cli_effect", "authorize_http_effect", "exec_argv", "http_request", "write_artifact", "load_result",
       "complete_replay",
     }) do ports[name] = function() return true end end
     _G.structured_execution_runtime = ports

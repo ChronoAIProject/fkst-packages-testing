@@ -130,6 +130,7 @@ local function assert_barrier(context, case)
     t.eq(released.process_group_absent, true)
     t.eq(released.listeners_closed, true)
     t.eq(released.workspace_absent, true)
+    t.eq(released.worker_environment_absent, true)
   elseif case.name == "publication-after-effect" then
     local effect = matching_effect(recovered, "test-publication/effects", aggregate_effect)
     t.eq(effect.value.result.status, "materialized")

@@ -38,6 +38,7 @@ contracts/
   agentic-browser-execution.v1.md
   defect-publication.v1.md
   environment-factory.v1.md
+  execution-authorization-lineage.v1.md
   project-profile.v1.md
   qa-publication.v1.md
   structured-execution.v2.md
@@ -55,7 +56,7 @@ Host repositories compose these packages and provide their own app-specific defa
 
 The formal full-FKST host flow is:
 
-1. The downstream Host creates a product-specific `testing-project-profile.v1`, authenticates one-use approval/preauthorization artifacts, and persists sanitized validation receipts.
+1. The downstream Host creates a product-specific `testing-project-profile.v1`, applies deterministic policy admission to the one-use profile/preauthorization artifacts, and persists sanitized validation receipts. The legacy `approval` schema name does not require a routine human action; the trusted Host policy remains the execution authority.
 2. The Host submits `workflow-qa.run-request.v2` on `workflow-qa.qa_run_request`; product names, commands, URLs, and credential locations remain Host-owned.
 3. `environment-factory` checks out, builds, starts, and publishes the immutable ready environment receipt.
 4. `testing-design` produces repository and traceability context; `workflow-qa` then revalidates the exact browser session through `browser-readiness`.
@@ -93,6 +94,10 @@ Issue seam and durable issue-written acknowledgement to the pinned `github-proxy
 
 Project startup configuration uses the separate `testing-project-profile.v1` and
 `testing-project-profile-approval.v1` contracts documented in `contracts/project-profile.v1.md`.
+Hosts may issue the latter through deterministic machine policy; this package does not require a
+routine human approval step. Removing human interaction does not merge the authority layers:
+profile admission, run preauthorization, Grant verification, and the atomic single-use execution
+claim remain distinct and fail closed.
 Profile validity and canonical digest identity never grant execution permission: a host trust root must
 authenticate the exact approval, and `contract.project_profile.authorize_execution` must recheck the
 profile, immutable repository commit, approval, validation receipt, freshness, and replay claim
@@ -112,7 +117,17 @@ binds `{ url, commit_sha }` repository identity and the sanitized browser readin
 Factory does not start or acknowledge testing. Its production adapter is
 `packages/environment-factory/runtime.lua`, backed by the shell-free Node effect runner at
 `packages/environment-factory/bin/environment-factory-runtime.js`; the hermetic package test drives
-that adapter through real Git, process, readiness, receipt, replay, and cleanup effects.
+that adapter through real Git, process, readiness, receipt, replay, and cleanup effects. All target
+checkout, build, start, readiness, test, and cleanup commands use a private leased home with GitHub,
+Git credential-helper, SSH agent, askpass, hooks, and fsmonitor authority removed. Host command
+environment cannot override those controls, and one-shot leases are removed immediately while a
+supervised-process lease is retained only until verified cleanup.
+
+Those environment controls are defense in depth, not an operating-system sandbox. Every target
+effect also requires the Host-owned `testing-host.target-execution-boundary.v1` contract documented
+in `contracts/target-execution-boundary.v1.md`. The current production package accepts only an exact
+immutable `trusted-fixture-exact` repository binding. Unknown or mismatched repositories fail closed
+with `HOST_RUNTIME_ISOLATION_REQUIRED` until a future Host supplies verifiable OS/container isolation.
 
 Terminal Environment Factory results include an immutable typed cleanup-receipt pointer. The receipt
 lists attempted resources, verified removals, and remaining owner-bound cleanup handles; cross-run

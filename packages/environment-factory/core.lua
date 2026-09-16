@@ -145,6 +145,23 @@ local function find_resource(state, id)
   return nil
 end
 
+local function worker_home_ledger_ref(state)
+  local resource = find_resource(state, "worker-homes")
+  if resource == nil or resource.kind ~= "worker-home-ledger" then error("environment-factory: worker-home-ledger-missing: durable worker isolation ledger is required") end
+  return copy(resource.cleanup_ref)
+end
+
+local function add_worker_home_ledger(state, request)
+  request.worker_home_ledger_ref = worker_home_ledger_ref(state)
+  return request
+end
+
+local function add_worker_home_ledger_if_present(state, request)
+  local resource = find_resource(state, "worker-homes")
+  if resource ~= nil then request.worker_home_ledger_ref = copy(resource.cleanup_ref) end
+  return request
+end
+
 local function checkpoint_runtime_cleanup(state, ports, outcome, resource)
   if type(outcome) ~= "table" or type(outcome.cleanup_ref) ~= "table" then return end
   local cleanup_ref = { kind = outcome.cleanup_ref.kind, ref = outcome.cleanup_ref.ref }
@@ -287,13 +304,49 @@ local function recover_authorized_state(request, ports, existing, remember)
   remember(state)
   save_state(ports, state)
 
-  local checkout = ports.checkout(add_budget({
+  local ledger_resource = find_resource(state, "worker-homes")
+  if state.completed.worker_home_ledger == true then
+    if ledger_resource == nil or ledger_resource.kind ~= "worker-home-ledger" then
+      error("environment-factory: foreign-state: completed worker-home ledger resource is missing")
+    end
+  else
+    if state.completed.checkout == true or state.workspace_ref ~= nil then
+      error("environment-factory: foreign-state: checkout began without a durable worker-home ledger")
+    end
+    local ledger = ports.initialize_worker_home_ledger(add_budget({
+      effect_id = effect_id(state, "worker-home-ledger"),
+      operation_id = state.operation_id,
+      artifact_root = state.artifact_root,
+      repository = copy(state.profile_snapshot.repository),
+    }, effect_budget(state, ports, state.profile_snapshot.timeouts.start_seconds, false)))
+    runtime_outcomes.validate_effect(ledger, "worker-home-ledger", {
+      status = true,
+      ledger_id = true,
+      cleanup_ref = true,
+    })
+    if ledger.status ~= "passed" or type(ledger.ledger_id) ~= "string" or ledger.ledger_id == ""
+      or type(ledger.cleanup_ref) ~= "table" then
+      error("environment-factory: worker-home-ledger-failed: runtime did not initialize the ledger")
+    end
+    contract.validate_ref(ledger.cleanup_ref, "worker-home-ledger.cleanup_ref")
+    append_resource(state, {
+      id = "worker-homes",
+      kind = "worker-home-ledger",
+      cleanup_ref = copy(ledger.cleanup_ref),
+      timeout_seconds = state.profile_snapshot.timeouts.cleanup_seconds,
+    })
+    state.completed.worker_home_ledger = true
+    remember(state)
+    save_state(ports, state)
+  end
+
+  local checkout = ports.checkout(add_worker_home_ledger(state, add_budget({
     effect_id = effect_id(state, "checkout"),
     operation_id = state.operation_id,
     repository = copy(state.profile_snapshot.repository),
     working_directory = state.profile_snapshot.working_directory,
     artifact_root = state.artifact_root,
-  }, effect_budget(state, ports, state.profile_snapshot.timeouts.start_seconds, false)))
+  }, effect_budget(state, ports, state.profile_snapshot.timeouts.start_seconds, false))))
   local previous_workspace_ref = state.workspace_ref and copy(state.workspace_ref) or nil
   if type(checkout) == "table" and type(checkout.workspace_ref) == "table" and type(checkout.cleanup_ref) == "table" then
     local workspace_ref = { kind = checkout.workspace_ref.kind, ref = checkout.workspace_ref.ref }
@@ -343,7 +396,7 @@ local function run_oneshot(state, ports, phase)
     mode = "oneshot",
   }, effect_budget(state, ports, state.profile_snapshot.timeouts[phase .. "_seconds"], false))
   if phase == "install" then request.requires_frozen_dependencies = true end
-  local outcome = ports.run_argv(request)
+  local outcome = ports.run_argv(add_worker_home_ledger(state, request))
   runtime_outcomes.validate_effect(outcome, "phase-" .. phase, {
     status = true,
     diagnostic_ref = true,
@@ -368,7 +421,7 @@ local function start_service(state, ports, service, index, runtime_ports)
     end
     return copy(resource.cleanup_ref)
   end
-  local outcome = ports.run_argv(add_budget({
+  local outcome = ports.run_argv(add_worker_home_ledger(state, add_budget({
     effect_id = effect_id(state, "service/" .. index .. "/start"),
     operation_id = state.operation_id,
     artifact_root = state.artifact_root,
@@ -378,7 +431,7 @@ local function start_service(state, ports, service, index, runtime_ports)
     mode = "supervised",
     listener_mode = service.listener_mode,
     runtime_ports = copy_list(runtime_ports),
-  }, effect_budget(state, ports, state.profile_snapshot.timeouts.start_seconds, false)))
+  }, effect_budget(state, ports, state.profile_snapshot.timeouts.start_seconds, false))))
   checkpoint_runtime_cleanup(state, ports, outcome, {
     id = resource_id,
     kind = "service",
@@ -408,7 +461,7 @@ end
 local function wait_checks(state, ports, checks, suffix, runtime_ports, process_cleanup_ref)
   local key = "readiness-" .. suffix
   if state.completed[key] then return end
-  local outcome = ports.wait_readiness(add_budget({
+  local outcome = ports.wait_readiness(add_worker_home_ledger(state, add_budget({
     effect_id = effect_id(state, "readiness/" .. suffix),
     operation_id = state.operation_id,
     artifact_root = state.artifact_root,
@@ -417,8 +470,10 @@ local function wait_checks(state, ports, checks, suffix, runtime_ports, process_
     checks = checks,
     runtime_ports = copy_list(runtime_ports),
     process_cleanup_ref = copy(process_cleanup_ref),
-  }, effect_budget(state, ports, state.profile_snapshot.timeouts.readiness_seconds, false)))
-  runtime_outcomes.validate_effect(outcome, key, { status = true, diagnostic_ref = true })
+  }, effect_budget(state, ports, state.profile_snapshot.timeouts.readiness_seconds, false))))
+  runtime_outcomes.validate_effect(outcome, key, {
+    status = true, diagnostic_ref = true,
+  })
   add_diagnostic(state, outcome.diagnostic_ref)
   if outcome.status ~= "ready" then error("environment-factory: readiness-failed: " .. suffix) end
   state.completed[key] = true
@@ -433,7 +488,7 @@ local function start_application(state, ports, runtime_ports)
     end
     return copy(resource.cleanup_ref)
   end
-  local outcome = ports.run_argv(add_budget({
+  local outcome = ports.run_argv(add_worker_home_ledger(state, add_budget({
     effect_id = effect_id(state, "application/start"),
     operation_id = state.operation_id,
     artifact_root = state.artifact_root,
@@ -443,7 +498,7 @@ local function start_application(state, ports, runtime_ports)
     mode = "supervised",
     listener_mode = state.profile_snapshot.application_listener_mode,
     runtime_ports = copy_list(runtime_ports),
-  }, effect_budget(state, ports, state.profile_snapshot.timeouts.start_seconds, false)))
+  }, effect_budget(state, ports, state.profile_snapshot.timeouts.start_seconds, false))))
   checkpoint_runtime_cleanup(state, ports, outcome, {
     id = "application",
     kind = "application",
@@ -475,7 +530,7 @@ local function cleanup_resources(state, ports)
   for index = #state.resources, 1, -1 do
     local resource = state.resources[index]
     if resource.cleaned ~= true then
-      local request = add_budget({
+      local request = add_worker_home_ledger_if_present(state, add_budget({
         effect_id = effect_id(state, "cleanup/" .. resource.id),
         operation_id = state.operation_id,
         artifact_root = state.artifact_root,
@@ -483,18 +538,39 @@ local function cleanup_resources(state, ports)
         argv = resource.cleanup_argv,
         workspace_ref = copy(state.workspace_ref),
         working_directory = state.profile_snapshot.working_directory,
-      }, effect_budget(state, ports, resource.timeout_seconds, true))
+      }, effect_budget(state, ports, resource.timeout_seconds, true)))
       local ok, outcome = pcall(ports.cleanup, request)
       if ok then
         ok = pcall(runtime_outcomes.validate_effect, outcome, "cleanup-" .. resource.id, {
           status = true,
           diagnostic_ref = true,
+          resource_detail_ref = true,
+          resource_detail_sha256 = true,
+          remaining_count = true,
         })
       end
       complete = complete and ok
       if ok then
         add_diagnostic(state, outcome.diagnostic_ref)
         resource.cleanup_diagnostic_ref = copy(outcome.diagnostic_ref)
+        if outcome.resource_detail_ref ~= nil then
+          if resource.kind ~= "worker-home-ledger" then
+            error("environment-factory: unexpected-retention-detail: " .. resource.id)
+          end
+          contract.validate_artifact_ref(outcome.resource_detail_ref,
+            "cleanup." .. resource.id .. ".resource_detail_ref")
+          if type(outcome.resource_detail_sha256) ~= "string"
+            or #outcome.resource_detail_sha256 ~= 64
+            or outcome.resource_detail_sha256:match("^[0-9a-f]+$") == nil
+            or type(outcome.remaining_count) ~= "number"
+            or outcome.remaining_count ~= math.floor(outcome.remaining_count)
+            or outcome.remaining_count < 1 or outcome.remaining_count > 256 then
+            error("environment-factory: malformed-retention-detail: " .. resource.id)
+          end
+          resource.resource_detail_ref = copy(outcome.resource_detail_ref)
+          resource.resource_detail_sha256 = outcome.resource_detail_sha256
+          resource.remaining_count = outcome.remaining_count
+        end
         if outcome.status == "cleaned" then resource.cleaned = true else complete = false end
       end
       if not try_save_state(ports, state) then complete = false end
@@ -520,11 +596,17 @@ local function cleanup_receipt(state)
     if status == "cleaned" then
       table.insert(verified, resource.id)
     else
-      table.insert(remaining, {
+      local retained = {
         resource_id = resource.id,
         resource_kind = resource.kind,
         cleanup_ref = copy(resource.cleanup_ref),
-      })
+      }
+      if resource.kind == "worker-home-ledger" then
+        retained.resource_detail_ref = copy(resource.resource_detail_ref)
+        retained.resource_detail_sha256 = resource.resource_detail_sha256
+        retained.remaining_count = resource.remaining_count
+      end
+      table.insert(remaining, retained)
     end
   end
   return contract.validate_cleanup_receipt({

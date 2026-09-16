@@ -55,7 +55,7 @@ function createListenerClaims(deps) {
       if (error.code === 'ENOENT') return [];
       throw error;
     }
-    return entries.flatMap((entry) => {
+    return entries.filter((entry) => entry.endsWith('.json')).flatMap((entry) => {
       const resource = readIfExists(path.join(root, entry));
       if (!resource || resource.schema !== 'environment-factory.resource.v1'
         || resource.kind !== 'process' || resource.operation_id !== operationId || resource.cleaned === true) {

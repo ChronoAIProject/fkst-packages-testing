@@ -227,6 +227,16 @@ local function fake_runtime(fx, options, shared)
         return outcome
       end)
     end,
+    initialize_worker_home_ledger = function(request)
+      assert_budget(request)
+      return cached(request.effect_id, function()
+        record("worker-home-ledger"); target_effects = target_effects + 1
+        if opts.fail_worker_home_ledger then return { status = "blocked" } end
+        return { status = "passed", ledger_id = string.rep("d", 64), cleanup_ref = {
+          kind = "resource-cleanup", ref = request.operation_id .. "-worker-home-ledger",
+        } }
+      end)
+    end,
     checkout = function(request)
       assert_budget(request)
       return cached(request.effect_id, function()
@@ -319,7 +329,15 @@ local function fake_runtime(fx, options, shared)
         else
           for ref, _ in pairs(active) do if ref:find(id == "application" and "application-start" or "service-start", 1, true) then active[ref] = nil end end
         end
-        return { status = opts.fail_cleanup == id and "blocked" or "cleaned", diagnostic_ref = { kind = "artifact", ref = fx.request.artifact_root .. "/diagnostics/cleanup-" .. id .. ".json" } }
+        local outcome = { status = opts.fail_cleanup == id and "blocked" or "cleaned", diagnostic_ref = {
+          kind = "artifact", ref = fx.request.artifact_root .. "/diagnostics/cleanup-" .. id .. ".json",
+        } }
+        if opts.retention_detail_for == id then
+          outcome.resource_detail_ref = { kind = "artifact", ref = fx.request.artifact_root .. "/worker-home-retention.json" }
+          outcome.resource_detail_sha256 = opts.malformed_retention_detail and "bad" or string.rep("e", 64)
+          outcome.remaining_count = 1
+        end
+        return outcome
       end)
     end,
     write_receipt = function(request)
@@ -429,7 +447,7 @@ return {
     t.eq(finalized.environment_receipt_ref.ref, fx.request.artifact_root .. "/environment-receipt-finalized.json")
     t.eq(finalized.environment_receipt_ref.ref == ready.environment_receipt_ref.ref, false)
     t.eq(observed.receipts[ready.environment_receipt_ref.ref].status, ready_receipt.status)
-    t.eq(table.concat(observed.cleanup_order, ","), "application,service-1,workspace,ports")
+    t.eq(table.concat(observed.cleanup_order, ","), "application,service-1,workspace,worker-homes,ports")
     t.eq(observed.active_count(), 0)
   end,
 
@@ -533,6 +551,22 @@ return {
     end
   end,
 
+  test_worker_home_ledger_state_and_initialization_fail_closed = function()
+    do
+      local fx = fixture({ operation_id = "worker-home-ledger-init-failed" }); local ports, observed = fake_runtime(fx, { fail_worker_home_ledger = true })
+      local blocked = start_environment(fx, ports); t.eq(blocked.status, "blocked"); t.eq(observed.active_count(), 0)
+    end
+    do
+      local fx = fixture({ operation_id = "worker-home-ledger-resource-missing" }); local ports, observed = fake_runtime(fx); core.start(fx.request, ports); local state = observed.state()
+      for index = #state.resources, 1, -1 do if state.resources[index].id == "worker-homes" then table.remove(state.resources, index) end end
+      observed.set_state(state, true); t.raises(function() core.start(fx.request, ports) end)
+    end
+    do
+      local fx = fixture({ operation_id = "worker-home-ledger-before-checkout" }); local ports, observed = fake_runtime(fx); core.start(fx.request, ports)
+      local state = observed.state(); state.completed.worker_home_ledger = false; observed.set_state(state, true)
+      t.raises(function() core.start(fx.request, ports) end)
+    end
+  end,
   test_diagnostics_are_deduplicated_and_capped_for_max_services = function()
     local fx = fixture({ service_count = 16 }); local ports = fake_runtime(fx); local ready = start_environment(fx, ports)
     t.eq(#ready.diagnostic_refs, environment_contract.max_diagnostic_refs); environment_contract.validate_result(ready)
@@ -596,7 +630,7 @@ return {
   test_partial_checkout_failure_persists_handle_unwinds_and_writes_blocked_receipt = function()
     local fx = fixture(); local ports, observed = fake_runtime(fx, { checkout_partial = true }); local blocked = start_environment(fx, ports)
     t.eq(blocked.status, "blocked"); t.eq(blocked.failure_class, "checkout-failed"); t.eq(blocked.environment_receipt_ref.ref, fx.request.artifact_root .. "/environment-receipt-blocked.json")
-    t.eq(table.concat(observed.cleanup_order, ","), "workspace,ports"); t.eq(observed.active_count(), 0)
+    t.eq(table.concat(observed.cleanup_order, ","), "workspace,worker-homes,ports"); t.eq(observed.active_count(), 0)
   end,
 
   test_serialized_port_lease_prevents_concurrent_exact_port_owners = function()
@@ -610,10 +644,10 @@ return {
 
   test_cancel_and_interrupt_use_same_reverse_cleanup_for_app_and_partial_service = function()
     local app = fixture({ operation_id = "cancel-app" }); local app_ports, app_observed = fake_runtime(app); local app_ready = start_environment(app, app_ports)
-    t.eq(core.interrupt(interrupt_request(app, app_ready, "cancelled"), app_ports).status, "cancelled"); t.eq(table.concat(app_observed.cleanup_order, ","), "application,service-1,workspace,ports")
+    t.eq(core.interrupt(interrupt_request(app, app_ready, "cancelled"), app_ports).status, "cancelled"); t.eq(table.concat(app_observed.cleanup_order, ","), "application,service-1,workspace,worker-homes,ports")
     local partial = fixture({ operation_id = "interrupt-service" }); local partial_ports, partial_observed = fake_runtime(partial); local partial_ready = start_environment(partial, partial_ports)
     local state = partial_observed.state(); table.remove(state.resources, #state.resources); state.status = "provisioning"; state.public_result = nil; state.receipt_refs.ready = nil; partial_observed.set_state(state, true)
-    t.eq(core.interrupt(interrupt_request(partial, partial_ready, "interrupted"), partial_ports).status, "interrupted"); t.eq(table.concat(partial_observed.cleanup_order, ","), "service-1,workspace,ports")
+    t.eq(core.interrupt(interrupt_request(partial, partial_ready, "interrupted"), partial_ports).status, "interrupted"); t.eq(table.concat(partial_observed.cleanup_order, ","), "service-1,workspace,worker-homes,ports")
   end,
 
   test_install_requires_explicit_frozen_dependency_enforcement = function()
@@ -640,7 +674,7 @@ return {
 
   test_resolved_source_mismatch_unwinds_workspace_and_port_claim = function()
     local fx = fixture(); local ports, observed = fake_runtime(fx, { resolved_commit = string.rep("b", 40) }); local blocked = start_environment(fx, ports)
-    t.eq(blocked.status, "blocked"); t.eq(blocked.failure_class, "source-mismatch"); t.eq(table.concat(observed.cleanup_order, ","), "workspace,ports")
+    t.eq(blocked.status, "blocked"); t.eq(blocked.failure_class, "source-mismatch"); t.eq(table.concat(observed.cleanup_order, ","), "workspace,worker-homes,ports")
   end,
 
   test_runtime_contract_failure_matrix_fails_closed = function()
@@ -768,8 +802,8 @@ return {
     local receipt = observed.receipts[blocked.cleanup_receipt_ref.ref]
     environment_contract.validate_cleanup_receipt(receipt)
     t.eq(receipt.status, "incomplete")
-    t.eq(#receipt.attempted_resources, 4)
-    t.eq(#receipt.verified_removals, 3)
+    t.eq(#receipt.attempted_resources, 5)
+    t.eq(#receipt.verified_removals, 4)
     t.eq(#receipt.remaining_resources, 1)
     t.eq(receipt.remaining_resources[1].resource_id, "application")
   end,
@@ -785,6 +819,18 @@ return {
     t.eq(receipt.remaining_resources[1].resource_id, "service-1")
   end,
 
+  test_cleanup_retention_details_are_worker_ledger_only_and_well_formed = function()
+    do
+      local fx = fixture({ operation_id = "unexpected-retention-detail" }); local ports = fake_runtime(fx, { retention_detail_for = "application" }); local ready = start_environment(fx, ports)
+      t.raises(function() core.finalize(finalize_request(fx, ready), ports) end)
+    end
+    do
+      local fx = fixture({ operation_id = "malformed-retention-detail" }); local ports = fake_runtime(fx, { fail_cleanup = "worker-homes", retention_detail_for = "worker-homes", malformed_retention_detail = true })
+      local ready = start_environment(fx, ports)
+      t.raises(function() core.finalize(finalize_request(fx, ready), ports) end)
+    end
+  end,
+
   test_terminal_cleanup_receipt_is_complete_replay_safe_and_owned = function()
     local fx = fixture({ operation_id = "cleanup-receipt-complete" })
     local ports, observed = fake_runtime(fx)
@@ -796,8 +842,8 @@ return {
     environment_contract.validate_cleanup_receipt(receipt)
     t.eq(receipt.operation_id, fx.request.operation_id)
     t.eq(receipt.status, "complete")
-    t.eq(#receipt.attempted_resources, 4)
-    t.eq(#receipt.verified_removals, 4)
+    t.eq(#receipt.attempted_resources, 5)
+    t.eq(#receipt.verified_removals, 5)
     t.eq(#receipt.remaining_resources, 0)
     local cleanup_count = #observed.cleanup_order
     local replay = core.finalize(finalize_request(fx, ready), ports)

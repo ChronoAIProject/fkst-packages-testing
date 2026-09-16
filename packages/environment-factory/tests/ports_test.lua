@@ -88,7 +88,8 @@ return {
   test_host_runtime_is_preferred_and_resolve_rejects_missing_methods = function()
     local host = {}
     for _, name in ipairs({
-      "load_state", "save_state", "load_authorization_bundle", "authorize_claim_ports", "checkout",
+      "load_state", "save_state", "load_authorization_bundle", "authorize_claim_ports",
+      "initialize_worker_home_ledger", "checkout",
       "remaining_budget", "create_readiness_attempt", "run_argv", "wait_readiness", "cleanup", "write_receipt",
     }) do host[name] = function() return name end end
     with_globals({ environment_factory_runtime = host }, function()

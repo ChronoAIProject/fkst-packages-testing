@@ -1,4 +1,6 @@
 local M = {}
+local canonical_json = require("contract.canonical_json")
+local sha256 = require("contract.sha256")
 local json = require("testing_runtime.json")
 local sha256_bytes = require("tests.fixtures.sha256_helpers")
 
@@ -84,7 +86,7 @@ function M.authorization_receipt(envelope, decision, reason)
   return {
     schema = "testing-effect-authorization-receipt.v1", decision = decision or "allow",
     reason_code = reason or "authorized", receipt_id = "receipt-110",
-    envelope_sha256 = string.rep("5", 64),
+    envelope_sha256 = sha256.hex(canonical_json.encode(envelope)),
     evaluated_input_digests = { profile = M.digest_profile, validation_receipt = M.digest_validation,
       preauthorization = M.digest_authorization, environment_receipt = M.digest_environment,
       plan = envelope.plan_sha256, grant = M.digest_grant },

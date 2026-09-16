@@ -9,6 +9,7 @@ local t = fkst.test
 
 local fixture_root = "packages/environment-factory/tests/fixtures/runtime/source"
 local command_sequence = 0
+local trusted_runtime_environment = {}
 
 local function copy(value)
   if type(value) ~= "table" then return value end
@@ -41,8 +42,16 @@ local function direct_exec_argv(request)
   local argv = type(request) == "table" and request.argv or nil
   if type(argv) ~= "table" or #argv == 0 then error("hermetic exec requires argv") end
   local rendered = {}
+  for _, key in ipairs({
+    "FKST_OBJECT_BOUND_ALLOCATION_BROKER",
+    "FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256",
+  }) do
+    local value = trusted_runtime_environment[key]
+    if value ~= nil then table.insert(rendered, shell_quote(key .. "=" .. value)) end
+  end
   for _, item in ipairs(argv) do table.insert(rendered, shell_quote(item)) end
-  local command = table.concat(rendered, " ")
+  local command = (next(trusted_runtime_environment) ~= nil and "env " or "")
+    .. table.concat(rendered, " ")
   if request.cwd ~= nil then command = "cd " .. shell_quote(request.cwd) .. " && " .. command end
 
   command_sequence = command_sequence + 1
@@ -112,6 +121,18 @@ local function run_argv(argv, cwd, timeout)
 end
 
 project_root = run_argv({ "node", "-e", "process.stdout.write(process.cwd())" }):gsub("%s+$", "")
+local allocation_broker = project_root
+  .. "/packages/environment-factory/bin/object-bound-cleanup-broker.py"
+local allocation_broker_sha256 = run_argv({
+  "node", "-e",
+  "const fs=require('fs'),c=require('crypto');"
+    .. "process.stdout.write(c.createHash('sha256').update(fs.readFileSync(process.argv[1])).digest('hex'));",
+  allocation_broker,
+})
+trusted_runtime_environment = {
+  FKST_OBJECT_BOUND_ALLOCATION_BROKER = allocation_broker,
+  FKST_OBJECT_BOUND_ALLOCATION_BROKER_SHA256 = allocation_broker_sha256,
+}
 
 local function make_context(suffix)
   local operation_id = "environment-hermetic-" .. suffix
@@ -176,6 +197,15 @@ local function assert_path_absent(path)
     "node",
     "-e",
     "if(require('fs').existsSync(process.argv[1])) process.exit(43)",
+    path,
+  }, nil, 5)
+end
+
+local function assert_path_present(path)
+  run_argv({
+    "node",
+    "-e",
+    "if(!require('fs').existsSync(process.argv[1])) process.exit(43)",
     path,
   }, nil, 5)
 end
@@ -288,6 +318,18 @@ local function request_fixture(ctx, ports, commit_sha)
     now = "2026-07-16T00:00:30Z",
     trusted_authorities = {},
     repository_mirrors = { [repository.url] = ctx.source_root },
+    target_execution_boundary = {
+      schema = "testing-host.target-execution-boundary.v1",
+      mode = "trusted-fixture-exact",
+      target_class = "host-owned-exact-trusted-fixture",
+      repository = repository,
+      authority = { kind = "host-policy", ref = "fixtures/environment-factory-hermetic" },
+      policy_revision = "environment-factory-hermetic-v1",
+      human_approval_required = false,
+      authorization_capability = false,
+      execution_authorized = false,
+      promotion_authorized = false,
+    },
     command_environment = {
       FKST_FIXTURE_EVIDENCE_DIR = ctx.evidence_root,
     },
@@ -538,20 +580,57 @@ local function assert_cleanup_evidence(ctx, optional)
   end
 end
 
-local function finalize_ready(ctx, request, ready, ports, optional_evidence)
+local function finalize_cleanup_blocked(ctx, request, ready, ports, optional_evidence)
   local final_result = core.finalize(termination_request(request))
-  if final_result.status ~= "finalized" then
-    local details = {}
-    for _, ref in ipairs(final_result.diagnostic_refs or {}) do
-      local read_ok, body = pcall(file.read, ref.ref)
-      if read_ok then table.insert(details, tostring(body)) end
-    end
-    error("finalization blocked diagnostics=" .. table.concat(details, " | "))
-  end
-  t.eq(final_result.cleanup_status, "complete")
+  t.eq(final_result.status, "blocked")
+  t.eq(final_result.failure_class, "cleanup-incomplete")
+  t.eq(final_result.cleanup_status, "incomplete")
   t.is_true(#file.read(final_result.environment_receipt_ref.ref) > 0)
+  t.is_true(#file.read(final_result.cleanup_receipt_ref.ref) > 0)
+  local unavailable = 0
+  for _, ref in ipairs(final_result.diagnostic_refs or {}) do
+    local read_ok, body = pcall(file.read, ref.ref)
+    if read_ok and tostring(body):find("OBJECT_BOUND_CLEANUP_UNAVAILABLE", 1, true) ~= nil then
+      unavailable = unavailable + 1
+    end
+  end
+  t.is_true(unavailable >= 2)
   assert_cleanup_evidence(ctx, optional_evidence)
   for _, port in pairs(ports) do assert_listener_released(port) end
+  local state = runtime.production().load_state(request.operation_state_ref)
+  t.eq(state.authenticated, true)
+  t.eq(state.state.status, "blocked")
+  t.eq(state.state.cleanup_status, "incomplete")
+  local cleanup_receipt = json.decode(file.read(final_result.cleanup_receipt_ref.ref))
+  local remaining = {}
+  for _, resource in ipairs(cleanup_receipt.remaining_resources) do
+    remaining[resource.resource_id] = resource
+  end
+  local worker_homes = remaining["worker-homes"]
+  t.eq(worker_homes.resource_kind, "worker-home-ledger")
+  t.is_true(type(worker_homes.resource_detail_ref.ref) == "string")
+  t.is_true(type(worker_homes.resource_detail_sha256) == "string")
+  t.is_true(worker_homes.remaining_count >= 2)
+  local retention = json.decode(file.read(worker_homes.resource_detail_ref.ref))
+  contract.validate_worker_home_retention(retention)
+  t.eq(retention.operation_id, request.operation_id)
+  t.eq(retention.remaining_count, worker_homes.remaining_count)
+  t.eq(runtime.call_cli("sha256", {
+    artifact_root = ctx.artifact_root,
+    value = file.read(worker_homes.resource_detail_ref.ref),
+  }, 15).digest, worker_homes.resource_detail_sha256)
+  assert_path_present(workspace_path(ctx))
+  local retained_homes = 0
+  for _, resource in ipairs(state.state.resources) do
+    if resource.kind == "application" or resource.kind == "service" then
+      local record = resource_record(ctx, resource.cleanup_ref)
+      if type(record.worker_environment_lease) == "table" then
+        assert_path_present(record.worker_environment_lease.home)
+        retained_homes = retained_homes + 1
+      end
+    end
+  end
+  t.is_true(retained_homes >= 2)
   return final_result
 end
 
@@ -707,10 +786,10 @@ return {
       t.eq(missing_outcome.status, "blocked")
       t.eq(missing_outcome.frozen_dependencies_enforced, false)
 
-      local final_result = finalize_ready(ctx, request, ready, ports)
+      local final_result = finalize_cleanup_blocked(ctx, request, ready, ports)
       mark_finalized()
       t.eq(file.read(ready.environment_receipt_ref.ref), ready_receipt_body)
-      assert_path_absent(checkout_path)
+      assert_path_present(checkout_path)
       t.eq(run_argv({ "git", "status", "--porcelain" }, ctx.source_root), "")
 
       local _, operation_digest = workspace_path(ctx)
@@ -725,8 +804,8 @@ return {
 
       local state_after = runtime.production().load_state(request.operation_state_ref)
       t.eq(state_after.authenticated, true)
-      t.eq(state_after.state.status, "finalized")
-      t.eq(state_after.state.cleanup_status, "complete")
+      t.eq(state_after.state.status, "blocked")
+      t.eq(state_after.state.cleanup_status, "incomplete")
 
       local overwrite_ok = pcall(runtime.production().write_receipt, {
         effect_id = request.dedup_key .. "/environment-factory/receipt/overwrite-attempt",
@@ -744,7 +823,7 @@ return {
       file.write(request.operation_state_ref.ref, json_codec.encode(forged_envelope) .. "\n")
       local forged_state = runtime.production().load_state(request.operation_state_ref)
       t.eq(forged_state.authenticated, false)
-      t.eq(final_result.status, "finalized")
+      t.eq(final_result.status, "blocked")
     end)
   end,
 
@@ -823,7 +902,7 @@ return {
       t.eq(process_blocked.status, "blocked")
       t.eq(diagnostic(process_blocked).reason, "process-budget-exceeded")
 
-      finalize_ready(ctx, request, ready, ports)
+      finalize_cleanup_blocked(ctx, request, ready, ports)
       mark_finalized()
     end)
   end,
@@ -873,7 +952,7 @@ return {
       end
       if not ok then error(failure, 0) end
 
-      finalize_ready(ctx, request, ready, ports, { ["application-stopped.json"] = true })
+      finalize_cleanup_blocked(ctx, request, ready, ports, { ["application-stopped.json"] = true })
       mark_finalized()
     end)
   end,

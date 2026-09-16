@@ -202,6 +202,12 @@ function M.run(context, project_root, options)
     stopped = prepared("environment-pending", actions)
     if stopped ~= nil then return stopped end
     local environment_pending = environment.start(actions[1].payload, context.environment_runtime)
+    if type(environment_pending) ~= "table" or type(environment_pending.readiness_check) ~= "table" then
+      error("canonical lifecycle environment start blocked: status="
+        .. tostring(type(environment_pending) == "table" and environment_pending.status)
+        .. " class=" .. tostring(type(environment_pending) == "table" and environment_pending.failure_class)
+        .. " message=" .. tostring(type(environment_pending) == "table" and environment_pending.message))
+    end
     local environment_ready = environment.handle_browser_readiness(
       readiness.result(environment_pending.readiness_check), context.environment_runtime).result
     actions = workflow.handle_environment_result(environment_ready, context.request, context.workflow_runtime)

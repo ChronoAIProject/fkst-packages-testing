@@ -12,7 +12,9 @@ E.schemas = {
   interrupt = "environment-factory.interrupt.v1",
   result = "environment-factory.result.v1",
   receipt = "environment-factory.receipt.v2",
-  cleanup_receipt = "environment-factory.cleanup-receipt.v1",
+  cleanup_receipt = "environment-factory.cleanup-receipt.v2",
+  cleanup_receipt_v1 = "environment-factory.cleanup-receipt.v1",
+  worker_home_retention = "environment-factory.worker-home-retention.v1",
   state = "environment-factory.operation-state.v1",
   start_binding = "environment-factory.start-binding.v1",
   readiness_correlation = "environment-factory.browser-readiness-correlation.v1",
@@ -588,8 +590,9 @@ local receipt_fields = {
 
 function E.validate_cleanup_receipt(value)
   only_fields(value, cleanup_receipt_fields, "cleanup-receipt")
-  if value.schema ~= E.schemas.cleanup_receipt then
-    fail("unknown-schema", "expected " .. E.schemas.cleanup_receipt)
+  local is_v2 = value.schema == E.schemas.cleanup_receipt
+  if not is_v2 and value.schema ~= E.schemas.cleanup_receipt_v1 then
+    fail("unknown-schema", "expected a supported cleanup receipt schema")
   end
   require_id(value.operation_id, "operation_id")
   if value.status ~= "complete" and value.status ~= "incomplete" then
@@ -635,11 +638,17 @@ function E.validate_cleanup_receipt(value)
   end
   local remaining = {}
   for index, resource in ipairs(value.remaining_resources) do
-    only_fields(resource, {
+    local allowed = {
       resource_id = true,
       resource_kind = true,
       cleanup_ref = true,
-    }, "remaining-resource")
+    }
+    if is_v2 then
+      allowed.resource_detail_ref = true
+      allowed.resource_detail_sha256 = true
+      allowed.remaining_count = true
+    end
+    only_fields(resource, allowed, "remaining-resource")
     local resource_id = require_id(resource.resource_id, "remaining_resources[" .. index .. "].resource_id")
     if remaining[resource_id] or attempted[resource_id] ~= true or cleaned[resource_id] == true then
       fail("invalid-remaining-resource", resource_id)
@@ -647,6 +656,20 @@ function E.validate_cleanup_receipt(value)
     remaining[resource_id] = true
     require_id(resource.resource_kind, "remaining_resources[" .. index .. "].resource_kind")
     validate_ref(resource.cleanup_ref, "remaining_resources[" .. index .. "].cleanup_ref")
+    if resource.resource_kind == "worker-home-ledger" then
+      if not is_v2 or resource.resource_detail_ref == nil then
+        fail("missing-retention-detail", resource_id)
+      end
+      validate_artifact_ref(resource.resource_detail_ref,
+        "remaining_resources[" .. index .. "].resource_detail_ref")
+      require_digest(resource.resource_detail_sha256,
+        "remaining_resources[" .. index .. "].resource_detail_sha256")
+      require_integer(resource.remaining_count,
+        "remaining_resources[" .. index .. "].remaining_count", 1, 256)
+    elseif is_v2 and (resource.resource_detail_ref ~= nil
+      or resource.resource_detail_sha256 ~= nil or resource.remaining_count ~= nil) then
+      fail("unexpected-retention-detail", resource_id)
+    end
   end
   for resource_id, _ in pairs(attempted) do
     if cleaned[resource_id] == true then
@@ -666,6 +689,52 @@ function E.validate_cleanup_receipt(value)
   end
   require_id(value.trace_id, "trace_id")
   require_id(value.dedup_key, "dedup_key")
+  return value
+end
+
+function E.validate_worker_home_retention(value)
+  only_fields(value, {
+    schema = true, operation_id = true, ledger_id = true, repository = true,
+    remaining_count = true, entries = true,
+  }, "worker-home-retention")
+  if value.schema ~= E.schemas.worker_home_retention then
+    fail("unknown-schema", "expected " .. E.schemas.worker_home_retention)
+  end
+  require_id(value.operation_id, "operation_id")
+  require_digest(value.ledger_id, "ledger_id")
+  validate_repository(value.repository)
+  require_integer(value.remaining_count, "remaining_count", 1, 256)
+  if not dense_list(value.entries, 256, true) or #value.entries ~= value.remaining_count then
+    fail("malformed-worker-home-retention", "entries must match remaining_count")
+  end
+  local slots = {}
+  for index, entry in ipairs(value.entries) do
+    only_fields(entry, {
+      slot_id = true, lease_id = true, effect_id = true, purpose = true,
+      generation = true, identity_sha256 = true, marker_sha256 = true,
+      state = true, reason = true,
+    }, "worker-home-retention-entry")
+    require_digest(entry.slot_id, "entries[" .. index .. "].slot_id")
+    if slots[entry.slot_id] then fail("duplicate-worker-home-slot", entry.slot_id) end
+    slots[entry.slot_id] = true
+    if type(entry.lease_id) ~= "string" or entry.lease_id:match("^[0-9a-f]+$") == nil
+      or #entry.lease_id ~= 32 then
+      fail("malformed-worker-home-retention", "lease_id must be lowercase 32-hex")
+    end
+    require_id(entry.effect_id, "entries[" .. index .. "].effect_id")
+    require_id(entry.purpose, "entries[" .. index .. "].purpose")
+    require_integer(entry.generation, "entries[" .. index .. "].generation", 1, 256)
+    if entry.identity_sha256 ~= nil then
+      require_digest(entry.identity_sha256, "entries[" .. index .. "].identity_sha256")
+    end
+    if entry.marker_sha256 ~= nil then
+      require_digest(entry.marker_sha256, "entries[" .. index .. "].marker_sha256")
+    end
+    if entry.state ~= "reserved" and entry.state ~= "allocated" and entry.state ~= "retained" then
+      fail("malformed-worker-home-retention", "entry state is invalid")
+    end
+    require_bounded(entry.reason, "entries[" .. index .. "].reason", max_string)
+  end
   return value
 end
 

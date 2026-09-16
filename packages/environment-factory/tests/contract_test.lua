@@ -125,6 +125,30 @@ local function cleanup_receipt()
   }
 end
 
+local function worker_home_retention()
+  return {
+    schema = contract.schemas.worker_home_retention,
+    operation_id = "contract-fixture",
+    ledger_id = string.rep("a", 64),
+    repository = {
+      url = "https://example.invalid/testing/fixture.git",
+      commit_sha = string.rep("b", 40),
+    },
+    remaining_count = 1,
+    entries = { {
+      slot_id = string.rep("c", 64),
+      lease_id = string.rep("d", 32),
+      effect_id = "worker-effect-1",
+      purpose = "validation-worker",
+      generation = 1,
+      identity_sha256 = string.rep("e", 64),
+      marker_sha256 = string.rep("f", 64),
+      state = "retained",
+      reason = "cleanup must retain an observed replacement",
+    } },
+  }
+end
+
 return {
   test_exported_pointer_copy_is_closed = function()
     local copied = contract.copy_ref({ kind = "artifact", ref = ".testing/runs/x.json", ignored = true })
@@ -372,6 +396,47 @@ return {
       local malformed = cleanup_receipt()
       mutate(malformed)
       t.raises(function() contract.validate_cleanup_receipt(malformed) end)
+    end
+  end,
+
+  test_cleanup_receipt_retention_details_are_closed_and_worker_home_only = function()
+    local function remaining_receipt(resource_kind)
+      local value = cleanup_receipt()
+      value.status = "incomplete"
+      value.attempted_resources[1].status = "remaining"
+      value.verified_removals = {}
+      value.remaining_resources = { {
+        resource_id = "workspace",
+        resource_kind = resource_kind,
+        cleanup_ref = { kind = "resource-cleanup", ref = "workspace" },
+      } }
+      return value
+    end
+
+    local missing = remaining_receipt("worker-home-ledger")
+    t.raises(function() contract.validate_cleanup_receipt(missing) end)
+
+    local unexpected = remaining_receipt("workspace")
+    unexpected.remaining_resources[1].resource_detail_ref = {
+      kind = "artifact",
+      ref = ".testing/runs/contract-fixture/worker-home-retention.json",
+    }
+    unexpected.remaining_resources[1].resource_detail_sha256 = string.rep("a", 64)
+    unexpected.remaining_resources[1].remaining_count = 1
+    t.raises(function() contract.validate_cleanup_receipt(unexpected) end)
+  end,
+
+  test_worker_home_retention_contract_rejects_malformed_recovery_state = function()
+    contract.validate_worker_home_retention(worker_home_retention())
+    for _, mutate in ipairs({
+      function(v) v.schema = "other" end,
+      function(v) v.remaining_count = 2 end,
+      function(v) v.entries[1].lease_id = string.rep("A", 32) end,
+      function(v) v.entries[1].state = "cleaned" end,
+    }) do
+      local malformed = worker_home_retention()
+      mutate(malformed)
+      t.raises(function() contract.validate_worker_home_retention(malformed) end)
     end
   end,
 }

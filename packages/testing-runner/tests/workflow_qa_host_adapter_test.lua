@@ -246,6 +246,13 @@ local function runtime(request, materials, mutate)
       claimed = claimed or { value = fixtures.copy(value), claim_id = "host-adapter-claim" }
       return { status = "claimed", claim_id = claimed.claim_id }
     end,
+    reconcile_preauthorization_claim = function(value)
+      if claimed == nil then return false end
+      for key, item in pairs(value) do
+        if not execution.equal(claimed.value[key], item) then return false end
+      end
+      return true
+    end,
     grant_values = function() return values() end,
     record_terminal = function(value) terminal = fixtures.copy(value) return true end,
   }
@@ -287,6 +294,57 @@ return {
     t.eq(artifacts[request.grant_ref].value.grant_id, "host-adapter-grant")
   end,
 
+  test_grant_reads_are_digest_bound_and_replay_probe_is_durable_only = function()
+    local request, materials = fixture()
+    local ports = runtime(request, materials)
+    local original_load = ports.load_artifact
+    local reads = {}
+    ports.load_artifact = function(ref, expected_digest, options)
+      table.insert(reads, {
+        ref = ref,
+        expected_digest = expected_digest,
+        durable_only = type(options) == "table" and options.durable_only == true,
+      })
+      return original_load(ref, expected_digest, options)
+    end
+
+    adapter.handle_execution_grant(request, ports)
+
+    t.eq(reads[1].ref, request.preauthorization_ref)
+    t.eq(reads[1].expected_digest, request.preauthorization_sha256)
+    t.eq(reads[2].ref, request.plan_ref)
+    t.eq(reads[2].expected_digest, request.plan_sha256)
+    t.eq(reads[3].ref, request.environment_receipt_ref)
+    t.eq(reads[3].expected_digest, request.environment_receipt_sha256)
+    t.eq(reads[4].ref, request.grant_ref)
+    t.eq(reads[4].expected_digest, nil)
+    t.eq(reads[4].durable_only, true)
+    t.eq(reads[5].ref, request.grant_ref)
+    t.eq(reads[5].expected_digest, digest("b"))
+  end,
+
+  test_persisted_grant_reconciles_only_from_an_authenticated_host_claim = function()
+    local request, materials = fixture()
+    local ports, _, _, claims = runtime(request, materials)
+    adapter.handle_execution_grant(request, ports)
+    t.eq(claims(), 1)
+    local reconciliations = 0
+    ports.reconcile_preauthorization_claim = function(value)
+      reconciliations = reconciliations + 1
+      return value.preauthorization_ref == request.preauthorization_ref
+        and value.plan_ref == request.plan_ref
+        and value.environment_receipt_ref == request.environment_receipt_ref
+    end
+    adapter.handle_execution_grant(request, ports)
+    t.eq(reconciliations, 1)
+    t.eq(claims(), 1)
+    ports.reconcile_preauthorization_claim = function() return false end
+    t.raises(function() adapter.handle_execution_grant(request, ports) end)
+    t.eq(claims(), 1)
+    ports.reconcile_preauthorization_claim = nil
+    t.raises(function() adapter.handle_execution_grant(request, ports) end)
+  end,
+
   test_grant_binding_environment_and_runtime_ports_fail_closed = function()
     local request, materials = fixture()
     local ports = runtime(request, materials)
@@ -307,6 +365,22 @@ return {
     t.raises(function() adapter.handle_execution_grant(request, {}) end)
   end,
 
+  test_derived_grants_reject_foreign_environment_and_http_origins = function()
+    local request, materials = fixture()
+    table.insert(materials.preauthorization.capabilities.http, {
+      origin = "http://127.0.0.1:43110", methods = { "GET" }, path_prefixes = { "/" },
+    })
+    t.raises(function() adapter.derive_execution_grant(request, materials, values()) end)
+
+    request, materials = fixture()
+    materials.environment_receipt_sha256 = digest("7")
+    t.raises(function() adapter.derive_execution_grant(request, materials, values()) end)
+
+    request, materials = browser_fixture()
+    materials.environment_receipt_sha256 = digest("7")
+    t.raises(function() adapter.derive_execution_grant(request, materials, browser_values()) end)
+  end,
+
   test_replayed_grant_rejects_foreign_http_origin_and_malformed_artifact = function()
     local request, materials = fixture()
     local ports, artifacts = runtime(request, materials)
@@ -314,6 +388,44 @@ return {
     artifacts[request.grant_ref].value.http_capabilities[1].origin = "http://127.0.0.1:43110"
     t.raises(function() adapter.handle_execution_grant(request, ports) end)
     artifacts[request.grant_ref] = { value = "bad", digest = digest("b") }
+    t.raises(function() adapter.handle_execution_grant(request, ports) end)
+  end,
+
+  test_replayed_grant_rejects_authority_policy_evidence_and_capability_expansion = function()
+    local mutations = {
+      function(grant) grant.authority.ref = "foreign-host-policy" end,
+      function(grant) grant.policy_revision = "host-adapter-policy-v2" end,
+      function(grant) grant.evidence_ref.ref = "foreign-grant-evidence" end,
+      function(grant) table.insert(grant.http_capabilities[1].methods, "POST") end,
+      function(grant) table.insert(grant.http_capabilities[1].path_prefixes, "/admin") end,
+    }
+    for _, mutate in ipairs(mutations) do
+      local request, materials = fixture()
+      local ports, artifacts = runtime(request, materials)
+      adapter.handle_execution_grant(request, ports)
+      mutate(artifacts[request.grant_ref].value)
+      t.raises(function() adapter.handle_execution_grant(request, ports) end)
+    end
+  end,
+
+  test_replayed_grant_rejects_cli_expansion_and_plan_capability_escalation = function()
+    local request, materials = fixture()
+    materials.plan.cases = { {
+      case_id = "health-cli", kind = "cli", argv = { "fixture-cli", "health" },
+      timeout_seconds = 10, assertions = { { type = "exit-code", expected = 0 } },
+    } }
+    materials.preauthorization.capabilities = {
+      cli = { { argv_prefix = { "fixture-cli", "health" } } }, http = {},
+    }
+    local ports, artifacts = runtime(request, materials)
+    adapter.handle_execution_grant(request, ports)
+    artifacts[request.grant_ref].value.cli_capabilities[1].argv_prefix = { "fixture-cli" }
+    t.raises(function() adapter.handle_execution_grant(request, ports) end)
+
+    request, materials = fixture()
+    ports, artifacts = runtime(request, materials)
+    adapter.handle_execution_grant(request, ports)
+    artifacts[request.plan_ref].value.cases[1].request.url = "http://127.0.0.1:4173/admin"
     t.raises(function() adapter.handle_execution_grant(request, ports) end)
   end,
 

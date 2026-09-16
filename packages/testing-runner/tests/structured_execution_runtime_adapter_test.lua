@@ -25,6 +25,7 @@ local function fake_host()
     ["verify-grant"] = { grant_sha256 = string.rep("b", 64) },
     ["replay-guard"] = { status = "claimed", claim_id = "claim", grant_id = "grant" },
     ["authorize-cli-effect"] = { decision = "allow" },
+    ["authorize-http-effect"] = { decision = "allow" },
     ["exec-argv"] = { exit_code = 0, stdout = "ok", stderr = "" },
     ["http-request"] = { status = 200, body = "ok", headers = {} },
     ["write-artifact"] = { written = true },
@@ -83,8 +84,11 @@ return {
       t.eq(ports.verify_grant({ artifact_root = root, operation_id = "op" }).grant_sha256, string.rep("b", 64))
       t.eq(ports.replay_guard({ artifact_root = root, grant_id = "grant" }).status, "claimed")
       t.eq(ports.authorize_cli_effect({ artifact_root = root, operation_id = "op" }).decision, "allow")
+      t.eq(ports.authorize_http_effect({ artifact_root = root, operation_id = "op" }).decision, "allow")
       t.eq(ports.exec_argv({ artifact_root = root, case_id = "cli", timeout_seconds = 7 }).exit_code, 0)
-      t.eq(ports.http_request({ artifact_root = root, case_id = "http", timeout_seconds = 9 }).status, 200)
+      t.eq(ports.http_request({ artifact_root = root, action_envelope = {
+        case = { timeout_seconds = 9 },
+      } }).status, 200)
       t.eq(ports.write_artifact(root .. "/result.json", { status = "passed" }), true)
       t.eq(ports.load_result({ artifact_root = root, result_ref = root .. "/execution.json" }).status, "passed")
       t.eq(ports.complete_replay({ artifact_root = root, result_ref = root .. "/execution.json" }), true)
