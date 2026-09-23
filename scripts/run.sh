@@ -582,7 +582,7 @@ run_node_runtime_tests() {
     node --test "$ROOT/packages/module-test-loop/tests/node_runtime_test.js"
   fi
   if [ -z "$target" ] || [ "$target" = "testing-runner" ]; then
-    node --test "$ROOT/libraries/testing_runtime/tests/browser_control_test.js" "$ROOT/libraries/testing_runtime/tests/structured_execution_runtime_test.js"
+    node --test "$ROOT/libraries/testing_runtime/tests/browser_control_test.js" "$ROOT/libraries/testing_runtime/tests/structured_execution_runtime_test.js" "$ROOT/libraries/testing_runtime/tests/fixed_browser_test.js"
   fi
 }
 
