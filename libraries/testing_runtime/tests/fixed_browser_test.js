@@ -216,6 +216,12 @@ test('cleanup preserves replaced directories and symlinks without matching inode
 
 test('failed identity lookup cannot signal a live group or remove its profile', async t => {
   const value = inputs(t); const id = value.request.execution_id;
+  const profile = path.join(os.tmpdir(), `fkst-fixed-browser-${fixed.sha256(value.config.store_root + '\0' + id)}`);
+  fs.mkdirSync(profile); fs.writeFileSync(path.join(profile, 'keep'), 'unchanged');
+  t.after(() => fs.rmSync(profile, { recursive: true, force: true }));
+  const stat = fs.lstatSync(profile);
+  store.execute({ root: value.config.store_root, operation: 'record-immutable', key: `fixed-browser/${id}/profile`,
+    value: { device: String(stat.dev), inode: String(stat.ino) } });
   const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore' });
   t.after(() => child.kill('SIGKILL'));
   const identity = store.processStartIdentity(child.pid); assert.ok(identity);
@@ -226,6 +232,7 @@ test('failed identity lookup cannot signal a live group or remove its profile', 
     store.processStartIdentity = () => null;
     assert.equal(context(value.config).recover(id), 'unknown');
     assert.doesNotThrow(() => process.kill(child.pid, 0));
+    assert.equal(fs.readFileSync(path.join(profile, 'keep'), 'utf8'), 'unchanged');
   } finally { store.processStartIdentity = original; }
   const stopped = new Promise(resolve => child.once('exit', resolve)); child.kill('SIGKILL'); await stopped;
 });
