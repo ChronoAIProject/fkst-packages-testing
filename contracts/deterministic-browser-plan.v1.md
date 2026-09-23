@@ -109,6 +109,12 @@ sentinel `[title differs]`, or null when unobserved), `target_status`
 (unique-visible/unresolved), `cleanup_status`, binding and UTC timestamps. The
 canonical reducer recomputes title equality from that bounded observation;
 neither passed flags nor untrusted result classifications are authoritative.
+The mismatch sentinel is outside the admitted expected-title syntax:
+`^[A-Za-z0-9][A-Za-z0-9 ._-]{0,119}$`. Its brackets cannot occur in a reviewed
+expected title accepted by this slice. Even with recomputed catalog, target,
+Case and candidate digests, an expected `[title differs]` fails compilation
+before Host store creation or Browser effects, so a mismatch cannot equal an
+admitted expected title.
 Consumers must verify against independently retained request/Host bindings,
 never trust a self-digest as execution authority. The read-only upstream verifier
 also reloads the private durable receipt and recomputes the expected canonical

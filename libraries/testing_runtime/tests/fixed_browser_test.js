@@ -70,6 +70,32 @@ test('compile exact original PQL staged candidate; deterministic and nonauthoriz
   assert.equal(plan.action.url, 'http://127.0.0.1:12345/results');
 });
 
+test('reserved mismatch sentinel cannot be a reviewed expected title before Host store or effects', t => {
+  const value = inputs(t);
+  value.candidate.catalog.assertions[0].expected_value = '[title differs]';
+  value.candidate.catalog = fixed.seal(value.candidate.catalog);
+  const catalog = value.candidate.catalog;
+  const tuple = { catalog_id: catalog.catalog_id, catalog_version: catalog.catalog_version, catalog_digest: catalog.content_digest };
+  const design = value.candidate.case_design;
+  design.action_assertion_catalog = tuple;
+  design.browser.action_catalog = tuple;
+  design.browser.assertion_catalog = tuple;
+  const target = design.browser.semantic_targets[0];
+  target.catalog_tuple = tuple;
+  const targetBody = { ...target }; delete targetBody.target_digest;
+  target.target_digest = fixed.digest(targetBody);
+  value.candidate.case_design = fixed.seal(design);
+  value.candidate = fixed.seal(value.candidate);
+  value.policy.candidate_digest = value.candidate.content_digest;
+  value.policy.case_content_digest = value.candidate.case_design.content_digest;
+  value.request.candidate = value.candidate;
+  const fake = fakeHost(value);
+  assert.throws(() => fixed.compile(value.candidate, value.policy), /catalog-assertion-mismatch/);
+  assert.throws(() => fixed.run(value.request, fake.host), /catalog-assertion-mismatch/);
+  assert.equal(fake.effects(), 0);
+  assert.equal(fs.existsSync(value.config.store_root), false);
+});
+
 for (const mutation of [
   c => { c.browser.actions.push({ kind: 'click_reviewed_target' }); },
   c => { c.browser.actions[0].kind = 'inspect'; },
