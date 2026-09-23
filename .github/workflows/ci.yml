@@ -77,6 +77,15 @@ jobs:
       - name: Provision Python test dependencies
         run: scripts/python_test_deps.sh provision
 
+      - name: Require real Chromium fixed Browser Plan tests
+        shell: bash
+        run: |
+          set -euo pipefail
+          chrome="$(command -v google-chrome || command -v chromium || command -v chromium-browser || true)"
+          [ -n "$chrome" ] || { echo "Chrome/Chromium is required for fixed Browser Plan tests" >&2; exit 1; }
+          FKST_REQUIRE_FIXED_BROWSER=1 FKST_FIXED_BROWSER_CHROME="$chrome" \
+            node --test libraries/testing_runtime/tests/fixed_browser_test.js
+
       - name: Run repository checks and package tests
         env:
           BIN: ${{ github.workspace }}/fkst-substrate/target/debug/fkst-framework
