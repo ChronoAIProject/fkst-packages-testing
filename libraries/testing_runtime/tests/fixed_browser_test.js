@@ -11,6 +11,7 @@ const fixed = require('../lib/deterministic_browser');
 const { context } = require('../../../examples/generic-host/bin/deterministic-browser');
 const store = require('../../../examples/generic-host/bin/durable-host-store');
 const candidateFixture = require('./fixtures/browser-host-candidate.json');
+const { waitForDebuggerPort } = require('../bin/fkst-fixed-browser-worker');
 
 const ROOT = path.resolve(__dirname, '../../..');
 const CLI = path.join(ROOT, 'examples/generic-host/bin/deterministic-browser.js');
@@ -61,6 +62,58 @@ function fakeHost(value) {
   host.browser = () => { effects += 1; return { outcome: 'observed', observed_title: 'Results', target_status: 'unique-visible', cleanup_status: 'complete' }; };
   return { host, effects: () => effects };
 }
+
+test('debugger readiness waits for creation, empty file and partial port publication', async t => {
+  const portFile = '/fixture/DevToolsActivePort';
+  const states = [null, '', '12', '12345\n/devtools/browser/fixture'];
+  const readFileSync = fs.readFileSync;
+  let reads = 0;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (file !== portFile) return readFileSync(file, ...args);
+    assert.ok(reads < states.length);
+    const value = states[reads++];
+    if (value === null) throw Object.assign(new Error('not yet created'), { code: 'ENOENT' });
+    return value;
+  });
+  assert.equal(await waitForDebuggerPort(portFile, Date.now() + 2000, () => false), '12345');
+  assert.equal(reads, states.length);
+});
+
+test('debugger readiness rejects a completed invalid port and non-ENOENT IO failure', async t => {
+  const portFile = '/fixture/DevToolsActivePort';
+  const readFileSync = fs.readFileSync;
+  let contents;
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (file !== portFile) return readFileSync(file, ...args);
+    if (contents instanceof Error) throw contents;
+    return contents;
+  });
+  for (contents of ['\n', '0\n', '65536\n', '123456\n', '12x\n', '123\r\n']) {
+    await assert.rejects(waitForDebuggerPort(portFile, Date.now() + 2000, () => false), /debugger-port-invalid/);
+  }
+  contents = Object.assign(new Error('denied'), { code: 'EACCES' });
+  await assert.rejects(waitForDebuggerPort(portFile, Date.now() + 2000, () => false), { code: 'EACCES' });
+});
+
+test('debugger readiness stays bounded for an incomplete record or exited Chrome', async t => {
+  const portFile = '/fixture/DevToolsActivePort';
+  const readFileSync = fs.readFileSync;
+  let reads = 0;
+  let closed = false;
+  let now = 0;
+  t.mock.method(Date, 'now', () => now);
+  t.mock.method(fs, 'readFileSync', (file, ...args) => {
+    if (file !== portFile) return readFileSync(file, ...args);
+    reads += 1;
+    if (reads === 1) now = 100;
+    else closed = true;
+    return '12';
+  });
+  await assert.rejects(waitForDebuggerPort(portFile, 100, () => closed), /chrome-start-failed/);
+  assert.equal(reads, 1);
+  await assert.rejects(waitForDebuggerPort(portFile, 200, () => closed), /chrome-start-failed/);
+  assert.equal(reads, 2);
+});
 
 test('compile exact original PQL staged candidate; deterministic and nonauthorizing', t => {
   const { candidate, policy, plan } = inputs(t);
