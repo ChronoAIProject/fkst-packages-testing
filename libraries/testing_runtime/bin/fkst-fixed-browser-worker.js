@@ -33,8 +33,11 @@ async function execute(input) {
   let chrome; let cdp; let deadlineTimer; let closed = false; let profileIdentity;
   const result = { outcome: 'error', observed_title: null, target_status: 'unresolved', cleanup_status: 'unknown' };
   let stage = 'ownership';
+  const diagnosticStarted = Date.now();
+  const stages = [];
   const mark = value => {
     stage = value;
+    stages.push({ stage, elapsed_ms: Date.now() - diagnosticStarted });
   };
   const deadline = Date.now() + plan.timeout_ms;
   const expired = () => Date.now() >= deadline;
@@ -163,7 +166,7 @@ async function execute(input) {
     result.outcome = expired() ? 'timeout' : 'error';
     result.observed_title = null; result.target_status = 'unresolved';
   } finally {
-    fs.writeFileSync(path.join(root, 'startup-stage.json'), JSON.stringify({ stage }));
+    fs.writeFileSync(path.join(root, 'startup-stage.json'), JSON.stringify({ stage, stages, elapsed_ms: Date.now() - diagnosticStarted }));
     clearTimeout(deadlineTimer);
     if (chrome && !closed) {
       chrome.kill('SIGKILL');
