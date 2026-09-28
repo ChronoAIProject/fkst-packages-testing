@@ -35,7 +35,6 @@ async function execute(input) {
   let stage = 'ownership';
   const mark = value => {
     stage = value;
-    fs.writeFileSync(path.join(root, 'startup-stage.json'), JSON.stringify({ stage }));
   };
   const deadline = Date.now() + plan.timeout_ms;
   const expired = () => Date.now() >= deadline;
@@ -164,6 +163,7 @@ async function execute(input) {
     result.outcome = expired() ? 'timeout' : 'error';
     result.observed_title = null; result.target_status = 'unresolved';
   } finally {
+    fs.writeFileSync(path.join(root, 'startup-stage.json'), JSON.stringify({ stage }));
     clearTimeout(deadlineTimer);
     if (chrome && !closed) {
       chrome.kill('SIGKILL');
