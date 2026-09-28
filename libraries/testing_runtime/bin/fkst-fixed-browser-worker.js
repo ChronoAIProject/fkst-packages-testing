@@ -32,6 +32,11 @@ async function execute(input) {
   const { plan, policy, root, execution_id: id, profile } = input;
   let chrome; let cdp; let deadlineTimer; let closed = false; let profileIdentity;
   const result = { outcome: 'error', observed_title: null, target_status: 'unresolved', cleanup_status: 'unknown' };
+  let stage = 'ownership';
+  const mark = value => {
+    stage = value;
+    fs.writeFileSync(path.join(root, 'startup-stage.json'), JSON.stringify({ stage }));
+  };
   const deadline = Date.now() + plan.timeout_ms;
   const expired = () => Date.now() >= deadline;
   const recordOwner = (suffix, pid) => {
@@ -68,14 +73,17 @@ async function execute(input) {
     check(Number.isInteger(chrome.pid), 'chrome-start-failed');
     recordOwner('browser', chrome.pid);
     chrome.stdin.end('start\n');
+    mark('port-publication');
     deadlineTimer = setTimeout(() => { chrome.kill('SIGKILL'); }, plan.timeout_ms);
     const portFile = path.join(profile, 'DevToolsActivePort');
     const port = await waitForDebuggerPort(portFile, deadline, () => closed);
+    mark('target-create');
     const response = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {
       method: 'PUT', signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
     });
     check(response.ok, 'debugger-target-failed');
     const target = await response.json();
+    mark('cdp-connect');
     cdp = new CdpSocket(target.webSocketDebuggerUrl);
     await cdp.connect();
     let navigationRequests = 0; let acceptedResponse = false; let networkViolation = false;
@@ -121,15 +129,16 @@ async function execute(input) {
           { name: 'Content-Security-Policy', value: "default-src 'none'; style-src 'unsafe-inline'; script-src 'none'; frame-src 'none'; connect-src 'none'; form-action 'none'; base-uri 'none'" }],
         body: bytes.toString('base64') });
     }
-    await cdp.send('Page.enable');
-    await cdp.send('Network.enable');
-    await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
-    await cdp.send('Network.setBypassServiceWorker', { bypass: true });
-    await cdp.send('Emulation.setScriptExecutionDisabled', { value: true });
-    await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }, { urlPattern: '*', requestStage: 'Response' }] });
+    mark('page-enable'); await cdp.send('Page.enable');
+    mark('network-enable'); await cdp.send('Network.enable');
+    mark('cache-disable'); await cdp.send('Network.setCacheDisabled', { cacheDisabled: true });
+    mark('service-worker-bypass'); await cdp.send('Network.setBypassServiceWorker', { bypass: true });
+    mark('script-disable'); await cdp.send('Emulation.setScriptExecutionDisabled', { value: true });
+    mark('fetch-enable'); await cdp.send('Fetch.enable', { patterns: [{ urlPattern: '*', requestStage: 'Request' }, { urlPattern: '*', requestStage: 'Response' }] });
+    mark('navigate');
     const nav = await cdp.send('Page.navigate', { url: plan.action.url });
     check(!nav.errorText, 'navigation-failed');
-    let state;
+    mark('document-ready'); let state;
     while (!expired()) {
       const responseState = await cdp.send('Runtime.evaluate', {
         expression: '({ready:document.readyState,url:location.href,title:document.title})', returnByValue: true,
@@ -140,6 +149,7 @@ async function execute(input) {
     }
     check(!expired() && acceptedResponse && navigationRequests === 1 && !networkViolation, 'navigation-unverified');
     const tree = await cdp.send('Accessibility.getFullAXTree');
+    mark('target-verify');
     const matches = tree.nodes.filter(node => !node.ignored && node.role && node.role.value === 'region'
       && node.name && node.name.value === policy.target_resolution.accessible_name);
     check(matches.length === 1 && matches[0].backendDOMNodeId, 'target-not-unique');
@@ -149,6 +159,7 @@ async function execute(input) {
     check(!networkViolation && !expired(), 'browser-policy-violation');
     result.outcome = 'observed'; result.target_status = 'unique-visible';
     result.observed_title = state.title === plan.assertion.expected ? plan.assertion.expected : '[title differs]';
+    mark('observed');
   } catch (_) {
     result.outcome = expired() ? 'timeout' : 'error';
     result.observed_title = null; result.target_status = 'unresolved';
