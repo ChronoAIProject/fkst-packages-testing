@@ -11,6 +11,23 @@ const store = require('../../../examples/generic-host/bin/durable-host-store');
 
 const delay = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+async function waitForDebuggerPort(portFile, deadline, isClosed) {
+  while (true) {
+    check(!isClosed() && Date.now() < deadline, 'chrome-start-failed');
+    let contents;
+    try { contents = fs.readFileSync(portFile, 'utf8'); }
+    catch (error) { if (error.code !== 'ENOENT') throw error; }
+    // Chromium creates the file before writing it. A port prefix is not ready
+    // until its terminating newline has been published.
+    if (contents !== undefined && contents.includes('\n')) {
+      const port = contents.split('\n')[0];
+      check(/^[1-9][0-9]{0,4}$/.test(port) && Number(port) <= 65535, 'debugger-port-invalid');
+      return port;
+    }
+    await delay(25);
+  }
+}
+
 async function execute(input) {
   const { plan, policy, root, execution_id: id, profile } = input;
   let chrome; let cdp; let deadlineTimer; let closed = false; let profileIdentity;
@@ -53,11 +70,7 @@ async function execute(input) {
     chrome.stdin.end('start\n');
     deadlineTimer = setTimeout(() => { chrome.kill('SIGKILL'); }, plan.timeout_ms);
     const portFile = path.join(profile, 'DevToolsActivePort');
-    while (!fs.existsSync(portFile)) {
-      check(!closed && !expired(), 'chrome-start-failed'); await delay(25);
-    }
-    const port = fs.readFileSync(portFile, 'utf8').split('\n')[0];
-    check(/^[1-9][0-9]{0,4}$/.test(port), 'debugger-port-invalid');
+    const port = await waitForDebuggerPort(portFile, deadline, () => closed);
     const response = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, {
       method: 'PUT', signal: AbortSignal.timeout(Math.max(1, deadline - Date.now())),
     });
@@ -162,3 +175,5 @@ if (require.main === module) {
     process.stdout.write(JSON.stringify(result) + '\n');
   }).catch(() => { process.exitCode = 1; }));
 }
+
+module.exports = { waitForDebuggerPort };
